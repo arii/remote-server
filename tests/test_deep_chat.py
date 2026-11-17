@@ -6,13 +6,17 @@ Run: python3 tests/test_deep_chat.py  (A only under system python)
 
 import base64
 import io
+import inspect
 import json
 import os
 import subprocess
 import sys
 import unittest
 from contextlib import redirect_stdout
+from types import SimpleNamespace
+from unittest import mock
 
+import cobrowse_handoff
 import deep_chat
 
 try:
@@ -26,6 +30,42 @@ except ImportError:
 
 def b64(text):
     return base64.b64encode(text.encode()).decode()
+
+
+class TestBrowserChatWiring(unittest.TestCase):
+    def test_chat_profile_includes_browser_tools_and_forwards_target(self):
+        def tool(fn):
+            return SimpleNamespace(
+                name=fn.__name__,
+                description=fn.__doc__,
+                args={
+                    name: p.annotation
+                    for name, p in inspect.signature(fn).parameters.items()
+                },
+                invoke=lambda args: fn(**args),
+            )
+
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "langchain_core.tools": SimpleNamespace(tool=tool),
+                "retrieval": SimpleNamespace(),
+            },
+        ):
+            tools = {tool.name: tool for tool in deep_chat.build_chat_tools(".")}
+        self.assertIn("browser_snapshot", tools)
+        self.assertIn("browser_act", tools)
+        with mock.patch.object(
+            cobrowse_handoff, "_browser_http", return_value="ok"
+        ) as http:
+            tools["browser_snapshot"].invoke({"target": "paired"})
+            self.assertEqual(http.call_args.args, ("GET", "/snapshot?target=paired"))
+            tools["browser_act"].invoke(
+                {"op": "click", "x": 1, "y": 2, "target": "paired"}
+            )
+            self.assertEqual(http.call_args.args[:2], ("POST", "/drive?target=paired"))
+            tools["browser_snapshot"].invoke({})
+            self.assertEqual(http.call_args.args, ("GET", "/snapshot?target=grid"))
 
 
 class TestProposalValidation(unittest.TestCase):
@@ -1736,16 +1776,13 @@ class TestChatToolProfile(unittest.TestCase):
         import tempfile
 
         tools = deep_chat.build_chat_tools(tempfile.mkdtemp())
-        self.assertLessEqual(len(tools), 8)
+        self.assertLessEqual(len(tools), 9)
         self.assertEqual([t.name for t in tools], list(deep_chat.CHAT_TOOL_NAMES))
         violations = []
         for tool in tools:
-            # propose_action is the locked-semantics exception to the
-            # parameter cap; flatness still applies.
-            cap = (
-                10**6
-                if tool.name == "propose_action"
-                else deep_chat.CHAT_MAX_TOOL_PARAMS
+            # Action schemas keep their flat, named parameter exceptions.
+            cap = deep_chat.CHAT_TOOL_PARAM_CAPS.get(
+                tool.name, deep_chat.CHAT_MAX_TOOL_PARAMS
             )
             violations.extend(
                 f"{tool.name}: {v}"

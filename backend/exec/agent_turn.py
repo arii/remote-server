@@ -809,6 +809,7 @@ class AgentTurnManager:
         prompt: str,
         continued: bool,
         argv: list | None = None,
+        browser_target: str = "grid",
     ):
         """Yield stdout text chunks for one turn. Afterwards
         pop_result(session_id) holds {exit, stderr, truncated,
@@ -825,7 +826,18 @@ class AgentTurnManager:
         )
         send = guard_prompt(spec_prompt(prompt))
         if not repo:
-            send = BROWSE_GUIDANCE + send
+            if browser_target not in ("grid", "paired"):
+                raise ValueError("unknown browser target")
+            guidance = BROWSE_GUIDANCE
+            if browser_target == "paired":
+                guidance = guidance.replace(
+                    "GET /snapshot", "GET /snapshot?target=paired"
+                ).replace("/drive {", "/drive?target=paired {")
+                guidance = (
+                    "Target: paired Chrome. Use ?target=paired on every snapshot, drive and state request.\n"
+                    + guidance
+                )
+            send = guidance + send
         cmd = (
             list(argv)
             if argv is not None

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Buttons pair options</title><link rel="stylesheet" href="style.css"></head>
+<body>
+  <h1>Buttons pair options</h1>
+  <form>
+    <label for="origin">Server origin (HTTPS)</label>
+    <input id="origin" type="url" required>
+    <p><label><input id="sites" type="checkbox"> Allow takeover detection on other HTTP and HTTPS sites</label></p>
+    <p>This optional site access lets Buttons detect your input only in the tab it creates. Without it, driving is restricted to granted sites. Revoke previously granted access in Chrome's extension settings.</p>
+    <button type="submit">Save and disconnect</button>
+  </form>
+  <p id="message" role="status"></p>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

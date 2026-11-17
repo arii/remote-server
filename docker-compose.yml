@@ -176,6 +176,7 @@ services:
       # Shared headed browser (Solution A): Selenium Grid base for agent
       # CDP sessions. The service must exist; there is no fail-safe.
       BROWSER_ENDPOINT: http://browser:4444
+      AGENT_API: http://buttons:8000/api/agent
       # Same pause-state file as buttons (#1104); /tmp is per-container
       # and would split-brain the pause across the takeover boundary.
       AGENT_CONTROL_STATE_FILE: /var/lib/buttons/agent_control_state.json

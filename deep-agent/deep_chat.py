@@ -107,14 +107,13 @@ BUDGET_SPENT_NUDGE = (
 )
 
 # The lean chat profile (D1): the tool names mounted on every chat
-# turn, in schema order. Eight or fewer, each flat (top-level scalars,
+# turn, in schema order. Nine or fewer, each flat (top-level scalars,
 # no nested objects or arrays-of-objects, at most 6 parameters —
-# propose_action is the locked-semantics exception to the parameter
+# propose_action and browser_act are exceptions to the parameter
 # cap, still flat). Schema weight is what locks qwen3:8b up, so the
 # profile is deliberately narrower than the full build_tools surface:
 # no web discovery (fetch_url/search_web), no past-turn recall
-# (search_turns), no shared-browser driving (browser_* — the human
-# drives the shared session from the Browser tab), and no visual-impact
+# (search_turns), and no visual-impact
 # tools (they stay on the eval path). Pinned by tests/test_deep_chat.py.
 CHAT_TOOL_NAMES = (
     "read_repo_file",
@@ -124,10 +123,13 @@ CHAT_TOOL_NAMES = (
     "pr_read",
     "run_repo_command",
     "propose_action",
+    "browser_snapshot",
+    "browser_act",
 )
-CHAT_MAX_TOOLS = 8
-# Parameter cap for non-propose_action tools (D1 flat-schema rule).
+CHAT_MAX_TOOLS = 9
+# Default parameter cap; action exceptions remain flat.
 CHAT_MAX_TOOL_PARAMS = 6
+CHAT_TOOL_PARAM_CAPS = {"propose_action": 10**6, "browser_act": 10}
 # Sliding window over checkpoint history, applied at turn start.
 # Checkpoints append indefinitely; without this long threads blow
 # the context window. ~5-10 turns of history. The count is a guard
@@ -675,18 +677,19 @@ def build_tools(checkout, *, impact_tools=False):
         )
 
     @tool
-    def browser_snapshot() -> str:
-        """See the shared cdp-stream browser page (read-only).
+    def browser_snapshot(target: str = "grid") -> str:
+        """See the selected browser page (read-only).
 
         Use when the user asks about the browser view or before
         driving it: returns the live page URL, title, and up to 100
-        click targets with coordinates. Attaches to the live shared
-        session; browser-busy means no viewer session exists. No
-        pixels — the human watches the stream, this text is enough.
+        click targets with coordinates. Grid uses the live shared
+        viewer; paired uses the connected Buttons pair Chrome tab.
+        Returns page text.
 
-        Takes no arguments.
+        Args:
+            target: 'grid' for the shared viewer or 'paired' for My Chrome.
         """
-        return cobrowse_handoff.browser_snapshot_impl()
+        return cobrowse_handoff.browser_snapshot_impl(target=target)
 
     @tool
     def browser_act(
@@ -699,8 +702,9 @@ def build_tools(checkout, *, impact_tools=False):
         code: str = "",
         dx: int = 0,
         dy: int = 0,
+        target: str = "grid",
     ) -> str:
-        """Drive the shared cdp-stream page (announce-then-act).
+        """Drive the selected browser page (announce-then-act).
 
         Say what you are about to do in chat, then call once per
         step, then report what the page shows. Refuses while the
@@ -721,9 +725,19 @@ def build_tools(checkout, *, impact_tools=False):
             code: Physical code, e.g. 'Enter' (defaults to key).
             dx: Horizontal scroll amount for wheel.
             dy: Vertical scroll amount for wheel.
+            target: 'grid' for the shared viewer or 'paired' for My Chrome.
         """
         return cobrowse_handoff.browser_drive_impl(
-            op, url=url, x=x, y=y, dx=dx, dy=dy, text=text, key=key, code=code
+            op,
+            url=url,
+            x=x,
+            y=y,
+            dx=dx,
+            dy=dy,
+            text=text,
+            key=key,
+            code=code,
+            target=target,
         )
 
     @tool
@@ -936,9 +950,7 @@ def build_chat_tools(checkout):
     tools = [built[name] for name in CHAT_TOOL_NAMES]
     problems = []
     for tool in tools:
-        # propose_action is the locked-semantics exception to the
-        # parameter cap (9 flat scalars); flatness still applies.
-        cap = 10**6 if tool.name == "propose_action" else CHAT_MAX_TOOL_PARAMS
+        cap = CHAT_TOOL_PARAM_CAPS.get(tool.name, CHAT_MAX_TOOL_PARAMS)
         problems.extend(
             f"{tool.name}: {v}"
             for v in flat_schema_violations(tool.args, max_params=cap)

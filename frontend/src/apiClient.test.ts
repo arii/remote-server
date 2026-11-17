@@ -13,6 +13,11 @@ import {
   abortAgentSession,
   abortRepair,
   apiUrl,
+  browserTaskShotUrl,
+  cancelBrowserTask,
+  createBrowserTask,
+  fetchBrowserTasks,
+  fetchPairedBrowserState,
   cancelJobRun,
   approvePr,
   clearOutbox,
@@ -89,6 +94,21 @@ beforeEach(() => {
 });
 
 describe('apiClient (fetch with inline shapes)', () => {
+  it('uses the Buttons-prefixed browser task, pairing and screenshot endpoints', async () => {
+    const fetch = mockFetchJson({ tasks: [] });
+    vi.stubGlobal('fetch', fetch);
+    expect(await fetchBrowserTasks()).toEqual([]);
+    expect(fetch).toHaveBeenLastCalledWith(apiUrl('api/browser/tasks'), expect.anything());
+    fetch.mockImplementation(mockFetchJson({ paired: { connected: false, url: null, title: null } }));
+    expect((await fetchPairedBrowserState()).connected).toBe(false);
+    expect(fetch).toHaveBeenLastCalledWith(apiUrl('api/browser/state?target=paired'), expect.anything());
+    fetch.mockImplementation(mockFetchJson({ id: 'task' }));
+    await createBrowserTask({ instructions: 'Inspect', target: 'paired', mode: 'check' });
+    expect(fetch).toHaveBeenLastCalledWith(apiUrl('api/browser/tasks'), expect.objectContaining({ method: 'POST', body: JSON.stringify({ instructions: 'Inspect', target: 'paired', mode: 'check' }) }));
+    await cancelBrowserTask('task');
+    expect(fetch).toHaveBeenLastCalledWith(apiUrl('api/browser/tasks/task/cancel'), expect.objectContaining({ method: 'POST' }));
+    expect(browserTaskShotUrl('task', 0)).toBe(apiUrl('api/browser/tasks/task/shots/0.png'));
+  });
   it('fetches the attention queue', async () => {
     const queue = { updated_at: 1, items: [] };
     vi.stubGlobal('fetch', mockFetchJson(queue));

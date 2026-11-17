@@ -481,6 +481,13 @@ li.detail.merging { opacity: 0.55; }
   background: var(--surface);
 }
 .cobrowse-chat { min-width: 0; }
+.browser-tasks { min-width: 0; margin-bottom: 1rem; }
+.browser-tasks label { display: block; }
+.browser-tasks input, .browser-tasks textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+.browser-tasks input[type="url"] { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem 0.55rem; }
+.browser-task-report, .browser-task-preview { margin: 0.75rem 0; min-width: 0; overflow-wrap: anywhere; }
+.browser-task-report pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.browser-task-report img, .browser-task-preview img { display: block; max-width: 100%; height: auto; }
 /* Narrow rail stacking: prompt chips and row buttons take one
    full-width line each with ellipsis, so nothing clips or wraps
    mid-word when the rail is at its 300px minimum. The rail owns

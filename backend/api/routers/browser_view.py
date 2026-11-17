@@ -311,6 +311,7 @@ def _log_activity(
     y: int | None = None,
     url: str | None = None,
     page_hash: str | None = None,
+    target: str = "grid",
 ) -> None:
     """Append one action event to the ring and the JSONL log.
 
@@ -330,6 +331,7 @@ def _log_activity(
         "y": y,
         "url": url,
         "page_hash": page_hash,
+        "target": target,
     }
     with _ACTIVITY_LOCK:
         _ACTIVITY.append(event)
@@ -427,24 +429,31 @@ def match_target(page: dict | None, x: int, y: int) -> dict | None:
 #: Last snapshot page, for pre-op selector matching and human-input
 #: context (the human viewer is pixels-only and never snapshots).
 _LAST_PAGE: dict = {"page": None, "hash": None}
+_PAGES_BY_TARGET: dict = {"grid": _LAST_PAGE, "paired": {"page": None, "hash": None}}
 
 
-def remember_page(page: dict) -> dict:
+def remember_page(page: dict, target: str = "grid") -> dict:
     """Cache a snapshot page and its hash; returns the same page."""
-    _LAST_PAGE["page"] = page
-    _LAST_PAGE["hash"] = page_hash_of(page)
+    _PAGES_BY_TARGET[target]["page"] = page
+    _PAGES_BY_TARGET[target]["hash"] = page_hash_of(page)
     return page
 
 
-def last_page() -> tuple[dict | None, str | None]:
+def last_page(target: str = "grid") -> tuple[dict | None, str | None]:
     """Cached page context; hash is unset until a current snapshot."""
-    return _LAST_PAGE["page"], _LAST_PAGE["hash"]
+    cache = _PAGES_BY_TARGET[target]
+    return cache["page"], cache["hash"]
 
 
-def remember_url(url: str, *, new_document: bool = False) -> None:
-    page = _LAST_PAGE["page"]
+def clear_page(target: str) -> None:
+    _PAGES_BY_TARGET[target].update(page=None, hash=None)
+
+
+def remember_url(url: str, *, new_document: bool = False, target: str = "grid") -> None:
+    cache = _PAGES_BY_TARGET[target]
+    page = cache["page"]
     if new_document or page is None or page.get("url") != url:
-        _LAST_PAGE.update(page={"url": url, "elements": []}, hash=None)
+        cache.update(page={"url": url, "elements": []}, hash=None)
 
 
 def _human_context(x: int | None = None, y: int | None = None) -> dict:
@@ -690,6 +699,19 @@ CREDENTIAL_FOCUS_JS = """(() => {
     return e.matches('input[type="password"]') || tokens.some(t =>
         ['username', 'current-password', 'new-password', 'one-time-code', 'webauthn'].includes(t));
 })()"""
+
+
+async def credential_focused(bridge):
+    try:
+        await bridge.ensure_focus()
+        raw = await bridge.call(
+            "Runtime.evaluate",
+            {"expression": CREDENTIAL_FOCUS_JS, "returnByValue": True},
+        )
+        return "exceptionDetails" in raw or raw["result"]["value"] is not False
+    except Exception:
+        # Unknown focus must not expose credential text.
+        return True
 
 
 class CDPBridge:
@@ -1046,16 +1068,7 @@ class CDPBridge:
         )
 
     async def credential_focused(self):
-        try:
-            await self.ensure_focus()
-            raw = await self.call(
-                "Runtime.evaluate",
-                {"expression": CREDENTIAL_FOCUS_JS, "returnByValue": True},
-            )
-            return "exceptionDetails" in raw or raw["result"]["value"] is not False
-        except Exception:
-            # Unknown focus must not expose credential text.
-            return True
+        return await credential_focused(self)
 
     async def key(self, key, code, modifiers=None, alt_graph=False):
         try:

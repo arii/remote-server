@@ -14,7 +14,9 @@ from backend.api.routers import (
     attention,
     briefing,
     browser_drive,
+    browser_ext,
     browser_skills,
+    browser_tasks,
     browser_view,
     chat,
     deferred,
@@ -98,7 +100,9 @@ app = FastAPI(title="remote-server backend", lifespan=_lifespan)
 app.include_router(agent.router)
 app.include_router(agent_control.router)
 app.include_router(browser_drive.router)
+app.include_router(browser_ext.router)
 app.include_router(browser_skills.router)
+app.include_router(browser_tasks.router)
 app.include_router(agents.router)
 app.include_router(briefing.router)
 app.include_router(repo.router)

@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import unittest
+from unittest import mock
 
 _spec = importlib.util.spec_from_file_location(
     "cobrowse_handoff",
@@ -92,6 +93,22 @@ class HandoffToolTest(unittest.TestCase):
 
 
 class BrowserApiBaseTest(unittest.TestCase):
+    def test_target_is_forwarded_and_invalid_targets_are_rejected(self):
+        with mock.patch.object(ch, "_browser_http", return_value="ok") as http:
+            ch.browser_snapshot_impl()
+            self.assertEqual(http.call_args.args, ("GET", "/snapshot?target=grid"))
+            ch.browser_snapshot_impl("paired")
+            self.assertEqual(http.call_args.args, ("GET", "/snapshot?target=paired"))
+            ch.browser_drive_impl("click", x=4, y=5, target="paired")
+            self.assertEqual(http.call_args.args[:2], ("POST", "/drive?target=paired"))
+            self.assertEqual(http.call_args.args[2]["x"], 4)
+            http.reset_mock()
+            self.assertTrue(ch.browser_snapshot_impl("other").startswith("REJECTED:"))
+            self.assertTrue(
+                ch.browser_drive_impl("key", target="other").startswith("REJECTED:")
+            )
+            http.assert_not_called()
+
     def test_strips_agent_suffix(self):
         self.assertEqual(
             ch.browser_api_base("http://127.0.0.1:8000/api/agent"),

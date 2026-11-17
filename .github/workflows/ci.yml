@@ -163,7 +163,9 @@ jobs:
       - name: install dependencies
         run: pnpm install --frozen-lockfile
       - name: unit tests (vitest + happy-dom over golden fixtures)
-        run: pnpm --filter localform-ai-extension test
+        run: pnpm run test:extension
+      - name: Buttons pair lint
+        run: pnpm --filter buttons-pair lint
       - name: syntax check
         run: pnpm --filter localform-ai-extension run test:syntax
       - name: build

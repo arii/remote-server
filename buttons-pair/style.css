@@ -1,0 +1,6 @@
+body { font: 14px system-ui, sans-serif; margin: 16px; min-width: 270px; max-width: 520px; color: #172033; background: #f8fafc; }
+h1 { font-size: 20px; }
+button { padding: 8px 12px; margin: 4px 4px 4px 0; }
+input[type="url"] { box-sizing: border-box; display: block; width: 100%; padding: 8px; margin-top: 8px; }
+[role="alert"] { color: #a21d23; overflow-wrap: anywhere; }
+a { color: #174ca4; }
