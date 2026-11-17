@@ -41,6 +41,8 @@ class TraceRuntimeTest(unittest.TestCase):
 
     def test_navigation_and_explicit_safe_target_ignore_focused_password(self):
         secret = "focused-password-fc51"
+        skill = sample_skill()
+        skill["steps"][0]["value"] = skill["source_url"]
         driver = TraceDriver()
         original = driver.snapshot
 
@@ -58,12 +60,10 @@ class TraceRuntimeTest(unittest.TestCase):
             return page
 
         with mock.patch.object(driver, "snapshot", side_effect=snapshot):
-            row = skill_runs.run_and_record(sample_skill(), driver)
+            row = skill_runs.run_and_record(skill, driver)
         self.assertTrue(row["passed"])
         self.assertFalse(row["steps"][0]["sensitive"])
-        self.assertEqual(
-            row["steps"][0]["proposal"]["value"], sample_skill()["steps"][0]["value"]
-        )
+        self.assertEqual(row["steps"][0]["proposal"]["value"], skill["source_url"])
         self.assertFalse(row["steps"][1]["sensitive"])
         self.assertNotIn(secret, json.dumps(row))
 
