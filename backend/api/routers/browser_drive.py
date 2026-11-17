@@ -351,6 +351,8 @@ async def drive(body: DriveRequest, target: DriveTarget = "grid") -> dict[str, A
         finish_step(trace, "error", f"driver failed: {exc}")
         raise
     finally:
+        if trace["page_hash"] is None and trace["outcome"]["verdict"] == "error":
+            trace["context"]["page_hash_unavailable"] = "error"
         skill_runs.record_run(
             {
                 "trace_version": 1,

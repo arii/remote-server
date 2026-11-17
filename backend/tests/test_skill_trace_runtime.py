@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from backend import skill_runs
@@ -75,6 +75,49 @@ class TraceRuntimeTest(unittest.TestCase):
         row = skill_runs.list_runs()[0]
         self.assertIsNotNone(row["steps"][0]["page_hash"])
         self.assertTrue(skill_runs.replay_trace(row)["passed"])
+
+    def test_cold_live_execution_and_snapshot_errors_replay_offline(self):
+        class BrokenBridge(FakeBridge):
+            async def click(self, x, y):
+                raise RuntimeError("fixture click disconnected")
+
+        for failure in ("mutation", "snapshot"):
+            with self.subTest(failure=failure):
+                app = FastAPI()
+                app.include_router(browser_drive.router)
+                with (
+                    mock.patch.object(browser_drive, "_require_human_not_driving"),
+                    mock.patch.object(
+                        browser_view, "last_page", return_value=(None, None)
+                    ),
+                    mock.patch.object(
+                        browser_view, "_grid_live_session", return_value="session"
+                    ),
+                    mock.patch.object(
+                        browser_view,
+                        "CDPBridge",
+                        BrokenBridge if failure == "mutation" else FakeBridge,
+                    ),
+                    mock.patch.object(
+                        browser_drive,
+                        "_snapshot",
+                        side_effect=HTTPException(502, "fixture snapshot disconnected"),
+                    ),
+                ):
+                    response = TestClient(app, raise_server_exceptions=False).post(
+                        "/api/browser/drive", json={"op": "click"}
+                    )
+                self.assertEqual(
+                    response.status_code, 500 if failure == "mutation" else 502
+                )
+                row = skill_runs.list_runs()[-1]
+                self.assertIsNone(row["steps"][0]["page_hash"])
+                restored = skill_runs.replay_trace(row)
+                self.assertEqual(restored["failed_step"], 1)
+                self.assertEqual(restored["steps"][0]["outcome"]["verdict"], "error")
+                self.assertEqual(
+                    restored["steps"][0]["context"]["page_hash_unavailable"], "error"
+                )
 
     def test_invalid_skill_error_never_persists_validation_input(self):
         secret = "audit-invalid-password-72ad"

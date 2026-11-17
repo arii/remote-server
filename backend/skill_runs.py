@@ -141,16 +141,20 @@ def replay_trace(row: dict) -> dict:
             for key in ("model_version", "gate_version")
         ):
             raise ValueError("missing step versions")
-        unobservable_dialog = (
+        unobservable = (
             step["mode"] == "live"
             and step["page_hash"] is None
-            and step["context"].get("page_hash_unavailable") == "dialog"
-            and step["context"].get("dialog_type")
-            in ("alert", "confirm", "prompt", "beforeunload")
+            and (
+                step["context"].get("page_hash_unavailable") == "dialog"
+                and step["context"].get("dialog_type")
+                in ("alert", "confirm", "prompt", "beforeunload")
+                or step["context"].get("page_hash_unavailable") == "error"
+                and step["outcome"].get("verdict") == "error"
+            )
         )
         if (
             step["executed"]
-            and not unobservable_dialog
+            and not unobservable
             and (
                 not isinstance(step["page_hash"], str)
                 or not re.fullmatch(r"[a-f0-9]{12,64}", step["page_hash"])
