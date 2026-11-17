@@ -71,7 +71,7 @@ def _read(task_id: str) -> dict:
 
 def _save(report: dict) -> None:
     directory = _directory(report["id"])
-    # A task pruned while in flight must not resurrect its artifacts.
+    # Stale writes must not resurrect pruned artifacts.
     if not directory.is_dir():
         return
     temporary = directory / "report.json.tmp"
@@ -90,8 +90,10 @@ def _reports() -> list[dict]:
 
 
 def prune_reports() -> None:
-    for report in _reports()[TASK_LIMIT:]:
-        shutil.rmtree(_directory(report["id"]))
+    reports = [_view(report) for report in _reports()]
+    for report in reports[TASK_LIMIT:]:
+        if report["status"] not in ("queued", "running", "cancelling"):
+            shutil.rmtree(_directory(report["id"]))
 
 
 def _view(report: dict) -> dict:
@@ -225,6 +227,7 @@ async def _worker(report: dict) -> None:
         finally:
             jobs.registry.append(task_id, f"browser task {report['status']}\n")
             jobs.registry.finish_run(task_id, code)
+        prune_reports()
 
 
 @router.post("", status_code=202)

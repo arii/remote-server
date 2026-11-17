@@ -348,6 +348,29 @@ class BrowserTasksTest(unittest.TestCase):
         self.assertFalse((self.root / "000000000000").exists())
         self.assertEqual(len(self.client.get("/api/browser/tasks").json()["tasks"]), 50)
 
+    def test_contract_c_retention_keeps_live_reports_and_screenshots(self):
+        """PR 1334 c: retention must never remove an active task's artifacts."""
+        live = []
+        for index in range(53):
+            task_id = f"{index:012x}"
+            status = ("queued", "running")[index] if index < 2 else "done"
+            directory = self.root / task_id
+            directory.mkdir(parents=True)
+            browser_tasks._save(
+                {"id": task_id, "created_at": index, "status": status, "captures": []}
+            )
+            (directory / "0.png").write_bytes(PNG)
+            if index < 2:
+                live.append(directory)
+        with mock.patch.object(
+            self.registry, "get_run", return_value={"done": False, "queued": True}
+        ):
+            browser_tasks.prune_reports()
+        for directory in live:
+            self.assertTrue((directory / "report.json").is_file(), str(directory))
+            self.assertEqual((directory / "0.png").read_bytes(), PNG)
+        self.assertFalse((self.root / "000000000002").exists())
+
     def test_unpaired_target_returns_409_before_queuing(self):
         with mock.patch.object(browser_ext, "_paired", None):
             response = self.client.post(
@@ -474,7 +497,9 @@ class CaptureTargetTest(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(browser_drive, "_require_human_not_driving"),
             mock.patch.object(bridge, "call", side_effect=command),
         ):
-            observation, png = await browser_drive.capture("grid", "https://other.test/")
+            observation, png = await browser_drive.capture(
+                "grid", "https://other.test/"
+            )
         self.assertEqual(png, PNG)
         self.assertEqual(observation["title"], "Example")
 
