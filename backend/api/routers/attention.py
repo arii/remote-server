@@ -670,7 +670,7 @@ def _assemble_items(name: str, now: float) -> list[dict]:
     # One collapsed item (stable snooze id); clean boot = no item.
     skill_problems = list_skills_verification_errors()
     if skill_problems:
-        detail = "; ".join(skill_problems)[:500]
+        detail = "; ".join(skill_problems)
         items.append(
             {
                 "id": "skills-verification",

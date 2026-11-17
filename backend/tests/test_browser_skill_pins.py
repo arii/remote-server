@@ -6,6 +6,7 @@ from unittest import mock
 
 from backend import skill_store
 from backend.tests.test_skill_replay import make_three_step_skill
+from backend.tests import test_browser_skill_integrity_contract as integrity
 
 
 class BrowserSkillPinsTest(unittest.TestCase):
@@ -55,3 +56,23 @@ class BrowserSkillPinsTest(unittest.TestCase):
         self.assertEqual(lock.read_bytes(), original)
         self.assertFalse((self.root / f"{skill['skill']}.v2.json").exists())
         self.assertEqual(skill_store.verify_skills(), [])
+
+    def test_verification_accepts_a_read_only_store(self):
+        self.assertNotIn("error", skill_store.save_skill(make_three_step_skill()))
+        for path in self.root.iterdir():
+            path.chmod(0o444)
+        self.root.chmod(0o555)
+        self.addCleanup(self.root.chmod, 0o755)
+        self.assertEqual(skill_store.verify_skills(), [])
+
+    def test_browser_warning_survives_long_first_party_errors(self):
+        case = integrity.BrowserSkillIntegrityContractTest()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        case.save()
+        case.skill_file.write_bytes(case.skill_file.read_bytes() + b" ")
+        notices = case.boot(first_party=["first-party sentinel: " + "x" * 800])
+        case.assert_browser_warning(notices)
+        self.assertIn(
+            "first-party sentinel", " ".join(item["detail"] for item in notices)
+        )

@@ -35,12 +35,12 @@ def skills_dir() -> Path:
 
 @contextmanager
 def _locked_store(directory: Path, *, shared: bool = False):
-    with (directory / ".skills.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
 
 
 def _load_pins(directory: Path) -> dict:
