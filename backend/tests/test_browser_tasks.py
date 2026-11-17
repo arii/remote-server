@@ -55,6 +55,9 @@ class FakeCDP:
     async def close(self):
         pass
 
+    async def reattach(self):
+        pass
+
     async def call(self, method, params=None):
         self.calls.append((method, params))
         if method == "Page.navigate":
@@ -446,6 +449,35 @@ class BrowserTasksTest(unittest.TestCase):
 
 
 class CaptureTargetTest(unittest.IsolatedAsyncioTestCase):
+    async def test_contract_b_capture_rebinds_after_cross_origin_target_swap(self):
+        """PR 1334 b: capture must observe the new Grid document after navigation."""
+        bridge = FakeCDP()
+        original = bridge.call
+        rebound = False
+
+        async def reattach():
+            nonlocal rebound
+            rebound = True
+
+        async def command(method, params=None):
+            if method == "Page.getFrameTree" and not rebound:
+                raise RuntimeError("old CDP target detached")
+            return await original(method, params)
+
+        @contextlib.asynccontextmanager
+        async def session(target):
+            yield bridge, "grid"
+
+        bridge.reattach = reattach
+        with (
+            mock.patch.object(browser_drive, "_drive_session", session),
+            mock.patch.object(browser_drive, "_require_human_not_driving"),
+            mock.patch.object(bridge, "call", side_effect=command),
+        ):
+            observation, png = await browser_drive.capture("grid", "https://other.test/")
+        self.assertEqual(png, PNG)
+        self.assertEqual(observation["title"], "Example")
+
     async def test_same_capture_surface_supports_paired(self):
         bridge = FakeCDP()
 

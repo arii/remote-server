@@ -174,6 +174,7 @@ async def capture(
             navigation = await bridge.call("Page.navigate", {"url": start_url})
             if navigation.get("errorText"):
                 raise RuntimeError(f"navigation failed: {navigation['errorText']}")
+            await bridge.reattach()
             loader = navigation.get("loaderId")
         deadline = time.monotonic() + 15
         while True:
