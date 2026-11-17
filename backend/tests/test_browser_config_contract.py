@@ -178,6 +178,8 @@ class BrowserConfigurationContractTest(BrowserContractCase):
                 "GITHUB_USER": "contract-probe",
                 "TERMINAL_DOMAIN": "example.test",
                 "TERMINAL_PORT": "8443",
+                "NEKO_PASSWORD": "contract-probe-only",
+                "NEKO_PASSWORD_ADMIN": "contract-probe-admin-only",
             },
             capture_output=True,
             text=True,
