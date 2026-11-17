@@ -15,21 +15,53 @@ except ImportError:
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderBackend(unittest.TestCase):
+    def tool_call(self, root, name, args):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from tests.test_coder_outcome import LocalModel
+
+        model = LocalModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": name,
+                            "args": args,
+                            "id": "probe",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="finished"),
+            ]
+        )
+        agent = coder.build_agent(root, "test", model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="probe")]})
+        return next(message for message in result["messages"] if message.type == "tool")
+
     def test_outside_absolute_paths_return_root_error(self):
         with tempfile.TemporaryDirectory() as root:
-            backend = coder.build_filesystem_backend(root)
-            for result in (
-                backend.ls("/etc"),
-                backend.read("/etc/passwd"),
-                backend.write("/outside-probe", "blocked"),
-                backend.edit("/etc/passwd", "absent", "blocked"),
-                backend.glob("*", path="/etc"),
-                backend.grep("x", path="/etc"),
-                backend.ls(root),
+            for name, args in (
+                ("ls", {"path": "/etc"}),
+                ("read_file", {"file_path": "/etc/passwd"}),
+                ("write_file", {"file_path": "/outside-probe", "content": "blocked"}),
+                (
+                    "edit_file",
+                    {
+                        "file_path": "/etc/passwd",
+                        "old_string": "absent",
+                        "new_string": "blocked",
+                    },
+                ),
+                ("glob", {"pattern": "*", "path": "/etc"}),
+                ("grep", {"pattern": "x", "path": "/etc"}),
+                ("ls", {"path": root}),
             ):
-                with self.subTest(result=result):
-                    self.assertIn("outside_worktree_root", result.error)
-                    self.assertIn("worktree-relative", result.error)
+                with self.subTest(name=name):
+                    result = self.tool_call(root, name, args)
+                    self.assertEqual(result.status, "error")
+                    self.assertIn("outside_worktree_root", result.content)
+                    self.assertIn("worktree-relative", result.content)
 
     def test_relative_empty_missing_and_normal_paths(self):
         with tempfile.TemporaryDirectory() as root:
@@ -53,10 +85,9 @@ class TestCoderBackend(unittest.TestCase):
 
     def test_async_write_and_boundary_use_same_backend(self):
         with tempfile.TemporaryDirectory() as root:
-            written = set()
-            backend = coder.build_filesystem_backend(root, written)
+            backend = coder.build_filesystem_backend(root)
             self.assertIsNone(asyncio.run(backend.awrite("ok.txt", "ok")).error)
-            self.assertEqual(written, {"ok.txt"})
+            self.assertEqual(Path(root, "ok.txt").read_text(), "ok")
             self.assertIn(
-                "outside_worktree_root", asyncio.run(backend.aread("/etc/passwd")).error
+                "outside_worktree_root", asyncio.run(backend.aread("../outside")).error
             )

@@ -350,14 +350,12 @@ def build_check_tool(worktree):
     return run_check
 
 
-def build_filesystem_backend(worktree, written_files=None):
+def build_filesystem_backend(worktree):
     from deepagents.backends import FilesystemBackend
 
     class CoderFilesystemBackend(FilesystemBackend):
         def _resolve_path(self, key):
             try:
-                if os.path.isabs(key) and key != "/":
-                    raise ValueError("absolute host path")
                 assert_inside(worktree, key.lstrip("/"))
             except ValueError as exc:
                 raise PermissionError(
@@ -366,19 +364,51 @@ def build_filesystem_backend(worktree, written_files=None):
                 ) from exc
             return super()._resolve_path(key)
 
-        def write(self, file_path, content):
-            result = super().write(file_path, content)
-            if result.error is None and written_files is not None:
-                written_files.add(file_path)
-            return result
-
-        def edit(self, file_path, old_string, new_string, replace_all=False):
-            result = super().edit(file_path, old_string, new_string, replace_all)
-            if result.error is None and written_files is not None:
-                written_files.add(file_path)
-            return result
-
     return CoderFilesystemBackend(root_dir=worktree, virtual_mode=True)
+
+
+def worktree_file_middleware(worktree, written_files):
+    from langchain.agents.middleware import wrap_tool_call
+    from langchain_core.messages import ToolMessage
+
+    @wrap_tool_call
+    def guard_file_call(request, handler):
+        call = request.tool_call
+        if call["name"] in {
+            "ls",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "delete",
+            "glob",
+            "grep",
+        }:
+            for key in ("path", "file_path"):
+                path = call["args"].get(key)
+                if path is None:
+                    continue
+                try:
+                    if os.path.isabs(path) and path != "/":
+                        raise ValueError("absolute host path")
+                    assert_inside(worktree, path.lstrip("/"))
+                except ValueError:
+                    return ToolMessage(
+                        content="outside_worktree_root: use worktree-relative paths "
+                        + f"under {worktree}",
+                        tool_call_id=call["id"],
+                        name=call["name"],
+                        status="error",
+                    )
+        result = handler(request)
+        if (
+            call["name"] in {"write_file", "edit_file"}
+            and result.status == "success"
+            and written_files is not None
+        ):
+            written_files.add(call["args"]["file_path"])
+        return result
+
+    return guard_file_call
 
 
 def build_agent(
@@ -412,20 +442,20 @@ def build_agent(
         model, _ = build_model()
     if spec is not None:
         model_router.disable_general_purpose(spec)
-    kwargs = {}
+    middleware = [worktree_file_middleware(worktree, written_files)]
     if recorder is not None:
         import observe  # noqa: E402
 
-        kwargs["middleware"] = observe.trace_middleware(recorder)
+        middleware = observe.trace_middleware(recorder) + middleware
     return create_deep_agent(
         model=model,
         tools=(list(tools) if tools is not None else [build_check_tool(worktree)]),
         system_prompt=system,
-        backend=build_filesystem_backend(worktree, written_files),
+        backend=build_filesystem_backend(worktree),
         interrupt_on=interrupt_on,
         permissions=permissions,
         checkpointer=checkpointer,
-        **kwargs,
+        middleware=middleware,
     )
 
 

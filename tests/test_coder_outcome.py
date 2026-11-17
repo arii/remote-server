@@ -11,10 +11,20 @@ import observe
 
 try:
     import deepagents  # noqa: F401
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
+    from langchain_core.messages import AIMessage
 
     HAS_DEPS = True
 except ImportError:
     HAS_DEPS = False
+
+if HAS_DEPS:
+
+    class LocalModel(FakeMessagesListChatModel):
+        def bind_tools(self, *args, **kwargs):
+            return self
 
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
@@ -23,24 +33,37 @@ class TestCoderOutcome(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             trace = Path(root, "trace.jsonl")
 
-            def build_agent(*args, **kwargs):
-                def invoke(*args, **kwargs2):
-                    if operation:
-                        backend = coder.build_filesystem_backend(
-                            root, kwargs["written_files"]
-                        )
-                        operation(backend)
-                    return {"messages": [SimpleNamespace(content=reply)]}
-
-                return SimpleNamespace(invoke=invoke)
+            calls = []
+            actions = SimpleNamespace(
+                write=lambda path, content: calls.append(
+                    ("write_file", {"file_path": path, "content": content})
+                ),
+                edit=lambda path, old, new: calls.append(
+                    (
+                        "edit_file",
+                        {"file_path": path, "old_string": old, "new_string": new},
+                    )
+                ),
+            )
+            if operation:
+                operation(actions)
+            responses = [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": name, "args": args, "id": str(i), "type": "tool_call"}
+                    ],
+                )
+                for i, (name, args) in enumerate(calls)
+            ]
+            model = LocalModel(responses=responses + [AIMessage(content=reply)])
 
             with (
                 mock.patch.object(
                     coder,
                     "build_model",
-                    return_value=(object(), {"provider": "ollama", "model": "test"}),
+                    return_value=(model, {"provider": "ollama", "model": "test"}),
                 ),
-                mock.patch.object(coder, "build_agent", side_effect=build_agent),
                 mock.patch.object(coder, "verify_rounds", return_value=rounds),
                 mock.patch.object(
                     deep_chat, "open_checkpointer", return_value=(None, False, None)
@@ -106,13 +129,14 @@ class TestCoderOutcome(unittest.TestCase):
         self.assertEqual(result[0].splitlines()[-1], "DONE #1261")
 
     def test_successful_edit_counts(self):
-        with tempfile.TemporaryDirectory() as root:
-            Path(root, "a.txt").write_text("before")
-            writes = set()
-            backend = coder.build_filesystem_backend(root, writes)
-            self.assertIsNone(backend.edit("a.txt", "before", "after").error)
-            self.assertEqual(writes, {"a.txt"})
-            self.assertEqual(Path(root, "a.txt").read_text(), "after")
+        def operation(actions):
+            actions.write("a.txt", "before")
+            actions.edit("a.txt", "before", "after")
+
+        result, events = self.run_scenario("DONE #1261", operation)
+        self.assertEqual(result[0], "DONE #1261")
+        self.assertTrue(events[-1]["ok"])
+        self.assertTrue(any(event.get("name") == "edit_file" for event in events))
 
     def test_blocked_is_not_success(self):
         result, events = self.run_scenario("BLOCKED #1261")
