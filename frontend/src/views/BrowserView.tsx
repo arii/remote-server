@@ -159,7 +159,7 @@ function LearnPanels() {
         ) : notes === '' ? (
           <p className="row-meta">Empty — the first pass will write here.</p>
         ) : (
-          <pre className="row-meta">{notes.slice(-2000)}</pre>
+          <pre className="row-meta cobrowse-notebook">{notes.slice(-2000)}</pre>
         )}
       </section>
     </>
