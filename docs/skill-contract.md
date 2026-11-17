@@ -5,7 +5,8 @@ is needed to record activity, summarize it, replay a skill, or reproduce a trace
 
 ## APIs
 
-Browser HTTP routes use the existing Buttons backend and its authentication.
+Browser HTTP routes use the existing Buttons backend. Call them through your
+deployment's authenticated ingress.
 `snapshot`, `drive` and `state` accept `?target=grid` (default) or `?target=paired`.
 Grid drive attaches to an existing agent/viewer-shared session; it does not create
 one. Pair Chrome through the Browser tab for the paired target.
@@ -46,6 +47,10 @@ Actions are `navigate`, `click`, `type`, `key`, `wheel`. Each step has one check
 `url_contains`, `element_visible`, `text_contains` or `value_equals`. Only
 `element_visible` permits an empty expectation. Navigate selectors are HTTP(S)
 destinations. Type/key send keyboard input; ensure the intended field has focus.
+Their `value` is the text/key to send. Click/wheel resolve the first matched
+element's `x,y`; use unique selectors. The snapshot matcher supports a CSS subset:
+use single-quoted attribute values as below. Current skill-wheel replay sends
+`dx=0,dy=0` and ignores `value`; use the drive API with explicit deltas to scroll.
 
 This complete example targets the local fixture served by the demo below:
 
@@ -141,10 +146,10 @@ and relay primitives do not themselves enforce the shared human-wheel gate.
 
 From the repository root, use Python 3.11+ with backend dependencies, Playwright
 and its Chromium binary already installed (the terminal image includes the
-package; browser installation is separate). The timed demo needs no server,
-Grid, relay or model. It scripts a synthetic human demonstration, not a live
-human recording. The real fixture, browser, notebook, store and replay run below
-are not mocked. Artifacts remain in a fresh directory under your home.
+package; browser installation is separate). The script runs six synthetic
+demonstration actions in local Chromium and records human-origin fixture events.
+It writes the notebook, versioned skills and run rows under a fresh directory in
+your home. A server, Grid, relay and model are unnecessary for this demo.
 
 Run this single command; expect three acts in under two minutes after setup.
 The private Playwright page hook is used only to serve the fixture and block
@@ -175,6 +180,7 @@ os.environ.update(BROWSER_DATA_DIR=str(root),
 doc = Path("docs/skill-contract.md").read_text()
 skill = json.loads(doc.split("```json\n", 1)[1].split("\n```", 1)[0])
 assert not validate_skill(skill)
+expected_values = [step["value"] for step in skill["steps"] if step["action"] == "type"]
 url = skill["source_url"]
 fixture = Path("tests/fixtures/browser/form.html").read_text()
 changed, blocked = False, []
@@ -212,7 +218,7 @@ try:
         row = skill_runs.run_and_record(stored, driver)
         if row["passed"]:
             text = page.locator("[data-testid='confirmation']").inner_text()
-            assert "Demo Builder" in text and "demo@example.invalid" in text
+            assert all(value in text for value in expected_values)
         return row
     stored = skill_store.read_skill(skill["skill"])
     first = replay(stored)
@@ -244,6 +250,5 @@ PY
 ```
 
 Expect verdicts `[True, False, True]` and failure points `[None, 6, None]`.
-If Playwright/Chromium is missing, install it before timing; a skipped test is
-not a completed demo. For a blocked external site, use this fixture instead of
-trying to evade the block. The demo does not verify a live Grid or MCP relay.
+Install Playwright/Chromium before timing. For a blocked external site, use this
+fixture instead of trying to evade the block. Verify Grid and MCP relays separately.
