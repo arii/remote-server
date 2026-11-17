@@ -239,7 +239,9 @@ class PlaywrightDriver:
 
     def click(self, x: int, y: int) -> None:
         try:
-            self._ensure().mouse.click(x, y)
+            page = self._ensure()
+            page.mouse.click(x, y)
+            page.evaluate("void 0")
         except Exception as exc:
             raise BrowserDriverError(f"click failed: {exc}") from exc
 

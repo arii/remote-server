@@ -20,7 +20,12 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from backend import skill_runs
 from backend.api.routers import agent_control, browser_ext, browser_view
+from backend.browser_safety import (
+    require_human_not_driving as _require_human_not_driving,
+)
+from backend.skill_trace import finish_step, sensitive_element, step_trace
 
 router = APIRouter(prefix="/api/browser", tags=["browser_drive"])
 
@@ -47,15 +52,6 @@ class DriveRequest(BaseModel):
     text: str = ""
     key: str = ""
     code: str = ""
-
-
-def _require_human_not_driving() -> None:
-    state = agent_control.read_control_state()
-    if state.state == "PAUSED_BY_USER":
-        raise HTTPException(
-            status_code=409,
-            detail="you have the wheel — human is driving (agent paused)",
-        )
 
 
 @contextlib.asynccontextmanager
@@ -121,6 +117,7 @@ SNAPSHOT_JS = (
     "['username','current-password','new-password','one-time-code','webauthn'].includes(t));"
     "const text=e.innerText||e.value||e.getAttribute('aria-label')||'';"
     "return {i,tag:e.tagName,"
+    "sensitive,focused:e===document.activeElement,type:e.type||null,"
     "text:sensitive?(text?'[redacted]':''):text.slice(0,80),"
     "x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),"
     "w:Math.round(r.width),h:Math.round(r.height),"
@@ -306,6 +303,57 @@ async def drive_state(target: DriveTarget = "grid") -> dict[str, Any]:
 @router.post("/drive")
 async def drive(body: DriveRequest, target: DriveTarget = "grid") -> dict[str, Any]:
     """Drive the shared page. Refuses while the human holds the wheel."""
+    page, _ = browser_view.last_page(target)
+    match = browser_view.match_target(page, body.x, body.y)
+    proposal = {
+        "action": body.op,
+        "selector": body.url
+        if body.op == "navigate"
+        else (browser_view.selector_for(match) if match else ""),
+        "value": body.text or body.key,
+        "x": body.x,
+        "y": body.y,
+        "dx": body.dx,
+        "dy": body.dy,
+        "code": body.code,
+    }
+    context = {
+        "target": target,
+        "mode": "live",
+        "source_url": (page or {}).get("url", body.url),
+    }
+    trace = step_trace(1, proposal, page=page, mode="live", context=context)
+    try:
+        result = await _execute_drive(body, target, trace)
+        finish_step(trace, "passed")
+        return result
+    except HTTPException as exc:
+        verdict = (
+            "blocked" if exc.status_code == 409 and not trace["executed"] else "error"
+        )
+        finish_step(trace, verdict, str(exc.detail))
+        raise
+    except Exception as exc:
+        finish_step(trace, "error", f"driver failed: {exc}")
+        raise
+    finally:
+        skill_runs.record_run(
+            {
+                "trace_version": 1,
+                "skill": "live-drive",
+                "version": 1,
+                "context": context,
+                "passed": trace.get("ok", False),
+                "failed_step": None if trace.get("ok") else 1,
+                "reason": trace.get("reason", ""),
+                "steps": [trace],
+            }
+        )
+
+
+async def _execute_drive(
+    body: DriveRequest, target: DriveTarget, trace: dict
+) -> dict[str, Any]:
     _require_human_not_driving()
     async with _drive_session(target) as (bridge, kind):
         # Pre-op page: selectors match what the action saw, not the
@@ -322,19 +370,20 @@ async def drive(body: DriveRequest, target: DriveTarget = "grid") -> dict[str, A
             if match:
                 candidates.append(match)
             sensitive = any(
-                el.get("val") == "[redacted]"
-                or el.get("text") == "[redacted]"
-                or el.get("kind") in ("password", "username")
-                or el.get("type") in ("password", "username")
-                for el in candidates
+                sensitive_element(el) for el in candidates
             ) or await browser_view.credential_focused(bridge)
+            trace["sensitive"] = sensitive
+        if body.op == "navigate" and not (body.url or "").strip().startswith(
+            ("http://", "https://")
+        ):
+            raise HTTPException(status_code=400, detail="navigate needs an http(s) URL")
+        if body.op == "type" and not body.text:
+            raise HTTPException(status_code=400, detail="type needs text")
+        if body.op == "key" and not body.key:
+            raise HTTPException(status_code=400, detail="key needs key")
+        trace["executed"] = True
         if body.op == "navigate":
             url = (body.url or "").strip()
-            if not url.startswith(("http://", "https://")):
-                raise HTTPException(
-                    status_code=400,
-                    detail="navigate needs an http(s) URL",
-                )
             await bridge.navigate(url)
             # Let the load commit, then bind the possibly swapped page
             # target — same path the viewer takes after address-bar go.
@@ -343,12 +392,8 @@ async def drive(body: DriveRequest, target: DriveTarget = "grid") -> dict[str, A
         elif body.op == "click":
             await bridge.click(body.x, body.y)
         elif body.op == "type":
-            if not body.text:
-                raise HTTPException(status_code=400, detail="type needs text")
             await bridge.type_text(body.text)
         elif body.op == "key":
-            if not body.key:
-                raise HTTPException(status_code=400, detail="key needs key")
             await bridge.key(body.key, body.code or body.key)
         elif body.op == "wheel":
             await bridge.wheel(body.x, body.y, body.dx, body.dy)

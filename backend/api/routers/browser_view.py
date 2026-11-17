@@ -14,17 +14,17 @@ import argparse
 import asyncio
 import collections
 import contextlib
-import hashlib
 import json
-from pathlib import Path
 import os
 import threading
 import time
 import unicodedata
 import urllib.request
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from backend.browser_config import data_path, grid_url
+from backend.skill_trace import page_hash_of
 
 GRID_BASE = grid_url()
 VIEWPORT = {"width": 1280, "height": 800}
@@ -363,18 +363,6 @@ def _append_jsonl(event: dict) -> None:
             fh.write(json.dumps(event, sort_keys=True) + "\n")
     except OSError:
         pass
-
-
-def page_hash_of(page: dict) -> str:
-    """Deterministic 12-hex state hash for a snapshot page: URL,
-    title, and the ordered target signature. Code-computed, so the
-    replayer (not the model) can tell whether the page changed."""
-    lines = [str(page.get("url", "")), str(page.get("title", ""))]
-    for el in page.get("elements", []) or []:
-        lines.append(
-            "|".join(str(el.get(k, "")) for k in ("tag", "tid", "text", "x", "y"))
-        )
-    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:12]
 
 
 def selector_for(target: dict) -> str | None:
