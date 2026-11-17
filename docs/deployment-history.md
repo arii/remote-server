@@ -3,8 +3,8 @@
 ## #1332: Open WebUI retired
 
 Open WebUI, its `/webui` shell shim, and its Caddy proxy routes were removed.
-Ambient chat uses the Buttons Chat view. This entry preserves the legacy names
-solely for operator cleanup; it is not an active service setup guide.
+Ambient chat uses the Buttons Chat view. Legacy names below identify the retired
+container and volume for one-time cleanup.
 
 Buttons keeps `/buttons/api/*`: Caddy strips `/buttons` before proxying to the
 backend. The production frontend builds with that base. Root `/api/*` had only
@@ -19,8 +19,8 @@ its directory-mounted configuration does not require container recreation.
 Never recreate or restart `terminal`. No other retained service needs a restart.
 
 ```bash
-./scripts/buttons-up.sh
-docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+./scripts/buttons-up.sh &&
+docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile &&
 docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 ```
 
@@ -42,7 +42,7 @@ checking the recorded name and approving irreversible data deletion, manually
 run in that same shell:
 
 ```bash
-docker volume inspect "$retired_volume"
+docker volume inspect "$retired_volume" &&
 docker volume rm "$retired_volume"
 ```
 
@@ -57,6 +57,4 @@ cleanup, which can affect the terminal or unrelated containers.
 - Signed in: `/api/agent/state` and `/webui/` return 404. An OAuth redirect before
   login is not evidence of the application response.
 
-These are operator checks after deployment, not a claim that this commit was
-deployed or tested live on the S5. Shared Nebius configuration remains because
-both Buttons and the terminal use it.
+Keep shared Nebius settings: Buttons and the terminal both use them.
