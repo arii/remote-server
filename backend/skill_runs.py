@@ -2,9 +2,8 @@
 
 A run is recorded by run_and_record, which runs a skill through
 the replayer (#1255) and appends the outcome. Rows are JSONL —
-not notebook prose — under BROWSER_RUNS_FILE (default
-/var/lib/buttons/browser_runs.jsonl, call-time env like the other
-browser paths). run_number counts per skill from 1, so the demo's
+not notebook prose, under BROWSER_RUNS_FILE in the configured browser
+data directory. run_number counts per skill from 1, so the demo's
 three runs read as run 1 (pass), run 2 (fail at the changed step),
 run 3 (pass after correction).
 """
@@ -12,18 +11,16 @@ run 3 (pass after correction).
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 
 from backend.skill_replay import run_skill
+from backend.browser_config import data_path
 
 
 def runs_file() -> Path:
     """Resolve the run log at call time so tests redirect it."""
-    return Path(
-        os.environ.get("BROWSER_RUNS_FILE", "/var/lib/buttons/browser_runs.jsonl")
-    )
+    return data_path("BROWSER_RUNS_FILE", "browser_runs.jsonl")
 
 
 def list_runs(skill: str | None = None, limit: int = 100) -> list:

@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from backend import skill_store
 from backend.api.routers import (
     agent,
     agent_control,
@@ -48,11 +49,11 @@ async def _lifespan(app):
     first Briefing visits land on a warm cache instead of blocking
     on cold generation. Best-effort; boot never waits for it.
 
-    Also verifies the first-party skill pins (issue #1120): a
+    Also verifies first-party and saved browser skill pins: a
     mismatch is logged loudly and recorded on
     `app.state.skills_verification_errors`, but boot continues —
     fail-closed would brick the console on any skill edit, so the
-    lock update rides the same PR as the skill change.
+    first-party lock update rides the same PR as the skill change.
     """
     try:
         issues._ensure_schedule_ticker()
@@ -62,26 +63,18 @@ async def _lifespan(app):
         import skills_lock
 
         skill_problems = skills_lock.verify_skills()
-        app.state.skills_verification_errors = skill_problems
-        attention.publish_skills_verification_errors(skill_problems)
-        if skill_problems:
-            banner = "\n".join(
-                [
-                    "FIRST-PARTY SKILLS VERIFICATION FAILED (issue #1120):",
-                    *[f"  - {line}" for line in skill_problems],
-                    "Fix the skill files or re-pin deep-agent/skills-lock.json; "
-                    "agent turns will run with these skills UNVERIFIED.",
-                ]
-            )
-            print(banner, file=sys.stderr, flush=True)
     except Exception as exc:
-        app.state.skills_verification_errors = [f"verifier error: {exc}"]
-        attention.publish_skills_verification_errors(
-            app.state.skills_verification_errors
-        )
+        skill_problems = [f"first-party skill verifier error: {exc}"]
+    try:
+        skill_problems.extend(skill_store.verify_skills())
+    except Exception as exc:
+        skill_problems.append(f"browser skill verifier error: {exc}")
+    app.state.skills_verification_errors = skill_problems
+    attention.publish_skills_verification_errors(skill_problems)
+    if skill_problems:
         print(
-            f"FIRST-PARTY SKILLS VERIFICATION ERROR (issue #1120): {exc} "
-            "— agent turns will run with skills UNVERIFIED.",
+            "SKILLS VERIFICATION FAILED:\n"
+            + "\n".join(f"  - {line}" for line in skill_problems),
             file=sys.stderr,
             flush=True,
         )

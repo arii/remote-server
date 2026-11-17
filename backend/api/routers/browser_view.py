@@ -22,8 +22,11 @@ import threading
 import time
 import unicodedata
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit
 
-GRID_BASE = "http://browser:4444"
+from backend.browser_config import data_path, grid_url
+
+GRID_BASE = grid_url()
 VIEWPORT = {"width": 1280, "height": 800}
 MOBILE_VIEWPORT = {"width": 390, "height": 844}
 
@@ -94,7 +97,7 @@ def _grid_session_create():
         "browserName": "chrome",
         "goog:chromeOptions": {
             "args": [
-                "--user-data-dir=/data/shared-browser/agent",
+                f"--user-data-dir={data_path('BROWSER_PROFILE_DIR', 'agent')}",
                 "--disable-dev-shm-usage",
                 "--enable-features=WebMCP",
                 # Drop the AutomationControlled blink flag so pages
@@ -346,11 +349,7 @@ def _log_activity(
 
 def activity_log_file() -> Path:
     """Resolve the JSONL action log at call time so tests redirect it."""
-    return Path(
-        os.environ.get(
-            "BROWSER_ACTIVITY_FILE", "/var/lib/buttons/browser_activity.jsonl"
-        )
-    )
+    return data_path("BROWSER_ACTIVITY_FILE", "browser_activity.jsonl")
 
 
 def _append_jsonl(event: dict) -> None:
@@ -480,9 +479,7 @@ def recent_activity(limit: int = 50) -> list:
 
 def notes_file() -> Path:
     """Resolve the shared notebook at call time so tests can redirect it."""
-    return Path(
-        os.environ.get("BROWSER_NOTES_FILE", "/var/lib/buttons/browser_notes.md")
-    )
+    return data_path("BROWSER_NOTES_FILE", "browser_notes.md")
 
 
 #: Volume trigger for the automatic learn pass: activity fires it,
@@ -759,7 +756,16 @@ class CDPBridge:
         self.dsf = DSF
 
     def _ws_url(self):
-        return f"ws://browser:4444/session/{self.session_id}/se/cdp"
+        base = urlsplit(GRID_BASE)
+        return urlunsplit(
+            (
+                "wss" if base.scheme == "https" else "ws",
+                base.netloc,
+                f"{base.path}/session/{self.session_id}/se/cdp",
+                "",
+                "",
+            )
+        )
 
     async def connect(self):
         import websockets

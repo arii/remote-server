@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -25,6 +24,7 @@ from backend.api.routers import (
     jobs,
 )
 from backend.exec import agent_turn
+from backend.browser_config import data_path
 
 router = APIRouter(prefix="/api/browser/tasks", tags=["browser_tasks"])
 _workers: dict[str, asyncio.Task] = {}
@@ -47,7 +47,7 @@ class TaskRequest(BaseModel):
 
 
 def tasks_root() -> Path:
-    return Path(os.environ.get("BROWSER_TASKS_DIR", "/var/lib/buttons/browser_tasks"))
+    return data_path("BROWSER_TASKS_DIR", "browser_tasks")
 
 
 def _directory(task_id: str) -> Path:
