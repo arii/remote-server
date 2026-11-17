@@ -8,3 +8,4 @@ pydantic==2.14.2
 aiofiles==25.1.0
 httpx==0.28.1
 PyYAML==6.0.3
+websockets==17.0.0
