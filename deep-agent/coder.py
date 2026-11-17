@@ -1322,10 +1322,6 @@ def main(argv=None) -> int:
     return _implement_and_finish(worktree, args.brief, system, thread, timeout)
 
 
-if __name__ == "__main__":
-    sys.exit(main())
-
-
 # ---------------------------------------------------------------------------
 # InitCoderGraph: worktree-isolated coding loop (deterministic gates).
 #
@@ -1794,3 +1790,7 @@ class InitCoderGraph:
         if resume is None:
             return graph.invoke({}, config)
         return graph.invoke(Command(resume=resume), config)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,4 +1,8 @@
 import json
+import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -29,12 +33,61 @@ if HAS_DEPS:
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderOutcome(unittest.TestCase):
+    def test_script_cli_can_write_a_file(self):
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "sitecustomize.py").write_text(
+                textwrap.dedent("""
+                from pathlib import Path
+                import deep_chat, ledger, model_router, observe
+                from langchain_core.messages import AIMessage
+                from tests.test_coder_outcome import LocalModel
+                model = LocalModel(responses=[
+                    AIMessage(content="", tool_calls=[{
+                        "name": "write_file", "args": {"file_path": "result.txt", "content": "done"},
+                        "id": "write", "type": "tool_call",
+                    }]), AIMessage(content="DONE #1261"),
+                ])
+                model_router.resolve_llm = lambda: {"provider": "ollama", "model": "test"}
+                model_router.build_chat_model = lambda **kwargs: (model, {"provider": "ollama", "model": "test"})
+                deep_chat.open_checkpointer = lambda *args: (None, False, None)
+                ledger.record = lambda *args, **kwargs: None
+                observe.default_trace_path = lambda *args: str(Path.cwd() / "trace.jsonl")
+            """)
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(repo / "deep-agent/coder.py"),
+                    "--worktree",
+                    root,
+                    "Implement #1261",
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={
+                    **os.environ,
+                    "PYTHONPATH": os.pathsep.join(
+                        [root, str(repo), str(repo / "deep-agent")]
+                    ),
+                    "CODER_PLAN": "never",
+                    "CODER_VERIFY_ROUNDS": "0",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("DONE #1261", result.stdout)
+            self.assertEqual(Path(root, "result.txt").read_text(), "done")
+
     def run_scenario(self, reply, operation=None, cli=False, rounds=0):
         with tempfile.TemporaryDirectory() as root:
             trace = Path(root, "trace.jsonl")
+            Path(root, "obsolete.txt").write_text("obsolete")
 
             calls = []
             actions = SimpleNamespace(
+                delete=lambda path: calls.append(("delete", {"file_path": path})),
                 write=lambda path, content: calls.append(
                     ("write_file", {"file_path": path, "content": content})
                 ),
@@ -96,6 +149,16 @@ class TestCoderOutcome(unittest.TestCase):
 
     def test_done_without_writes_fails(self):
         result, events = self.run_scenario("DONE #1261")
+        self.assertIsInstance(result, RuntimeError)
+        self.assertFalse(events[-1]["ok"])
+
+    def test_deletion_only_implementation_succeeds(self):
+        result, events = self.run_scenario("DONE #1261", lambda b: b.delete("obsolete.txt"))
+        self.assertNotIsInstance(result, RuntimeError)
+        self.assertTrue(events[-1]["ok"])
+
+    def test_failed_delete_does_not_count(self):
+        result, events = self.run_scenario("DONE #1261", lambda b: b.delete("missing.txt"))
         self.assertIsInstance(result, RuntimeError)
         self.assertFalse(events[-1]["ok"])
 
