@@ -1,4 +1,5 @@
 import asyncio
+import ast
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,6 +16,54 @@ except ImportError:
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderBackend(unittest.TestCase):
+    def test_discovered_virtual_paths_can_be_read_and_edited(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "src").mkdir()
+            target = Path(root, "src/app.py")
+            for discovery, args in (
+                ("ls", {"path": "src"}),
+                ("glob", {"pattern": "**/*.py"}),
+            ):
+                with self.subTest(discovery=discovery):
+                    target.write_text("before")
+                    result = self.tool_call(root, discovery, args)
+                    (path,) = ast.literal_eval(result.content)
+                    self.assertEqual(path, "/src/app.py")
+                    read = self.tool_call(root, "read_file", {"file_path": path})
+                    self.assertEqual(read.status, "success", read.content)
+                    self.assertIn("before", read.content)
+                    edit = self.tool_call(
+                        root,
+                        "edit_file",
+                        {
+                            "file_path": path,
+                            "old_string": "before",
+                            "new_string": "after",
+                        },
+                    )
+                    self.assertEqual(edit.status, "success", edit.content)
+                    self.assertEqual(target.read_text(), "after")
+
+    def test_tool_paths_reject_traversal_and_symlink_escapes(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            tempfile.TemporaryDirectory() as outside,
+        ):
+            Path(outside, "secret").write_text("private")
+            Path(root, "link").symlink_to(outside, target_is_directory=True)
+            for path in (
+                "../",
+                "/../etc/passwd",
+                "/link/secret",
+                "link/secret",
+                "/etc/passwd",
+            ):
+                with self.subTest(path=path):
+                    result = self.tool_call(root, "read_file", {"file_path": path})
+                    self.assertEqual(result.status, "error")
+                    self.assertIn("outside_worktree_root", result.content)
+                    self.assertNotIn("private", result.content)
+
     def tool_call(self, root, name, args):
         from langchain_core.messages import AIMessage, HumanMessage
         from tests.test_coder_outcome import LocalModel

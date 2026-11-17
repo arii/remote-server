@@ -388,9 +388,13 @@ def worktree_file_middleware(worktree, written_files):
                 if path is None:
                     continue
                 try:
-                    if os.path.isabs(path) and path != "/":
+                    target = assert_inside(worktree, path.lstrip("/"))
+                    if (
+                        os.path.isabs(path)
+                        and path != "/"
+                        and not os.path.exists(target)
+                    ):
                         raise ValueError("absolute host path")
-                    assert_inside(worktree, path.lstrip("/"))
                 except ValueError:
                     return ToolMessage(
                         content="outside_worktree_root: use worktree-relative paths "
