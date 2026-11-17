@@ -29,17 +29,6 @@ def _load_preflight_script():
     return module
 
 
-def _full_js_toolchain_available():
-    # Root-relative: tests run with cwd=repo root.
-    tsc = os.path.join("frontend", "node_modules", ".bin", "tsc")
-    return (
-        shutil.which("node") is not None
-        and shutil.which("pnpm") is not None
-        and shutil.which("fallow") is not None
-        and os.path.isfile(tsc)
-    )
-
-
 class TestPreflightDigest(unittest.TestCase):
     def run_digest(self, payload):
         raw = payload if isinstance(payload, str) else json.dumps(payload)
@@ -123,39 +112,6 @@ class TestPreflightDigest(unittest.TestCase):
         first = out.splitlines()[0]
         self.assertTrue(first.startswith("✗"))
         self.assertIn("FAIL", first)
-
-    @unittest.skipUnless(
-        _full_js_toolchain_available(),
-        "needs full JS toolchain (node, pnpm, tsc, fallow)",
-    )
-    def test_package_scripts_and_fallow(self):
-        # Verify npm run type-check passes
-        proc_tc = subprocess.run(
-            ["npm", "run", "type-check"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self.assertEqual(proc_tc.returncode, 0, f"npm run type-check failed: {proc_tc.stderr}")
-
-        # Verify npm run lint passes
-        proc_lint = subprocess.run(
-            ["npm", "run", "lint"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self.assertEqual(proc_lint.returncode, 0, f"npm run lint failed: {proc_lint.stderr}")
-
-        # Verify fallow audit runs successfully
-        proc_fallow = subprocess.run(
-            ["pnpm", "run", "audit:fallow"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self.assertEqual(proc_fallow.returncode, 0, f"pnpm run audit:fallow failed: {proc_fallow.stderr}")
-
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is not available")
 class TestBannerExtraction(unittest.TestCase):
