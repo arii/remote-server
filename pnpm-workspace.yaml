@@ -5,6 +5,7 @@ packages:
   - .
   - frontend
   - chrome-extension
+  - buttons-pair
 
 # Matches the previous Dockerfile SPA-stage override (esbuild native
 # binding must build on install).
