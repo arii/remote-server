@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import threading
 import time
@@ -410,6 +411,20 @@ class BrowserTasksTest(unittest.TestCase):
         ):
             report = self.wait(self.submit()["id"], "failed")
         self.assertIn("capture rejected", report["error"])
+        self.assertEqual(self.registry.active_ids, set())
+
+    def test_missing_capture_directory_cannot_be_reported_as_success(self):
+        """PR 1334 A03: missing screenshot storage must fail the run, not fake success."""
+
+        async def capture(*args):
+            for directory in self.root.iterdir():
+                shutil.rmtree(directory)
+            return dict(OBSERVATION), PNG
+
+        with mock.patch.object(browser_drive, "capture", side_effect=capture):
+            task = self.submit()
+            self.until(lambda: self.registry.get_run(task["id"])["done"])
+        self.assertEqual(self.registry.get_run(task["id"])["exit_code"], 1)
         self.assertEqual(self.registry.active_ids, set())
 
     def test_failed_agent_still_captures_after_and_retains_final_text(self):

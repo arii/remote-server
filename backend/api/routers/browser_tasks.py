@@ -134,8 +134,7 @@ async def _capture(report: dict, start_url: str | None = None) -> None:
     observation, png = await browser_drive.capture(report["target"], start_url)
     n = len(report["captures"])
     directory = _directory(report["id"])
-    if directory.is_dir():
-        (directory / f"{n}.png").write_bytes(png)
+    (directory / f"{n}.png").write_bytes(png)
     report["captures"].append({**observation, "shot": n})
     report.update(observation)
     _save(report)

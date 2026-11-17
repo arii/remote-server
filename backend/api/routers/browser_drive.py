@@ -26,6 +26,9 @@ router = APIRouter(prefix="/api/browser", tags=["browser_drive"])
 
 # Cap the element list so a dense page cannot flood chat context.
 MAX_ELEMENTS = 100
+LOAD_TIMEOUT_SECONDS = 15
+LOAD_POLL_SECONDS = 0.1
+OBSERVED_TEXT_LIMIT = 8000
 
 #: Step prefix a browser-drive op records on the shared control
 #: state. The drawer banner keys off this prefix to show the agent
@@ -176,7 +179,7 @@ async def capture(
                 raise RuntimeError(f"navigation failed: {navigation['errorText']}")
             await bridge.reattach()
             loader = navigation.get("loaderId")
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + LOAD_TIMEOUT_SECONDS
         while True:
             _require_human_not_driving()
             committed = True
@@ -191,7 +194,7 @@ async def capture(
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError("browser page load timed out")
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(LOAD_POLL_SECONDS)
         page = await _snapshot(bridge, target)
         password = await bridge.call(
             "Runtime.evaluate",
@@ -217,7 +220,7 @@ async def capture(
             "title": page["title"],
             "observed_text": "\n".join(
                 str(el.get("text", "")) for el in page["elements"]
-            )[:8000],
+            )[:OBSERVED_TEXT_LIMIT],
             "landed_on_login": login_url or password["result"]["value"],
         }, png
 

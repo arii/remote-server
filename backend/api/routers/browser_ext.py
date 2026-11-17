@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from typing import Any
 
@@ -14,6 +13,7 @@ from backend.api.routers import agent_control, browser_view
 router = APIRouter(prefix="/api/browser", tags=["browser_ext"])
 logger = logging.getLogger(__name__)
 COMMAND_TIMEOUT = 15
+CLOSE_TIMEOUT = 5
 _paired: PairedBridge | None = None
 
 
@@ -52,7 +52,10 @@ class PairedBridge(browser_view.CDPBridge):
             await self.ws.send_json({"id": identifier, "op": op, **payload})
             if is_input and self.dialog is not None and not future.done():
                 future.set_result({})
-            return await future
+            result = await future
+            if self.closed.is_set():
+                raise ConnectionError("paired Chrome disconnected")
+            return result
 
         try:
             return await asyncio.wait_for(
@@ -86,6 +89,8 @@ class PairedBridge(browser_view.CDPBridge):
             raise ConnectionError("paired Chrome tab closed")
 
     async def receive(self, message: dict[str, Any]):
+        if self.closed.is_set():
+            return
         if "id" in message:
             future = self._pending.get(message["id"])
             if future is not None and not future.done():
@@ -95,8 +100,12 @@ class PairedBridge(browser_view.CDPBridge):
                             f"paired Chrome command failed: {message['error']}"
                         )
                     )
+                elif "result" not in message:
+                    future.set_exception(
+                        RuntimeError("paired Chrome reply missing result")
+                    )
                 else:
-                    future.set_result(message.get("result", {}))
+                    future.set_result(message["result"])
             return
         event = message.get("event")
         if event == "human_input" and message.get("kind") in (
@@ -173,17 +182,24 @@ async def extension_socket(websocket: WebSocket):
     browser_view.clear_page("paired")
     if previous is not None:
         previous.disconnect("paired Chrome replaced by a new connection")
-        with contextlib.suppress(Exception):
-            await previous.ws.close(code=1000, reason="replaced by a new paired Chrome")
+        try:
+            await asyncio.wait_for(
+                previous.ws.close(code=1000, reason="replaced by a new paired Chrome"),
+                timeout=CLOSE_TIMEOUT,
+            )
+        except Exception:
+            logger.warning("Could not close replaced paired Chrome", exc_info=True)
     try:
         while _paired is bridge:
             message = await websocket.receive_json()
+            if _paired is not bridge:
+                break
             if not isinstance(message, dict):
                 await websocket.close(code=1008, reason="expected a JSON object")
                 break
             await bridge.receive(message)
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as exc:
+        logger.debug("Paired Chrome disconnected (code %s)", exc.code)
     finally:
         bridge.disconnect("paired Chrome disconnected")
         if _paired is bridge:

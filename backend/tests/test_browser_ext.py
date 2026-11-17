@@ -1,5 +1,6 @@
 """Paired Chrome protocol and drive API, without a real browser."""
 
+import asyncio
 import concurrent.futures
 import os
 import tempfile
@@ -327,6 +328,107 @@ class PairedChromeTest(unittest.TestCase):
         self.assertEqual(
             self.client.get("/api/browser/snapshot?target=unknown").status_code, 422
         )
+
+
+class BridgeLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_protocol_reply_requires_result_or_error(self):
+        """PR 1334 protocol: an id-only reply cannot acknowledge a CDP operation."""
+        websocket = mock.Mock()
+        bridge = browser_ext.PairedBridge(websocket)
+
+        async def send(message):
+            await bridge.receive({"id": message["id"]})
+
+        websocket.send_json = send
+        with self.assertRaisesRegex(RuntimeError, "missing result"):
+            await bridge.call("Page.enable")
+
+    async def test_contract_A06_retired_events_and_replies_cannot_change_replacement(
+        self,
+    ):
+        """PR 1334 A06: late retired traffic cannot mutate new pair context."""
+        old = browser_ext.PairedBridge(mock.Mock())
+        new = browser_ext.PairedBridge(mock.Mock())
+        new.url, new.title = "https://fresh.test/", "Fresh"
+        new.dialog = {"type": "alert", "message": "fresh"}
+        pending = asyncio.get_running_loop().create_future()
+        new._pending[1] = pending
+        page = {"url": new.url, "title": new.title, "elements": []}
+        browser_view.remember_page(page, "paired")
+        old.disconnect("replaced")
+        with mock.patch.object(browser_ext, "_paired", new):
+            await old.receive({"id": 1, "result": {"stale": True}})
+            await old.receive(
+                {
+                    "event": "cdp",
+                    "method": "Page.frameNavigated",
+                    "params": {"frame": {"id": "old", "url": "https://stale.test/"}},
+                }
+            )
+            await old.receive(
+                {
+                    "event": "cdp",
+                    "method": "Page.javascriptDialogOpening",
+                    "params": {"type": "prompt", "message": "stale"},
+                }
+            )
+            self.assertEqual(
+                browser_ext.paired_state(),
+                {"connected": True, "url": "https://fresh.test/", "title": "Fresh"},
+            )
+            self.assertEqual(new.dialog, {"type": "alert", "message": "fresh"})
+            self.assertIs(new._pending[1], pending)
+            self.assertFalse(pending.done())
+            self.assertEqual(browser_view.last_page("paired")[0], page)
+        browser_view.clear_page("paired")
+        pending.cancel()
+
+    async def test_contract_A06_inflight_reply_cannot_succeed_after_replacement(self):
+        """PR 1334 A06: replacement invalidates even an already-buffered old reply."""
+        websocket = mock.Mock()
+        old = browser_ext.PairedBridge(websocket)
+
+        async def send(message):
+            await old.receive({"id": message["id"], "result": {"stale": True}})
+            old.disconnect("replaced")
+
+        websocket.send_json = send
+        with self.assertRaises(ConnectionError):
+            await old.call("Page.enable")
+
+    async def test_contract_A07_replacement_close_failure_is_observable(self):
+        """PR 1334 A07: close failure is logged while the new receiver runs."""
+        old = browser_ext.PairedBridge(
+            mock.Mock(close=mock.AsyncMock(side_effect=RuntimeError("close failed")))
+        )
+        socket = mock.Mock(
+            headers={"origin": "chrome-extension://buttons"},
+            accept=mock.AsyncMock(),
+            receive_json=mock.AsyncMock(side_effect=WebSocketDisconnect(1000)),
+        )
+        with mock.patch.object(browser_ext, "_paired", old):
+            with self.assertLogs(browser_ext.logger, level="WARNING"):
+                await browser_ext.extension_socket(socket)
+        socket.receive_json.assert_awaited_once()
+
+    async def test_contract_A07_stalled_old_close_cannot_block_replacement(self):
+        """PR 1334 A07: old-peer cleanup has a deadline independent of peer response."""
+
+        async def stalled_close(**kwargs):
+            await asyncio.get_running_loop().create_future()
+
+        old = browser_ext.PairedBridge(mock.Mock(close=stalled_close))
+        socket = mock.Mock(
+            headers={"origin": "chrome-extension://buttons"},
+            accept=mock.AsyncMock(),
+            receive_json=mock.AsyncMock(side_effect=WebSocketDisconnect(1000)),
+        )
+        with (
+            mock.patch.object(browser_ext, "_paired", old),
+            mock.patch.object(browser_ext, "CLOSE_TIMEOUT", 0, create=True),
+        ):
+            await asyncio.wait_for(browser_ext.extension_socket(socket), timeout=0.2)
+        socket.receive_json.assert_awaited_once()
 
 
 if __name__ == "__main__":
