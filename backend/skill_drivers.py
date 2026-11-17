@@ -90,10 +90,6 @@ class GridCDPDriver:
     """Drive the S5 shared Grid session. Attach-only: raises
     BrowserDriverError when no shared session exists."""
 
-    def __init__(self, grid_url: str | None = None):
-        base = grid_url or os.environ.get("BROWSER_GRID_URL", "http://browser:4444")
-        self.grid_url = base.rstrip("/")
-
     def _acquire(self):
         from backend.api.routers import browser_view
 

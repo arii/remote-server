@@ -104,8 +104,7 @@ _snooze_lock = threading.Lock()
 def snooze_path() -> str:
     """Current snooze file path (env override read dynamically so
     tests can point at a tmp dir without import tricks)."""
-    return os.environ.get("BUTTONS_SNOOZE_PATH",
-                          DEFAULT_SNOOZE_PATH)
+    return os.environ.get("BUTTONS_SNOOZE_PATH", DEFAULT_SNOOZE_PATH)
 
 
 def _row_until(entry) -> float:
@@ -166,6 +165,7 @@ def _invalidate_inbox(name: str | None) -> None:
     inbox router imports this module at load time.
     """
     from backend.api.routers import inbox as inbox_mod
+
     inbox_mod.invalidate_inbox_cache(name)
 
 
@@ -179,12 +179,10 @@ def _snooze_filter(items: list, now: float) -> list:
     """
     with _snooze_lock:
         store = _read_snooze()
-        live = {k: v for k, v in store.items()
-                if _row_until(v) > now}
+        live = {k: v for k, v in store.items() if _row_until(v) > now}
         if live != store:
             _write_snooze(live)
-        return [i for i in items
-                if _row_until(live.get(i.get("id", ""))) <= now]
+        return [i for i in items if _row_until(live.get(i.get("id", ""))) <= now]
 
 
 # TTL cache: the gh subprocess chain behind workflow-health takes
@@ -251,9 +249,13 @@ def failover_budget() -> dict:
         return agents.agent_budget()
     except Exception as exc:
         logger.warning("attention: budget read failed: %s", exc)
-        return {"cap_usd": None, "spent_usd": 0.0,
-                "remaining_usd": None, "blocked": False,
-                "unknown": 0}
+        return {
+            "cap_usd": None,
+            "spent_usd": 0.0,
+            "remaining_usd": None,
+            "blocked": False,
+            "unknown": 0,
+        }
 
 
 def list_failed_jobs() -> list:
@@ -266,8 +268,7 @@ def list_failed_jobs() -> list:
     for job in registry.list_jobs():
         if not isinstance(job, dict):
             continue
-        if job.get("done") is True and \
-                job.get("exit_code") not in (None, 0):
+        if job.get("done") is True and job.get("exit_code") not in (None, 0):
             out.append(job)
     return out
 
@@ -287,8 +288,7 @@ def latest_webhook_success_ts() -> dict:
         return {}
     best: dict = {}
     for e in entries:
-        if isinstance(e, dict) and e.get("ok") is True \
-                and e.get("advanced") is True:
+        if isinstance(e, dict) and e.get("ok") is True and e.get("advanced") is True:
             try:
                 ts = float(e.get("ts", 0) or 0)
             except (TypeError, ValueError):
@@ -318,10 +318,15 @@ def list_failed_webhooks() -> list:
             ts = 0.0
         if ts <= resolved_before.get(str(e.get("repo", "")), 0.0):
             continue
-        blob = " ".join(str(e.get(k, "")) for k in
-                        ("event", "status", "error", "detail")).lower()
-        if "fail" in blob or "error" in blob or e.get("ok") is False \
-                or e.get("status") in ("failed", "error"):
+        blob = " ".join(
+            str(e.get(k, "")) for k in ("event", "status", "error", "detail")
+        ).lower()
+        if (
+            "fail" in blob
+            or "error" in blob
+            or e.get("ok") is False
+            or e.get("status") in ("failed", "error")
+        ):
             out.append(e)
     return out
 
@@ -377,8 +382,9 @@ def list_terminal_dispatches() -> list:
     except Exception as exc:
         logger.warning("attention: dispatch queue read failed: %s", exc)
         return []
-    return [i for i in rows if isinstance(i, dict)
-            and i.get("state") in ("done", "failed")]
+    return [
+        i for i in rows if isinstance(i, dict) and i.get("state") in ("done", "failed")
+    ]
 
 
 def list_pending_approvals() -> list:
@@ -387,9 +393,12 @@ def list_pending_approvals() -> list:
     for e in ledger.read(kind="all", limit=100):
         if not isinstance(e, dict):
             continue
-        if e.get("awaiting_approval") is True or e.get("pending_approval") is True \
-                or str(e.get("event", "")).lower() in (
-                    "approval requested", "approval pending", "awaiting approval"):
+        if (
+            e.get("awaiting_approval") is True
+            or e.get("pending_approval") is True
+            or str(e.get("event", "")).lower()
+            in ("approval requested", "approval pending", "awaiting approval")
+        ):
             out.append(e)
     try:
         for job in registry.list_jobs():
@@ -427,8 +436,12 @@ def _run_created_ts(wf: dict, now: float) -> float:
     (#455). Missing or unparseable values fall back to poll time
     so the item still renders.
     """
-    raw = (wf.get("created_at") or wf.get("createdAt")
-           or wf.get("updated_at") or wf.get("updatedAt"))
+    raw = (
+        wf.get("created_at")
+        or wf.get("createdAt")
+        or wf.get("updated_at")
+        or wf.get("updatedAt")
+    )
     if isinstance(raw, bool):
         return now
     if isinstance(raw, (int, float)):
@@ -437,8 +450,7 @@ def _run_created_ts(wf: dict, now: float) -> float:
         text = raw.strip()
         if text:
             try:
-                parsed = datetime.fromisoformat(
-                    text.replace("Z", "+00:00"))
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
             except ValueError:
                 return now
             if parsed.tzinfo is None:
@@ -464,7 +476,7 @@ def _assemble_items(name: str, now: float) -> list[dict]:
         logger.warning("attention: workflow-health read failed: %s", exc)
         health = {}
     seen_runs: dict[tuple[str, str], dict] = {}
-    for wf in (health.get("workflows") or []):
+    for wf in health.get("workflows") or []:
         if not isinstance(wf, dict):
             continue
         rid = wf.get("id", "?")
@@ -481,9 +493,13 @@ def _assemble_items(name: str, now: float) -> list[dict]:
             "detail": detail,
             "repo": name,
             "severity": "crit",
-            "action": {"label": "View health", "method": "GET",
-                       "href": f"api/workflow-health?repo={name}",
-                       "destructive": False, "intent": ""},
+            "action": {
+                "label": "View health",
+                "method": "GET",
+                "href": f"api/workflow-health?repo={name}",
+                "destructive": False,
+                "intent": "",
+            },
             "created_at": _run_created_ts(wf, now),
         }
         seen_runs[key] = {"item": item, "runs": 1}
@@ -496,17 +512,24 @@ def _assemble_items(name: str, now: float) -> list[dict]:
         if repo != name:
             continue
         jid = job.get("id", "?")
-        items.append({
-            "id": f"job-{jid}",
-            "kind": "failed-job",
-            "title": f"Failed job: {job.get('name', jid)}",
-            "detail": str(job.get("error", job.get("detail", "job failed"))),
-            "repo": repo,
-            "severity": "warn",
-            "action": {"label": "View jobs", "method": "GET",
-                       "href": "api/jobs", "destructive": False, "intent": ""},
-            "created_at": float(job.get("created_at", now) or now),
-        })
+        items.append(
+            {
+                "id": f"job-{jid}",
+                "kind": "failed-job",
+                "title": f"Failed job: {job.get('name', jid)}",
+                "detail": str(job.get("error", job.get("detail", "job failed"))),
+                "repo": repo,
+                "severity": "warn",
+                "action": {
+                    "label": "View jobs",
+                    "method": "GET",
+                    "href": "api/jobs",
+                    "destructive": False,
+                    "intent": "",
+                },
+                "created_at": float(job.get("created_at", now) or now),
+            }
+        )
     # One row per terminal dispatch (done info, failed warn): the
     # operator who is elsewhere still sees the outcome (#883).
     for item in list_terminal_dispatches():
@@ -520,23 +543,27 @@ def _assemble_items(name: str, now: float) -> list[dict]:
         title = str(item.get("title") or "").strip()
         if title:
             label += f" — {title}"
-        detail = str(item.get("detail") or "").strip() \
-            or ("repair worker failed" if failed
-                else "repair worker finished")
-        items.append({
-            "id": f"dispatch-{repo}-{item.get('issue', '?')}",
-            "kind": "failed-dispatch" if failed
-            else "completed-dispatch",
-            "title": f"Dispatch {'failed' if failed else 'done'}: "
-                     f"{label}",
-            "detail": detail,
-            "repo": repo,
-            "severity": "warn" if failed else "info",
-            "action": {"label": "View queue", "method": "GET",
-                       "href": "api/dispatch/queue",
-                       "destructive": False, "intent": ""},
-            "created_at": float(item.get("finished_at", now) or now),
-        })
+        detail = str(item.get("detail") or "").strip() or (
+            "repair worker failed" if failed else "repair worker finished"
+        )
+        items.append(
+            {
+                "id": f"dispatch-{repo}-{item.get('issue', '?')}",
+                "kind": "failed-dispatch" if failed else "completed-dispatch",
+                "title": f"Dispatch {'failed' if failed else 'done'}: {label}",
+                "detail": detail,
+                "repo": repo,
+                "severity": "warn" if failed else "info",
+                "action": {
+                    "label": "View queue",
+                    "method": "GET",
+                    "href": "api/dispatch/queue",
+                    "destructive": False,
+                    "intent": "",
+                },
+                "created_at": float(item.get("finished_at", now) or now),
+            }
+        )
     # One row per incident: repeat failures with the same repo+detail
     # collapse into a single item with a count (latest first).
     webhook_incidents: dict = {}
@@ -544,8 +571,9 @@ def _assemble_items(name: str, now: float) -> list[dict]:
         repo = _event_repo(e.get("repo"), name)
         if repo != name:
             continue
-        detail = str(e.get("error") or e.get("detail") or e.get("event")
-                     or "webhook failed")
+        detail = str(
+            e.get("error") or e.get("detail") or e.get("event") or "webhook failed"
+        )
         key = (repo, detail)
         ts = float(e.get("ts", now) or now)
         prev = webhook_incidents.get(key)
@@ -558,9 +586,13 @@ def _assemble_items(name: str, now: float) -> list[dict]:
                 "detail": detail,
                 "repo": repo,
                 "severity": "warn",
-                "action": {"label": "View notifications", "method": "GET",
-                           "href": "api/notifications/status",
-                           "destructive": False, "intent": ""},
+                "action": {
+                    "label": "View notifications",
+                    "method": "GET",
+                    "href": "api/notifications/status",
+                    "destructive": False,
+                    "intent": "",
+                },
                 "created_at": ts,
                 "count": (prev["count"] + 1) if prev else 1,
             }
@@ -579,61 +611,78 @@ def _assemble_items(name: str, now: float) -> list[dict]:
         repo = _event_repo(e.get("repo"), name)
         if repo != name:
             continue
-        detail = str(e.get("detail") or e.get("error") or e.get("event")
-                     or "webhook pull skipped")
+        detail = str(
+            e.get("detail")
+            or e.get("error")
+            or e.get("event")
+            or "webhook pull skipped"
+        )
         # Inline cause (#855): the machine reason + ladder outcome
         # compose the precise recovery sentence after the raw skip
         # line, so the operator never has to decode git output.
-        cause = webhook_heal.cause_for(e) if isinstance(e, dict) \
-            else ""
+        cause = webhook_heal.cause_for(e) if isinstance(e, dict) else ""
         if cause:
             detail = f"{detail} — {cause}"[:300]
         eid = e.get("id", e.get("ts", "?"))
-        items.append({
-            "id": f"webhook-skip-{eid}",
-            "kind": "skipped-webhook",
-            "title": "Webhook pull skipped — checkout lagging",
-            "detail": detail,
-            "repo": repo,
-            "severity": "info",
-            "action": {"label": "Retry pull", "method": "POST",
-                       "href": f"api/webhook/retry?repo={repo}",
-                       "destructive": False, "intent": ""},
-            "created_at": float(e.get("ts", now) or now),
-        })
+        items.append(
+            {
+                "id": f"webhook-skip-{eid}",
+                "kind": "skipped-webhook",
+                "title": "Webhook pull skipped — checkout lagging",
+                "detail": detail,
+                "repo": repo,
+                "severity": "info",
+                "action": {
+                    "label": "Retry pull",
+                    "method": "POST",
+                    "href": f"api/webhook/retry?repo={repo}",
+                    "destructive": False,
+                    "intent": "",
+                },
+                "created_at": float(e.get("ts", now) or now),
+            }
+        )
     for e in list_pending_approvals():
         repo = _event_repo(e.get("repo"), name)
         if repo != name:
             continue
         eid = e.get("id", e.get("ts", "?"))
-        items.append({
-            "id": f"approval-{eid}",
-            "kind": "pending-approval",
-            "title": str(e.get("title", "Approval pending")),
-            "detail": str(e.get("detail", e.get("event", "awaiting approval"))),
-            "repo": repo,
-            "severity": "info",
-            "action": {"label": "Review", "method": "GET",
-                       "href": "api/prs?repo=" + name,
-                       "destructive": False, "intent": ""},
-            "created_at": float(e.get("ts", e.get("created_at", now)) or now),
-        })
-    # Tampered first-party skill pins (#1134): boot-time verifier
+        items.append(
+            {
+                "id": f"approval-{eid}",
+                "kind": "pending-approval",
+                "title": str(e.get("title", "Approval pending")),
+                "detail": str(e.get("detail", e.get("event", "awaiting approval"))),
+                "repo": repo,
+                "severity": "info",
+                "action": {
+                    "label": "Review",
+                    "method": "GET",
+                    "href": "api/prs?repo=" + name,
+                    "destructive": False,
+                    "intent": "",
+                },
+                "created_at": float(e.get("ts", e.get("created_at", now)) or now),
+            }
+        )
+    # Tampered skill pins: boot-time verifier
     # outcome, surfaced here because nobody watches the server log.
     # One collapsed item (stable snooze id); clean boot = no item.
     skill_problems = list_skills_verification_errors()
     if skill_problems:
         detail = "; ".join(skill_problems)[:500]
-        items.append({
-            "id": "skills-verification",
-            "kind": "skills-verification",
-            "title": "First-party skill verification failed — agent turns run UNVERIFIED",
-            "detail": f"{detail} — fix the skill files or re-pin deep-agent/skills-lock.json (#1120).",
-            "repo": name,
-            "severity": "crit",
-            "action": {},
-            "created_at": now,
-        })
+        items.append(
+            {
+                "id": "skills-verification",
+                "kind": "skills-verification",
+                "title": "Skill verification failed: agent turns run UNVERIFIED",
+                "detail": f"{detail}; restore browser files or their trusted skills-lock.json, or re-pin first-party skills (#1120).",
+                "repo": name,
+                "severity": "crit",
+                "action": {},
+                "created_at": now,
+            }
+        )
     try:
         local_up = ollama_up()
     except Exception as exc:
@@ -647,25 +696,34 @@ def _assemble_items(name: str, now: float) -> list[dict]:
             spent = 0.0
         cap = budget.get("cap_usd")
         cap_txt = "unlimited"
-        if isinstance(cap, (int, float)) \
-                and not isinstance(cap, bool):
+        if isinstance(cap, (int, float)) and not isinstance(cap, bool):
             cap_txt = f"${cap:.2f}"
-        items.append({
-            "id": "ollama-outage",
-            "kind": "provider-outage",
-            "title": (f"Ollama unreachable \u2014 on metered Nebius "
-                      f"(spend ${spent:.2f} / cap {cap_txt})"),
-            "detail": ("Ollama is unreachable; default traffic falls back "
-                       "to metered Nebius until it recovers. "
-                       f"Lifetime metered spend ${spent:.4f} "
-                       f"of {cap_txt}."),
-            "repo": name,
-            "severity": "warn",
-            "action": {"label": "View budget", "method": "GET",
-                       "href": "api/agents/budget",
-                       "destructive": False, "intent": ""},
-            "created_at": now,
-        })
+        items.append(
+            {
+                "id": "ollama-outage",
+                "kind": "provider-outage",
+                "title": (
+                    f"Ollama unreachable \u2014 on metered Nebius "
+                    f"(spend ${spent:.2f} / cap {cap_txt})"
+                ),
+                "detail": (
+                    "Ollama is unreachable; default traffic falls back "
+                    "to metered Nebius until it recovers. "
+                    f"Lifetime metered spend ${spent:.4f} "
+                    f"of {cap_txt}."
+                ),
+                "repo": name,
+                "severity": "warn",
+                "action": {
+                    "label": "View budget",
+                    "method": "GET",
+                    "href": "api/agents/budget",
+                    "destructive": False,
+                    "intent": "",
+                },
+                "created_at": now,
+            }
+        )
     return items
 
 
@@ -684,8 +742,8 @@ def attention(repo: str = "remote-server") -> dict:
 def snooze_attention(body: SnoozeRequest) -> dict:
     if body.minutes not in SNOOZE_PRESETS:
         raise HTTPException(
-            status_code=400,
-            detail=f"minutes must be one of {list(SNOOZE_PRESETS)}")
+            status_code=400, detail=f"minutes must be one of {list(SNOOZE_PRESETS)}"
+        )
     try:
         name = validate_repo_name(body.repo)
     except ValueError as exc:
@@ -694,8 +752,7 @@ def snooze_attention(body: SnoozeRequest) -> dict:
     items = _assemble_items(name, now)
     match = next((i for i in items if i.get("id", "") == body.id), None)
     if match is None:
-        raise HTTPException(
-            status_code=404, detail=f"unknown attention id: {body.id}")
+        raise HTTPException(status_code=404, detail=f"unknown attention id: {body.id}")
     until = now + body.minutes * 60
     with _snooze_lock:
         store = _read_snooze()
@@ -733,15 +790,17 @@ def list_snoozed() -> dict:
     now = time.time()
     with _snooze_lock:
         store = _read_snooze()
-        live = {k: v for k, v in store.items()
-                if _row_until(v) > now}
+        live = {k: v for k, v in store.items() if _row_until(v) > now}
         if live != store:
             _write_snooze(live)
     rows = [
-        {"id": k, "title": v.get("title", "") or k,
-         "until": _row_until(v), "repo": v.get("repo", "")}
-        for k, v in sorted(live.items(),
-                           key=lambda kv: _row_until(kv[1]))
+        {
+            "id": k,
+            "title": v.get("title", "") or k,
+            "until": _row_until(v),
+            "repo": v.get("repo", ""),
+        }
+        for k, v in sorted(live.items(), key=lambda kv: _row_until(kv[1]))
     ]
     return {"snoozed": rows}
 

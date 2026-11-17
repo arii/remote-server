@@ -317,6 +317,9 @@ services:
       - buttons-data:/var/lib/buttons
     environment:
       HOME: /home/ari # ${HOME} in the compose file must interpolate to host paths
+      BROWSER_DATA_DIR: /var/lib/buttons
+      BROWSER_GRID_URL: http://browser:4444
+      BROWSER_PROFILE_DIR: /data/shared-browser/agent
       # GitHub webhook HMAC secret (see .env.example). Empty/unset =
       # webhook endpoint refuses everything (fail closed).
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
