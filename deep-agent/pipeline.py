@@ -235,13 +235,15 @@ class Pipeline:
             )
             summary, usage, calls, started, label, trace, verified, _ = result
             import ledger
-            from langchain_core.messages import AIMessage, HumanMessage
 
             ledger.record(
                 "pipeline.py",
                 label,
                 f"{self.thread_id}-edit",
-                [HumanMessage(content=prompt), AIMessage(content=summary)],
+                [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": summary},
+                ],
                 started,
                 extra={
                     "worktree": root,
