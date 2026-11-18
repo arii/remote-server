@@ -228,6 +228,8 @@ export function RollupGate({ view }: { view: string }) {
 }
 
 export default function App() {
+  const topbarRef = useRef<HTMLElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
   // New sessions start on Chat; reloads restore the session's tab.
   const [bootMemory] = useState(() => loadNavMemory());
   const [tab, setTab] = useState<Tab>(bootMemory?.tab ?? 'chat');
@@ -803,8 +805,20 @@ export default function App() {
 
   return (
     <div className="layout">
-      <a href="#main-content" className="skip-link">Skip to content</a>
-      <header className="topbar" data-testid="topbar">
+      <a
+        href="#main-content"
+        className="skip-link"
+        onClick={() => {
+          const main = mainRef.current;
+          const header = topbarRef.current;
+          if (!main || !header) return;
+          // Measure on activation: wrapping and text zoom change the sticky bar's height.
+          main.style.scrollMarginTop = window.getComputedStyle(header).position === 'sticky'
+            ? `${header.getBoundingClientRect().height + 12}px`
+            : '0px';
+        }}
+      >Skip to content</a>
+      <header ref={topbarRef} className="topbar" data-testid="topbar">
         <div className="topbar-group">
           <RepoPicker repos={repos} value={repo} onChange={setRepo} />
           {selectedRepo && !selectedRepo.clean && (
@@ -858,7 +872,7 @@ export default function App() {
           </a>
         </div>
       </header>
-      <main id="main-content" tabIndex={-1}>
+      <main ref={mainRef} id="main-content" tabIndex={-1}>
         <h1 className="sr-only">Operator console</h1>
         <SyncBanner />
         <SessionBanner />
