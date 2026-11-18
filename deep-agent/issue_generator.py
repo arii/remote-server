@@ -85,8 +85,12 @@ def investigation_tool_guard(results=None):
                 )
             seen.add(key)
         result = handler(request)
-        if results is not None:
-            content = getattr(result, "content", result)
+        content = getattr(result, "content", result)
+        if (
+            results is not None
+            and str(content).strip()
+            and getattr(result, "status", "") != "error"
+        ):
             with lock:
                 results.append(f"{key[0]} {key[1]}: {str(content)[:500]}")
         return result
