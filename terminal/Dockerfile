@@ -27,9 +27,8 @@ ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
 ARG COPILOT_VERSION=1.0.109
-# Boomtick CLI floats on main (latest-only): the image always
-# consumes current upstream instead of a release tag.
-ARG BOOMTICK_CLI_REF=main
+# v0.20.2 + unreleased workflows/MCP changes; no compatible release yet.
+ARG BOOMTICK_CLI_REF=3e970a570aee0a550ec6409de769c201c9a5b900
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
@@ -89,7 +88,10 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store apt-get update \
  && /opt/venvs/td/bin/pip install --no-cache-dir -r /tmp/terminal/requirements.txt \
  && rm -rf /tmp/terminal /tmp/deep-agent \
  && /opt/venvs/td/bin/td --help > /dev/null \
- && git clone --depth 1 --branch "${BOOMTICK_CLI_REF}" https://github.com/arii/boomtick.git /tmp/boomtick \
+ && git init /tmp/boomtick \
+ && git -C /tmp/boomtick remote add origin https://github.com/arii/boomtick.git \
+ && git -C /tmp/boomtick fetch --depth 1 origin "${BOOMTICK_CLI_REF}" \
+ && git -C /tmp/boomtick checkout --detach FETCH_HEAD \
  && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp... --store-dir /pnpm/store) \
  && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
  && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
