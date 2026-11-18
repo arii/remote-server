@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import skills_registry
 
@@ -27,6 +28,25 @@ REQUIRED_SECTIONS = (
 )
 
 MAX_LOOPS_DEFAULT = 5
+
+
+def completed_spec(state):
+    parts = [state.get("draft", "")]
+    if state.get("evidence"):
+        parts.append("## Investigation Evidence\n" + state["evidence"])
+    if state.get("answers"):
+        parts.append(
+            "## Q&A Context\n"
+            + "\n".join(f"- **{k}**: {v}" for k, v in sorted(state["answers"].items()))
+        )
+    return "\n\n".join(part for part in parts if part).rstrip() + "\n"
+
+
+def write_spec(path, text):
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+
 
 # Sanctioned Ollama endpoint (issue #1085): OLLAMA_URL override, else
 # the compose-network host. Never raw localhost — unreachable inside
@@ -312,25 +332,31 @@ class IssueGeneratorGraph:
         """One investigate pass (LLM + tools). Tests inject this."""
         if self.investigate_fn is not None:
             return self.investigate_fn(brief, draft)
+        import ask_investigator
         from langchain.agents import create_agent
 
         agent = create_agent(self._model(), self._investigator_tools())
-        result = agent.invoke(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": f"Gather evidence for: {brief}\n\n"
-                        f"Draft so far:\n{draft}\n\n"
-                        "Cite every factual claim with a "
-                        "repo file path (path:line). If you "
-                        "cannot read any repo file, say so "
-                        "explicitly instead of inventing "
-                        "content.",
-                    }
-                ]
-            }
-        )
+        previous = ask_investigator._checkout
+        ask_investigator._checkout = self.repo_root
+        try:
+            result = agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"Gather evidence for: {brief}\n\n"
+                            f"Draft so far:\n{draft}\n\n"
+                            "Cite every factual claim with a "
+                            "repo file path (path:line). If you "
+                            "cannot read any repo file, say so "
+                            "explicitly instead of inventing "
+                            "content.",
+                        }
+                    ]
+                }
+            )
+        finally:
+            ask_investigator._checkout = previous
         messages = result.get("messages", []) if isinstance(result, dict) else []
         texts = [getattr(m, "content", "") or "" for m in messages]
         return "\n\n".join(t for t in texts if t) or draft
@@ -534,7 +560,7 @@ class IssueGeneratorGraph:
 
 
 def main(argv=None):
-    """CLI: --spec-file <path|-> [--qna-file <path>] [--max-loops N]."""
+    """CLI: --spec-file <path|-> [--out PATH] [--qna-file PATH] [--max-loops N]."""
     import cli as cli_helpers
 
     args = list(argv if argv is not None else sys.argv[1:])
@@ -542,10 +568,13 @@ def main(argv=None):
     qna_file = None
     max_loops = MAX_LOOPS_DEFAULT
     repo_root = None
+    out = None
     i = 0
     while i < len(args):
         if args[i] == "--spec-file" and i + 1 < len(args):
             spec_file, i = args[i + 1], i + 2
+        elif args[i] == "--out" and i + 1 < len(args):
+            out, i = args[i + 1], i + 2
         elif args[i] == "--qna-file" and i + 1 < len(args):
             qna_file, i = args[i + 1], i + 2
         elif args[i] == "--max-loops" and i + 1 < len(args):
@@ -611,6 +640,11 @@ def main(argv=None):
     except RuntimeError as exc:
         return cli_helpers.sorry(f"Sorry, {exc}")
     if state.get("valid"):
+        if out:
+            try:
+                write_spec(out, completed_spec(state))
+            except OSError as exc:
+                return cli_helpers.sorry(f"Sorry, cannot write spec: {exc}")
         print(
             json.dumps(
                 {"status": "ready", "valid": True, "attempts": state.get("attempts", 0)}

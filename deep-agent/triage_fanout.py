@@ -236,7 +236,9 @@ def main() -> int:
         prefer = extract_prefer(sys.argv)
     except ValueError as exc:
         return cli.usage_error(str(exc))
-    if prefer == "auto":
+    if model_router.local_only():
+        prefer = "ollama"
+    elif prefer == "auto":
         # Ladder: Nebius when keyed (today's behavior), else local.
         prefer = "nebius" if os.environ.get("NEBIUS_API_KEY") else None
     keyless_auto = prefer is None

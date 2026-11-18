@@ -4,7 +4,7 @@ Greenfield rule: try deterministic commands first (td/gh/subprocess JSON)
 and reach for an LLM only for judgment/explanation/summarization. When an
 LLM is needed, this module picks the cheapest feasible one:
 
-  1. explicit ``prefer`` (or NEBIUS_ONLY=1) wins,
+  1. S5_LOCAL_ONLY=1 forces local Ollama, otherwise explicit prefer wins,
   2. otherwise local Ollama (``ASK_MODEL``, default qwen3:8b) when reachable,
   3. otherwise keyed OpenRouter, free models by default,
   4. otherwise keyed Nebius (``NEBIUS_MODEL``),
@@ -16,6 +16,7 @@ logs; the caller passes its own key to ChatOpenAI from the environment.
 
 Env contract:
   ASK_MODEL (default qwen3:8b), OLLAMA_URL (default http://ollama:11434),
+  S5_LOCAL_ONLY=1 (Ollama only; reject cloud models and remote overrides),
   NEBIUS_MODEL (default zai-org/GLM-5.3-Flash),
   NEBIUS_BASE_URL (default https://api.tokenfactory.nebius.com/v1),
   NEBIUS_API_KEY (required for the nebius path),
@@ -103,6 +104,19 @@ def _ollama_spec():
     }
 
 
+def local_only():
+    return _env("S5_LOCAL_ONLY") == "1"
+
+
+def validate_local_spec(spec):
+    if local_only():
+        if spec.get("provider") != "ollama":
+            raise RuntimeError("S5_LOCAL_ONLY=1 requires Ollama")
+        if "cloud" in spec.get("model", "").lower():
+            raise RuntimeError("S5_LOCAL_ONLY=1 rejects Ollama cloud models")
+    return spec
+
+
 def api_key(spec):
     """Credential for the resolved remote backend. Keep out of specs and logs."""
     provider = spec["provider"]
@@ -184,6 +198,13 @@ def resolve_llm(prefer=None):
     keyed OpenRouter, then keyed Nebius.
     OLLAMA_STRICT=1 disables the fallback on the default path too.
     """
+    if local_only():
+        spec = validate_local_spec(_ollama_spec())
+        if not ollama_reachable():
+            raise RuntimeError(
+                "S5_LOCAL_ONLY=1: Ollama unreachable at " + _ollama_base()
+            )
+        return spec
     only_nebius = _env("NEBIUS_ONLY") == "1"
     strict_ollama = _env("OLLAMA_STRICT") == "1"
     want = (prefer or ("nebius" if only_nebius else "")).strip().lower()
@@ -351,6 +372,7 @@ def with_local_fallback(primary_fn, make_local_fn, note_fn, *, primary_is_local=
 def chat_kwargs(spec):
     """Constructor kwargs for ChatOllama / ChatOpenAI. No secrets inside —
     the caller supplies api_key itself, and specs must never be logged."""
+    validate_local_spec(spec)
     if spec.get("provider") == "ollama":
         return {
             "model": spec["model"],
@@ -383,7 +405,7 @@ def chat_kwargs(spec):
 PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai", "openrouter": "openai"}
 
 
-def build_chat_model(spec=None, think=False):
+def build_chat_model(spec=None, think=False, num_ctx=None):
     """Container-correct chat model (Ollama no-think default). Venv-only.
 
     resolve_llm() picks local or keyed remote through the spend choke;
@@ -396,8 +418,9 @@ def build_chat_model(spec=None, think=False):
     if spec.get("provider") == "ollama":
         from langchain_ollama import ChatOllama  # noqa: E402
 
-        if not think:
-            kwargs["model_kwargs"] = {"think": False}
+        kwargs["reasoning"] = think
+        if num_ctx is not None:
+            kwargs["num_ctx"] = num_ctx
         return ChatOllama(**kwargs), spec
     from langchain_openai import ChatOpenAI  # noqa: E402
 

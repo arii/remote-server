@@ -231,6 +231,7 @@ def build_model(model_override=None):
     import model_router  # noqa: E402
 
     spec = model_router.resolve_llm()
+    model_override = model_override or os.environ.get("CODER_MODEL", "").strip()
     if model_override:
         spec = dict(spec, model=model_override)
     think = os.environ.get("CODER_THINK", "") == "1"
@@ -1299,6 +1300,8 @@ def _cmd_resume(
 
 def main(argv=None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
+    if args.model:
+        os.environ["CODER_MODEL"] = args.model
     if args.resume:
         if not args.thread:
             return cli.usage_error("--thread is required with --resume")
@@ -1556,7 +1559,7 @@ class InitCoderGraph:
         """Compile the coding loop (needs langgraph)."""
         from langgraph.checkpoint.memory import InMemorySaver
         from langgraph.graph import END, START, StateGraph
-        from langgraph.types import Command, interrupt
+        from langgraph.types import interrupt
         from typing_extensions import TypedDict
 
         if getattr(self, "_checkpointer", None) is None:
