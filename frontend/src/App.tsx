@@ -228,6 +228,8 @@ export function RollupGate({ view }: { view: string }) {
 }
 
 export default function App() {
+  const topbarRef = useRef<HTMLElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
   // New sessions start on Chat; reloads restore the session's tab.
   const [bootMemory] = useState(() => loadNavMemory());
   const [tab, setTab] = useState<Tab>(bootMemory?.tab ?? 'chat');
@@ -802,10 +804,21 @@ export default function App() {
         : null;
 
   return (
-    <main className="layout" id="main-content">
-      <a href="#main-content" className="skip-link">Skip to content</a>
-      <h1 className="sr-only">Operator console</h1>
-      <header className="topbar" data-testid="topbar">
+    <div className="layout">
+      <a
+        href="#main-content"
+        className="skip-link"
+        onClick={() => {
+          const main = mainRef.current;
+          const header = topbarRef.current;
+          if (!main || !header) return;
+          // Measure on activation: wrapping and text zoom change the sticky bar's height.
+          main.style.scrollMarginTop = window.getComputedStyle(header).position === 'sticky'
+            ? `${header.getBoundingClientRect().height + 12}px`
+            : '0px';
+        }}
+      >Skip to content</a>
+      <header ref={topbarRef} className="topbar" data-testid="topbar">
         <div className="topbar-group">
           <RepoPicker repos={repos} value={repo} onChange={setRepo} />
           {selectedRepo && !selectedRepo.clean && (
@@ -859,184 +872,187 @@ export default function App() {
           </a>
         </div>
       </header>
-      <SyncBanner />
-      <SessionBanner />
-      <CommandPalette
-        open={paletteOpen}
-        commands={commands}
-        onClose={() => setPaletteOpen(false)}
-        onRun={runCommand}
-      />
-      {diffRepo && (
-        <RepoDiffModal
-          repo={diffRepo}
-          branch={diffBranch}
-          data={diffData}
-          error={diffError}
-          onAction={(action) => onRepoAction(action)}
-          onAskAgent={askAgent}
-          onClose={() => setDiffRepo(null)}
+      <main ref={mainRef} id="main-content" tabIndex={-1}>
+        <h1 className="sr-only">Operator console</h1>
+        <SyncBanner />
+        <SessionBanner />
+        <CommandPalette
+          open={paletteOpen}
+          commands={commands}
+          onClose={() => setPaletteOpen(false)}
+          onRun={runCommand}
         />
-      )}
-      {statsOpen && (
-        <ContainerDrawer
-          rows={statsRows}
-          loading={statsLoading}
-          error={statsError}
-          degraded={statsDegraded}
-          restartRequested={restartRequested}
-          restartError={restartError}
-          serviceRestarted={serviceRestarted}
-          diskSummary={health?.disk.summary ?? null}
-          memSummary={health?.memory.summary ?? null}
-          onRestart={(action) => void onRestartContainer(action)}
-          onRestartService={(service) => void onRestartServiceContainer(service)}
-          onOpenLogs={(service) => setLogService(service)}
-          onFilterHistory={openHistoryFilter}
-          onRefresh={() => setStatsSeq((n) => n + 1)}
-          onClose={closeStats}
-        />
-      )}
-      {triageOpen && triageSection !== null && (
-        <TriageDrawer
-          open
-          section={triageSection}
-          onSectionChange={setTriageSection}
-          onClose={() => {
-            setTriageOpen(false);
-            setTab('now');
-          }}
-          repo={repo}
-          defaultBranch={repos.find((r) => r.name === repo)?.branch}
-          onAskAgent={(seed) => askAgent(seed)}
-          onOpenChat={() => {
-            setTriageOpen(false);
-            setTab('chat');
-          }}
-          createRequest={createRequest}
-          pendingTdCommand={pendingTd}
-          onPendingTdHandled={() => setPendingTd(null)}
-          onOpenHistory={() => {
-            setTriageOpen(false);
-            setTab('history');
-          }}
-          reloadRequest={briefingReloadRequest}
-        />
-      )}
-      {seenTabs.has('browser') && (
-        <div hidden={triageOpen || tab !== 'browser'} data-testid="keepalive-browser">
-          <BrowserView
-            browserState={agentBrowser?.state ?? 'IDLE'}
-            currentStep={agentBrowser?.current_step || null}
-            handoffReason={agentBrowser?.handoff_reason ?? null}
-            handoffUrl={agentBrowser?.handoff_url ?? null}
-            iframeSrc={`${stackBase()}/cdp-stream/`}
-            error={browserError}
-            onResume={() => void onResumeBrowser()}
-            onHandBack={() => void onHandBackBrowser()}
+        {diffRepo && (
+          <RepoDiffModal
+            repo={diffRepo}
+            branch={diffBranch}
+            data={diffData}
+            error={diffError}
+            onAction={(action) => onRepoAction(action)}
+            onAskAgent={askAgent}
+            onClose={() => setDiffRepo(null)}
           />
-        </div>
-      )}
-      {statsOpen && logService && (
-        <ContainerLogsDrawer
-          service={logService}
-          name={logRow?.name ?? logService}
-          usage={logUsage}
-          canRestart={logEngineAction !== null || serviceRestartable(logService)}
-          restartConfirm={
-            logEngineAction ? dangerEntryFor(logEngineAction)?.confirm : undefined
-          }
-          restartNote={logRestartNote}
-          restartError={restartError}
-          onRestart={restartForService}
-          onClose={() => setLogService(null)}
-        />
-      )}
-      <ShortcutHint />
-      {!triageOpen && tab === 'now' && (
-        <NowView
-          repo={repo}
-          repos={repos}
-          health={health}
-          reportContext={`${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`}
-          onAskAgent={askAgent}
-          composer={
-            <NowComposer
-              prompt={nowPrompt}
-              onChange={setNowPrompt}
-              focusRequest={nowFocusRequest}
-              blockedReason={isRollupRepo(repo) ? 'Choose a repository before sending.' : null}
-              onSend={() => {
-                setChatSeed(nowPrompt.trim());
-                setSendChatSeed(true);
-                setNowPrompt('');
-                setTab('chat');
+        )}
+        {statsOpen && (
+          <ContainerDrawer
+            rows={statsRows}
+            loading={statsLoading}
+            error={statsError}
+            degraded={statsDegraded}
+            restartRequested={restartRequested}
+            restartError={restartError}
+            serviceRestarted={serviceRestarted}
+            diskSummary={health?.disk.summary ?? null}
+            memSummary={health?.memory.summary ?? null}
+            onRestart={(action) => void onRestartContainer(action)}
+            onRestartService={(service) => void onRestartServiceContainer(service)}
+            onOpenLogs={(service) => setLogService(service)}
+            onFilterHistory={openHistoryFilter}
+            onRefresh={() => setStatsSeq((n) => n + 1)}
+            onClose={closeStats}
+          />
+        )}
+        {triageOpen && triageSection !== null && (
+          <TriageDrawer
+            open
+            section={triageSection}
+            onSectionChange={setTriageSection}
+            onClose={() => {
+              setTriageOpen(false);
+              setTab('now');
+            }}
+            repo={repo}
+            defaultBranch={repos.find((r) => r.name === repo)?.branch}
+            onAskAgent={(seed) => askAgent(seed)}
+            onOpenChat={() => {
+              setTriageOpen(false);
+              setTab('chat');
+            }}
+            createRequest={createRequest}
+            pendingTdCommand={pendingTd}
+            onPendingTdHandled={() => setPendingTd(null)}
+            onOpenHistory={() => {
+              setTriageOpen(false);
+              setTab('history');
+            }}
+            reloadRequest={briefingReloadRequest}
+          />
+        )}
+        {seenTabs.has('browser') && (
+          <div hidden={triageOpen || tab !== 'browser'} data-testid="keepalive-browser">
+            <BrowserView
+              browserState={agentBrowser?.state ?? 'IDLE'}
+              currentStep={agentBrowser?.current_step || null}
+              handoffReason={agentBrowser?.handoff_reason ?? null}
+              handoffUrl={agentBrowser?.handoff_url ?? null}
+              iframeSrc={`${stackBase()}/cdp-stream/`}
+              error={browserError}
+              onResume={() => void onResumeBrowser()}
+              onHandBack={() => void onHandBackBrowser()}
+            />
+          </div>
+        )}
+        {statsOpen && logService && (
+          <ContainerLogsDrawer
+            service={logService}
+            name={logRow?.name ?? logService}
+            usage={logUsage}
+            canRestart={logEngineAction !== null || serviceRestartable(logService)}
+            restartConfirm={
+              logEngineAction ? dangerEntryFor(logEngineAction)?.confirm : undefined
+            }
+            restartNote={logRestartNote}
+            restartError={restartError}
+            onRestart={restartForService}
+            onClose={() => setLogService(null)}
+          />
+        )}
+        <ShortcutHint />
+        {!triageOpen && tab === 'now' && (
+          <NowView
+            repo={repo}
+            repos={repos}
+            health={health}
+            reportContext={`${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`}
+            onAskAgent={askAgent}
+            composer={
+              <NowComposer
+                prompt={nowPrompt}
+                onChange={setNowPrompt}
+                focusRequest={nowFocusRequest}
+                blockedReason={isRollupRepo(repo) ? 'Choose a repository before sending.' : null}
+                onSend={() => {
+                  setChatSeed(nowPrompt.trim());
+                  setSendChatSeed(true);
+                  setNowPrompt('');
+                  setTab('chat');
+                }}
+              />
+            }
+            onOpenTab={(t) => {
+              // Briefing is a drawer section now (D5): the attention
+              // rows' briefing hop lands in the triage drawer.
+              if (t === 'briefing') {
+                setTriageOpen(true);
+                setTriageSection('briefing');
+              } else {
+                setTab(t);
+              }
+            }}
+            onOpenHistoryQuery={(q) => {
+              setHistoryQueryRequest((r) => ({ query: q, nonce: (r?.nonce ?? 0) + 1 }));
+              setTab('history');
+            }}
+            reportRequest={reportRequest}
+            onOpenSection={(s) => {
+              setTriageOpen(true);
+              setTriageSection(s);
+            }}
+            onOpenStats={openStats}
+            onViewDiff={(name) => setDiffRepo(name)}
+            onRepoAction={(name, action) => onRepoActionFor(name, action)}
+            onOpenChat={openRepoInChat}
+            onFilterHistory={openHistoryFilter}
+          />
+        )}
+        {!triageOpen && tab === 'chat' &&
+          (isRollupRepo(repo) ? (
+            <RollupGate view="Chat" />
+          ) : (
+            <ChatView
+              repo={repo}
+              seed={chatSeed}
+              sendSeed={sendChatSeed}
+              onSeedUsed={() => {
+                setChatSeed(null);
+                setSendChatSeed(false);
+              }}
+              onOpenDiff={() => setDiffRepo(repo)}
+              statusStrip={{
+                state: stripHealthState(health),
+                label: healthSummary(health),
+                attentionCount: badgeCounts.now,
+                openPrCount: badgeCounts.review,
+                onOpenTriage: () => {
+                  setTriageOpen(true);
+                  setTriageSection((s) => s ?? 'review');
+                },
               }}
             />
-          }
-          onOpenTab={(t) => {
-            // Briefing is a drawer section now (D5): the attention
-            // rows' briefing hop lands in the triage drawer.
-            if (t === 'briefing') {
-              setTriageOpen(true);
-              setTriageSection('briefing');
-            } else {
-              setTab(t);
-            }
-          }}
-          onOpenHistoryQuery={(q) => {
-            setHistoryQueryRequest((r) => ({ query: q, nonce: (r?.nonce ?? 0) + 1 }));
-            setTab('history');
-          }}
-          reportRequest={reportRequest}
-          onOpenSection={(s) => {
-            setTriageOpen(true);
-            setTriageSection(s);
-          }}
-          onOpenStats={openStats}
-          onViewDiff={(name) => setDiffRepo(name)}
-          onRepoAction={(name, action) => onRepoActionFor(name, action)}
-          onOpenChat={openRepoInChat}
-          onFilterHistory={openHistoryFilter}
-        />
-      )}
-      {!triageOpen && tab === 'chat' &&
-        (isRollupRepo(repo) ? (
-          <RollupGate view="Chat" />
-        ) : (
-          <ChatView
-            repo={repo}
-            seed={chatSeed}
-            sendSeed={sendChatSeed}
-            onSeedUsed={() => {
-              setChatSeed(null);
-              setSendChatSeed(false);
-            }}
-            onOpenDiff={() => setDiffRepo(repo)}
-            statusStrip={{
-              state: stripHealthState(health),
-              label: healthSummary(health),
-              attentionCount: badgeCounts.now,
-              openPrCount: badgeCounts.review,
-              onOpenTriage: () => {
-                setTriageOpen(true);
-                setTriageSection((s) => s ?? 'review');
-              },
-            }}
-          />
-        ))}
-      {!triageOpen && tab === 'history' && isRollupRepo(repo) && <RollupGate view="History" />}
-      {seenTabs.has('history') && !isRollupRepo(repo) && (
-        <div hidden={triageOpen || tab !== 'history'} data-testid="keepalive-history">
-          <HistoryView
-            repo={repo}
-            active={!triageOpen && tab === 'history'}
-            queryRequest={historyQueryRequest}
-            filterRequest={historyFilter}
-          />
-        </div>
-      )}
-      <ShortcutCheatsheet open={helpOpen} onClose={() => setHelpOpen(false)} />
-    </main>
+          ))}
+        {!triageOpen && tab === 'history' && isRollupRepo(repo) && <RollupGate view="History" />}
+        {seenTabs.has('history') && !isRollupRepo(repo) && (
+          <div hidden={triageOpen || tab !== 'history'} data-testid="keepalive-history">
+            <HistoryView
+              repo={repo}
+              active={!triageOpen && tab === 'history'}
+              queryRequest={historyQueryRequest}
+              filterRequest={historyFilter}
+            />
+          </div>
+        )}
+        <ShortcutCheatsheet open={helpOpen} onClose={() => setHelpOpen(false)} />
+      </main>
+    </div>
   );
 }
