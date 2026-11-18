@@ -1,9 +1,9 @@
-# Keeps every pinned boomtick CLI ref on the latest cli-* release.
+# Advances immutable CLI pins to newer published cli-* releases.
 #
-# Pins live in four places and must move together (no legacy versions):
+# Pins live in four places and must move together:
 #   Dockerfile (ARG BOOMTICK_CLI_REF), terminal/Dockerfile (ARG),
 #   .github/workflows/e2e.yml (pip install @ref), tests/e2e/run.sh (same).
-# Runs weekly plus on demand; opens one PR when a newer cli-* tag exists.
+# Runs weekly plus on demand; never downgrades an unreleased SHA pin.
 name: bump-boomtick-cli
 
 on:
@@ -26,12 +26,46 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG=$(gh api repos/arii/boomtick/tags --paginate -q '.[].name' \
-            | grep -E '^cli-v[0-9]' | sort -V | tail -1)
-          if [ -z "$TAG" ]; then echo "no cli-* tag found"; exit 1; fi
-          echo "latest cli tag: $TAG"
-          sed -i -E "s/^(ARG BOOMTICK_CLI_REF=)cli-v[0-9.]+/\\1$TAG/" Dockerfile terminal/Dockerfile
-          sed -i -E "s|(github.com:arii/boomtick.git@)cli-v[0-9.]+|\\1$TAG|" .github/workflows/e2e.yml tests/e2e/run.sh
+          TAG=$(gh api repos/arii/boomtick/releases --paginate \
+            | jq -rs '[.[][] | select(.draft == false and .prerelease == false) | select(.tag_name | test("^cli-v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(.published_at) | last | .tag_name // empty')
+          if [ -z "$TAG" ]; then echo "no published cli release found"; exit 1; fi
+          SHA=$(gh api "repos/arii/boomtick/commits/$TAG" --jq .sha)
+          CURRENT=$(sed -n 's/^ARG BOOMTICK_CLI_REF=//p' Dockerfile)
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] && [[ "$CURRENT" =~ ^[0-9a-f]{40}$ ]]
+          STATUS=$(gh api "repos/arii/boomtick/compare/$CURRENT...$SHA" --jq .status)
+          case "$STATUS" in
+            identical|behind) echo "release $TAG does not advance $CURRENT; nothing to do"; exit 0 ;;
+            ahead) ;;
+            *) echo "release $TAG diverges from pinned commit; manual review required"; exit 1 ;;
+          esac
+          export SHA TAG
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          sha = os.environ["SHA"]
+          patterns = {
+              "Dockerfile": r"(?m)(^ARG BOOMTICK_CLI_REF=)[0-9a-f]{40}$",
+              "terminal/Dockerfile": r"(?m)(^ARG BOOMTICK_CLI_REF=)[0-9a-f]{40}$",
+              ".github/workflows/e2e.yml": r"(github\.com/arii/boomtick\.git@)[0-9a-f]{40}(?=#subdirectory=cli)",
+              "tests/e2e/run.sh": r"(github\.com/arii/boomtick\.git@)[0-9a-f]{40}(?=#subdirectory=cli)",
+          }
+          updates = {}
+          for name, pattern in patterns.items():
+              path = pathlib.Path(name)
+              updated, count = re.subn(pattern, lambda m: m[1] + sha, path.read_text())
+              if count != 1:
+                  raise SystemExit(f"expected one immutable pin in {name}, found {count}")
+              updated = re.sub(
+                  r"# v[0-9]+\.[0-9]+\.[0-9]+[^\n]*",
+                  "# " + os.environ["TAG"].removeprefix("cli-"),
+                  updated,
+              )
+              updates[path] = updated
+          for path, updated in updates.items():
+              path.write_text(updated)
+          PY
           if git diff --quiet; then
             echo "pins already at latest ($TAG); nothing to do"
             exit 0

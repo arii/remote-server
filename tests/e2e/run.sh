@@ -26,11 +26,11 @@ if ! python3 -c "import fastapi, uvicorn" 2>/dev/null; then
   pip install -r "$REPO_ROOT/backend/requirements.txt"
 fi
 
-# The backend shells out to td; install current upstream
-# (latest-only, same float as the Dockerfiles).
+# The backend shells out to td; use the same revision as the Dockerfiles.
 if ! command -v td >/dev/null 2>&1; then
-  echo "==> installing boomtick td CLI (latest)" >&2
-  pip install "git+https://github.com/arii/boomtick.git@main#subdirectory=cli"
+  echo "==> installing pinned boomtick td CLI" >&2
+  # v0.20.2 + unreleased workflows/MCP changes; no compatible release yet.
+  pip install "git+https://github.com/arii/boomtick.git@3e970a570aee0a550ec6409de769c201c9a5b900#subdirectory=cli"
 fi
 
 echo "==> ensuring chromium" >&2
