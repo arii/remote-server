@@ -5,11 +5,13 @@ Full-graph evals need the deep-agent venv (langgraph) and run real
 git fixtures + real pytest; they skip otherwise. The real-td smoke
 test skips when no td binary is on PATH.
 """
+
 import os
 import shutil
 import unittest
 
 import pipeline as pipeline_mod
+from backend.tests.agent_control_case import AgentControlTestCase
 
 try:
     import langgraph  # noqa: F401
@@ -72,7 +74,8 @@ class TestHelpers(unittest.TestCase):
 
     def test_drive_to_settled_no_interrupt(self):
         state = pipeline_mod.drive_to_settled(
-            lambda: {"valid": True}, lambda r: {}, lambda i, s: {})
+            lambda: {"valid": True}, lambda r: {}, lambda i, s: {}
+        )
         self.assertTrue(state["valid"])
 
     def test_drive_to_settled_policy(self):
@@ -85,15 +88,13 @@ class TestHelpers(unittest.TestCase):
             seen.append(resume)
             return {"valid": True}
 
-        state = pipeline_mod.drive_to_settled(
-            first, resume_fn, lambda i, s: {"a": 2})
+        state = pipeline_mod.drive_to_settled(first, resume_fn, lambda i, s: {"a": 2})
         self.assertTrue(state["valid"])
         self.assertEqual(seen, [{"a": 2}])
 
     def test_final_interrupt_newest(self):
         interrupts = [{"value": {"n": 1}}, {"value": {"n": 2}}]
-        self.assertEqual(
-            pipeline_mod.final_interrupt(interrupts), {"n": 2})
+        self.assertEqual(pipeline_mod.final_interrupt(interrupts), {"n": 2})
         self.assertEqual(pipeline_mod.final_interrupt([]), {})
 
 
@@ -116,13 +117,16 @@ class TestPreviewUrlThreading(unittest.TestCase):
         real_graph = auditor.AuditorGraph
         real_drive = pipeline_mod.drive_to_settled
         auditor.AuditorGraph = RecordingGraph
-        pipeline_mod.drive_to_settled = (
-            lambda first, resume_fn, policy, limit=None: {
-                "valid": True, "verdict": {"status": "APPROVED"}})
+        pipeline_mod.drive_to_settled = lambda first, resume_fn, policy, limit=None: {
+            "valid": True,
+            "verdict": {"status": "APPROVED"},
+        }
         try:
             pipe = pipeline_mod.Pipeline(
-                repo="/tmp", intent="preview test",
-                preview_url=kwargs.get("preview_url"))
+                repo="/tmp",
+                intent="preview test",
+                preview_url=kwargs.get("preview_url"),
+            )
             return pipe, pipe.stage_audit("/tmp/wt"), seen
         finally:
             auditor.AuditorGraph = real_graph
@@ -130,7 +134,8 @@ class TestPreviewUrlThreading(unittest.TestCase):
 
     def test_preview_url_reaches_auditor(self):
         _pipe, (status, _state, _detail), seen = self._run_stage_audit(
-            preview_url="https://preview/x")
+            preview_url="https://preview/x"
+        )
         self.assertEqual(status, "APPROVED")
         self.assertEqual(seen.get("preview_url"), "https://preview/x")
 
@@ -140,10 +145,9 @@ class TestPreviewUrlThreading(unittest.TestCase):
         self.assertIsNone(seen["preview_url"])
 
 
-class TestRouting(unittest.TestCase):
+class TestRouting(AgentControlTestCase):
     def test_approved_submits_and_cleans(self):
-        pipe = ScriptedPipeline(
-            [pipeline_mod.APPROVED], submit_pr=True)
+        pipe = ScriptedPipeline([pipeline_mod.APPROVED], submit_pr=True)
         result = pipe.run()
         self.assertEqual(result["status"], pipeline_mod.APPROVED)
         stages = [e["stage"] for e in pipe.events]
@@ -152,26 +156,27 @@ class TestRouting(unittest.TestCase):
 
     def test_reject_routes_repair_same_worktree(self):
         pipe = ScriptedPipeline(
-            [pipeline_mod.CHANGES_REQUESTED, pipeline_mod.APPROVED],
-            submit_pr=False)
+            [pipeline_mod.CHANGES_REQUESTED, pipeline_mod.APPROVED], submit_pr=False
+        )
         result = pipe.run()
         self.assertEqual(result["status"], pipeline_mod.APPROVED)
         self.assertEqual(result["audit_cycles"], 1)
-        self.assertEqual(pipe.calls,
-                         [(None, False), ("/tmp/wt-1", True)])
+        self.assertEqual(pipe.calls, [(None, False), ("/tmp/wt-1", True)])
 
     def test_reject_exhausts_cycles(self):
         pipe = ScriptedPipeline(
-            [pipeline_mod.CHANGES_REQUESTED] * 4, max_audit_cycles=2)
+            [pipeline_mod.CHANGES_REQUESTED] * 4, max_audit_cycles=2
+        )
         result = pipe.run()
         self.assertEqual(result["status"], pipeline_mod.CHANGES_REQUESTED)
         self.assertEqual(result["audit_cycles"], 2)
 
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langgraph)")
-class TestEvals(unittest.TestCase):
+class TestEvals(AgentControlTestCase):
     def test_all_evals_pass(self):
         import eval_pipeline
+
         results, ok = eval_pipeline.run_all()
         for item in results:
             self.assertTrue(item["passed"], item)
@@ -181,44 +186,52 @@ class TestEvals(unittest.TestCase):
 class TestCliCommands(unittest.TestCase):
     def test_no_args_usage(self):
         import cli
+
         self.assertEqual(cli.main([]), 2)
 
     def test_unknown_command(self):
         import cli
+
         self.assertEqual(cli.main(["bogus"]), 2)
 
     def test_run_pipeline_missing_args(self):
         import cli
+
         self.assertEqual(cli.main(["run-pipeline"]), 2)
         self.assertEqual(
-            cli.main(["run-pipeline", "--intent", "x",
-                      "--repo", "/tmp", "--bogus"]), 2)
+            cli.main(["run-pipeline", "--intent", "x", "--repo", "/tmp", "--bogus"]), 2
+        )
 
     def test_run_pipeline_bad_issue(self):
         import cli
+
         self.assertEqual(
-            cli.main(["run-pipeline", "--intent", "x",
-                      "--repo", "/tmp", "--issue", "abc"]), 2)
+            cli.main(
+                ["run-pipeline", "--intent", "x", "--repo", "/tmp", "--issue", "abc"]
+            ),
+            2,
+        )
 
 
 class TestSubmitArgv(unittest.TestCase):
     def test_submit_uses_agent_submit_pr(self):
         import json as _json
+
         seen = []
 
         def fake_td(argv, cwd=None):
             seen.append(list(argv))
-            return 0, _json.dumps({"status": "success",
-                                   "url": "https://example.invalid/pr/9"})
+            return 0, _json.dumps(
+                {"status": "success", "url": "https://example.invalid/pr/9"}
+            )
 
         import pipeline as pipeline_mod
-        pipe = pipeline_mod.Pipeline("/tmp", "intent", issue_id=7,
-                                     td_run=fake_td)
+
+        pipe = pipeline_mod.Pipeline("/tmp", "intent", issue_id=7, td_run=fake_td)
         ok, url = pipe.stage_submit("/tmp/wt", "title", "body")
         self.assertTrue(ok)
         self.assertEqual(url, "https://example.invalid/pr/9")
-        self.assertEqual(
-            seen[0][:3], ["agent", "submit-pr", "--worktree"])
+        self.assertEqual(seen[0][:3], ["agent", "submit-pr", "--worktree"])
         self.assertIn("--issue", seen[0])
         self.assertIn("7", seen[0])
 
