@@ -66,7 +66,7 @@ fail() { report FAIL "$@"; FAIL=1; }
 # the assumption. OLLAMA_STRICT=1 refuses the Nebius fallback on
 # the default path, so an Ollama-only violation fails instead of
 # going metered. NEBIUS_ONLY is scrubbed too: it forces cloud.
-CUTOFF_SCRUB_VARS=(NEBIUS_API_KEY GEMINI_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY LANGSMITH_API_KEY NEBIUS_ONLY)
+CUTOFF_SCRUB_VARS=(NEBIUS_API_KEY OPENROUTER_API_KEY GEMINI_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY LANGSMITH_API_KEY NEBIUS_ONLY)
 if [[ "$PROOF" == "1" ]]; then
   was_set=""
   for v in "${CUTOFF_SCRUB_VARS[@]}"; do

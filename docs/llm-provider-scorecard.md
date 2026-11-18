@@ -9,6 +9,34 @@ the repo's `AI Review & Impact Analysis` CI check and the lane reviewer
 protocol (`audit-gemini-talker` skill for Gemini). This file records
 outcomes; it does not create a parallel review framework.
 
+## #1294 routing check (keyless)
+
+Default router order: Ollama, keyed OpenRouter, keyed Nebius. OpenRouter uses
+`OPENROUTER_MODEL=openrouter/free`; `:free` variants are also supported.
+`OPENROUTER_ALLOW_PAID=1` permits paid model overrides, priced through the
+existing `METERED_RATE_*` settings. Every remote selection uses the existing
+`NEBIUS_SPEND_CAP_USD` lifetime gate, including free selections.
+
+| Provider | Probe result | Input/output tokens |
+|---|---|---|
+| Ollama | Keyless availability probe failed at `http://ollama:11434`; no turn executed | Unavailable |
+| OpenRouter | Skipped: authentication requires a key; this run prohibits real-key use | Unavailable |
+| Nebius | Skipped: paid probes prohibited | Unavailable |
+
+The Ollama check ran `resolve_llm(prefer="ollama")` with a cleared environment
+and `OLLAMA_STRICT=1`. Output:
+
+```text
+Ollama keyless probe unavailable: RuntimeError Ollama unreachable at http://ollama:11434
+OpenRouter probe: skipped; requires a key, real-key use prohibited
+Nebius probe: skipped; paid probes prohibited
+```
+
+Live token receipts remain pending an available local model or approval to use
+an OpenRouter key on a free model. Synthetic unit-test usage is separate from
+this probe record. OpenRouter documents [free variants](https://openrouter.ai/docs/guides/routing/model-variants/free)
+and the [free-only router](https://openrouter.ai/docs/guides/routing/routers/free-router).
+
 ## Current status (2026-11-08)
 
 | Provider | Reachable now | Role tonight | Tonight's spend |

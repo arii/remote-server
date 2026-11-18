@@ -20,6 +20,8 @@ import os
 import tempfile
 import unittest
 
+from backend.tests.agent_control_case import AgentControlTestCase
+
 FORM_URL = "https://example.com/form"
 CONF_URL = "https://example.com/confirmation"
 
@@ -216,10 +218,11 @@ def make_invalid_skill(name="history-probe-form", version=1):
     return skill
 
 
-class RunsModuleBase(unittest.TestCase):
+class RunsModuleBase(AgentControlTestCase):
     """Redirect BROWSER_RUNS_FILE to a tmp dir for every module test."""
 
     def setUp(self):
+        super().setUp()
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmpdir = tmp.name
@@ -374,10 +377,11 @@ class ListLimitTest(RunsModuleBase):
         self.assertEqual([r["run_number"] for r in limited], [3, 4])
 
 
-class RunsHttpBase(unittest.TestCase):
+class RunsHttpBase(AgentControlTestCase):
     """Serve browser_skills.router on a bare FastAPI app with tmp-dir runs."""
 
     def setUp(self):
+        super().setUp()
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         old_runs = os.environ.get("BROWSER_RUNS_FILE")

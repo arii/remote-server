@@ -13,6 +13,7 @@ import unittest
 
 from backend.skill_format import validate_skill
 from backend.skill_replay import run_skill
+from backend.tests.agent_control_case import AgentControlTestCase
 
 FORM_URL = "https://example.com/form"
 CONF_URL = "https://example.com/confirmation"
@@ -267,7 +268,7 @@ def make_invalid_skill():
     return skill
 
 
-class PassEndToEndTest(unittest.TestCase):
+class PassEndToEndTest(AgentControlTestCase):
     def test_three_step_form_skill_passes_with_failed_step_none(self):
         """Contract: 'A good skill passes' with failed_step None; result
         carries skill/version/passed/failed_step/reason/steps."""
@@ -294,7 +295,7 @@ class PassEndToEndTest(unittest.TestCase):
         self.assertIn("click", kinds)
 
 
-class ChangedLayoutTest(unittest.TestCase):
+class ChangedLayoutTest(AgentControlTestCase):
     def test_changed_layout_fails_at_changed_step_and_skips_later_steps(self):
         """Contract: 'a skill with a changed layout fails at the changed
         step and stops there'; 'steps after a failure never execute'."""
@@ -322,7 +323,7 @@ class ChangedLayoutTest(unittest.TestCase):
         )
 
 
-class CheckFailureStopsRunTest(unittest.TestCase):
+class CheckFailureStopsRunTest(AgentControlTestCase):
     def test_failing_post_action_check_stops_the_run(self):
         """Contract: 'run the deterministic check after each step, stop
         on the first failed check, return the failing step number';
@@ -346,7 +347,7 @@ class CheckFailureStopsRunTest(unittest.TestCase):
         )
 
 
-class InvalidSkillTest(unittest.TestCase):
+class InvalidSkillTest(AgentControlTestCase):
     def test_invalid_skill_refused_without_touching_driver(self):
         """Contract: 'run_skill validates first and refuses an invalid
         skill (passed False, failed_step None, reason naming the
@@ -365,7 +366,7 @@ class InvalidSkillTest(unittest.TestCase):
         self.assertEqual(driver.actions, [])
 
 
-class ResolveFailureTest(unittest.TestCase):
+class ResolveFailureTest(AgentControlTestCase):
     def test_unmatched_selector_fails_step_without_acting(self):
         """Contract: 'Selectors resolve against the pre-action snapshot;
         a selector matching nothing fails the step before acting'."""

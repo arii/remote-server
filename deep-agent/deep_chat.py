@@ -191,7 +191,7 @@ INTERRUPT_ON = {
 # (provider, identifier): ChatOllama -> ollama:<model>, ChatOpenAI
 # (our Nebius path) -> openai:<model>. Translate our spec provider
 # names; anything else passes through for custom model classes.
-PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai"}
+PROFILE_PROVIDERS = model_router.PROFILE_PROVIDERS
 
 
 def gate_chat_harness(spec):
@@ -963,7 +963,7 @@ def build_chat_tools(checkout):
 def build_model(prefer=None):
     """Chat model via model_router. Returns (model, spec). Venv-only.
 
-    prefer is the per-turn override ("ollama"/"nebius"); None keeps
+    prefer is the per-turn provider override; None keeps
     today's ladder (env contract applies)."""
     spec = model_router.resolve_llm(prefer=prefer)
     kwargs = model_router.chat_kwargs(spec)
@@ -985,7 +985,7 @@ def build_model(prefer=None):
         return ChatOllama(**kwargs), spec
     from langchain_openai import ChatOpenAI  # noqa: E402
 
-    return ChatOpenAI(api_key=os.environ["NEBIUS_API_KEY"], **kwargs), spec
+    return ChatOpenAI(api_key=model_router.api_key(spec), **kwargs), spec
 
 
 def _invoke_with_failover(model, spec, messages):
@@ -1810,7 +1810,7 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
 
 
 def extract_prefer(argv):
-    """Per-turn backend override from --prefer=ollama|nebius.
+    """Per-turn backend override from --prefer=ollama|openrouter|nebius.
 
     Scanned (not positional) so it survives every argv shape; the
     b64 prompt slot can never match ('-' is outside the base64
@@ -1820,8 +1820,10 @@ def extract_prefer(argv):
     for arg in argv[1:]:
         if isinstance(arg, str) and arg.startswith("--prefer="):
             value = arg.split("=", 1)[1].strip().lower()
-            if value not in ("ollama", "nebius"):
-                raise ValueError(f"bad --prefer={value!r}: want 'ollama' or 'nebius'")
+            if value not in model_router.PROVIDERS:
+                raise ValueError(
+                    f"bad --prefer={value!r}: want {', '.join(model_router.PROVIDERS)}"
+                )
             return value
     return None
 

@@ -75,6 +75,6 @@ jobs:
 
       - name: keyless proof drill
         run: |
-          env -u NEBIUS_API_KEY -u GEMINI_API_KEY -u ANTHROPIC_API_KEY \
+          env -u NEBIUS_API_KEY -u OPENROUTER_API_KEY -u GEMINI_API_KEY -u ANTHROPIC_API_KEY \
             -u OPENAI_API_KEY -u LANGSMITH_API_KEY -u NEBIUS_ONLY \
             bash scripts/cutoff-drill.sh --proof

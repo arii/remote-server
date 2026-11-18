@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from backend.api.routers import browser_view
+from backend.tests.agent_control_case import AgentControlTestCase
 
 
 class ViewerMountTest(unittest.TestCase):
@@ -205,8 +206,9 @@ class FakeBridge:
         pass
 
 
-class SharedViewerSessionTest(unittest.TestCase):
+class SharedViewerSessionTest(AgentControlTestCase):
     def setUp(self):
+        super().setUp()
         self._sid = browser_view._viewer_session_id
         self._ref = browser_view._viewer_refcount
         self._vp = browser_view._viewer_viewport

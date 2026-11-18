@@ -22,6 +22,7 @@ from backend.skill_drivers import (
     get_driver,
 )
 from backend.skill_format import validate_skill
+from backend.tests.agent_control_case import AgentControlTestCase
 from backend.skill_replay import run_skill
 
 FORM_URL = "https://example.com/form"
@@ -408,7 +409,7 @@ class RealDriverConstructionTest(unittest.TestCase):
                     )
 
 
-class ReplayerInterfaceTest(unittest.TestCase):
+class ReplayerInterfaceTest(AgentControlTestCase):
     def _set_env(self, value):
         old = os.environ.get("BROWSER_DRIVER")
         if value is None:

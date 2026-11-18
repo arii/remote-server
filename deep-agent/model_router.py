@@ -6,9 +6,9 @@ LLM is needed, this module picks the cheapest feasible one:
 
   1. explicit ``prefer`` (or NEBIUS_ONLY=1) wins,
   2. otherwise local Ollama (``ASK_MODEL``, default qwen3:8b) when reachable,
-  3. otherwise Nebius (``NEBIUS_MODEL``, default zai-org/GLM-5.3-Flash —
-     proven in harness bring-up, Flash tier = cheap) when a key exists,
-  4. otherwise raise with an actionable message.
+  3. otherwise keyed OpenRouter, free models by default,
+  4. otherwise keyed Nebius (``NEBIUS_MODEL``),
+  5. otherwise raise with an actionable message.
 
 Stdlib only on purpose: system-python tests import this without the
 deep-agent venv. Never touches secrets — no API keys in specs, kwargs, or
@@ -19,6 +19,8 @@ Env contract:
   NEBIUS_MODEL (default zai-org/GLM-5.3-Flash),
   NEBIUS_BASE_URL (default https://api.tokenfactory.nebius.com/v1),
   NEBIUS_API_KEY (required for the nebius path),
+  OPENROUTER_API_KEY (required for OpenRouter), OPENROUTER_MODEL
+  (default openrouter/free), OPENROUTER_ALLOW_PAID=1 (allow paid models),
   NEBIUS_ONLY=1 (force cloud), OLLAMA_STRICT=1 (fail instead of falling back).
   NEBIUS_SPEND_CAP_USD (lifetime metered cap, default $5.00
   when unset; 0 blocks every metered call).
@@ -45,10 +47,13 @@ import urllib.request
 import ledger
 import pricing
 import runs
+from pricing import PROVIDERS
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_URL = "http://ollama:11434"
+DEFAULT_OPENROUTER_MODEL = "openrouter/free"
+DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 
@@ -98,15 +103,31 @@ def _ollama_spec():
     }
 
 
-def _nebius_spec():
-    if not _env("NEBIUS_API_KEY"):
-        raise RuntimeError("Nebius fallback needs NEBIUS_API_KEY in the environment")
+def api_key(spec):
+    """Credential for the resolved remote backend. Keep out of specs and logs."""
+    provider = spec["provider"]
+    if provider not in ("nebius", "openrouter"):
+        raise ValueError(f"bad remote provider: {provider!r}")
+    variable = f"{provider.upper()}_API_KEY"
+    key = _env(variable).strip()
+    if not key:
+        raise RuntimeError(
+            f"{provider.title()} fallback needs {variable} in the environment"
+        )
+    return key
+
+
+def _remote_spec(provider, model, base_url):
+    spec = {"provider": provider, "model": model, "base_url": base_url}
+    api_key(spec)
     cap = pricing.spend_cap()
     # Effective cap, logged each time the metered path initializes
     # (#885). Info, not warning: the outage signal below stays the
     # one warning per failover.
     logger.info(
-        "nebius effective spend cap: $%s", "unlimited" if cap is None else f"{cap:.2f}"
+        "%s effective spend cap: $%s",
+        provider,
+        "unlimited" if cap is None else f"{cap:.2f}",
     )
     if cap is not None:
         # Single choke point: every metered path flows through here
@@ -119,37 +140,59 @@ def _nebius_spec():
             # Fail closed: unrated spend is unbounded spend. Rate
             # the models (card or METERED_RATE_* override) to lift.
             raise RuntimeError(
-                f"Nebius spend cap unverifiable: {total['unknown']} "
-                "metered run(s) have no rate — add a rate card entry "
+                f"{provider.title()} spend cap unverifiable: {total['unknown']} "
+                "metered run(s) have no rate; add a rate card entry "
                 "or set METERED_RATE_IN_PER_1M/METERED_RATE_OUT_PER_1M"
             )
         spent = total["spent"]
         if spent >= cap:
             raise RuntimeError(
-                f"Nebius spend cap hit: ${spent:.4f} of ${cap:.4f} "
-                "used — raise NEBIUS_SPEND_CAP_USD to continue"
+                f"{provider.title()} spend cap hit: ${spent:.4f} of ${cap:.4f} "
+                "used; raise NEBIUS_SPEND_CAP_USD to continue"
             )
-    return {
-        "provider": "nebius",
-        "model": _env("NEBIUS_MODEL", DEFAULT_NEBIUS_MODEL),
-        "base_url": _env("NEBIUS_BASE_URL", DEFAULT_NEBIUS_BASE_URL),
-    }
+    return spec
+
+
+def _nebius_spec():
+    return _remote_spec(
+        "nebius",
+        _env("NEBIUS_MODEL", DEFAULT_NEBIUS_MODEL),
+        _env("NEBIUS_BASE_URL", DEFAULT_NEBIUS_BASE_URL),
+    )
+
+
+def _validate_openrouter_model(model):
+    if (
+        not pricing.is_free_openrouter(f"openrouter:{model}")
+        and _env("OPENROUTER_ALLOW_PAID") != "1"
+    ):
+        raise RuntimeError(
+            "OpenRouter requires a free model unless OPENROUTER_ALLOW_PAID=1"
+        )
+
+
+def _openrouter_spec():
+    model = _env("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL).strip()
+    _validate_openrouter_model(model)
+    return _remote_spec("openrouter", model, DEFAULT_OPENROUTER_BASE_URL)
 
 
 def resolve_llm(prefer=None):
     """Pick the cheapest feasible LLM. Returns {"provider","model","base_url"}.
 
-    ``prefer`` is "ollama" or "nebius" (strict: no fallback). With no
-    prefer: Ollama when reachable, else Nebius when keyed, else raise.
+    ``prefer`` selects a provider strictly. Default order is local Ollama,
+    keyed OpenRouter, then keyed Nebius.
     OLLAMA_STRICT=1 disables the fallback on the default path too.
     """
     only_nebius = _env("NEBIUS_ONLY") == "1"
     strict_ollama = _env("OLLAMA_STRICT") == "1"
     want = (prefer or ("nebius" if only_nebius else "")).strip().lower()
-    if want and want not in ("ollama", "nebius"):
-        raise ValueError(f"bad provider {prefer!r}: want 'ollama' or 'nebius'")
+    if want and want not in PROVIDERS:
+        raise ValueError(f"bad provider {prefer!r}: want {', '.join(PROVIDERS)}")
     if want == "nebius":
         return _nebius_spec()
+    if want == "openrouter":
+        return _openrouter_spec()
     if want == "ollama":
         if ollama_reachable():
             return _ollama_spec()
@@ -160,36 +203,36 @@ def resolve_llm(prefer=None):
         return _ollama_spec()
     if strict_ollama:
         raise RuntimeError(
-            "Ollama unreachable and OLLAMA_STRICT=1 refuses the Nebius fallback"
+            "Ollama unreachable and OLLAMA_STRICT=1 refuses remote fallback"
         )
+    if _env("OPENROUTER_API_KEY"):
+        spec = _openrouter_spec()
+        _announce_fallback(spec)
+        return spec
+    logger.info("OpenRouter skipped: OPENROUTER_API_KEY is unset")
+    print(
+        "model_router: OpenRouter skipped: OPENROUTER_API_KEY is unset", file=sys.stderr
+    )
     spec = _nebius_spec()
     _announce_fallback(spec)
     return spec
 
 
 def _announce_fallback(spec):
-    """Outage signal when the default path goes metered.
-
-    Fires exactly when an Ollama outage reroutes a resolve to paid
-    Nebius (never on the explicit prefer="nebius" path — that is a
-    choice, not a downgrade). Journals get it via logging, run
-    output via stderr, and the run ledger gets a zero-usage marker
-    row (timestamp, reason, model) for the audit trail. Never logs
-    the spec itself (no-secrets rule: model names and URLs only).
-    """
+    """Announce default remote selection and record a zero-usage audit marker."""
     url = _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
     model = spec.get("model", "?")
-    logger.warning("ollama unreachable at %s, using metered nebius (%s)", url, model)
+    provider = spec["provider"]
+    label = "metered nebius" if provider == "nebius" else "openrouter"
+    logger.warning("ollama unreachable at %s, using %s (%s)", url, label, model)
     print(
-        f"model_router: ollama unreachable at {url}, using metered nebius ({model})",
+        f"model_router: ollama unreachable at {url}, using {label} ({model})",
         file=sys.stderr,
     )
-    # Marker row, not a turn: zero usage quotes to $0 on carded
-    # models, so spend totals are untouched. record() never raises,
-    # so a ledger failure cannot break the failover it records.
+    # Unknown paid model rates still fail closed after the marker.
     ledger.record(
         script="model_router",
-        model="nebius:" + str(model),
+        model=provider + ":" + str(model),
         thread_id="",
         messages=[],
         started=time.time(),
@@ -314,21 +357,21 @@ def chat_kwargs(spec):
             "base_url": spec["base_url"],
             "temperature": 0,
         }
-    if spec.get("provider") == "nebius":
-        return {
+    if spec.get("provider") in ("nebius", "openrouter"):
+        if spec["provider"] == "openrouter":
+            _validate_openrouter_model(spec["model"])
+        kwargs = {
             "model": spec["model"],
             "base_url": spec["base_url"],
             "temperature": 0,
             # The gateway omits usage from stream chunks unless asked;
-            # without this every Nebius run ledgers zero tokens.
+            # without this streamed runs lose token usage.
             "stream_usage": True,
-            # Issue #1040: default reasoning effort burns the whole
-            # output budget on long turns (reasoning_content eats
-            # output tokens, content starves, empty review for full
-            # price). Low effort keeps answers (probe: 1277 -> 1
-            # reasoning token, content intact).
-            "reasoning_effort": "low",
         }
+        if spec["provider"] == "nebius":
+            # #1040: leave output budget for visible answers.
+            kwargs.update({"reasoning_effort": "low"})
+        return kwargs
     raise ValueError(f"bad spec provider: {spec.get('provider')!r}")
 
 
@@ -337,19 +380,17 @@ def chat_kwargs(spec):
 # (our Nebius path) -> openai:<model>. Translate our spec provider
 # names; anything else passes through for custom model classes.
 # (Mirrors deep_chat.PROFILE_PROVIDERS for the chat gate.)
-PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai"}
+PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai", "openrouter": "openai"}
 
 
 def build_chat_model(spec=None, think=False):
     """Container-correct chat model (Ollama no-think default). Venv-only.
 
-    resolve_llm() picks the backend (Ollama when reachable, else the
-    Nebius fallback with spend-cap choke); chat_kwargs() supplies the
+    resolve_llm() picks local or keyed remote through the spend choke;
+    chat_kwargs() supplies the
     provider-correct constructor args including the in-container
     Ollama base_url. Returns (model, spec).
     """
-    import os  # noqa: E402
-
     spec = dict(spec) if spec else resolve_llm()
     kwargs = chat_kwargs(spec)
     if spec.get("provider") == "ollama":
@@ -360,7 +401,7 @@ def build_chat_model(spec=None, think=False):
         return ChatOllama(**kwargs), spec
     from langchain_openai import ChatOpenAI  # noqa: E402
 
-    return ChatOpenAI(api_key=os.environ["NEBIUS_API_KEY"], **kwargs), spec
+    return ChatOpenAI(api_key=api_key(spec), **kwargs), spec
 
 
 def build_structured_chat_model(spec=None, schema=None, think=False):
@@ -375,7 +416,7 @@ def build_structured_chat_model(spec=None, schema=None, think=False):
     model, resolved = build_chat_model(spec, think=think)
     if schema is None:
         return model, resolved
-    if resolved.get("provider") == "nebius":
+    if resolved.get("provider") in ("nebius", "openrouter"):
         return model.with_structured_output(
             schema, method="json_schema", strict=True
         ), resolved

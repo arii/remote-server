@@ -66,18 +66,20 @@ def _row_cost(row):
     metered = row.get("metered")
     if isinstance(cost_usd, (int, float)) and isinstance(metered, bool):
         return cost_usd, metered
-    return pricing.quote(row.get("model"), row.get("usage") or {})
+    return pricing.quote(
+        row.get("model"), row.get("usage") or {}, provider=row.get("provider")
+    )
 
 
 def _row_provider(model):
     """Provider slot for one ledger row, or None when unknown.
 
     Ledger model labels read `{provider}:{model}` and the router
-    emits only ollama + nebius, so only those prefixes count: a
+    emits registered provider prefixes, so only those count: a
     bare `qwen3:8b` keeps its colon without minting a bogus
     provider. Never raises."""
     if isinstance(model, str):
-        for prefix in ("ollama:", "nebius:"):
+        for prefix in (provider + ":" for provider in pricing.PROVIDERS):
             if model.startswith(prefix):
                 return prefix[:-1]
     return None
@@ -365,7 +367,7 @@ def _tombstone_lines(indexes, path):
                 # Spend is spend: the tombstone keeps cost evidence
                 # so deletes hide runs without erasing the meter.
                 tomb = {"deleted": True, "ts": time.time()}
-                for key in ("model", "usage", "cost_usd", "metered"):
+                for key in ("model", "provider", "usage", "cost_usd", "metered"):
                     if key in row:
                         tomb[key] = row[key]
                 lines[i] = json.dumps(tomb) + "\n"
