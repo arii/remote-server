@@ -244,7 +244,7 @@ class TestScopeURLs(unittest.TestCase):
 
 
 class TestInvestigationEvidence(unittest.TestCase):
-    def evidence(self, messages, limit=None):
+    def evidence(self, messages, limit=None, error=None):
         agent = mock.Mock()
         agent.invoke.return_value = {"messages": messages}
         agents = types.ModuleType("langchain.agents")
@@ -253,11 +253,27 @@ class TestInvestigationEvidence(unittest.TestCase):
         langchain.agents = agents
         middleware = types.ModuleType("langchain.agents.middleware")
         middleware.wrap_tool_call = lambda fn: fn
+        middleware.wrap_model_call = lambda fn: fn
+        errors_module = types.ModuleType("langgraph.errors")
+        errors_module.GraphRecursionError = type(
+            "GraphRecursionError", (RuntimeError,), {}
+        )
         messages_module = types.ModuleType("langchain_core.messages")
         messages_module.ToolMessage = lambda **kwargs: types.SimpleNamespace(**kwargs)
         investigator = types.ModuleType("ask_investigator")
         investigator._checkout = "/original"
         graph = issue_generator.IssueGeneratorGraph("/tmp", model_fn=lambda: object())
+        self.graph = graph
+        self.events = []
+        graph.event_fn = self.events.append
+        if error is not None:
+
+            def invoke(*args, **kwargs):
+                capture = agents.create_agent.call_args.kwargs["middleware"][1]
+                capture(None, lambda request: types.SimpleNamespace(result=messages))
+                raise error
+
+            agent.invoke.side_effect = invoke
         with (
             mock.patch.dict(
                 sys.modules,
@@ -266,6 +282,7 @@ class TestInvestigationEvidence(unittest.TestCase):
                     "langchain.agents": agents,
                     "langchain.agents.middleware": middleware,
                     "langchain_core.messages": messages_module,
+                    "langgraph.errors": errors_module,
                     "ask_investigator": investigator,
                 },
             ),
@@ -284,6 +301,31 @@ class TestInvestigationEvidence(unittest.TestCase):
         )
         self.guard = agents.create_agent.call_args.kwargs["middleware"][0]
         return result
+
+    def test_truncation_prefers_final_ai_text(self):
+        messages = [
+            types.SimpleNamespace(
+                type="ai", content="widget.py:1 final evidence", tool_calls=[]
+            )
+        ]
+        self.assertEqual(
+            self.evidence(
+                messages, error=issue_generator.InvestigationTruncated("limit")
+            ),
+            "widget.py:1 final evidence",
+        )
+        self.assertTrue(self.graph.investigation_truncated)
+        self.assertEqual(len(self.events), 1)
+
+    def test_truncation_without_results_returns_empty_evidence(self):
+        self.assertEqual(
+            self.evidence([], error=issue_generator.InvestigationTruncated("limit")), ""
+        )
+        self.assertTrue(self.graph.investigation_truncated)
+
+    def test_unrelated_errors_are_not_swallowed(self):
+        with self.assertRaisesRegex(ValueError, "bad tool"):
+            self.evidence([], error=ValueError("bad tool"))
 
     def test_recursion_limit_env_override(self):
         self.evidence([], limit="7")
@@ -365,7 +407,7 @@ class TestInvestigationEvidence(unittest.TestCase):
         self.guard(call, handler)
         self.assertEqual(handler.call_count, 2)
 
-    def test_real_agent_can_use_warning_and_stops_on_third_repeat(self):
+    def test_real_agent_keeps_distinct_results_after_truncation(self):
         try:
             import langchain.agents  # noqa: F401
             from langchain_core.language_models.fake_chat_models import (
@@ -388,7 +430,7 @@ class TestInvestigationEvidence(unittest.TestCase):
             calls.append(path)
             return "file contents"
 
-        for call_count in (2, 4):
+        for call_count, limit in ((2, "25"), (4, "25"), (4, "2")):
             model = ScriptedModel(
                 responses=[
                     AIMessage(
@@ -408,20 +450,32 @@ class TestInvestigationEvidence(unittest.TestCase):
             graph = issue_generator.IssueGeneratorGraph(
                 "/tmp", model_fn=lambda model=model: model
             )
+            events = []
+            graph.event_fn = events.append
             investigator = types.SimpleNamespace(_checkout="/original")
             calls.clear()
             with (
                 self.subTest(call_count=call_count),
                 mock.patch.dict(sys.modules, {"ask_investigator": investigator}),
                 mock.patch.object(graph, "_investigator_tools", return_value=[lookup]),
+                mock.patch.dict(os.environ, {"S5_SPEC_RECURSION_LIMIT": limit}),
             ):
+                evidence = graph.investigate_text("task", "draft")
                 if call_count == 4:
-                    with self.assertRaisesRegex(RuntimeError, "3 repeats"):
-                        graph.investigate_text("task", "draft")
-                else:
-                    self.assertEqual(
-                        graph.investigate_text("task", "draft"), "widget.py:1 evidence"
+                    self.assertIn(
+                        'lookup {"path": "widget.py"}: file contents', evidence
                     )
+                    self.assertEqual(evidence.count("file contents"), 1)
+                    self.assertTrue(graph.investigation_truncated)
+                    self.assertEqual(len(events), 1)
+                    self.assertIn(
+                        "GraphRecursionError" if limit == "2" else "3 repeats",
+                        events[0],
+                    )
+                else:
+                    self.assertEqual(evidence, "widget.py:1 evidence")
+                    self.assertFalse(graph.investigation_truncated)
+                    self.assertFalse(events)
             self.assertEqual(calls, ["widget.py"])
             self.assertEqual(investigator._checkout, "/original")
 
@@ -452,6 +506,59 @@ class TestInvestigationEvidence(unittest.TestCase):
 
 
 class TestPipelineContracts(unittest.TestCase):
+    def test_truncated_investigation_redrafts_and_logs_pipeline_event(self):
+        try:
+            import langgraph  # noqa: F401
+        except ImportError:
+            self.skipTest("agent dependencies not installed")
+        original = issue_generator.IssueGeneratorGraph
+        seen = []
+
+        def factory(**kwargs):
+            gen = original(**kwargs)
+            gen.draft_text = mock.Mock(side_effect=["initial draft", "redrafted spec"])
+
+            def investigate(brief, draft):
+                gen.investigation_truncated = True
+                gen.event_fn("repeat budget")
+                return "widget.py:1 observed evidence"
+
+            gen.investigate_text = investigate
+            seen.append(gen)
+            return gen
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "widget.py").write_text("pass\n", encoding="utf-8")
+            pipe = pipeline.Pipeline(
+                root,
+                "task",
+                spec_model_fn=lambda: object(),
+                td_run=lambda *args: (
+                    0,
+                    json.dumps({"status": "ready", "valid": True, "errors": []}),
+                ),
+            )
+            with (
+                mock.patch.object(
+                    issue_generator, "IssueGeneratorGraph", side_effect=factory
+                ),
+                mock.patch("ledger.record"),
+            ):
+                ok, state, text = pipe.stage_spec()
+        self.assertTrue(ok, state)
+        self.assertIn("redrafted spec", text)
+        self.assertIn(
+            "widget.py:1 observed evidence", seen[0].draft_text.call_args.args[1]
+        )
+        self.assertEqual(seen[0].draft_text.call_count, 2)
+        self.assertTrue(
+            any(
+                e["stage"] == "investigation"
+                and "investigation was truncated" in e["message"]
+                for e in pipe.events
+            )
+        )
+
     def test_pipeline_cli_accepts_upfront_answers_and_keep_worktree(self):
         with tempfile.TemporaryDirectory() as root:
             qna = Path(root) / "answers.json"

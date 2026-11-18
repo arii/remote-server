@@ -52,7 +52,11 @@ def clean_allowed_file_urls(text):
     return "".join(lines)
 
 
-def investigation_tool_guard():
+class InvestigationTruncated(RuntimeError):
+    pass
+
+
+def investigation_tool_guard(results=None):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
 
@@ -69,7 +73,7 @@ def investigation_tool_guard():
             if key in seen:
                 repeats += 1
                 if repeats >= 3:
-                    raise RuntimeError(
+                    raise InvestigationTruncated(
                         "Repeated investigation tool call limit reached (3 repeats): "
                         f"{key[0]} {key[1]}"
                     )
@@ -80,7 +84,12 @@ def investigation_tool_guard():
                     status="error",
                 )
             seen.add(key)
-        return handler(request)
+        result = handler(request)
+        if results is not None:
+            content = getattr(result, "content", result)
+            with lock:
+                results.append(f"{key[0]} {key[1]}: {str(content)[:500]}")
+        return result
 
     return stop_repeated_call
 
@@ -207,6 +216,7 @@ class IssueGeneratorGraph:
         td_runner=None,
         max_loops=MAX_LOOPS_DEFAULT,
         thread_id=None,
+        event_fn=None,
     ):
         self.repo_root = os.path.abspath(repo_root or os.getcwd())
         self.model_fn = model_fn
@@ -215,6 +225,8 @@ class IssueGeneratorGraph:
         self.max_loops = max_loops
         self.thread_id = thread_id or f"issuegen-{int(time.time())}"
         self.last_spec = None
+        self.event_fn = event_fn
+        self.investigation_truncated = False
 
     # -- deterministic pieces (pure, unit-tested) --------------------
 
@@ -392,10 +404,13 @@ class IssueGeneratorGraph:
 
     def investigate_text(self, brief, draft):
         """One investigate pass (LLM + tools). Tests inject this."""
+        self.investigation_truncated = False
         if self.investigate_fn is not None:
             return self.investigate_fn(brief, draft)
         import ask_investigator
         from langchain.agents import create_agent
+        from langchain.agents.middleware import wrap_model_call
+        from langgraph.errors import GraphRecursionError
 
         try:
             limit = int(
@@ -407,10 +422,19 @@ class IssueGeneratorGraph:
             ) from exc
         if limit <= 0:
             raise ValueError("S5_SPEC_RECURSION_LIMIT must be a positive integer")
+        observed = {"messages": []}
+        results = []
+
+        @wrap_model_call
+        def capture_messages(request, handler):
+            response = handler(request)
+            observed["messages"].extend(response.result)
+            return response
+
         agent = create_agent(
             self._model(),
             self._investigator_tools(),
-            middleware=[investigation_tool_guard()],
+            middleware=[investigation_tool_guard(results), capture_messages],
         )
         previous = ask_investigator._checkout
         ask_investigator._checkout = self.repo_root
@@ -432,12 +456,23 @@ class IssueGeneratorGraph:
                 },
                 config={"recursion_limit": limit},
             )
+        except (InvestigationTruncated, GraphRecursionError) as exc:
+            self.investigation_truncated = True
+            if self.event_fn is not None:
+                self.event_fn(f"{type(exc).__name__}: {exc}")
+            result = observed
         finally:
             ask_investigator._checkout = previous
         messages = result.get("messages", []) if isinstance(result, dict) else []
         for message in reversed(messages):
-            if getattr(message, "type", "") == "ai":
-                return getattr(message, "content", "") or ""
+            if (
+                getattr(message, "type", "") == "ai"
+                and not getattr(message, "tool_calls", [])
+                and getattr(message, "content", "")
+            ):
+                return message.content
+        if self.investigation_truncated:
+            return "\n".join(results)[:6000]
         return ""
 
     # -- graph ---------------------------------------------------------
@@ -507,7 +542,18 @@ class IssueGeneratorGraph:
                     ],
                     "off_brief": True,
                 }
-            return {"evidence": evidence}
+            update = {"evidence": evidence}
+            if outer.investigation_truncated:
+                update["draft"] = outer.draft_text(
+                    state.get("brief", ""),
+                    state.get("context", "")
+                    + "\n\nInvestigation evidence:\n"
+                    + evidence,
+                    state.get("errors", []),
+                    state.get("answers", {}),
+                )
+                update["attempts"] = state.get("attempts", 0) + 1
+            return update
 
         def qa_loop_node(state):
             answers = dict(state.get("answers", {}))

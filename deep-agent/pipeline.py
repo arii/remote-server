@@ -196,6 +196,9 @@ class Pipeline:
             model_fn=self.spec_model_fn,
             td_runner=lambda args: self.td_run(list(args), self.repo),
             thread_id=f"{self.thread_id}-spec",
+            event_fn=lambda reason: self.log(
+                "investigation", f"investigation was truncated: {reason}"
+            ),
         )
         state = drive_to_settled(
             lambda: gen.run(self.intent, answers=dict(self.answers)),
