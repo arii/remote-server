@@ -57,6 +57,8 @@ class SkillStep(_ForbidExtra):
     action: str
     selector: str = ""
     value: str = ""
+    dx: int = Field(default=0, strict=True)
+    dy: int = Field(default=0, strict=True)
     check: SkillCheck
 
 

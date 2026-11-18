@@ -48,9 +48,9 @@ Actions are `navigate`, `click`, `type`, `key`, `wheel`. Each step has one check
 `element_visible` permits an empty expectation. Navigate selectors are HTTP(S)
 destinations. Type/key send keyboard input; ensure the intended field has focus.
 Their `value` is the text/key to send. Click/wheel resolve the first matched
-element's `x,y`; use unique selectors. The snapshot matcher supports a CSS subset:
-use single-quoted attribute values as below. Current skill-wheel replay sends
-`dx=0,dy=0` and ignores `value`; use the drive API with explicit deltas to scroll.
+element's `x,y`; use unique selectors. Wheel steps use integer `dx,dy` deltas in
+CSS pixels (each defaults to zero); `value` is unused. The snapshot matcher
+supports a CSS subset: use single-quoted attribute values as below.
 
 This complete example targets the local fixture served by the demo below:
 

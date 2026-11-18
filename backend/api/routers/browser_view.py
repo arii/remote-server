@@ -312,6 +312,8 @@ def _log_activity(
     selector: str | None = None,
     x: int | None = None,
     y: int | None = None,
+    dx: int | None = None,
+    dy: int | None = None,
     url: str | None = None,
     page_hash: str | None = None,
     target: str = "grid",
@@ -332,6 +334,8 @@ def _log_activity(
         "selector": selector,
         "x": x,
         "y": y,
+        "dx": dx,
+        "dy": dy,
         "url": url,
         "page_hash": page_hash,
         "target": target,
@@ -1475,7 +1479,11 @@ def create_app():
                     except (KeyError, TypeError, ValueError):
                         continue
                     _log_activity(
-                        "wheel", f"{x},{y} d{dx},{dy}", **_human_context(x, y)
+                        "wheel",
+                        f"{x},{y} d{dx},{dy}",
+                        dx=dx,
+                        dy=dy,
+                        **_human_context(x, y),
                     )
                     await recover_once(lambda: bridge.wheel(x, y, dx, dy))
                 elif msg.get("t") == "touch":
