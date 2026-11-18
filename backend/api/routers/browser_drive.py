@@ -435,6 +435,8 @@ async def _execute_drive(
             selector=selector,
             x=body.x if body.op in ("click", "wheel") else None,
             y=body.y if body.op in ("click", "wheel") else None,
+            dx=body.dx if body.op == "wheel" else None,
+            dy=body.dy if body.op == "wheel" else None,
             url=(body.url if body.op == "navigate" else (pre_page or {}).get("url")),
             # A navigate's destination hash is unknown until the
             # post-op snapshot: never pair the new URL with the

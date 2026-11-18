@@ -59,7 +59,11 @@ def _resolve(step: dict, page: dict) -> tuple[str, dict | None, str]:
             return action, None, "matched target has no coordinates"
         if action == "click":
             return action, {"x": x, "y": y}, ""
-        return action, {"x": x, "y": y, "dx": 0, "dy": 0}, ""
+        return (
+            action,
+            {"x": x, "y": y, "dx": step.get("dx", 0), "dy": step.get("dy", 0)},
+            "",
+        )
     if action == "type":
         return action, {"text": step.get("value", "")}, ""
     if action == "key":

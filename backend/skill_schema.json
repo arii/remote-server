@@ -33,6 +33,8 @@
                         "description": "No XPath. The no-bare-text rule is enforced by the validator, which also requires sequential step numbers. Navigate steps carry the destination URL here instead of a CSS selector."
                     },
                     "value": {"type": "string", "default": ""},
+                    "dx": {"type": "integer", "default": 0, "description": "Wheel horizontal delta in CSS pixels."},
+                    "dy": {"type": "integer", "default": 0, "description": "Wheel vertical delta in CSS pixels."},
                     "check": {
                         "type": "object",
                         "required": ["type", "expected"],
