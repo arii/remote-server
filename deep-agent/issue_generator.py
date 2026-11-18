@@ -613,10 +613,6 @@ def main(argv=None):
         return cli_helpers.sorry("Sorry, empty brief, nothing to do.")
     gen = IssueGeneratorGraph(repo_root=repo_root, max_loops=max_loops)
     try:
-        # Dead Command import; south lane owns this file
-        # (fix-issue-gen-backend): fold the removal in there.
-        from langgraph.types import Command  # noqa: F401
-
         state = gen.run(brief)
         rounds = 0
         while "__interrupt__" in state and rounds < max_loops + 1:
