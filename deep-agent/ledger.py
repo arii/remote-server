@@ -14,6 +14,7 @@ import time
 import cli
 import pricing
 
+
 # EVAL_LEDGER lets parallel eval gates isolate their ledgers; the eval
 # scorer reads the same knob, so writer and scorer stay consistent.
 def state_dir():
@@ -24,11 +25,11 @@ def state_dir():
     recreates); default is this source dir for dev.
     """
     return os.environ.get("DEEP_AGENT_STATE_DIR") or os.path.dirname(
-        os.path.abspath(__file__))
+        os.path.abspath(__file__)
+    )
 
 
-LEDGER = (os.environ.get("EVAL_LEDGER") or os.path.join(
-    state_dir(), "ledger.jsonl"))
+LEDGER = os.environ.get("EVAL_LEDGER") or os.path.join(state_dir(), "ledger.jsonl")
 
 
 def _as_dict(obj):
@@ -41,8 +42,7 @@ def _usage_total(messages):
         if m is None:
             continue
         d = _as_dict(m)
-        u = (d.get("usage_metadata") if d else
-             getattr(m, "usage_metadata", None)) or {}
+        u = (d.get("usage_metadata") if d else getattr(m, "usage_metadata", None)) or {}
         if not isinstance(u, dict):
             u = {}
         for k in total:
@@ -51,8 +51,11 @@ def _usage_total(messages):
             # Fallback: Ollama-style counts surfaced via
             # response_metadata/generation_info instead of
             # usage_metadata (streaming chunks, older versions).
-            r = (d.get("response_metadata") if d else
-                 getattr(m, "response_metadata", None)) or {}
+            r = (
+                d.get("response_metadata")
+                if d
+                else getattr(m, "response_metadata", None)
+            ) or {}
             if not isinstance(r, dict):
                 continue
             prompt_n = r.get("prompt_eval_count") or 0
@@ -67,12 +70,12 @@ def _model_provider(model):
     """Provider slot from a ledger model label, or None.
 
     Ledger labels read `{provider}:{model}` (deep_chat,
-    ask_investigator already write these); only ollama + nebius
-    count — a bare `qwen3:8b` keeps no provider rather than minting
+    ask_investigator already write these); registered providers
+    count. A bare `qwen3:8b` keeps no provider rather than minting
     a bogus one (same rule as runs._row_provider). Never raises.
     """
     if isinstance(model, str):
-        for prefix in ("ollama:", "nebius:"):
+        for prefix in (provider + ":" for provider in pricing.PROVIDERS):
             if model.startswith(prefix):
                 return prefix[:-1]
     return None
@@ -94,8 +97,17 @@ def _is_test_thread(thread_id):
     return tid == "test" or tid.startswith("test-")
 
 
-def record(script, model, thread_id, messages, started, extra=None,
-           usage=None, calls=None, provider=None):
+def record(
+    script,
+    model,
+    thread_id,
+    messages,
+    started,
+    extra=None,
+    usage=None,
+    calls=None,
+    provider=None,
+):
     """Append one run entry; returns it. Never raises on odd inputs.
 
     usage: optional pre-aggregated {"input_tokens", "output_tokens",
@@ -104,7 +116,7 @@ def record(script, model, thread_id, messages, started, extra=None,
     calls: optional pre-aggregated [{"name", "args"}] list, used when
     the message list no longer carries the tool-call records
     (streaming reassembly, failure paths).
-    provider: backend that ran the turn ("ollama" | "nebius").
+    provider: backend that ran the turn (ollama, openrouter, nebius).
     Explicit wins; otherwise derived from a `provider:model` label;
     bare labels stay provider-less (fail-closed: only an explicit
     ollama label or provider earns the free tag).
@@ -120,28 +132,26 @@ def record(script, model, thread_id, messages, started, extra=None,
             if m is None:
                 continue
             d = _as_dict(m)
-            tool_calls = (d.get("tool_calls") if d else
-                          getattr(m, "tool_calls", [])) or []
+            tool_calls = (
+                d.get("tool_calls") if d else getattr(m, "tool_calls", [])
+            ) or []
             for tc in tool_calls:
                 if not isinstance(tc, dict):
                     continue
                 if derived:
                     calls.append(
-                        {"name": tc.get("name"),
-                         "args": str(tc.get("args"))[:300]}
+                        {"name": tc.get("name"), "args": str(tc.get("args"))[:300]}
                     )
             cls = d.get("type", "") if d else m.__class__.__name__
             if cls in ("ToolMessage", "tool"):
                 name = d.get("name", "?") if d else getattr(m, "name", "?")
-                content = d.get("content", "") if d else getattr(
-                    m, "content", "")
+                content = d.get("content", "") if d else getattr(m, "content", "")
                 if isinstance(content, list):
                     content = " ".join(
-                        str(p.get("text", "")) if isinstance(p, dict)
-                        else str(p) for p in content)
-                results.append(
-                    {"name": name, "result": str(content)[:500]}
-                )
+                        str(p.get("text", "")) if isinstance(p, dict) else str(p)
+                        for p in content
+                    )
+                results.append({"name": name, "result": str(content)[:500]})
         try:
             duration = round(time.time() - float(started), 1)
         except (TypeError, ValueError):
@@ -151,27 +161,26 @@ def record(script, model, thread_id, messages, started, extra=None,
             last = messages[-1]
             if last is not None:
                 d = _as_dict(last)
-                content = (d.get("content", "") if d else
-                           getattr(last, "content", ""))
+                content = d.get("content", "") if d else getattr(last, "content", "")
                 if isinstance(content, list):
                     content = " ".join(
-                        str(p.get("text", "")) if isinstance(p, dict)
-                        else str(p) for p in content)
+                        str(p.get("text", "")) if isinstance(p, dict) else str(p)
+                        for p in content
+                    )
                 final = str(content)[:500]
         extra = dict(extra or {})
         # Cap stored prompts: Continue needs the text, not unbounded input.
         prompt = extra.get("prompt")
         if isinstance(prompt, str) and len(prompt) > 4000:
             extra["prompt"] = prompt[:4000]
-        usage = dict(usage) if isinstance(usage, dict) \
-            else _usage_total(messages)
+        usage = dict(usage) if isinstance(usage, dict) else _usage_total(messages)
         # Record-time quote freezes the rate: rows stay true even
         # when the card moves. Old rows without these fields are
         # derived at read time (current-rate estimates, no rewrite).
         cost_usd, metered = pricing.quote(model, usage)
         if provider is None:
             provider = _model_provider(model)
-        if provider not in ("ollama", "nebius"):
+        if provider not in pricing.PROVIDERS:
             provider = None
         if provider == "ollama":
             # The resolved backend is truth: a locally-run turn is
@@ -234,8 +243,9 @@ def main() -> int:
         if not isinstance(e, dict):
             continue
         u = e.get("usage", {}) or {}
-        tools = [c.get("name") for c in e.get("tool_calls", []) or []
-                 if isinstance(c, dict)]
+        tools = [
+            c.get("name") for c in e.get("tool_calls", []) or [] if isinstance(c, dict)
+        ]
         print(
             f"{e.get('script')} thread={e.get('thread_id')} "
             f"dur={e.get('duration_s')}s "
@@ -246,8 +256,7 @@ def main() -> int:
         for r in (e.get("tool_results", []) or [])[:8]:
             if not isinstance(r, dict):
                 continue
-            print(f"    = {r.get('name')}: "
-                  f"{str(r.get('result', ''))[:150]}")
+            print(f"    = {r.get('name')}: {str(r.get('result', ''))[:150]}")
         shown += 1
     if shown == 0:
         print("ledger empty")

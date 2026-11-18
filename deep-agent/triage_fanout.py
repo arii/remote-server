@@ -44,8 +44,9 @@ def triage_counts(repo: str) -> str:
 # One line naming the top action, per the scout system prompt
 # ("one line TOP ACTION: <the single next action>"). Case- and
 # whitespace-tolerant; first match wins, multi-line bodies ignored.
-TOP_ACTION_RE = re.compile(r"^\s*top action\s*:\s*(.+?)\s*$",
-                           re.IGNORECASE | re.MULTILINE)
+TOP_ACTION_RE = re.compile(
+    r"^\s*top action\s*:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE
+)
 
 
 def parse_top_action(text):
@@ -62,8 +63,7 @@ def scout_repo_from_args(args, repos):
     """Which known repo a task call targets (substring over the
     instructions); "unknown" when none is named. Never raises."""
     try:
-        blob = args if isinstance(args, str) else json.dumps(
-            args, default=str)
+        blob = args if isinstance(args, str) else json.dumps(args, default=str)
     except (TypeError, ValueError):
         return "unknown"
     for repo in repos or []:
@@ -100,8 +100,7 @@ def _scout_results(messages, repos):
             call_id = call.get("id")
             if call_id is None:
                 continue
-            calls[call_id] = scout_repo_from_args(
-                call.get("args"), repos)
+            calls[call_id] = scout_repo_from_args(call.get("args"), repos)
     results = {}
     for message in messages or []:
         call_id = _msg_field(message, "tool_call_id", None)
@@ -121,8 +120,7 @@ def _scout_results(messages, repos):
             except (TypeError, ValueError):
                 content = ""
         status = _msg_field(message, "status", None)
-        out[repo] = {"top_action": parse_top_action(content),
-                     "ok": status != "error"}
+        out[repo] = {"top_action": parse_top_action(content), "ok": status != "error"}
     return out
 
 
@@ -157,14 +155,15 @@ def scout_progress_middleware(repos):
             result = handler(request)
         except Exception:
             try:
-                print(f"fanout: scout {repo} done "
-                      f"{time.time() - t0:.1f}s error", flush=True)
+                print(
+                    f"fanout: scout {repo} done {time.time() - t0:.1f}s error",
+                    flush=True,
+                )
             except (OSError, ValueError):
                 pass
             raise
         try:
-            print(f"fanout: scout {repo} done "
-                  f"{time.time() - t0:.1f}s ok", flush=True)
+            print(f"fanout: scout {repo} done {time.time() - t0:.1f}s ok", flush=True)
         except (OSError, ValueError):
             pass
         return result
@@ -183,10 +182,11 @@ def extract_prefer(argv):
     for arg in argv[1:]:
         if isinstance(arg, str) and arg.startswith("--prefer="):
             value = arg.split("=", 1)[1].strip().lower()
-            if value not in ("ollama", "nebius", "auto"):
+            if value not in (*model_router.PROVIDERS, "auto"):
                 raise ValueError(
-                    f"bad --prefer={value!r}: want 'ollama', 'nebius', "
-                    "or 'auto'")
+                    f"bad --prefer={value!r}: want 'ollama', 'openrouter', 'nebius', "
+                    "or 'auto'"
+                )
             return value
     return "auto"
 
@@ -244,9 +244,11 @@ def main() -> int:
         print("NEBIUS_API_KEY is not set", file=sys.stderr)
         return 1
     # Strip before positional parsing so the flag never shifts the repos.
-    repos = [a for a in sys.argv[1:]
-             if not (isinstance(a, str) and a.startswith("--prefer="))] \
-        or DEFAULT_REPOS
+    repos = [
+        a
+        for a in sys.argv[1:]
+        if not (isinstance(a, str) and a.startswith("--prefer="))
+    ] or DEFAULT_REPOS
     bad = [r for r in repos if not triage_common.valid_repo(r)]
     if bad:
         return cli.usage_error(f"bad repo(s): {bad}")
@@ -259,32 +261,42 @@ def main() -> int:
     if provider == "ollama":
         # Local path (#622): resolved spec as-is, no Nebius pin/endpoint.
         if keyless_auto:
-            print("fanout: no Nebius key — triage on local model (weaker)",
-                  file=sys.stderr)
+            print(
+                "fanout: no Nebius key — triage on local model (weaker)",
+                file=sys.stderr,
+            )
         kwargs = model_router.chat_kwargs(spec)
         # No-think default mirrors chat/coder: a qwen3 thinking trace
         # takes 15+ min per prompt on this CPU-only box.
         if os.environ.get("FANOUT_THINK", "") != "1":
             kwargs["model_kwargs"] = {"think": False}
         from langchain_ollama import ChatOllama  # noqa: E402
+
         model = ChatOllama(**kwargs)
         model_id = spec["model"]
     else:
         # Re-resolve after load_dotenv: the import-time MODEL_ID predates
         # the dotenv load, and a blank NEBIUS_MODEL must fall back to the
         # pin.
-        model_id = model_router._env("NEBIUS_MODEL", MODEL_ID)
+        model_id = (
+            model_router._env("NEBIUS_MODEL", MODEL_ID)
+            if provider == "nebius"
+            else spec["model"]
+        )
         if not model_id:
-            print("fanout: no model resolved "
-                  "(NEBIUS_MODEL is blank and no default)",
-                  file=sys.stderr)
+            print(
+                "fanout: no model resolved (NEBIUS_MODEL is blank and no default)",
+                file=sys.stderr,
+            )
             return 1
         # Cap checked above; keep this entrypoint's pinned model/endpoint.
-        spec = dict(spec, model=model_id,
-                    base_url="https://api.studio.nebius.com/v1")
+        if provider == "nebius":
+            spec = dict(
+                spec, model=model_id, base_url="https://api.studio.nebius.com/v1"
+            )
         kwargs = model_router.chat_kwargs(spec)
         model = ChatOpenAI(
-            api_key=os.environ["NEBIUS_API_KEY"],
+            api_key=model_router.api_key(spec),
             max_tokens=2000,
             **kwargs,
         )
@@ -293,17 +305,13 @@ def main() -> int:
     # and repos in the ledger; each process is one checkpoint sequence.
     thread = "fanout-" + time.strftime("%Y%m%d-%H%M%S")
     recorder = observe.TraceRecorder(
-        observe.default_trace_path("triage_fanout", thread))
-    recorder.run_start("triage_fanout.py", thread,
-                       f"{provider}:{model_id}")
+        observe.default_trace_path("triage_fanout", thread)
+    )
+    recorder.run_start("triage_fanout.py", thread, f"{provider}:{model_id}")
     agent = build_agent(model, repos, spec, recorder=recorder)
     try:
         result = agent.invoke(
-            {
-                "messages": [
-                    {"role": "user", "content": f"Triage {repo_list}."}
-                ]
-            },
+            {"messages": [{"role": "user", "content": f"Triage {repo_list}."}]},
             config={"configurable": {"thread_id": thread}},
         )
     except Exception as exc:
@@ -314,9 +322,8 @@ def main() -> int:
         code = getattr(exc, "status_code", None)
         detail = str(exc).strip().split("\n", 1)[0] or type(exc).__name__
         if code is not None:
-            label = "Nebius" if provider == "nebius" else "Ollama"
-            print(f"fanout: {label} error {code}: {detail}",
-                  file=sys.stderr)
+            label = provider.title()
+            print(f"fanout: {label} error {code}: {detail}", file=sys.stderr)
         else:
             print(f"fanout: error: {detail}", file=sys.stderr)
         return 1
@@ -330,9 +337,11 @@ def main() -> int:
         thread,
         result["messages"],
         started,
-        extra={"task_delegations": tasks, "repos": repos,
-               "scout_results": scout_results_from_messages(
-                   result["messages"], repos)},
+        extra={
+            "task_delegations": tasks,
+            "repos": repos,
+            "scout_results": scout_results_from_messages(result["messages"], repos),
+        },
     )
     print(f"task_delegations: {tasks}")
     print("FINAL:", result["messages"][-1].content)

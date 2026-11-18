@@ -1,11 +1,10 @@
 """Per-turn cost quotes over ledger usage (issue #398). Stdlib-only.
 
-quote(model, usage) -> (cost_usd | None, metered): ollama:* is
-local/free; nebius:* is metered at the card below when the model is
-known, otherwise cost is None (paid but unrated — the UI shows a
-bare "metered" tag rather than an invented number). Anything else
-is treated as metered-unknown: only an explicit ollama: prefix
-earns the free tag.
+quote(model, usage) -> (cost_usd | None, metered): ollama:* is local.
+OpenRouter free variants and openrouter/free quote zero as remote usage.
+Paid OpenRouter models require METERED_RATE_* overrides; the card below
+prices Nebius models. Unrated remote usage has cost None and fails the
+shared spend gate closed.
 
 Rates are $/1M tokens (input, output), re-verified 2026-11-06
 against the live Token Factory catalog
@@ -34,6 +33,15 @@ RATE_CARD = {
 }
 
 FREE_PREFIX = "ollama:"
+PROVIDERS = ("ollama", "openrouter", "nebius")
+
+
+def is_free_openrouter(model):
+    if not isinstance(model, str) or not model.startswith("openrouter:"):
+        return False
+    identifier = model[len("openrouter:") :]
+    return identifier == "openrouter/free" or identifier.endswith(":free")
+
 
 # Sorry-sentinel model labels: the harness records these when no
 # model was ever resolved, so no model call could have spent
@@ -119,9 +127,17 @@ def rate_for(model):
             return None
         if model.startswith(FREE_PREFIX):
             return None
-        return _card_rate(model) or _env_rates()
+        return _model_rate(model)
     except Exception:
         return None
+
+
+def _model_rate(model):
+    if is_free_openrouter(model):
+        return (0.0, 0.0)
+    if model.startswith("openrouter:"):
+        return _env_rates()
+    return _card_rate(model) or _env_rates()
 
 
 def _is_sorry_zero(model, usage):
@@ -136,8 +152,9 @@ def _is_sorry_zero(model, usage):
             return False
         if not isinstance(usage, dict):
             return False
-        return all(int(usage.get(key) or 0) == 0
-                   and key in usage for key in ZERO_TRIPLE)
+        return all(
+            int(usage.get(key) or 0) == 0 and key in usage for key in ZERO_TRIPLE
+        )
     except (TypeError, ValueError, AttributeError):
         return False
 
@@ -151,7 +168,7 @@ def quote(model, usage):
             return None, True
         if model.startswith(FREE_PREFIX):
             return 0.0, False
-        rate = _card_rate(model) or _env_rates()
+        rate = _model_rate(model)
         if rate is None:
             return None, True
         n_in, n_out = _tokens(usage)

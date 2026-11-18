@@ -73,11 +73,11 @@ def _row_provider(model):
     """Provider slot for one ledger row, or None when unknown.
 
     Ledger model labels read `{provider}:{model}` and the router
-    emits only ollama + nebius, so only those prefixes count: a
+    emits registered provider prefixes, so only those count: a
     bare `qwen3:8b` keeps its colon without minting a bogus
     provider. Never raises."""
     if isinstance(model, str):
-        for prefix in ("ollama:", "nebius:"):
+        for prefix in (provider + ":" for provider in pricing.PROVIDERS):
             if model.startswith(prefix):
                 return prefix[:-1]
     return None

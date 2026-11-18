@@ -168,6 +168,9 @@ services:
       # this container; the model_router default matches this value,
       # so the line documents the topology and offers one override.
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
+      OPENROUTER_ALLOW_PAID: ${OPENROUTER_ALLOW_PAID:-0}
       NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
       # Default mirrors deep-agent/model_router.py DEFAULT_NEBIUS_MODEL;
       # keep both in sync so sessions never stall on model choice.
@@ -335,6 +338,9 @@ services:
       # terminal). Empty/unset = public read-only GitHub ops only.
       GITHUB_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
       GH_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
+      OPENROUTER_ALLOW_PAID: ${OPENROUTER_ALLOW_PAID:-0}
       # Nebius fallback for the local-model router (mirrors terminal).
       # Model default mirrors deep-agent/model_router.py; host env
       # overrides both. Cap defaults to $2.00 (spend-gate default).

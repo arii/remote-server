@@ -38,8 +38,7 @@ BASE = DEFAULT_BASE
 def _timeout():
     """Wall-clock bound in seconds (RESOLVER_TIMEOUT override)."""
     try:
-        return max(60, int(os.environ.get(
-            "RESOLVER_TIMEOUT", DEFAULT_TIMEOUT)))
+        return max(60, int(os.environ.get("RESOLVER_TIMEOUT", DEFAULT_TIMEOUT)))
     except (TypeError, ValueError):
         return DEFAULT_TIMEOUT
 
@@ -94,10 +93,11 @@ def extract_prefer(argv):
     for arg in argv[1:]:
         if isinstance(arg, str) and arg.startswith("--prefer="):
             value = arg.split("=", 1)[1].strip().lower()
-            if value not in ("ollama", "nebius", "auto"):
+            if value not in (*model_router.PROVIDERS, "auto"):
                 raise ValueError(
-                    f"bad --prefer={value!r}: want 'ollama', 'nebius', "
-                    "or 'auto'")
+                    f"bad --prefer={value!r}: want 'ollama', 'openrouter', 'nebius', "
+                    "or 'auto'"
+                )
             return value
     return "auto"
 
@@ -153,13 +153,15 @@ def main() -> int:
         print("NEBIUS_API_KEY is not set", file=sys.stderr)
         return 1
     # Strip before positional parsing so the flag never shifts them.
-    positionals = [a for a in sys.argv[1:]
-                   if not (isinstance(a, str)
-                           and a.startswith("--prefer="))]
+    positionals = [
+        a
+        for a in sys.argv[1:]
+        if not (isinstance(a, str) and a.startswith("--prefer="))
+    ]
     if not positionals:
         return cli.usage_error(
-            "usage: resolve_conflicts.py [--prefer=...] "
-            "<worktree-path> [base-ref]")
+            "usage: resolve_conflicts.py [--prefer=...] <worktree-path> [base-ref]"
+        )
     WORKTREE = positionals[0]
     BASE = positionals[1] if len(positionals) > 1 else DEFAULT_BASE
     if not os.path.isdir(os.path.join(WORKTREE, ".git")) and not os.path.isfile(
@@ -176,33 +178,39 @@ def main() -> int:
     if provider == "ollama":
         # Local path (#647): resolved spec as-is, no Nebius pin/endpoint.
         if keyless_auto:
-            print("resolve: no Nebius key — resolve on local model (weaker)",
-                  file=sys.stderr)
+            print(
+                "resolve: no Nebius key — resolve on local model (weaker)",
+                file=sys.stderr,
+            )
         kwargs = model_router.chat_kwargs(spec)
         # No-think default mirrors fanout/chat/coder: a qwen3 thinking
         # trace takes 15+ min per prompt on this CPU-only box.
         if os.environ.get("RESOLVER_THINK", "") != "1":
             kwargs["model_kwargs"] = {"think": False}
         from langchain_ollama import ChatOllama  # noqa: E402
+
         model = ChatOllama(**kwargs)
         model_id = spec["model"]
     else:
         # Cap checked above; keep this entrypoint's pinned model/endpoint.
-        spec = dict(spec, model=MODEL_ID,
-                    base_url="https://api.studio.nebius.com/v1")
+        if provider == "nebius":
+            spec = dict(
+                spec, model=MODEL_ID, base_url="https://api.studio.nebius.com/v1"
+            )
         kwargs = model_router.chat_kwargs(spec)
         model = ChatOpenAI(
-            api_key=os.environ["NEBIUS_API_KEY"],
+            api_key=model_router.api_key(spec),
             # Reasoning model: needs headroom for hidden reasoning tokens
             # plus the visible reply + tool call.
             max_tokens=4000,
             **kwargs,
         )
-        model_id = MODEL_ID
+        model_id = spec["model"]
     thread = "resolve-" + os.path.basename(os.path.normpath(WORKTREE))
     label = f"{provider}:{model_id}"
     recorder = observe.TraceRecorder(
-        observe.default_trace_path("resolve_conflicts", thread))
+        observe.default_trace_path("resolve_conflicts", thread)
+    )
     recorder.run_start("resolve_conflicts.py", thread, label)
     agent = build_agent(WORKTREE, model, spec, recorder=recorder)
     outcome = {}
@@ -221,8 +229,10 @@ def main() -> int:
                         }
                     ]
                 },
-                config={"configurable": {"thread_id": thread},
-                        "recursion_limit": RECURSION_LIMIT},
+                config={
+                    "configurable": {"thread_id": thread},
+                    "recursion_limit": RECURSION_LIMIT,
+                },
             )
         except Exception as exc:
             outcome["error"] = exc
@@ -244,14 +254,16 @@ def main() -> int:
             thread,
             [],
             started,
-            extra={"worktree": WORKTREE, "base": BASE,
-                   "trace": recorder.path,
-                   "error": f"timed out after {timeout}s"},
+            extra={
+                "worktree": WORKTREE,
+                "base": BASE,
+                "trace": recorder.path,
+                "error": f"timed out after {timeout}s",
+            },
             usage=usage,
             calls=calls,
         )
-        print(f"resolve_conflicts timed out after {timeout}s",
-              file=sys.stderr)
+        print(f"resolve_conflicts timed out after {timeout}s", file=sys.stderr)
         return 1
     if "error" in outcome:
         recorder.run_end(False)
@@ -267,8 +279,7 @@ def main() -> int:
         thread,
         result["messages"],
         started,
-        extra={"worktree": WORKTREE, "base": BASE,
-               "trace": recorder.path},
+        extra={"worktree": WORKTREE, "base": BASE, "trace": recorder.path},
         usage=usage,
         calls=calls,
     )
