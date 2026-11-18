@@ -280,6 +280,11 @@ class TestPipelineContracts(unittest.TestCase):
             ):
                 graph.implement_fn("task", "plan", root, [])
 
+    def test_prose_severity_words_only_block_as_labels(self):
+        """A "High-level" summary line is not a high-severity finding."""
+        self.assertFalse(auditor.blocking_findings("- High-level: nothing risky"))
+        self.assertTrue(auditor.blocking_findings("- high: deletes deploy keys"))
+
     def test_blocking_findings_cannot_be_approved(self):
         """High and critical semantic findings override passing deterministic gates."""
         for severity in ("high", "critical"):

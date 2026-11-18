@@ -17,6 +17,7 @@ import os
 import subprocess
 import time
 
+UNVERIFIED_CODER = "pipeline coder did not pass verification"
 MAX_AUDIT_CYCLES_DEFAULT = 2
 DRIVE_LIMIT_DEFAULT = 25
 
@@ -249,15 +250,13 @@ class Pipeline:
                     "worktree": root,
                     "trace": trace,
                     "verified": verified,
-                    **(
-                        {} if verified else {"error": "coder did not pass verification"}
-                    ),
+                    **({} if verified else {"error": UNVERIFIED_CODER}),
                 },
                 usage=usage,
                 calls=calls,
             )
             if not verified:
-                raise RuntimeError("pipeline coder did not pass verification")
+                raise RuntimeError(UNVERIFIED_CODER)
             return summary
 
         def plan(task, root, context):
@@ -510,7 +509,7 @@ class Pipeline:
         return {
             "status": status,
             "worktree": worktree,
-            "detail": (detail if isinstance(detail, str) else json.dumps(detail)[:500]),
+            "detail": (detail if isinstance(detail, str) else json.dumps(detail))[:500],
             "audit_cycles": audit_cycles,
             "submit_url": submit_url,
             "cleaned": cleaned,
