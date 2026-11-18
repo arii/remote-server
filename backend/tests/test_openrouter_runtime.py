@@ -3,6 +3,7 @@ import io
 import json
 import os
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -96,3 +97,57 @@ class OpenRouterLedgerIdentityTest(unittest.TestCase):
             + "\n"
         )
         self.assertEqual(runs.total_metered_spend(), {"spent": 0.0, "unknown": 0})
+
+
+class OpenRouterFinalModelPolicyTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(
+            mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "synthetic"}, clear=True)
+        )
+        self.enterContext(
+            mock.patch.object(
+                runs, "total_metered_spend", return_value={"spent": 0.0, "unknown": 0}
+            )
+        )
+        self.sdk = types.ModuleType("langchain_openai")
+        self.sdk.ChatOpenAI = mock.Mock()
+        self.enterContext(
+            mock.patch.dict("sys.modules", {"langchain_openai": self.sdk})
+        )
+        self.spec = model_router.resolve_llm("openrouter")
+
+    def test_paid_post_resolution_override_is_rejected_before_construction(self):
+        os.environ["S5_AUDIT_MODEL"] = "contract/paid-reasoner"
+        final = dict(self.spec, model=os.environ["S5_AUDIT_MODEL"])
+        with self.assertRaisesRegex(RuntimeError, "OPENROUTER_ALLOW_PAID"):
+            model_router.build_chat_model(spec=final)
+        self.sdk.ChatOpenAI.assert_not_called()
+
+    def test_structured_builder_cannot_bypass_paid_override_policy(self):
+        with self.assertRaisesRegex(RuntimeError, "OPENROUTER_ALLOW_PAID"):
+            model_router.build_structured_chat_model(
+                spec=dict(self.spec, model="contract/paid-reasoner"), schema=object()
+            )
+        self.sdk.ChatOpenAI.assert_not_called()
+
+    def test_free_and_empty_environment_overrides_build_free_models(self):
+        for override in ("contract/reasoner:free", "openrouter/free", "", "  "):
+            with self.subTest(override=override):
+                final = (
+                    dict(self.spec, model=override.strip())
+                    if override.strip()
+                    else self.spec
+                )
+                _, spec = model_router.build_chat_model(spec=final)
+                self.assertEqual(spec["model"], override.strip() or self.spec["model"])
+                self.assertEqual(
+                    self.sdk.ChatOpenAI.call_args.kwargs["model"], spec["model"]
+                )
+
+    def test_explicit_paid_opt_in_allows_the_final_override(self):
+        os.environ["OPENROUTER_ALLOW_PAID"] = "1"
+        _, final = model_router.build_chat_model(
+            spec=dict(self.spec, model="contract/paid-reasoner")
+        )
+        self.assertEqual(final["model"], "contract/paid-reasoner")
+        self.assertEqual(self.sdk.ChatOpenAI.call_args.kwargs["api_key"], "synthetic")

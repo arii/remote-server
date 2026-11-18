@@ -161,8 +161,7 @@ def _nebius_spec():
     )
 
 
-def _openrouter_spec():
-    model = _env("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL).strip()
+def _validate_openrouter_model(model):
     if (
         not pricing.is_free_openrouter(f"openrouter:{model}")
         and _env("OPENROUTER_ALLOW_PAID") != "1"
@@ -170,6 +169,11 @@ def _openrouter_spec():
         raise RuntimeError(
             "OpenRouter requires a free model unless OPENROUTER_ALLOW_PAID=1"
         )
+
+
+def _openrouter_spec():
+    model = _env("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL).strip()
+    _validate_openrouter_model(model)
     return _remote_spec("openrouter", model, DEFAULT_OPENROUTER_BASE_URL)
 
 
@@ -354,6 +358,8 @@ def chat_kwargs(spec):
             "temperature": 0,
         }
     if spec.get("provider") in ("nebius", "openrouter"):
+        if spec["provider"] == "openrouter":
+            _validate_openrouter_model(spec["model"])
         kwargs = {
             "model": spec["model"],
             "base_url": spec["base_url"],
