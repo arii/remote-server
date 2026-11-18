@@ -358,8 +358,10 @@ class IssueGeneratorGraph:
         finally:
             ask_investigator._checkout = previous
         messages = result.get("messages", []) if isinstance(result, dict) else []
-        texts = [getattr(m, "content", "") or "" for m in messages]
-        return "\n\n".join(t for t in texts if t) or draft
+        for message in reversed(messages):
+            if getattr(message, "type", "") == "ai":
+                return getattr(message, "content", "") or ""
+        return ""
 
     # -- graph ---------------------------------------------------------
 

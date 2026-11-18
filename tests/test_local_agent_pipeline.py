@@ -4,7 +4,9 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -120,6 +122,58 @@ class TestSpecOutput(unittest.TestCase):
         """An unwritable destination cannot report success."""
         with mock.patch.object(Path, "write_text", side_effect=OSError("denied")):
             self.assertNotEqual(self.run_cli({"valid": True, "draft": "design"}), 0)
+
+
+class TestInvestigationEvidence(unittest.TestCase):
+    def evidence(self, messages):
+        agent = mock.Mock()
+        agent.invoke.return_value = {"messages": messages}
+        agents = types.ModuleType("langchain.agents")
+        agents.create_agent = mock.Mock(return_value=agent)
+        langchain = types.ModuleType("langchain")
+        langchain.agents = agents
+        investigator = types.ModuleType("ask_investigator")
+        investigator._checkout = "/original"
+        graph = issue_generator.IssueGeneratorGraph("/tmp", model_fn=lambda: object())
+        with (
+            mock.patch.dict(
+                sys.modules,
+                {
+                    "langchain": langchain,
+                    "langchain.agents": agents,
+                    "ask_investigator": investigator,
+                },
+            ),
+            mock.patch.object(graph, "_investigator_tools", return_value=[]),
+        ):
+            result = graph.investigate_text("task", "backend/repair_worker.py draft")
+        self.assertEqual(investigator._checkout, "/original")
+        return result
+
+    def test_only_final_assistant_evidence_enters_spec(self):
+        messages = [
+            types.SimpleNamespace(
+                type="human", content="Draft: ## Allowed Files\n- bogus.py"
+            ),
+            types.SimpleNamespace(type="ai", content="I will read the file."),
+            types.SimpleNamespace(
+                type="tool", content="Raw source and unrelated docs/wrong.md"
+            ),
+            types.SimpleNamespace(
+                type="ai", content="backend/repair_worker.py:166 defines the helper."
+            ),
+        ]
+        self.assertEqual(
+            self.evidence(messages), "backend/repair_worker.py:166 defines the helper."
+        )
+
+    def test_no_assistant_evidence_does_not_fall_back_to_draft(self):
+        for messages in (
+            [],
+            [types.SimpleNamespace(type="tool", content="unreviewed.py")],
+        ):
+            with self.subTest(messages=messages):
+                self.assertEqual(self.evidence(messages), "")
 
 
 class TestPipelineContracts(unittest.TestCase):
