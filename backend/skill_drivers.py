@@ -13,14 +13,9 @@ Drivers:
 - PlaywrightDriver: local Chromium via Playwright (lazy import —
   missing package is a clear error, not a silent fallback).
   The laptop demo driver: headed when BROWSER_HEADLESS=0.
-- BrowserMCPDriver: laptop browser via the Browser MCP relay
-  (BROWSER_MCP_URL, default http://127.0.0.1:9010) using the
-  standard MCP streamable-HTTP tools/call envelope. Snapshot
-  mapping and coordinate clicks were written against the public
-  BrowserMCP tool surface; the live demo (#1264) is the
-  verification — if the paired relay rejects a call, its error
-  names the tool and the demo corrects the mapping. The standing
-  fallback holds: if the remote link fails, use local Playwright.
+- BrowserMCPDriver: legacy relay adapter (BROWSER_MCP_URL, default
+  http://127.0.0.1:9010). Click and wheel fail closed: its coordinate
+  tool calls are incompatible with the BrowserMCP v2 contract.
 """
 
 from __future__ import annotations
@@ -265,15 +260,7 @@ class PlaywrightDriver:
 
 
 class BrowserMCPDriver:
-    """Laptop browser via the Browser MCP relay.
-
-    Calls use the standard MCP streamable-HTTP tools/call envelope
-    with the public BrowserMCP tool names. Snapshot elements carry
-    refs; coordinate clicks pass x/y through to browser_click.
-    Relay errors propagate as BrowserDriverError naming the tool —
-    the live demo (#1264) corrects any mapping drift. If the link
-    itself is down, use the local Playwright driver instead.
-    """
+    """Legacy relay adapter; coordinate mutations require a v2 migration."""
 
     def __init__(self, relay_url: str | None = None):
         base = relay_url or os.environ.get("BROWSER_MCP_URL", "http://127.0.0.1:9010")
@@ -369,7 +356,10 @@ class BrowserMCPDriver:
         self._call("browser_navigate", {"url": url})
 
     def click(self, x: int, y: int) -> None:
-        self._call("browser_click", {"x": x, "y": y})
+        raise BrowserDriverError(
+            "click refused: BrowserMCP v2 contract mismatch; v2 uses the browser "
+            "commands tool, not coordinate browser_click calls"
+        )
 
     def type_text(self, text: str) -> None:
         self._call("browser_type", {"text": text})
@@ -378,5 +368,7 @@ class BrowserMCPDriver:
         self._call("browser_press_key", {"key": key})
 
     def wheel(self, x: int, y: int, dx: int, dy: int) -> None:
-        self._call("browser_hover", {"x": x, "y": y})
-        self._call("browser_wheel", {"x": x, "y": y, "dx": dx, "dy": dy})
+        raise BrowserDriverError(
+            "wheel refused: BrowserMCP v2 contract mismatch; v2 uses the browser "
+            "commands tool, not coordinate browser_hover/browser_wheel calls"
+        )

@@ -115,6 +115,9 @@ and mark protected values `[redacted]`. Raise `BrowserDriverError` on failure.
 Use `run_and_record` rather than composing unguarded primitives: local Playwright
 and relay primitives do not themselves enforce the shared human-wheel gate.
 
+BrowserMCP click and wheel fail closed with `BrowserDriverError`: this adapter's
+legacy coordinate calls do not match the v2 `browser` commands contract.
+
 ## Safety and trace semantics
 
 - Login, MFA, CAPTCHA, payments and message sends stay human. Do not encode them
