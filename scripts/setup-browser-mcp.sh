@@ -24,7 +24,7 @@ cat > "${LAUNCHER}" <<'EOF'
 #!/bin/bash
 # Persisted daemon home (survives terminal recreates, unlike ~/.browsermcp).
 export BROWSER_MCP_HOME="${BROWSER_MCP_HOME:-/root/.local/share/browsermcp}"
-exec npx -y @browsermcp/mcp@latest "$@"
+exec npx -y @browsermcp/mcp@2.4.0 "$@"
 EOF
 chmod +x "${LAUNCHER}"
 echo "Created executable launcher: ${LAUNCHER}"
