@@ -29,7 +29,7 @@ def blocking_findings(findings):
         except ValueError:
             return bool(
                 re.search(
-                    r"(?im)^\s*(?:[-*]|\d+[.)])?\s*[*\[]*(?:high|critical|blocking)\b(?!-)"
+                    r"(?im)^\s*(?:[-*]|\d+[.)])?\s*[*\[]*(?:high|critical|blocking)\b(?!-level\b)"
                     r'|"severity"\s*:\s*"(?:high|critical|blocking)"',
                     text,
                 )

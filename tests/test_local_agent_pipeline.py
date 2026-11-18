@@ -284,6 +284,7 @@ class TestPipelineContracts(unittest.TestCase):
         """A "High-level" summary line is not a high-severity finding."""
         self.assertFalse(auditor.blocking_findings("- High-level: nothing risky"))
         self.assertTrue(auditor.blocking_findings("- high: deletes deploy keys"))
+        self.assertTrue(auditor.blocking_findings("- High-severity: drops records"))
 
     def test_blocking_findings_cannot_be_approved(self):
         """High and critical semantic findings override passing deterministic gates."""
