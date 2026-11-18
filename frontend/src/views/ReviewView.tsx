@@ -2093,7 +2093,7 @@ export default function ReviewView({
           <h3>
             Pull requests{' '}
             {visiblePrs.length > 0 && (
-              <label className="row-meta">
+              <label className="row-meta bulk-select-all">
                 <input
                   type="checkbox"
                   data-testid="defer-select-all-prs"
@@ -2101,7 +2101,7 @@ export default function ReviewView({
                   checked={visiblePrKeys.every((k) => bulkSelected.has(k))}
                   onChange={() => setBulkSelected((prev) => toggleBulkSelectAll(prev, visiblePrKeys))}
                 />{' '}
-                all
+                Select all
               </label>
             )}
           </h3>
@@ -2203,7 +2203,7 @@ export default function ReviewView({
           <h3>
             Issues{' '}
             {visibleIssues.length > 0 && (
-              <label className="row-meta">
+              <label className="row-meta bulk-select-all">
                 <input
                   type="checkbox"
                   data-testid="defer-select-all-issues"
@@ -2211,7 +2211,7 @@ export default function ReviewView({
                   checked={visibleIssueKeys.every((k) => bulkSelected.has(k))}
                   onChange={() => setBulkSelected((prev) => toggleBulkSelectAll(prev, visibleIssueKeys))}
                 />{' '}
-                all
+                Select all
               </label>
             )}
           </h3>
@@ -2332,7 +2332,7 @@ export default function ReviewView({
           {deferred.length > 0 && (
             <details data-testid="review-deferred-disclosure">
               <summary className="details-title">Deferred ({deferred.length})</summary>
-              <label className="row-meta">
+              <label className="row-meta bulk-select-all">
                 <input
                   type="checkbox"
                   data-testid="restore-select-all"
@@ -2340,7 +2340,7 @@ export default function ReviewView({
                   checked={deferredKeys.every((k) => bulkRestore.has(k))}
                   onChange={() => setBulkRestore((prev) => toggleBulkSelectAll(prev, deferredKeys))}
                 />{' '}
-                all
+                Select all
               </label>
               {bulkRestore.size > 0 && (
                 <BulkRestoreBar count={bulkRestore.size} busy={bulkRestoreBusy} onRestore={() => void restoreBulk()} />

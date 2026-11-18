@@ -367,7 +367,7 @@ label.label-chip:has(input:focus-visible) { outline: 2px solid var(--accent); ou
   .split > .inspector { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; }
 }
 
-.session-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.session-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
 
 .row {
   display: block;
@@ -411,7 +411,7 @@ label.label-chip:has(input:focus-visible) { outline: 2px solid var(--accent); ou
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.8rem 0.9rem;
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
 }
 .detail h2 { font-size: 1.05rem; margin: 0 0 0.25rem; word-break: break-all; }
 .detail p { margin: 0.35rem 0 0; }
@@ -675,7 +675,7 @@ button[data-testid="chat-dictate"] { display: inline-flex; align-items: center; 
 .danger-row:first-child { border-top: 0; }
 
 [data-testid="history-list"] { gap: 0; }
-.history-row { padding: 0.55rem 0; border-top: 1px solid var(--border); }
+.history-row { padding: 0.55rem 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
 /* Inline status edge (#964): green/red row edge for exit status,
    readable without expanding. Plain left edge, no glow or radius. */
 li.history-row.tone-bad,
@@ -1200,6 +1200,9 @@ textarea { border-color: var(--accent); border-width: 1px; opacity: 1; }
 ::placeholder { color: var(--muted); opacity: 1; }
 textarea { width: 100%; min-height: 4.5rem; resize: vertical; }
 label.row-meta { display: grid; gap: 0.3rem; }
+label.bulk-select-all { display: inline-flex; align-items: center; gap: 0.4rem; min-height: 44px; cursor: pointer; }
+.repair-picker { min-width: 0; max-width: 100%; }
+.repair-picker select { min-width: 0; width: 100%; }
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 

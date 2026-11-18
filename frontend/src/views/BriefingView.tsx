@@ -1023,7 +1023,7 @@ export function RepairPicker({
         </p>
       ) : (
         <div className="actions">
-          <label className="row-meta" htmlFor="briefing-repair-pick">
+          <label className="row-meta repair-picker" htmlFor="briefing-repair-pick">
             Pull request{' '}
             <select
               id="briefing-repair-pick"
