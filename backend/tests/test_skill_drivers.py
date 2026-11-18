@@ -15,7 +15,6 @@ import unittest
 from backend.skill_drivers import (
     BrowserDriver,
     BrowserDriverError,
-    BrowserMCPDriver,
     GridCDPDriver,
     PlaywrightDriver,
     check_driver,
@@ -240,11 +239,11 @@ class OnlySnapshotDriver:
 class PublicSurfaceTest(unittest.TestCase):
     def test_public_names_are_importable_and_shaped(self):
         """Contract: public surfaces are BrowserDriver, check_driver,
-        get_driver, GridCDPDriver, PlaywrightDriver, BrowserMCPDriver,
+        get_driver, GridCDPDriver, PlaywrightDriver,
         BrowserDriverError (interfaces only)."""
         self.assertTrue(callable(check_driver))
         self.assertTrue(callable(get_driver))
-        for cls in (GridCDPDriver, PlaywrightDriver, BrowserMCPDriver):
+        for cls in (GridCDPDriver, PlaywrightDriver):
             self.assertTrue(isinstance(cls, type))
         self.assertTrue(isinstance(BrowserDriverError, type))
         self.assertTrue(issubclass(BrowserDriverError, Exception))
@@ -322,7 +321,7 @@ class FactoryMappingTest(unittest.TestCase):
         self.addCleanup(restore)
 
     def test_get_driver_grid_maps_to_grid_cdp_driver(self):
-        """Contract: get_driver builds grid|playwright|browser-mcp;
+        """Contract: get_driver builds grid|playwright;
         explicit 'grid' gives the Grid CDP driver."""
         self._set_env(None)
         driver = get_driver("grid")
@@ -334,13 +333,6 @@ class FactoryMappingTest(unittest.TestCase):
         self._set_env(None)
         driver = get_driver("playwright")
         self.assertIsInstance(driver, PlaywrightDriver)
-
-    def test_get_driver_browser_mcp_maps_to_browser_mcp_driver(self):
-        """Contract: explicit 'browser-mcp' gives the Browser MCP
-        driver."""
-        self._set_env(None)
-        driver = get_driver("browser-mcp")
-        self.assertIsInstance(driver, BrowserMCPDriver)
 
     def test_get_driver_defaults_to_grid_when_env_unset(self):
         """Contract: get_driver(name=None) defaults to grid when
@@ -354,8 +346,6 @@ class FactoryMappingTest(unittest.TestCase):
         env value."""
         self._set_env("playwright")
         self.assertIsInstance(get_driver(None), PlaywrightDriver)
-        self._set_env("browser-mcp")
-        self.assertIsInstance(get_driver(None), BrowserMCPDriver)
 
     def test_get_driver_explicit_name_overrides_env(self):
         """Contract: an explicit name wins over the BROWSER_DRIVER env
@@ -368,6 +358,11 @@ class FactoryMappingTest(unittest.TestCase):
         self._set_env(None)
         with self.assertRaises(BrowserDriverError):
             get_driver("no-such-driver")
+        with self.assertRaisesRegex(
+            BrowserDriverError,
+            "unknown driver 'browser-mcp'; want one of grid, playwright",
+        ):
+            get_driver("browser-mcp")
 
     def test_get_driver_rejects_unknown_env_value(self):
         """Contract: get_driver rejects an unknown BROWSER_DRIVER env
@@ -381,7 +376,7 @@ class RealDriverConstructionTest(unittest.TestCase):
     def test_each_driver_constructs_with_no_required_args(self):
         """Contract: each driver class constructs with no required args
         (env-configured)."""
-        for cls in (GridCDPDriver, PlaywrightDriver, BrowserMCPDriver):
+        for cls in (GridCDPDriver, PlaywrightDriver):
             try:
                 cls()
             except TypeError as exc:
@@ -390,14 +385,14 @@ class RealDriverConstructionTest(unittest.TestCase):
     def test_each_constructed_real_driver_conforms(self):
         """Contract: each env-configured driver conforms to the
         interface (no live browser needed for the check)."""
-        for cls in (GridCDPDriver, PlaywrightDriver, BrowserMCPDriver):
+        for cls in (GridCDPDriver, PlaywrightDriver):
             with self.subTest(driver=cls.__name__):
                 self.assertEqual(check_driver(cls()), [])
 
     def test_real_driver_methods_are_sync(self):
         """Contract: driver protocol is all sync, including the real
         driver implementations."""
-        for cls in (GridCDPDriver, PlaywrightDriver, BrowserMCPDriver):
+        for cls in (GridCDPDriver, PlaywrightDriver):
             with self.subTest(driver=cls.__name__):
                 instance = cls()
                 for name in INTERFACE_METHODS:
@@ -453,13 +448,12 @@ class ReplayerInterfaceTest(AgentControlTestCase):
             registry = {
                 "grid": ConformingFakeDriver,
                 "playwright": SecondConformingFakeDriver,
-                "browser-mcp": SecondConformingFakeDriver,
             }
             return registry[name](make_good_pages(), FORM_URL)
 
         self._set_env("grid")
         first = run_skill(copy.deepcopy(skill), driver_from_config())
-        self._set_env("browser-mcp")
+        self._set_env("playwright")
         second = run_skill(copy.deepcopy(skill), driver_from_config())
         self.assertIs(first["passed"], True)
         self.assertIs(second["passed"], True)

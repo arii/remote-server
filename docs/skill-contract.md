@@ -86,9 +86,8 @@ the data root. Defaults below are portable; deployment overrides live in Compose
 | `BROWSER_RUNS_FILE` | `browser_runs.jsonl` under the data root. |
 | `BROWSER_TASKS_DIR` | `browser_tasks` under the data root. |
 | `BROWSER_PROFILE_DIR` | `agent` under the data root; Grid agent profile. |
-| `BROWSER_DRIVER` | `grid`, `playwright` or `browser-mcp`; default `grid`. |
+| `BROWSER_DRIVER` | `grid` or `playwright`; default `grid`. |
 | `BROWSER_HEADLESS` | Playwright: `1` by default; `0` opens a window. |
-| `BROWSER_MCP_URL` | Relay base, default `http://127.0.0.1:9010`. |
 | `AGENT_CONTROL_STATE_FILE` | Control JSON, default `/tmp/agent_control_state.json`; deployment overrides it. |
 
 The Grid profile path must also be valid inside the browser container.
@@ -113,10 +112,7 @@ Coordinates use the snapshot's CSS-pixel space. Elements carry selector hooks,
 position, type/value and focus/sensitivity metadata; preserve credential markers
 and mark protected values `[redacted]`. Raise `BrowserDriverError` on failure.
 Use `run_and_record` rather than composing unguarded primitives: local Playwright
-and relay primitives do not themselves enforce the shared human-wheel gate.
-
-BrowserMCP click and wheel fail closed with `BrowserDriverError`: this adapter's
-legacy coordinate calls do not match the v2 `browser` commands contract.
+primitives do not themselves enforce the shared human-wheel gate.
 
 ## Safety and trace semantics
 

@@ -2,7 +2,7 @@
 
 Recorder (#1252) and replayer (#1255) call the BrowserDriver
 interface, never a driver directly. Swapping the driver is one
-config line: BROWSER_DRIVER=grid|playwright|browser-mcp (default
+config line: BROWSER_DRIVER=grid|playwright (default
 grid). No model, no network beyond the browser link itself.
 
 Drivers:
@@ -13,17 +13,12 @@ Drivers:
 - PlaywrightDriver: local Chromium via Playwright (lazy import —
   missing package is a clear error, not a silent fallback).
   The laptop demo driver: headed when BROWSER_HEADLESS=0.
-- BrowserMCPDriver: legacy relay adapter (BROWSER_MCP_URL, default
-  http://127.0.0.1:9010). Click and wheel fail closed: its coordinate
-  tool calls are incompatible with the BrowserMCP v2 contract.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-import urllib.request
 from typing import Protocol, runtime_checkable
 
 from backend.browser_safety import BrowserDriverError
@@ -61,19 +56,17 @@ def check_driver(driver) -> list:
     return ["missing " + name for name in missing]
 
 
-DRIVERS = ("grid", "playwright", "browser-mcp")
+DRIVERS = ("grid", "playwright")
 
 
 def get_driver(name: str | None = None):
     """Build the configured driver. One config line swaps it:
-    BROWSER_DRIVER=grid|playwright|browser-mcp (default grid)."""
+    BROWSER_DRIVER=grid|playwright (default grid)."""
     which = (name or os.environ.get("BROWSER_DRIVER", "grid")).strip()
     if which == "grid":
         return GridCDPDriver()
     if which == "playwright":
         return PlaywrightDriver()
-    if which == "browser-mcp":
-        return BrowserMCPDriver()
     raise BrowserDriverError(
         f"unknown driver {which!r}; want one of {', '.join(DRIVERS)}"
     )
@@ -257,118 +250,3 @@ class PlaywrightDriver:
             page.mouse.wheel(dx, dy)
         except Exception as exc:
             raise BrowserDriverError(f"wheel failed: {exc}") from exc
-
-
-class BrowserMCPDriver:
-    """Legacy relay adapter; coordinate mutations require a v2 migration."""
-
-    def __init__(self, relay_url: str | None = None):
-        base = relay_url or os.environ.get("BROWSER_MCP_URL", "http://127.0.0.1:9010")
-        self.relay_url = base.rstrip("/")
-        self._ref_table: dict = {}
-
-    def _call(self, tool: str, args: dict):
-        body = json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": tool, "arguments": args},
-            }
-        ).encode("utf-8")
-        req = urllib.request.Request(
-            self.relay_url + "/mcp",
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                payload = resp.read().decode("utf-8", "replace")
-                ctype = resp.headers.get("Content-Type", "")
-        except Exception as exc:
-            raise BrowserDriverError(
-                f"relay unreachable at {self.relay_url}: {exc}"
-            ) from exc
-        if "text/event-stream" in ctype:
-            data_lines = [
-                line[5:] for line in payload.splitlines() if line.startswith("data:")
-            ]
-            payload = data_lines[-1] if data_lines else ""
-        try:
-            message = json.loads(payload or "{}")
-        except ValueError as exc:
-            raise BrowserDriverError(f"{tool}: bad relay response: {exc}") from exc
-        if "error" in message:
-            raise BrowserDriverError(f"{tool}: {message['error']}")
-        result = message.get("result", {})
-        content = result.get("content", [])
-        if content and isinstance(content[0], dict):
-            text = content[0].get("text", "")
-            try:
-                return json.loads(text)
-            except ValueError:
-                return text
-        return result
-
-    def snapshot(self) -> dict:
-        data = self._call("browser_snapshot", {})
-        if not isinstance(data, dict):
-            raise BrowserDriverError("browser_snapshot: bad shape")
-        elements = []
-        refs = {}
-
-        def walk(node):
-            if not isinstance(node, dict):
-                return
-            ref = node.get("ref")
-            if node.get("role") and ref:
-                refs[ref] = node
-                elements.append(
-                    {
-                        "tag": str(node.get("role", "")).upper(),
-                        "text": str(node.get("name", "") or "")[:80],
-                        "x": 0,
-                        "y": 0,
-                        "w": 0,
-                        "h": 0,
-                        "tid": None,
-                        "id": None,
-                        "name": node.get("name"),
-                        "role": node.get("role"),
-                        "ref": ref,
-                    }
-                )
-            for child in node.get("children", []) or []:
-                walk(child)
-
-        walk(data.get("snapshot", data))
-        self._ref_table = refs
-        return {
-            "url": str(data.get("url", "")),
-            "title": str(data.get("title", "")),
-            "elements": elements,
-        }
-
-    def navigate(self, url: str) -> None:
-        self._call("browser_navigate", {"url": url})
-
-    def click(self, x: int, y: int) -> None:
-        raise BrowserDriverError(
-            "click refused: BrowserMCP v2 contract mismatch; v2 uses the browser "
-            "commands tool, not coordinate browser_click calls"
-        )
-
-    def type_text(self, text: str) -> None:
-        self._call("browser_type", {"text": text})
-
-    def key(self, key: str) -> None:
-        self._call("browser_press_key", {"key": key})
-
-    def wheel(self, x: int, y: int, dx: int, dy: int) -> None:
-        raise BrowserDriverError(
-            "wheel refused: BrowserMCP v2 contract mismatch; v2 uses the browser "
-            "commands tool, not coordinate browser_hover/browser_wheel calls"
-        )
