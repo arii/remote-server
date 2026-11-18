@@ -233,9 +233,22 @@ class Pipeline:
                 f"{self.thread_id}-edit-{time.time_ns()}",
                 coder._timeout(),
             )
-            if not result[6]:
+            summary, usage, calls, started, label, trace, verified, _ = result
+            import ledger
+
+            ledger.record(
+                "pipeline.py",
+                label,
+                f"{self.thread_id}-edit",
+                [{"role": "user", "content": prompt}],
+                started,
+                extra={"worktree": root, "trace": trace, "verified": verified},
+                usage=usage,
+                calls=calls,
+            )
+            if not verified:
                 raise RuntimeError("pipeline coder did not pass verification")
-            return result[0]
+            return summary
 
         def plan(task, root, context):
             result = (self.plan_fn or coder._default_plan_fn)(task, root, context)
@@ -266,7 +279,7 @@ class Pipeline:
 
         def provision_with_spec():
             root, error = provision()
-            if not error:
+            if not error and not worktree_root:
                 issue_generator.write_spec(os.path.join(root, spec_path), brief)
             return root, error
 

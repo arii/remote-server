@@ -351,8 +351,8 @@ class AuditorGraph:
             ask_investigator._checkout = previous
         messages = result.get("messages", []) if isinstance(result, dict) else []
         self.record_review_usage(messages)
-        texts = [getattr(m, "content", "") or "" for m in messages]
-        return "\n\n".join(t for t in texts if t) or "no findings"
+        final = messages[-1] if messages else None
+        return getattr(final, "content", "") or "no findings"
 
     def record_review_usage(self, messages):
         """Stash summed review-turn token usage for the persist row.
