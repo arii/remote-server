@@ -177,11 +177,11 @@ def record(
         # Record-time quote freezes the rate: rows stay true even
         # when the card moves. Old rows without these fields are
         # derived at read time (current-rate estimates, no rewrite).
-        cost_usd, metered = pricing.quote(model, usage)
         if provider is None:
             provider = _model_provider(model)
         if provider not in pricing.PROVIDERS:
             provider = None
+        cost_usd, metered = pricing.quote(model, usage, provider=provider)
         if provider == "ollama":
             # The resolved backend is truth: a locally-run turn is
             # free even when the model string carries no prefix.

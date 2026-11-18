@@ -159,13 +159,18 @@ def _is_sorry_zero(model, usage):
         return False
 
 
-def quote(model, usage):
+def quote(model, usage, provider=None):
     """(cost_usd | None, metered) for one turn. Never raises."""
     try:
         if _is_sorry_zero(model, usage):
             return 0.0, False
         if not isinstance(model, str) or not model:
             return None, True
+        if provider in PROVIDERS:
+            prefix, separator, name = model.partition(":")
+            if separator and prefix in PROVIDERS:
+                model = name
+            model = f"{provider}:{model}"
         if model.startswith(FREE_PREFIX):
             return 0.0, False
         rate = _model_rate(model)

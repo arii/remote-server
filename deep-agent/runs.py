@@ -66,7 +66,9 @@ def _row_cost(row):
     metered = row.get("metered")
     if isinstance(cost_usd, (int, float)) and isinstance(metered, bool):
         return cost_usd, metered
-    return pricing.quote(row.get("model"), row.get("usage") or {})
+    return pricing.quote(
+        row.get("model"), row.get("usage") or {}, provider=row.get("provider")
+    )
 
 
 def _row_provider(model):

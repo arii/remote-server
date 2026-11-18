@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -34,3 +35,64 @@ class OpenRouterSkipVisibilityTest(unittest.TestCase):
                             spec = model_router.resolve_llm()
                         self.assertEqual(spec["provider"], "nebius")
                         self.assertIn("OpenRouter skipped", output.getvalue())
+
+
+class OpenRouterLedgerIdentityTest(unittest.TestCase):
+    def setUp(self):
+        root = self.enterContext(tempfile.TemporaryDirectory())
+        self.path = Path(root) / "ledger.jsonl"
+        self.enterContext(mock.patch.dict(os.environ, {}, clear=True))
+        self.enterContext(mock.patch.object(ledger, "LEDGER", str(self.path)))
+        self.enterContext(mock.patch.object(runs, "LEDGER", str(self.path)))
+
+    def record(self, model, script="auditor.py", usage=None):
+        return ledger.record(
+            script,
+            model,
+            "openrouter-identity-proof",
+            [],
+            0,
+            provider="openrouter",
+            usage=usage,
+        )
+
+    def test_graph_style_bare_free_models_do_not_poison_spend(self):
+        for script in ("issue_generator.py", "auditor.py"):
+            for model in ("openrouter/free", "reasoner:free"):
+                for usage in ({}, {"input_tokens": 23, "output_tokens": 7}):
+                    with self.subTest(script=script, model=model, usage=usage):
+                        row = self.record(model, script, usage)
+                        self.assertEqual(row["model"], model)
+                        self.assertEqual(row["provider"], "openrouter")
+                        self.assertEqual((row["cost_usd"], row["metered"]), (0.0, True))
+        self.assertEqual(runs.total_metered_spend(), {"spent": 0.0, "unknown": 0})
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "synthetic"}):
+            self.assertEqual(
+                model_router.resolve_llm("openrouter")["provider"], "openrouter"
+            )
+
+    def test_paid_bare_model_does_not_borrow_nebius_rate(self):
+        row = self.record("zai-org/GLM-5.3-Flash", usage={"input_tokens": 23})
+        self.assertIsNone(row["cost_usd"])
+        self.assertEqual(runs.total_metered_spend()["unknown"], 1)
+
+    def test_missing_model_stays_unrated(self):
+        row = self.record(None)
+        self.assertIsNone(row["cost_usd"])
+        self.assertEqual(runs.total_metered_spend()["unknown"], 1)
+
+    def test_old_unrated_free_row_uses_recorded_provider_for_requote(self):
+        self.path.write_text(
+            json.dumps(
+                {
+                    "kind": "deep-agent-run",
+                    "model": "openrouter/free",
+                    "provider": "openrouter",
+                    "usage": {"input_tokens": 23},
+                    "cost_usd": None,
+                    "metered": True,
+                }
+            )
+            + "\n"
+        )
+        self.assertEqual(runs.total_metered_spend(), {"spent": 0.0, "unknown": 0})
