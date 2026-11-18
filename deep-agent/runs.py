@@ -367,7 +367,7 @@ def _tombstone_lines(indexes, path):
                 # Spend is spend: the tombstone keeps cost evidence
                 # so deletes hide runs without erasing the meter.
                 tomb = {"deleted": True, "ts": time.time()}
-                for key in ("model", "usage", "cost_usd", "metered"):
+                for key in ("model", "provider", "usage", "cost_usd", "metered"):
                     if key in row:
                         tomb[key] = row[key]
                 lines[i] = json.dumps(tomb) + "\n"

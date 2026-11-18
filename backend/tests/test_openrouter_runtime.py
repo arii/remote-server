@@ -98,6 +98,94 @@ class OpenRouterLedgerIdentityTest(unittest.TestCase):
         )
         self.assertEqual(runs.total_metered_spend(), {"spent": 0.0, "unknown": 0})
 
+    def test_tombstones_keep_free_legacy_provider_for_spend(self):
+        for bulk in (False, True):
+            for model in ("openrouter/free", "contract/reasoner:free"):
+                with self.subTest(bulk=bulk, model=model):
+                    self.path.write_text(
+                        json.dumps(
+                            {
+                                "model": model,
+                                "provider": "openrouter",
+                                "usage": {"input_tokens": 23, "output_tokens": 7},
+                                "cost_usd": None,
+                                "metered": True,
+                            }
+                        )
+                        + "\n"
+                    )
+                    before = runs.total_metered_spend()
+                    self.assertEqual(before, {"spent": 0.0, "unknown": 0})
+                    if bulk:
+                        self.assertEqual(runs.clear_finished_runs(), 1)
+                    else:
+                        self.assertTrue(runs.delete_run("run-0"))
+                    self.assertEqual(runs.total_metered_spend(), before)
+                    self.assertEqual(
+                        json.loads(self.path.read_text())["provider"], "openrouter"
+                    )
+                    with mock.patch.dict(
+                        os.environ, {"OPENROUTER_API_KEY": "synthetic"}
+                    ):
+                        self.assertEqual(
+                            model_router.resolve_llm("openrouter")["provider"],
+                            "openrouter",
+                        )
+
+    def test_tombstones_keep_paid_provider_rates_and_unknown_spend(self):
+        for bulk in (False, True):
+            for rates in (
+                {},
+                {"METERED_RATE_IN_PER_1M": "1", "METERED_RATE_OUT_PER_1M": "2"},
+            ):
+                with (
+                    self.subTest(bulk=bulk, rates=rates),
+                    mock.patch.dict(os.environ, rates),
+                ):
+                    self.path.write_text(
+                        json.dumps(
+                            {
+                                "model": "zai-org/GLM-5.3-Flash",
+                                "provider": "openrouter",
+                                "usage": {
+                                    "input_tokens": 1000000,
+                                    "output_tokens": 2000000,
+                                },
+                                "cost_usd": None,
+                                "metered": True,
+                            }
+                        )
+                        + "\n"
+                    )
+                    before = runs.total_metered_spend()
+                    expected = (
+                        {"spent": 5.0, "unknown": 0}
+                        if rates
+                        else {"spent": 0.0, "unknown": 1}
+                    )
+                    self.assertEqual(before, expected)
+                    if bulk:
+                        self.assertEqual(runs.clear_finished_runs(), 1)
+                    else:
+                        self.assertTrue(runs.delete_run("run-0"))
+                    self.assertEqual(runs.total_metered_spend(), before)
+                    with mock.patch.dict(
+                        os.environ, {"OPENROUTER_API_KEY": "synthetic"}
+                    ):
+                        with self.assertRaisesRegex(RuntimeError, "spend cap"):
+                            model_router.resolve_llm("openrouter")
+
+    def test_tombstones_preserve_recorded_quote_fields(self):
+        row = self.record("openrouter/free", usage={})
+        self.assertTrue(runs.delete_run("run-0"))
+        tombstone = json.loads(self.path.read_text())
+        for key in ("model", "provider", "usage", "cost_usd", "metered"):
+            self.assertEqual(tombstone.get(key), row[key], key)
+        self.assertTrue(tombstone["deleted"])
+        self.assertEqual(runs.clear_finished_runs(), 0)
+        self.assertFalse(runs.delete_run("run-9"))
+        self.assertEqual(runs.total_metered_spend(), {"spent": 0.0, "unknown": 0})
+
 
 class OpenRouterFinalModelPolicyTest(unittest.TestCase):
     def setUp(self):
