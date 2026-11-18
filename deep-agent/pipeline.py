@@ -140,6 +140,7 @@ class Pipeline:
         verification_commands=None,
         drive_limit=DRIVE_LIMIT_DEFAULT,
         preview_url=None,
+        keep_worktree=False,
     ):
         self.repo = os.path.abspath(repo)
         self.intent = intent
@@ -154,6 +155,7 @@ class Pipeline:
         self.spec_model_fn = spec_model_fn
         self.auto_approve_plan = auto_approve_plan
         self.submit_pr = submit_pr
+        self.keep_worktree = keep_worktree
         self.max_audit_cycles = max_audit_cycles
         self.thread_id = thread_id or f"pipeline-{int(time.time())}"
         self.verification_commands = list(verification_commands or [])
@@ -456,8 +458,12 @@ class Pipeline:
                     started,
                     submit_url="",
                 )
-        ok, error = self.stage_cleanup(worktree)
-        self.log("cleanup", "removed" if ok else f"FAILED: {error}")
+        ok = False
+        if self.keep_worktree:
+            self.log("cleanup", "retained")
+        else:
+            ok, error = self.stage_cleanup(worktree)
+            self.log("cleanup", "removed" if ok else f"FAILED: {error}")
         return self._result(
             APPROVED,
             worktree,

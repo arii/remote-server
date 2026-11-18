@@ -394,6 +394,41 @@ class TestSpendCapGate(unittest.TestCase):
 class TestBuildChatModel(unittest.TestCase):
     """Container-correct constructor (#1103): no bare ChatOllama."""
 
+    def test_ollama_context_env_and_explicit_override(self):
+        try:
+            import langchain_ollama  # noqa: F401
+        except ImportError:
+            self.skipTest("langchain-ollama is required")
+        spec = {"provider": "ollama", "model": "qwen3:8b", "base_url": "http://x"}
+        for value, explicit, expected in (
+            ("", None, None),
+            ("16384", None, 16384),
+            ("16384", 8192, 8192),
+        ):
+            with (
+                self.subTest(value=value, explicit=explicit),
+                env(OLLAMA_NUM_CTX=value),
+            ):
+                model, _ = model_router.build_chat_model(spec=spec, num_ctx=explicit)
+                self.assertEqual(model.num_ctx, expected)
+                self.assertEqual(
+                    model._chat_params([])["options"].get("num_ctx"), expected
+                )
+
+    def test_invalid_ollama_context_is_rejected(self):
+        try:
+            import langchain_ollama  # noqa: F401
+        except ImportError:
+            self.skipTest("langchain-ollama is required")
+        spec = {"provider": "ollama", "model": "qwen3:8b", "base_url": "http://x"}
+        for value in ("bad", "0", "-1"):
+            with (
+                self.subTest(value=value),
+                env(OLLAMA_NUM_CTX=value),
+                self.assertRaisesRegex(ValueError, "OLLAMA_NUM_CTX"),
+            ):
+                model_router.build_chat_model(spec=spec)
+
     def test_real_ollama_no_think(self):
         try:
             from langchain_ollama import ChatOllama

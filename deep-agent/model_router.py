@@ -17,6 +17,7 @@ logs; the caller passes its own key to ChatOpenAI from the environment.
 Env contract:
   ASK_MODEL (default qwen3:8b), OLLAMA_URL (default http://ollama:11434),
   S5_LOCAL_ONLY=1 (Ollama only; reject cloud models and remote overrides),
+  OLLAMA_NUM_CTX (optional Ollama context window; server default when unset),
   NEBIUS_MODEL (default zai-org/GLM-5.3-Flash),
   NEBIUS_BASE_URL (default https://api.tokenfactory.nebius.com/v1),
   NEBIUS_API_KEY (required for the nebius path),
@@ -419,6 +420,13 @@ def build_chat_model(spec=None, think=False, num_ctx=None):
         from langchain_ollama import ChatOllama  # noqa: E402
 
         kwargs["reasoning"] = think
+        if num_ctx is None and _env("OLLAMA_NUM_CTX"):
+            try:
+                num_ctx = int(_env("OLLAMA_NUM_CTX"))
+            except ValueError as exc:
+                raise ValueError("OLLAMA_NUM_CTX must be a positive integer") from exc
+            if num_ctx <= 0:
+                raise ValueError("OLLAMA_NUM_CTX must be a positive integer")
         if num_ctx is not None:
             kwargs["num_ctx"] = num_ctx
         return ChatOllama(**kwargs), spec

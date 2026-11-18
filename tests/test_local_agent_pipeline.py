@@ -123,6 +123,58 @@ class TestSpecOutput(unittest.TestCase):
 
 
 class TestPipelineContracts(unittest.TestCase):
+    def test_pipeline_cli_accepts_upfront_answers_and_keep_worktree(self):
+        with tempfile.TemporaryDirectory() as root:
+            qna = Path(root) / "answers.json"
+            qna.write_text(json.dumps({"Scope?": "Only the helper"}), encoding="utf-8")
+            with (
+                mock.patch.object(pipeline, "Pipeline") as factory,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                factory.return_value.run.return_value = {"status": "APPROVED"}
+                result = cli.main(
+                    [
+                        "run-pipeline",
+                        "--repo",
+                        root,
+                        "--intent",
+                        "fix",
+                        "--keep-worktree",
+                        "--qna-file",
+                        str(qna),
+                    ]
+                )
+            self.assertEqual(result, 0)
+            self.assertEqual(
+                factory.call_args.kwargs["answers"], {"Scope?": "Only the helper"}
+            )
+            self.assertTrue(factory.call_args.kwargs["keep_worktree"])
+
+    def test_pipeline_cli_rejects_invalid_answers(self):
+        with tempfile.TemporaryDirectory() as root:
+            qna = Path(root) / "answers.json"
+            for value in ("[]", "not json"):
+                qna.write_text(value, encoding="utf-8")
+                with (
+                    mock.patch.object(pipeline, "Pipeline") as factory,
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    self.assertNotEqual(
+                        cli.main(
+                            [
+                                "run-pipeline",
+                                "--repo",
+                                root,
+                                "--intent",
+                                "fix",
+                                "--qna-file",
+                                str(qna),
+                            ]
+                        ),
+                        0,
+                    )
+                factory.assert_not_called()
+
     def test_worktree_contains_completed_spec(self):
         """The spec belongs in the implementation worktree so the PR ships it."""
         with tempfile.TemporaryDirectory() as root:

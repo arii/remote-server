@@ -9,6 +9,7 @@ test skips when no td binary is on PATH.
 import os
 import shutil
 import unittest
+from unittest import mock
 
 import pipeline as pipeline_mod
 from backend.tests.agent_control_case import AgentControlTestCase
@@ -146,6 +147,15 @@ class TestPreviewUrlThreading(unittest.TestCase):
 
 
 class TestRouting(AgentControlTestCase):
+    def test_keep_worktree_skips_cleanup(self):
+        pipe = ScriptedPipeline([pipeline_mod.APPROVED], keep_worktree=True)
+        with mock.patch.object(pipe, "stage_cleanup") as cleanup:
+            result = pipe.run()
+        cleanup.assert_not_called()
+        self.assertEqual(result["status"], pipeline_mod.APPROVED)
+        self.assertFalse(result["cleaned"])
+        self.assertEqual(result["worktree"], "/tmp/wt-1")
+
     def test_approved_submits_and_cleans(self):
         pipe = ScriptedPipeline([pipeline_mod.APPROVED], submit_pr=True)
         result = pipe.run()
