@@ -16,7 +16,7 @@ Every spec issue generated must contain these exact Markdown headers:
 1. `## Problem Statement`: Must cite exact existing file paths and line numbers (`file.py#L12-L34`) identified during investigation.
 2. `## Goal`: Single paragraph describing the target functional state.
 3. `## Scope & File Boundaries`:
-   - `### Allowed Files (Create / Modify / Delete)`: Explicit list of file paths. No wildcards in write scopes.
+   - `### Allowed Files (Create / Modify / Delete)`: Explicit list of repo-relative file paths only. No URLs, protocol-relative links (`//host`), absolute paths, or wildcards. Do not put commit citations or links in this section, including beside a valid path; put those in a separate References section.
    - `### Forbidden Files`: Explicit list of critical infrastructure or out-of-scope files.
 4. `## Implementation Plan`: Numbered step-by-step technical plan.
 5. `## Definition of Done`: Concrete, measurable completion conditions.

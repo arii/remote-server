@@ -176,6 +176,73 @@ class TestSpecTemplate(unittest.TestCase):
         self.assertTrue(json.loads(result.stdout)["valid"])
 
 
+class TestScopeURLs(unittest.TestCase):
+    def test_allowed_urls_removed_but_reference_links_preserved(self):
+        draft = (
+            "## Scope\n### Allowed Files\n- `widget.py`\n"
+            "- https://github.com/org/repo/commit/123\n"
+            "- `//github.com/org/repo`\n"
+            "- [commit](http://example.org/commit/123)\n"
+            "## References\nhttps://github.com/org/repo/commit/123\n"
+        )
+        cleaned = issue_generator.clean_allowed_file_urls(draft)
+        scope, references = cleaned.split("## References")
+        self.assertEqual(scope, "## Scope\n### Allowed Files\n- `widget.py`\n")
+        self.assertIn("https://github.com", references)
+        model = mock.Mock()
+        model.invoke.return_value = types.SimpleNamespace(content=draft)
+        graph = issue_generator.IssueGeneratorGraph("/tmp", model_fn=lambda: model)
+        self.assertEqual(graph.draft_text("task", "", [], {}), cleaned)
+        self.assertEqual(issue_generator.completed_spec({"draft": draft}), cleaned)
+
+    def test_empty_and_plain_scope_unchanged(self):
+        for text in (
+            "",
+            "### Allowed Files\n- `dir//widget.py`\n",
+            "## References\n//github.com/org/repo\n",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(issue_generator.clean_allowed_file_urls(text), text)
+
+    def test_validation_omits_citations_without_rewriting_commands(self):
+        captured = []
+
+        def td(args):
+            captured.append(Path(args[args.index("--file") + 1]).read_text())
+            return 0, json.dumps({"valid": True, "errors": []})
+
+        graph = issue_generator.IssueGeneratorGraph("/tmp", td_runner=td)
+        text = "## References\nhttps://github.com/org/repo\n## Verification Commands\n```bash\ncurl https://example.org/status\n```\n"
+        self.assertTrue(graph.validate_spec(text)[0])
+        self.assertNotIn("github.com", captured[0])
+        self.assertIn("curl https://example.org/status", captured[0])
+        self.assertIn("https://github.com", text)
+
+    @unittest.skipUnless(shutil.which("td"), "td CLI not installed")
+    def test_real_validator_ignores_citations_but_rejects_missing_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "widget.py").write_text("pass\n", encoding="utf-8")
+            graph = issue_generator.IssueGeneratorGraph(root)
+            for path, expected in (("widget.py", True), ("missing.py", False)):
+                text = (
+                    "## Problem Statement\nFix behavior.\n## Goal\nCorrect behavior.\n"
+                    f"## Scope\n### Allowed Files\n- `{path}`\n"
+                    "- https://github.com/org/repo/commit/123\n- `//example.org/commit/456`\n"
+                    "## Definition of Done\nBehavior corrected.\n"
+                    "## Acceptance Criteria\n- [ ] Behavior verified.\n"
+                    "## Verification Commands\n```bash\npython -m unittest\n```\n"
+                    "## References\nhttps://github.com/org/repo/commit/123\n//example.org/commit/456\n"
+                )
+                valid, data, errors = graph.validate_spec(text)
+                with self.subTest(path=path):
+                    self.assertEqual(valid, expected, errors)
+                    self.assertEqual(data["allowed_files"], [path])
+                    if not expected:
+                        self.assertIn(
+                            "allowed path not in checkout: missing.py", errors[0]
+                        )
+
+
 class TestInvestigationEvidence(unittest.TestCase):
     def evidence(self, messages, limit=None):
         agent = mock.Mock()
@@ -186,6 +253,8 @@ class TestInvestigationEvidence(unittest.TestCase):
         langchain.agents = agents
         middleware = types.ModuleType("langchain.agents.middleware")
         middleware.wrap_tool_call = lambda fn: fn
+        messages_module = types.ModuleType("langchain_core.messages")
+        messages_module.ToolMessage = lambda **kwargs: types.SimpleNamespace(**kwargs)
         investigator = types.ModuleType("ask_investigator")
         investigator._checkout = "/original"
         graph = issue_generator.IssueGeneratorGraph("/tmp", model_fn=lambda: object())
@@ -196,6 +265,7 @@ class TestInvestigationEvidence(unittest.TestCase):
                     "langchain": langchain,
                     "langchain.agents": agents,
                     "langchain.agents.middleware": middleware,
+                    "langchain_core.messages": messages_module,
                     "ask_investigator": investigator,
                 },
             ),
@@ -223,19 +293,27 @@ class TestInvestigationEvidence(unittest.TestCase):
             with self.subTest(limit=limit), self.assertRaises(ValueError):
                 self.evidence([], limit=limit)
 
-    def test_duplicate_call_stops_before_second_execution(self):
+    def test_duplicate_calls_warn_twice_then_stop_without_reexecution(self):
         self.evidence([])
         handler = mock.Mock(return_value="result")
 
         def request(name, args):
-            return types.SimpleNamespace(tool_call={"name": name, "args": args})
+            return types.SimpleNamespace(
+                tool_call={"name": name, "args": args, "id": "call-id"}
+            )
 
         self.guard(
             request("read_repo_file", {"path": "widget.py", "offset": 0}), handler
         )
-        with self.assertRaisesRegex(RuntimeError, "Repeated investigation tool call"):
-            self.guard(
+        for _ in range(2):
+            warning = self.guard(
                 request("read_repo_file", {"offset": 0, "path": "widget.py"}), handler
+            )
+            self.assertIn("Already called with these args", warning.content)
+            self.assertEqual(warning.tool_call_id, "call-id")
+        with self.assertRaisesRegex(RuntimeError, "3 repeats"):
+            self.guard(
+                request("read_repo_file", {"path": "widget.py", "offset": 0}), handler
             )
         handler.assert_called_once()
         self.guard(
@@ -244,18 +322,50 @@ class TestInvestigationEvidence(unittest.TestCase):
         self.guard(request("grep_repo", {"path": "widget.py", "offset": 0}), handler)
         self.assertEqual(handler.call_count, 3)
 
+    def test_repeat_budget_counts_across_different_tools(self):
+        self.evidence([])
+        handler = mock.Mock()
+        first = types.SimpleNamespace(
+            tool_call={
+                "name": "read_repo_file",
+                "args": {"path": "widget.py"},
+                "id": "first",
+            }
+        )
+        second = types.SimpleNamespace(
+            tool_call={
+                "name": "grep_repo",
+                "args": {"pattern": "helper"},
+                "id": "second",
+            }
+        )
+        self.guard(first, handler)
+        self.guard(second, handler)
+        self.guard(first, handler)
+        self.guard(second, handler)
+        with self.assertRaisesRegex(RuntimeError, "3 repeats"):
+            self.guard(first, handler)
+        self.assertEqual(handler.call_count, 2)
+
     def test_guard_is_scoped_to_one_investigation(self):
         call = types.SimpleNamespace(
-            tool_call={"name": "grep_repo", "args": {"pattern": "helper"}}
+            tool_call={
+                "name": "grep_repo",
+                "args": {"pattern": "helper"},
+                "id": "call-id",
+            }
         )
         handler = mock.Mock()
         self.evidence([])
         self.guard(call, handler)
+        self.guard(call, handler)
+        self.guard(call, handler)
         self.evidence([])
+        self.guard(call, handler)
         self.guard(call, handler)
         self.assertEqual(handler.call_count, 2)
 
-    def test_real_agent_propagates_duplicate_call_and_restores_checkout(self):
+    def test_real_agent_can_use_warning_and_stops_on_third_repeat(self):
         try:
             import langchain.agents  # noqa: F401
             from langchain_core.language_models.fake_chat_models import (
@@ -278,27 +388,42 @@ class TestInvestigationEvidence(unittest.TestCase):
             calls.append(path)
             return "file contents"
 
-        model = ScriptedModel(
-            responses=[
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {"name": "lookup", "args": {"path": "widget.py"}, "id": str(i)}
-                    ],
-                )
-                for i in range(2)
-            ]
-        )
-        graph = issue_generator.IssueGeneratorGraph("/tmp", model_fn=lambda: model)
-        investigator = types.SimpleNamespace(_checkout="/original")
-        with (
-            mock.patch.dict(sys.modules, {"ask_investigator": investigator}),
-            mock.patch.object(graph, "_investigator_tools", return_value=[lookup]),
-            self.assertRaisesRegex(RuntimeError, "Repeated investigation tool call"),
-        ):
-            graph.investigate_text("task", "draft")
-        self.assertEqual(calls, ["widget.py"])
-        self.assertEqual(investigator._checkout, "/original")
+        for call_count in (2, 4):
+            model = ScriptedModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "lookup",
+                                "args": {"path": "widget.py"},
+                                "id": str(i),
+                            }
+                        ],
+                    )
+                    for i in range(call_count)
+                ]
+                + [AIMessage(content="widget.py:1 evidence")]
+            )
+            graph = issue_generator.IssueGeneratorGraph(
+                "/tmp", model_fn=lambda model=model: model
+            )
+            investigator = types.SimpleNamespace(_checkout="/original")
+            calls.clear()
+            with (
+                self.subTest(call_count=call_count),
+                mock.patch.dict(sys.modules, {"ask_investigator": investigator}),
+                mock.patch.object(graph, "_investigator_tools", return_value=[lookup]),
+            ):
+                if call_count == 4:
+                    with self.assertRaisesRegex(RuntimeError, "3 repeats"):
+                        graph.investigate_text("task", "draft")
+                else:
+                    self.assertEqual(
+                        graph.investigate_text("task", "draft"), "widget.py:1 evidence"
+                    )
+            self.assertEqual(calls, ["widget.py"])
+            self.assertEqual(investigator._checkout, "/original")
 
     def test_only_final_assistant_evidence_enters_spec(self):
         messages = [

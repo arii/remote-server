@@ -30,22 +30,54 @@ REQUIRED_SECTIONS = (
 
 MAX_LOOPS_DEFAULT = 5
 SPEC_RECURSION_LIMIT_DEFAULT = 25
+_URL_RE = re.compile(
+    r"https?://[^\s`<>()[\]]+|(?<![\w:/])//[^\s`<>()[\]]+", re.IGNORECASE
+)
+
+
+def clean_allowed_file_urls(text):
+    lines = []
+    allowed = False
+    for line in text.splitlines(keepends=True):
+        heading = re.match(r"^\s*#{1,6}\s+(.+)", line)
+        if heading:
+            allowed = heading[1].lower().startswith(("allowed files", "allowed paths"))
+        elif allowed and _URL_RE.search(line):
+            line = _URL_RE.sub("", line)
+            line = re.sub(r"\[[^\]]*\]\(\s*\)", "", line)
+            line = re.sub(r"`{2,}", "", line)
+            if not line.strip(" \t\r\n-*+`[]()"):
+                continue
+        lines.append(line)
+    return "".join(lines)
 
 
 def investigation_tool_guard():
     from langchain.agents.middleware import wrap_tool_call
+    from langchain_core.messages import ToolMessage
 
     seen = set()
+    repeats = 0
     lock = Lock()
 
     @wrap_tool_call
     def stop_repeated_call(request, handler):
+        nonlocal repeats
         call = request.tool_call
         key = (call["name"], json.dumps(call["args"], sort_keys=True))
         with lock:
             if key in seen:
-                raise RuntimeError(
-                    f"Repeated investigation tool call: {key[0]} {key[1]}"
+                repeats += 1
+                if repeats >= 3:
+                    raise RuntimeError(
+                        "Repeated investigation tool call limit reached (3 repeats): "
+                        f"{key[0]} {key[1]}"
+                    )
+                return ToolMessage(
+                    content="Already called with these args; result was shown earlier "
+                    "— use it or call a different tool.",
+                    tool_call_id=call["id"],
+                    status="error",
                 )
             seen.add(key)
         return handler(request)
@@ -62,7 +94,9 @@ def completed_spec(state):
             "## Q&A Context\n"
             + "\n".join(f"- **{k}**: {v}" for k, v in sorted(state["answers"].items()))
         )
-    return "\n\n".join(part for part in parts if part).rstrip() + "\n"
+    return clean_allowed_file_urls(
+        "\n\n".join(part for part in parts if part).rstrip() + "\n"
+    )
 
 
 def write_spec(path, text):
@@ -201,12 +235,16 @@ class IssueGeneratorGraph:
         return True, payload
 
     def validate_spec(self, spec_text):
-        """Validate via td validate-issue; return (valid, data, errors)."""
+        """Validate citation-free scope text, preserving commands and stored links."""
         handle = tempfile.NamedTemporaryFile(
             mode="w", suffix=".md", delete=False, encoding="utf-8"
         )
         try:
-            handle.write(spec_text)
+            in_fence = False
+            for line in clean_allowed_file_urls(spec_text).splitlines(keepends=True):
+                if line.strip().startswith("```"):
+                    in_fence = not in_fence
+                handle.write(line if in_fence else _URL_RE.sub("", line))
             handle.close()
             try:
                 code, out = self.td_runner(
@@ -349,7 +387,8 @@ class IssueGeneratorGraph:
             "draft_spec_node", prompt
         )
         reply = model.invoke(prompt)
-        return getattr(reply, "content", reply) if not isinstance(reply, str) else reply
+        text = getattr(reply, "content", reply) if not isinstance(reply, str) else reply
+        return clean_allowed_file_urls(text)
 
     def investigate_text(self, brief, draft):
         """One investigate pass (LLM + tools). Tests inject this."""
