@@ -4,6 +4,9 @@ import contextlib
 import io
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -17,6 +20,7 @@ import coder
 import issue_generator
 import model_router
 import pipeline
+import skills_registry
 
 from backend import review
 
@@ -124,14 +128,64 @@ class TestSpecOutput(unittest.TestCase):
             self.assertNotEqual(self.run_cli({"valid": True, "draft": "design"}), 0)
 
 
+class TestSpecTemplate(unittest.TestCase):
+    def headers(self):
+        prompt = skills_registry.SkillsRegistry().inject_skills_for_node(
+            "draft_spec_node", ""
+        )
+        return re.findall(r"`(#{1,3} [^`]+)`", prompt)
+
+    def test_injected_template_has_validator_required_headers(self):
+        headers = self.headers()
+        for required in issue_generator.REQUIRED_SECTIONS:
+            with self.subTest(required=required):
+                self.assertTrue(any(required.lower() in h.lower() for h in headers))
+
+    @unittest.skipUnless(shutil.which("td"), "td CLI not installed")
+    def test_template_sections_pass_real_td_validator(self):
+        sections = []
+        for header in self.headers():
+            content = "Specified behavior."
+            if "Allowed Files" in header:
+                content = "- `widget.py`"
+            elif "Acceptance Criteria" in header:
+                content = "- [ ] Specified behavior is verified."
+            elif "Verification Commands" in header:
+                content = "```bash\npython -m unittest\n```"
+            sections.append(header + "\n" + content)
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "widget.py").write_text("pass\n", encoding="utf-8")
+            spec = Path(root, "spec.md")
+            spec.write_text("\n\n".join(sections), encoding="utf-8")
+            result = subprocess.run(
+                [
+                    "td",
+                    "validate-issue",
+                    "--file",
+                    str(spec),
+                    "--repo-root",
+                    root,
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(json.loads(result.stdout)["valid"])
+
+
 class TestInvestigationEvidence(unittest.TestCase):
-    def evidence(self, messages):
+    def evidence(self, messages, limit=None):
         agent = mock.Mock()
         agent.invoke.return_value = {"messages": messages}
         agents = types.ModuleType("langchain.agents")
         agents.create_agent = mock.Mock(return_value=agent)
         langchain = types.ModuleType("langchain")
         langchain.agents = agents
+        middleware = types.ModuleType("langchain.agents.middleware")
+        middleware.wrap_tool_call = lambda fn: fn
         investigator = types.ModuleType("ask_investigator")
         investigator._checkout = "/original"
         graph = issue_generator.IssueGeneratorGraph("/tmp", model_fn=lambda: object())
@@ -141,14 +195,110 @@ class TestInvestigationEvidence(unittest.TestCase):
                 {
                     "langchain": langchain,
                     "langchain.agents": agents,
+                    "langchain.agents.middleware": middleware,
                     "ask_investigator": investigator,
                 },
             ),
             mock.patch.object(graph, "_investigator_tools", return_value=[]),
+            mock.patch.dict(os.environ),
         ):
+            os.environ.pop("S5_SPEC_RECURSION_LIMIT", None)
+            if limit is not None:
+                os.environ["S5_SPEC_RECURSION_LIMIT"] = limit
             result = graph.investigate_text("task", "backend/repair_worker.py draft")
         self.assertEqual(investigator._checkout, "/original")
+        agent.invoke.assert_called_once()
+        self.assertEqual(
+            agent.invoke.call_args.kwargs["config"]["recursion_limit"],
+            int(limit) if limit is not None else 25,
+        )
+        self.guard = agents.create_agent.call_args.kwargs["middleware"][0]
         return result
+
+    def test_recursion_limit_env_override(self):
+        self.evidence([], limit="7")
+
+    def test_invalid_recursion_limit(self):
+        for limit in ("0", "-1", "bad"):
+            with self.subTest(limit=limit), self.assertRaises(ValueError):
+                self.evidence([], limit=limit)
+
+    def test_duplicate_call_stops_before_second_execution(self):
+        self.evidence([])
+        handler = mock.Mock(return_value="result")
+
+        def request(name, args):
+            return types.SimpleNamespace(tool_call={"name": name, "args": args})
+
+        self.guard(
+            request("read_repo_file", {"path": "widget.py", "offset": 0}), handler
+        )
+        with self.assertRaisesRegex(RuntimeError, "Repeated investigation tool call"):
+            self.guard(
+                request("read_repo_file", {"offset": 0, "path": "widget.py"}), handler
+            )
+        handler.assert_called_once()
+        self.guard(
+            request("read_repo_file", {"path": "widget.py", "offset": 100}), handler
+        )
+        self.guard(request("grep_repo", {"path": "widget.py", "offset": 0}), handler)
+        self.assertEqual(handler.call_count, 3)
+
+    def test_guard_is_scoped_to_one_investigation(self):
+        call = types.SimpleNamespace(
+            tool_call={"name": "grep_repo", "args": {"pattern": "helper"}}
+        )
+        handler = mock.Mock()
+        self.evidence([])
+        self.guard(call, handler)
+        self.evidence([])
+        self.guard(call, handler)
+        self.assertEqual(handler.call_count, 2)
+
+    def test_real_agent_propagates_duplicate_call_and_restores_checkout(self):
+        try:
+            import langchain.agents  # noqa: F401
+            from langchain_core.language_models.fake_chat_models import (
+                FakeMessagesListChatModel,
+            )
+            from langchain_core.messages import AIMessage
+            from langchain_core.tools import tool
+        except ImportError:
+            self.skipTest("agent dependencies not installed")
+
+        class ScriptedModel(FakeMessagesListChatModel):
+            def bind_tools(self, tools, **kwargs):
+                return self
+
+        calls = []
+
+        @tool
+        def lookup(path: str) -> str:
+            """Read a repository file."""
+            calls.append(path)
+            return "file contents"
+
+        model = ScriptedModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "lookup", "args": {"path": "widget.py"}, "id": str(i)}
+                    ],
+                )
+                for i in range(2)
+            ]
+        )
+        graph = issue_generator.IssueGeneratorGraph("/tmp", model_fn=lambda: model)
+        investigator = types.SimpleNamespace(_checkout="/original")
+        with (
+            mock.patch.dict(sys.modules, {"ask_investigator": investigator}),
+            mock.patch.object(graph, "_investigator_tools", return_value=[lookup]),
+            self.assertRaisesRegex(RuntimeError, "Repeated investigation tool call"),
+        ):
+            graph.investigate_text("task", "draft")
+        self.assertEqual(calls, ["widget.py"])
+        self.assertEqual(investigator._checkout, "/original")
 
     def test_only_final_assistant_evidence_enters_spec(self):
         messages = [

@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from threading import Lock
 
 import skills_registry
 
@@ -28,6 +29,28 @@ REQUIRED_SECTIONS = (
 )
 
 MAX_LOOPS_DEFAULT = 5
+SPEC_RECURSION_LIMIT_DEFAULT = 25
+
+
+def investigation_tool_guard():
+    from langchain.agents.middleware import wrap_tool_call
+
+    seen = set()
+    lock = Lock()
+
+    @wrap_tool_call
+    def stop_repeated_call(request, handler):
+        call = request.tool_call
+        key = (call["name"], json.dumps(call["args"], sort_keys=True))
+        with lock:
+            if key in seen:
+                raise RuntimeError(
+                    f"Repeated investigation tool call: {key[0]} {key[1]}"
+                )
+            seen.add(key)
+        return handler(request)
+
+    return stop_repeated_call
 
 
 def completed_spec(state):
@@ -335,7 +358,21 @@ class IssueGeneratorGraph:
         import ask_investigator
         from langchain.agents import create_agent
 
-        agent = create_agent(self._model(), self._investigator_tools())
+        try:
+            limit = int(
+                os.environ.get("S5_SPEC_RECURSION_LIMIT", SPEC_RECURSION_LIMIT_DEFAULT)
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "S5_SPEC_RECURSION_LIMIT must be a positive integer"
+            ) from exc
+        if limit <= 0:
+            raise ValueError("S5_SPEC_RECURSION_LIMIT must be a positive integer")
+        agent = create_agent(
+            self._model(),
+            self._investigator_tools(),
+            middleware=[investigation_tool_guard()],
+        )
         previous = ask_investigator._checkout
         ask_investigator._checkout = self.repo_root
         try:
@@ -353,7 +390,8 @@ class IssueGeneratorGraph:
                             "content.",
                         }
                     ]
-                }
+                },
+                config={"recursion_limit": limit},
             )
         finally:
             ask_investigator._checkout = previous

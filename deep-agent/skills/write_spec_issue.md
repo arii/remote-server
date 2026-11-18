@@ -14,13 +14,14 @@ trigger_nodes:
 ## 2. Mandatory Structural Sections
 Every spec issue generated must contain these exact Markdown headers:
 1. `## Problem Statement`: Must cite exact existing file paths and line numbers (`file.py#L12-L34`) identified during investigation.
-2. `## Objective`: Single paragraph describing the target functional state.
+2. `## Goal`: Single paragraph describing the target functional state.
 3. `## Scope & File Boundaries`:
    - `### Allowed Files (Create / Modify / Delete)`: Explicit list of file paths. No wildcards in write scopes.
    - `### Forbidden Files`: Explicit list of critical infrastructure or out-of-scope files.
 4. `## Implementation Plan`: Numbered step-by-step technical plan.
-5. `## Acceptance Criteria`: Unchecked markdown checklist (`- [ ]`) verifying every required functional behavior.
-6. `## Verification Commands`: A single fenced bash code block containing non-empty, executable test and lint commands that exit with code 0 on success.
+5. `## Definition of Done`: Concrete, measurable completion conditions.
+6. `## Acceptance Criteria`: Unchecked markdown checklist (`- [ ]`) verifying every required functional behavior.
+7. `## Verification Commands`: A single fenced bash code block containing non-empty, executable test and lint commands that exit with code 0 on success.
 
 ## 3. Repair Protocol on Validation Failure
 When `td validate-issue` returns `valid == false`:
