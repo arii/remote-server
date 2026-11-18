@@ -20,6 +20,7 @@ from pathlib import Path
 from threading import Lock
 
 import skills_registry
+from s5tools import verification_guidance
 
 REQUIRED_SECTIONS = (
     "Problem Statement",
@@ -385,6 +386,7 @@ class IssueGeneratorGraph:
             "relevant to the task and quote it — a spec that cites no "
             "repo file is rejected outright. Ask any blocking "
             "questions as a trailing bulleted list of questions.\n\n"
+            f"{verification_guidance()}\n\n"
             f"Task: {brief}\n\nContext:\n{context}\n"
         )
         if errors:

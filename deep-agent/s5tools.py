@@ -90,6 +90,22 @@ def allowed_commands_text():
     )
 
 
+def verification_guidance():
+    heads = ", ".join(" ".join(p) for p in CHECK_PREFIXES)
+    return (
+        "Verification policy for run_check (overrides commands suggested in the issue):\n"
+        f"Allowed command heads: {heads}; python3 tests/test_NAME.py; "
+        "python3 -m unittest backend.tests.test_NAME "
+        "(optionally prefixed with PYTHONPATH=./deep-agent).\n"
+        "Replace NAME with an existing test module; read the repository's tests first. "
+        "For backend Python changes prefer targeted python3 -m unittest "
+        "backend.tests.test_NAME or python3 -m pytest with existing test paths. "
+        "Run one command per call, without shell operators. "
+        "Do not use npm run test:backend, arbitrary npm scripts, or dependency installs. "
+        "Git inspection alone does not verify an implementation."
+    )
+
+
 def parse_check_command(command):
     argv = shlex.split(command)
     if not argv or not check_allowed(argv):

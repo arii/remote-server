@@ -21,10 +21,10 @@ Every spec issue generated must contain these exact Markdown headers:
 4. `## Implementation Plan`: Numbered step-by-step technical plan.
 5. `## Definition of Done`: Concrete, measurable completion conditions.
 6. `## Acceptance Criteria`: Unchecked markdown checklist (`- [ ]`) verifying every required functional behavior.
-7. `## Verification Commands`: A single fenced bash code block containing non-empty, executable test and lint commands that exit with code 0 on success.
+7. `## Verification Commands`: A single fenced bash code block containing non-empty, executable test and lint commands accepted by the injected run_check verification policy. Use existing repository test paths/modules, one command per line. For backend Python changes prefer targeted `python3 -m unittest backend.tests.test_NAME` (replace NAME with an existing module) or `python3 -m pytest` with existing test paths. Never copy an unsupported command from the issue, use arbitrary npm scripts, or install dependencies.
 
 ## 3. Repair Protocol on Validation Failure
 When `td validate-issue` returns `valid == false`:
 - Inspect `validation_result["errors"]`.
 - If an allowed file does not exist on disk and is not marked `(CREATE)`, correct the path using findings from `codebase_investigator_node`.
-- If verification commands are missing or non-executable, look up the repository's `project_config.json` test scripts and supply the exact command.
+- If verification commands are missing, non-executable, or rejected, inspect existing repository tests and supply an exact command accepted by the injected run_check verification policy. Do not change flags repeatedly to bypass a rejection.

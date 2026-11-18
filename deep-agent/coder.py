@@ -54,6 +54,7 @@ from s5tools import (  # noqa: E402,F401
     check_allowed,
     check_env,
     parse_check_command,
+    verification_guidance,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -93,13 +94,17 @@ VERIFY_NUDGE = (
     "do not finish without a passing run."
 )
 
-CODER_RULES = """You are implementing the task below in the checkout at {worktree}. Rules:
+CODER_RULES = (
+    """You are implementing the task below in the checkout at {worktree}. Rules:
 - File paths are repo-relative like frontend/src/views/NowView.tsx; never use absolute paths or a leading /.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
 - Verify with run_check (the touched area's tests/lint) before finishing.
 - Do NOT commit, push, or open PRs; leave changes in the working tree.
 - End with a short summary: files changed + verification run, then a final DONE #<issue> or BLOCKED #<issue> line."""
+    + "\n\n"
+    + verification_guidance()
+)
 
 # Plan-then-implement (#654): deterministic multi-file bar, no LLM
 # judge. CODER_PLAN=always forces planning, =never skips it.
@@ -118,7 +123,8 @@ FILE_TOKEN_RE = re.compile(
 URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 PROSE_ABBREVS = frozenset({"e.g", "i.e"})
 
-PLAN_PROMPT = """Before writing any code, produce an implementation plan for the task below. Call the propose_plan tool exactly once with your plan, then stop. Do not call any other tool. Do not write or edit any file.
+PLAN_PROMPT = (
+    """Before writing any code, produce an implementation plan for the task below. Call the propose_plan tool exactly once with your plan, then stop. Do not call any other tool. Do not write or edit any file.
 
 Plan shape — numbered steps; each step names its files and its checks:
 PLAN:
@@ -127,6 +133,9 @@ PLAN:
 
 Task:
 {brief}"""
+    + "\n\n"
+    + verification_guidance()
+)
 
 # Replan/runbook skill for the plan + validated_replanner loop. The
 # registry tolerates a missing skills dir (worktrees), yielding PLAN_PROMPT
@@ -251,6 +260,7 @@ def _default_plan_fn(brief, worktree_root, context):
         "Reply with a numbered step list, one step per line, each "
         "naming its files like [files: path1, path2]. "
         "Keep it to the brief; no questions."
+        f"\n\n{verification_guidance()}"
         f"{skills_block}"
         f"\n\nBrief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
     )
