@@ -141,14 +141,14 @@ def _remote_spec(provider, model, base_url):
             # the models (card or METERED_RATE_* override) to lift.
             raise RuntimeError(
                 f"{provider.title()} spend cap unverifiable: {total['unknown']} "
-                "metered run(s) have no rate — add a rate card entry "
+                "metered run(s) have no rate; add a rate card entry "
                 "or set METERED_RATE_IN_PER_1M/METERED_RATE_OUT_PER_1M"
             )
         spent = total["spent"]
         if spent >= cap:
             raise RuntimeError(
                 f"{provider.title()} spend cap hit: ${spent:.4f} of ${cap:.4f} "
-                "used — raise NEBIUS_SPEND_CAP_USD to continue"
+                "used; raise NEBIUS_SPEND_CAP_USD to continue"
             )
     return spec
 
@@ -206,6 +206,9 @@ def resolve_llm(prefer=None):
         _announce_fallback(spec)
         return spec
     logger.info("OpenRouter skipped: OPENROUTER_API_KEY is unset")
+    print(
+        "model_router: OpenRouter skipped: OPENROUTER_API_KEY is unset", file=sys.stderr
+    )
     spec = _nebius_spec()
     _announce_fallback(spec)
     return spec
@@ -361,7 +364,7 @@ def chat_kwargs(spec):
         }
         if spec["provider"] == "nebius":
             # #1040: leave output budget for visible answers.
-            kwargs["reasoning_effort"] = "low"
+            kwargs.update({"reasoning_effort": "low"})
         return kwargs
     raise ValueError(f"bad spec provider: {spec.get('provider')!r}")
 

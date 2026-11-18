@@ -279,9 +279,9 @@ def main() -> int:
         # the dotenv load, and a blank NEBIUS_MODEL must fall back to the
         # pin.
         model_id = (
-            model_router._env("NEBIUS_MODEL", MODEL_ID)
-            if provider == "nebius"
-            else spec["model"]
+            spec["model"]
+            if provider == "openrouter"
+            else model_router._env("NEBIUS_MODEL", MODEL_ID)
         )
         if not model_id:
             print(

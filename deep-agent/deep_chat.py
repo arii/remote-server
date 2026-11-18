@@ -1852,7 +1852,7 @@ def main(argv=None) -> int:
     if len(argv) < 4 or not s5tools.valid_repo(argv[1]):
         return cli.usage_error(
             "usage: deep_chat.py owner/repo <thread-id> <b64-prompt>"
-            " [--prefer=ollama|openrouter|nebius]",
+            " [--prefer=ollama|nebius]",
             "   or: deep_chat.py owner/repo <thread-id> --resume "
             "approve|reject [b64-message]",
             "   or: deep_chat.py owner/repo --supervise",
