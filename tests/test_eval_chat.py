@@ -2,6 +2,7 @@
 langchain (eval_chat and deep_chat are stdlib-only at import; the
 @tool surface is inspected via ast). Run: python3
 tests/test_eval_chat.py"""
+
 import ast
 import json
 import os
@@ -44,54 +45,59 @@ def icase(**over):
     return base
 
 
-def entry(tools=(), usage=None, duration=1.0, mode="turn",
-          thread="eval-t"):
+def entry(tools=(), usage=None, duration=1.0, mode="turn", thread="eval-t"):
     return {
         "script": "deep_chat.py",
         "thread_id": thread,
         "tool_calls": [{"name": n, "args": ""} for n in tools],
-        "usage": {"input_tokens": 1, "output_tokens": 1,
-                  "total_tokens": 2} if usage is None else usage,
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        if usage is None
+        else usage,
         "duration_s": duration,
-        "extra": {"mode": mode,
-                  "decisions": [{"what": "w", "why": "y"}]},
+        "extra": {"mode": mode, "decisions": [{"what": "w", "why": "y"}]},
     }
 
 
 def blob(thread="eval-t", proposal=True):
-    value = {"action_requests": [{"args": {"kind": "issue"}}]} \
-        if proposal else {"note": "nothing validatable"}
-    return {"thread_id": thread,
-            "interrupts": [{"id": "i1", "value": value}]}
+    value = (
+        {"action_requests": [{"args": {"kind": "issue"}}]}
+        if proposal
+        else {"note": "nothing validatable"}
+    )
+    return {"thread_id": thread, "interrupts": [{"id": "i1", "value": value}]}
 
 
 def resume(code=0, answer="PROPOSE issue", out=None, timed_out=False):
-    return {"code": code, "out": answer if out is None else out,
-            "answer": answer, "timed_out": timed_out}
+    return {
+        "code": code,
+        "out": answer if out is None else out,
+        "answer": answer,
+        "timed_out": timed_out,
+    }
 
 
 class TestSessionFor(unittest.TestCase):
     def test_fits_thread_contract(self):
         for name in ("turn-docs", "propose-approve", "resume-thread"):
             self.assertTrue(
-                deep_chat.valid_thread_id(eval_chat.session_for(name)),
-                name)
+                deep_chat.valid_thread_id(eval_chat.session_for(name)), name
+            )
 
     def test_unique_per_call(self):
         seen = {eval_chat.session_for("t") for _ in range(20)}
         self.assertEqual(len(seen), 20)
 
     def test_derives_from_case_name(self):
-        self.assertIn("turn-docs",
-                      eval_chat.session_for("turn-docs"))
+        self.assertIn("turn-docs", eval_chat.session_for("turn-docs"))
 
 
 class TestExtractInterrupt(unittest.TestCase):
     def test_last_line_wins(self):
-        stdout = ('INTERRUPT: {"thread_id": "old", "interrupts": []}\n'
-                  'INTERRUPT: {"thread_id": "new", "interrupts": []}\n')
-        self.assertEqual(
-            eval_chat.extract_interrupt(stdout)["thread_id"], "new")
+        stdout = (
+            'INTERRUPT: {"thread_id": "old", "interrupts": []}\n'
+            'INTERRUPT: {"thread_id": "new", "interrupts": []}\n'
+        )
+        self.assertEqual(eval_chat.extract_interrupt(stdout)["thread_id"], "new")
 
     def test_missing_is_none(self):
         self.assertIsNone(eval_chat.extract_interrupt("just text\n"))
@@ -106,8 +112,8 @@ class TestExtractInterrupt(unittest.TestCase):
 class TestStripMarkers(unittest.TestCase):
     def test_drops_interrupt_lines(self):
         self.assertEqual(
-            eval_chat.strip_markers('text\nINTERRUPT: {"a": 1}\nmore'),
-            "text\nmore")
+            eval_chat.strip_markers('text\nINTERRUPT: {"a": 1}\nmore'), "text\nmore"
+        )
 
     def test_plain_text_untouched(self):
         self.assertEqual(eval_chat.strip_markers("  hi  "), "hi")
@@ -115,28 +121,27 @@ class TestStripMarkers(unittest.TestCase):
 
 class TestInterruptCarriesProposal(unittest.TestCase):
     def test_action_requests(self):
-        self.assertTrue(eval_chat.interrupt_carries_proposal(
-            blob(proposal=True)))
+        self.assertTrue(eval_chat.interrupt_carries_proposal(blob(proposal=True)))
 
     def test_bare_kind(self):
-        payload = {"thread_id": "t",
-                   "interrupts": [{"id": "i",
-                                   "value": {"kind": "td"}}]}
+        payload = {
+            "thread_id": "t",
+            "interrupts": [{"id": "i", "value": {"kind": "td"}}],
+        }
         self.assertTrue(eval_chat.interrupt_carries_proposal(payload))
 
     def test_empty_or_missing(self):
-        self.assertFalse(eval_chat.interrupt_carries_proposal(
-            blob(proposal=False)))
-        self.assertFalse(eval_chat.interrupt_carries_proposal(
-            {"thread_id": "t", "interrupts": []}))
+        self.assertFalse(eval_chat.interrupt_carries_proposal(blob(proposal=False)))
+        self.assertFalse(
+            eval_chat.interrupt_carries_proposal({"thread_id": "t", "interrupts": []})
+        )
         self.assertFalse(eval_chat.interrupt_carries_proposal({}))
         self.assertFalse(eval_chat.interrupt_carries_proposal(None))
 
 
 class TestCheckLedgerRows(unittest.TestCase):
     def test_ok(self):
-        self.assertEqual(
-            eval_chat.check_ledger_rows([entry()], 1), [])
+        self.assertEqual(eval_chat.check_ledger_rows([entry()], 1), [])
 
     def test_missing_rows(self):
         reasons = eval_chat.check_ledger_rows([], 1)
@@ -144,8 +149,7 @@ class TestCheckLedgerRows(unittest.TestCase):
 
     def test_shape_mode_and_decisions(self):
         bad_mode = entry()
-        bad_mode["extra"] = {"mode": "bogus",
-                             "decisions": [{"what": "w", "why": "y"}]}
+        bad_mode["extra"] = {"mode": "bogus", "decisions": [{"what": "w", "why": "y"}]}
         reasons = eval_chat.check_ledger_rows([bad_mode], 1)
         self.assertTrue(any("mode" in r for r in reasons))
         bad_dec = entry()
@@ -158,8 +162,7 @@ class TestCheckLedgerRows(unittest.TestCase):
         self.assertTrue(any("SHAPE" in r for r in reasons))
 
     def test_resume_mode_accepted(self):
-        self.assertEqual(
-            eval_chat.check_ledger_rows([entry(mode="resume")], 1), [])
+        self.assertEqual(eval_chat.check_ledger_rows([entry(mode="resume")], 1), [])
 
     def test_budget_cap_per_turn(self):
         cap = deep_chat.CHAT_TOOL_BUDGET + eval_chat.BUDGET_SLACK
@@ -171,22 +174,20 @@ class TestCheckLedgerRows(unittest.TestCase):
         self.assertFalse(any("BUDGET" in r for r in reasons))
 
     def test_require_usage(self):
-        self.assertEqual(
-            eval_chat.check_ledger_rows([entry()], 1, True), [])
-        reasons = eval_chat.check_ledger_rows(
-            [entry(usage={"x": 1})], 1, True)
+        self.assertEqual(eval_chat.check_ledger_rows([entry()], 1, True), [])
+        reasons = eval_chat.check_ledger_rows([entry(usage={"x": 1})], 1, True)
         self.assertTrue(any("usage MISS" in r for r in reasons))
 
 
 class TestCheckChatCase(unittest.TestCase):
     def test_pass(self):
         v, r = eval_chat.check_chat_case(
-            case(), 0, "ok", "ok done", [], [entry()], False)
+            case(), 0, "ok", "ok done", [], [entry()], False
+        )
         self.assertEqual((v, r), ("pass", []))
 
     def test_timeout_and_model_failure_are_invalid(self):
-        v, _ = eval_chat.check_chat_case(
-            case(), None, "", "", [], [], True)
+        v, _ = eval_chat.check_chat_case(case(), None, "", "", [], [], True)
         self.assertEqual(v, "invalid")
         out = "Sorry, no model is available right now: Nebius needs key"
         v, _ = eval_chat.check_chat_case(case(), 1, out, "", [], [], False)
@@ -194,7 +195,8 @@ class TestCheckChatCase(unittest.TestCase):
 
     def test_unexpected_interrupt_is_fail_not_invalid(self):
         v, r = eval_chat.check_chat_case(
-            case(), 3, "INTERRUPT: {}", "", [], [entry()], False)
+            case(), 3, "INTERRUPT: {}", "", [], [entry()], False
+        )
         self.assertEqual(v, "fail")
         self.assertTrue(any("INTERRUPT" in x for x in r))
 
@@ -202,77 +204,124 @@ class TestCheckChatCase(unittest.TestCase):
         c = case(tools=["*"])
         for rogue in ("shell_exec", "task", "write_file", "edit_file"):
             v, r = eval_chat.check_chat_case(
-                c, 0, "ok", "ok", ["grep_repo", rogue],
-                [entry()], False)
+                c, 0, "ok", "ok", ["grep_repo", rogue], [entry()], False
+            )
             self.assertEqual(v, "fail", rogue)
             self.assertTrue(any("SAFETY" in x for x in r), rogue)
 
     def test_chat_and_harness_tools_pass(self):
         c = case(tools=["*"])
         v, _ = eval_chat.check_chat_case(
-            c, 0, "ok", "ok",
-            ["list_dir", "grep_repo", "read_repo_file", "search_docs",
-             "propose_action", "run_repo_command", "fetch_url",
-             "search_web", "search_turns", "write_todos", "ls",
-             "read_file", "glob", "grep"],
-            [entry()], False)
+            c,
+            0,
+            "ok",
+            "ok",
+            [
+                "list_dir",
+                "grep_repo",
+                "read_repo_file",
+                "search_docs",
+                "propose_action",
+                "run_repo_command",
+                "fetch_url",
+                "search_web",
+                "search_turns",
+                "write_todos",
+                "ls",
+                "read_file",
+                "glob",
+                "grep",
+            ],
+            [entry()],
+            False,
+        )
         self.assertEqual(v, "pass")
 
     def test_answered_without_ledger_is_fail(self):
-        v, r = eval_chat.check_chat_case(
-            case(), 0, "ok", "ok done", [], [], False)
+        v, r = eval_chat.check_chat_case(case(), 0, "ok", "ok done", [], [], False)
         self.assertEqual(v, "fail")
         self.assertTrue(any("ledger MISS" in x for x in r))
 
     def test_require_usage(self):
         c = case(require_usage=True)
-        v, _ = eval_chat.check_chat_case(
-            c, 0, "ok", "ok", [], [entry()], False)
+        v, _ = eval_chat.check_chat_case(c, 0, "ok", "ok", [], [entry()], False)
         self.assertEqual(v, "pass")
         v, r = eval_chat.check_chat_case(
-            c, 0, "ok", "ok", [], [entry(usage={"x": 1})], False)
+            c, 0, "ok", "ok", [], [entry(usage={"x": 1})], False
+        )
         self.assertEqual(v, "fail")
         self.assertTrue(any("usage MISS" in x for x in r))
 
     def test_usage_rejects_bool_counts(self):
         # True is an int instance; token counts must be real ints.
         v, _ = eval_chat.check_chat_case(
-            case(require_usage=True), 0, "ok", "ok", [],
-            [entry(usage={"input_tokens": True, "output_tokens": 0,
-                          "total_tokens": 0})], False)
+            case(require_usage=True),
+            0,
+            "ok",
+            "ok",
+            [],
+            [
+                entry(
+                    usage={"input_tokens": True, "output_tokens": 0, "total_tokens": 0}
+                )
+            ],
+            False,
+        )
         self.assertEqual(v, "fail")
 
     def test_absent(self):
-        c = case(anchor=re.compile(r".+", re.S),
-                 absent=re.compile(r"INTERRUPT:"))
+        c = case(anchor=re.compile(r".+", re.S), absent=re.compile(r"INTERRUPT:"))
         v, _ = eval_chat.check_chat_case(
-            c, 0, "out", "plain answer.", [], [entry()], False)
+            c, 0, "out", "plain answer.", [], [entry()], False
+        )
         self.assertEqual(v, "pass")
         v, _ = eval_chat.check_chat_case(
-            c, 0, "out", "INTERRUPT: {}", [], [entry()], False)
+            c, 0, "out", "INTERRUPT: {}", [], [entry()], False
+        )
         self.assertEqual(v, "fail")
 
 
 class TestCheckInterruptCase(unittest.TestCase):
-    def check(self, c=None, code=3, stdout=None, used=("propose_action",),
-            entries=None, timed_out=False, thread="eval-t",
-            interrupt="default", resume_result="default", turns=1):
+    def check(
+        self,
+        c=None,
+        code=3,
+        stdout=None,
+        used=("propose_action",),
+        entries=None,
+        timed_out=False,
+        thread="eval-t",
+        interrupt="default",
+        resume_result="default",
+        turns=1,
+    ):
         c = icase() if c is None else c
-        stdout = ('INTERRUPT: {"thread_id": "eval-t", "interrupts": []}'
-                  if stdout is None else stdout)
+        stdout = (
+            'INTERRUPT: {"thread_id": "eval-t", "interrupts": []}'
+            if stdout is None
+            else stdout
+        )
         default_entries = entries is None
-        entries = [entry(thread=thread)] \
-            if entries is None else entries
+        entries = [entry(thread=thread)] if entries is None else entries
         if interrupt == "default":
             interrupt = blob(thread)
         if resume_result == "default":
             resume_result = resume()
             if default_entries:
-                entries = entries + [entry(mode="resume",
-                                           thread=thread)]
+                entries = entries + [entry(mode="resume", thread=thread)]
         return eval_chat.check_interrupt_case(
-            c, code, stdout, stdout, list(used), entries, timed_out,
-            thread, interrupt, resume_result, turns)
+            c,
+            code,
+            stdout,
+            stdout,
+            list(used),
+            entries,
+            timed_out,
+            thread,
+            interrupt,
+            resume_result,
+            turns,
+        )
 
     def test_pass(self):
         v, r = self.check()
@@ -283,38 +332,51 @@ class TestCheckInterruptCase(unittest.TestCase):
         self.assertEqual(v, "invalid")
 
     def test_answered_instead_of_proposing_is_fail(self):
-        v, r = self.check(code=0, stdout="here is the fix",
-                        interrupt=None, resume_result=None)
+        v, r = self.check(
+            code=0, stdout="here is the fix", interrupt=None, resume_result=None
+        )
         self.assertEqual(v, "fail")
         self.assertTrue(any("answered instead" in x for x in r))
 
     def test_exit1_without_ledger_is_invalid(self):
-        v, _ = self.check(code=1, stdout="boom", used=[], entries=[],
-                        interrupt=None, resume_result=None)
+        v, _ = self.check(
+            code=1,
+            stdout="boom",
+            used=[],
+            entries=[],
+            interrupt=None,
+            resume_result=None,
+        )
         self.assertEqual(v, "invalid")
 
     def test_exit1_sorry_is_invalid(self):
-        v, r = self.check(code=1, stdout="Sorry, the assistant failed: x",
-                        used=[], interrupt=None, resume_result=None)
+        v, r = self.check(
+            code=1,
+            stdout="Sorry, the assistant failed: x",
+            used=[],
+            interrupt=None,
+            resume_result=None,
+        )
         # Sorry marker: infra failure, not an agent failure.
         self.assertEqual(v, "invalid", r)
 
     def test_missing_blob_is_fail(self):
-        v, r = self.check(stdout="no blob here", interrupt=None,
-                        resume_result=None,
-                        c=icase(anchor=re.compile(r".+", re.S)))
+        v, r = self.check(
+            stdout="no blob here",
+            interrupt=None,
+            resume_result=None,
+            c=icase(anchor=re.compile(r".+", re.S)),
+        )
         self.assertEqual(v, "fail")
         self.assertTrue(any("parseable" in x for x in r))
 
     def test_thread_mismatch_is_fail(self):
-        v, r = self.check(interrupt=blob("other-thread"),
-                        resume_result=None)
+        v, r = self.check(interrupt=blob("other-thread"), resume_result=None)
         self.assertEqual(v, "fail")
         self.assertTrue(any("mismatch" in x for x in r))
 
     def test_blob_without_proposal_is_fail(self):
-        v, r = self.check(interrupt=blob(proposal=False),
-                        resume_result=None)
+        v, r = self.check(interrupt=blob(proposal=False), resume_result=None)
         self.assertEqual(v, "fail")
         self.assertTrue(any("no proposal" in x for x in r))
 
@@ -338,15 +400,16 @@ class TestCheckInterruptCase(unittest.TestCase):
         self.assertEqual(v, "invalid")
 
     def test_resume_still_pending_is_fail(self):
-        v, r = self.check(resume_result=resume(
-            code=3, answer="", out="INTERRUPT: {}"))
+        v, r = self.check(resume_result=resume(code=3, answer="", out="INTERRUPT: {}"))
         self.assertEqual(v, "fail")
         self.assertTrue(any("still pending" in x for x in r))
 
     def test_resume_model_failure_is_invalid(self):
-        v, _ = self.check(resume_result=resume(
-            code=1, answer="",
-            out="Sorry, no model is available right now: down"))
+        v, _ = self.check(
+            resume_result=resume(
+                code=1, answer="", out="Sorry, no model is available right now: down"
+            )
+        )
         self.assertEqual(v, "invalid")
 
     def test_missing_resume_row_is_fail(self):
@@ -355,16 +418,14 @@ class TestCheckInterruptCase(unittest.TestCase):
         self.assertTrue(any("no resume row" in x for x in r))
 
     def test_missing_turn_row_is_fail(self):
-        v, r = self.check(entries=[entry(mode="resume",
-                                       thread="eval-t")])
+        v, r = self.check(entries=[entry(mode="resume", thread="eval-t")])
         self.assertEqual(v, "fail")
         self.assertTrue(any("no turn row" in x for x in r))
 
     def test_no_approve_spec_checks_turn_only(self):
         c = icase()
         del c["approve"]
-        v, r = self.check(c=c, resume_result=None,
-                        entries=[entry(thread="eval-t")])
+        v, r = self.check(c=c, resume_result=None, entries=[entry(thread="eval-t")])
         self.assertEqual((v, r), ("pass", []))
 
 
@@ -384,15 +445,17 @@ class TestRunChatCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ledger = os.path.join(d, "ledger.jsonl")
             open(ledger, "w").close()
-            child = self.fake_child(ledger, "eval-t",
-                                    "run docker compose up", ["grep_repo"])
-            c = case(name="turn-docs", tools=["*"],
-                     anchor=re.compile(r"compose"))
-            with mock.patch.object(eval_chat, "SCRIPT", child), \
-                    mock.patch.object(eval_chat, "session_for",
-                                      return_value="eval-turn-docs"):
-                res = eval_chat.run_chat_case("o/r", c, sys.executable,
-                                              60, ledger)
+            child = self.fake_child(
+                ledger, "eval-t", "run docker compose up", ["grep_repo"]
+            )
+            c = case(name="turn-docs", tools=["*"], anchor=re.compile(r"compose"))
+            with (
+                mock.patch.object(eval_chat, "SCRIPT", child),
+                mock.patch.object(
+                    eval_chat, "session_for", return_value="eval-turn-docs"
+                ),
+            ):
+                res = eval_chat.run_chat_case("o/r", c, sys.executable, 60, ledger)
             # The fake row used thread eval-t, not eval-turn-docs, so
             # tools + ledger checks fail: thread correlation ignores
             # foreign rows.
@@ -400,22 +463,25 @@ class TestRunChatCase(unittest.TestCase):
             self.assertEqual(res["turns"], 1)
             self.assertEqual(res["thread"], "eval-turn-docs")
             self.assertFalse(res["ledger_hit"])
-            self.assertTrue(any("tools MISS" in r
-                                for r in res["reasons"]))
+            self.assertTrue(any("tools MISS" in r for r in res["reasons"]))
 
     def test_thread_correlation(self):
         with tempfile.TemporaryDirectory() as d:
             ledger = os.path.join(d, "ledger.jsonl")
             open(ledger, "w").close()
-            child = self.fake_child(ledger, "eval-turn-x",
-                                    "see buttons/server.py", ["grep_repo"])
-            c = case(name="turn-x", tools=["grep_repo"],
-                     anchor=re.compile(r"buttons/server\.py"))
-            with mock.patch.object(eval_chat, "SCRIPT", child), \
-                    mock.patch.object(eval_chat, "session_for",
-                                      return_value="eval-turn-x"):
-                res = eval_chat.run_chat_case("o/r", c, sys.executable,
-                                              60, ledger)
+            child = self.fake_child(
+                ledger, "eval-turn-x", "see buttons/server.py", ["grep_repo"]
+            )
+            c = case(
+                name="turn-x",
+                tools=["grep_repo"],
+                anchor=re.compile(r"buttons/server\.py"),
+            )
+            with (
+                mock.patch.object(eval_chat, "SCRIPT", child),
+                mock.patch.object(eval_chat, "session_for", return_value="eval-turn-x"),
+            ):
+                res = eval_chat.run_chat_case("o/r", c, sys.executable, 60, ledger)
             self.assertEqual(res["verdict"], "pass")
             self.assertEqual(res["tools_used"], ["grep_repo"])
 
@@ -428,24 +494,25 @@ class TestRunChatCase(unittest.TestCase):
                 return 0, "noted the buttons server", "", False, 0.1
             return 0, "you mentioned buttons", "", False, 0.1
 
-        c = case(name="resume-thread", anchor=re.compile(r".+", re.S),
-                 followup={"prompt": "Which service?",
-                           "anchor": re.compile(r"buttons")})
+        c = case(
+            name="resume-thread",
+            anchor=re.compile(r".+", re.S),
+            followup={"prompt": "Which service?", "anchor": re.compile(r"buttons")},
+        )
         with tempfile.TemporaryDirectory() as d:
             ledger = os.path.join(d, "ledger.jsonl")
             with open(ledger, "w") as f:
-                f.write(json.dumps(entry(
-                    thread="eval-resume-thread-1-1-1")) + "\n")
+                f.write(json.dumps(entry(thread="eval-resume-thread-1-1-1")) + "\n")
             # Rows predate the run, so the ledger check misses — but
             # the threading shape is what this test pins: same
             # thread, no history payload, followup anchor wins.
-            with mock.patch.object(eval_chat, "run_turn",
-                                    side_effect=turn), \
-                    mock.patch.object(
-                        eval_chat, "session_for",
-                        return_value="eval-resume-thread-1-1-1"):
-                res = eval_chat.run_chat_case("o/r", c, sys.executable,
-                                              60, ledger)
+            with (
+                mock.patch.object(eval_chat, "run_turn", side_effect=turn),
+                mock.patch.object(
+                    eval_chat, "session_for", return_value="eval-resume-thread-1-1-1"
+                ),
+            ):
+                res = eval_chat.run_chat_case("o/r", c, sys.executable, 60, ledger)
         self.assertEqual(res["turns"], 2)
         self.assertEqual(len(seen["calls"]), 2)
         self.assertEqual(seen["calls"][0][0], seen["calls"][1][0])
@@ -454,22 +521,21 @@ class TestRunChatCase(unittest.TestCase):
     def test_followup_second_turn_writes_ledger_rows(self):
         def turn(repo, session, prompt, exe, timeout):
             with open(ledger, "a") as f:
-                f.write(json.dumps(entry(
-                    tools=["grep_repo"], thread=session)) + "\n")
+                f.write(json.dumps(entry(tools=["grep_repo"], thread=session)) + "\n")
             if "Which service?" in prompt:
                 return 0, "you mentioned buttons", "", False, 0.1
             return 0, "noted the buttons server", "", False, 0.1
 
-        c = case(name="resume-thread", anchor=re.compile(r".+", re.S),
-                 followup={"prompt": "Which service?",
-                           "anchor": re.compile(r"buttons")})
+        c = case(
+            name="resume-thread",
+            anchor=re.compile(r".+", re.S),
+            followup={"prompt": "Which service?", "anchor": re.compile(r"buttons")},
+        )
         with tempfile.TemporaryDirectory() as d:
             ledger = os.path.join(d, "ledger.jsonl")
             open(ledger, "w").close()
-            with mock.patch.object(eval_chat, "run_turn",
-                                    side_effect=turn):
-                res = eval_chat.run_chat_case("o/r", c, sys.executable,
-                                              60, ledger)
+            with mock.patch.object(eval_chat, "run_turn", side_effect=turn):
+                res = eval_chat.run_chat_case("o/r", c, sys.executable, 60, ledger)
         self.assertEqual(res["verdict"], "pass")
         self.assertEqual(res["turns"], 2)
         self.assertEqual(res["tools_used"], ["grep_repo"])
@@ -478,46 +544,43 @@ class TestRunChatCase(unittest.TestCase):
         def turn(repo, session, prompt, exe, timeout):
             return 1, "", "boom", False, 0.1
 
-        c = case(name="resume-thread", anchor=re.compile(r".+", re.S),
-                 followup={"prompt": "Which service?",
-                           "anchor": re.compile(r"buttons")})
+        c = case(
+            name="resume-thread",
+            anchor=re.compile(r".+", re.S),
+            followup={"prompt": "Which service?", "anchor": re.compile(r"buttons")},
+        )
         with tempfile.TemporaryDirectory() as d:
             ledger = os.path.join(d, "ledger.jsonl")
             open(ledger, "w").close()
-            with mock.patch.object(eval_chat, "run_turn",
-                                    side_effect=turn):
-                res = eval_chat.run_chat_case("o/r", c, sys.executable,
-                                              60, ledger)
+            with mock.patch.object(eval_chat, "run_turn", side_effect=turn):
+                res = eval_chat.run_chat_case("o/r", c, sys.executable, 60, ledger)
         self.assertEqual(res["verdict"], "invalid")
         self.assertEqual(res["turns"], 1)
 
     def test_interrupt_approve_flow(self):
         def turn(repo, session, prompt, exe, timeout):
             with open(ledger, "a") as f:
-                f.write(json.dumps(entry(
-                    tools=["propose_action"], thread=session)) + "\n")
+                f.write(
+                    json.dumps(entry(tools=["propose_action"], thread=session)) + "\n"
+                )
             payload = json.dumps(blob(session))
             return 3, f"INTERRUPT: {payload}", "", False, 0.1
 
-        def do_resume(repo, session, verdict, exe, timeout,
-                      message=None):
+        def do_resume(repo, session, verdict, exe, timeout, message=None):
             assert verdict == "approve"
             with open(ledger, "a") as f:
-                f.write(json.dumps(entry(
-                    mode="resume", thread=session)) + "\n")
-            return 0, ("PROPOSE issue\nTITLE: T\nBODY:\nB\n"
-                       "END PROPOSE"), "", False, 0.1
+                f.write(json.dumps(entry(mode="resume", thread=session)) + "\n")
+            return 0, ("PROPOSE issue\nTITLE: T\nBODY:\nB\nEND PROPOSE"), "", False, 0.1
 
         c = icase(name="propose-approve")
         with tempfile.TemporaryDirectory() as d:
             ledger = os.path.join(d, "ledger.jsonl")
             open(ledger, "w").close()
-            with mock.patch.object(eval_chat, "run_turn",
-                                    side_effect=turn), \
-                    mock.patch.object(eval_chat, "run_resume",
-                                      side_effect=do_resume):
-                res = eval_chat.run_chat_case("o/r", c, sys.executable,
-                                              60, ledger)
+            with (
+                mock.patch.object(eval_chat, "run_turn", side_effect=turn),
+                mock.patch.object(eval_chat, "run_resume", side_effect=do_resume),
+            ):
+                res = eval_chat.run_chat_case("o/r", c, sys.executable, 60, ledger)
         self.assertEqual(res["verdict"], "pass")
         self.assertEqual(res["turns"], 2)
         self.assertTrue(res["interrupt"])
@@ -532,11 +595,11 @@ class TestRunChatCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ledger = os.path.join(d, "ledger.jsonl")
             open(ledger, "w").close()
-            with mock.patch.object(eval_chat, "run_turn",
-                                    side_effect=turn), \
-                    mock.patch.object(eval_chat, "run_resume") as rm:
-                res = eval_chat.run_chat_case("o/r", c, sys.executable,
-                                              60, ledger)
+            with (
+                mock.patch.object(eval_chat, "run_turn", side_effect=turn),
+                mock.patch.object(eval_chat, "run_resume") as rm,
+            ):
+                res = eval_chat.run_chat_case("o/r", c, sys.executable, 60, ledger)
         rm.assert_not_called()
         self.assertEqual(res["verdict"], "fail")
         self.assertIsNone(res["resume_exit"])
@@ -554,32 +617,31 @@ class TestChatPromptsSchema(unittest.TestCase):
             self.assertIsInstance(c.get("gating", True), bool)
             # Threads derive from names; session ids must fit the
             # live thread contract.
-            self.assertTrue(deep_chat.valid_thread_id(
-                eval_chat.session_for(c["name"])))
-            self.assertFalse("followup" in c
-                             and "expect_interrupt" in c,
-                             c["name"])
+            self.assertTrue(deep_chat.valid_thread_id(eval_chat.session_for(c["name"])))
+            self.assertFalse("followup" in c and "expect_interrupt" in c, c["name"])
             if "followup" in c:
                 self.assertTrue(c["followup"]["prompt"].strip())
-                self.assertTrue(hasattr(
-                    c["followup"]["anchor"], "search"))
+                self.assertTrue(hasattr(c["followup"]["anchor"], "search"))
             if "approve" in c:
-                self.assertIn(c["approve"]["verdict"],
-                              ("approve", "reject"))
-                self.assertTrue(hasattr(
-                    c["approve"]["anchor"], "search"))
+                self.assertIn(c["approve"]["verdict"], ("approve", "reject"))
+                self.assertTrue(hasattr(c["approve"]["anchor"], "search"))
         kinds = {c["name"] for c in eval_chat.PROMPTS}
-        for needed in ("turn-docs", "turn-tool-use", "usage-accounting",
-                       "propose-approve", "propose-reject",
-                       "resume-thread"):
+        for needed in (
+            "turn-docs",
+            "turn-tool-use",
+            "usage-accounting",
+            "propose-approve",
+            "propose-reject",
+            "resume-thread",
+        ):
             self.assertIn(needed, kinds)
 
     def test_gating_set(self):
-        gating = {c["name"] for c in eval_chat.PROMPTS
-                  if c.get("gating", True)}
-        self.assertEqual(gating, {"turn-docs", "turn-tool-use",
-                                  "usage-accounting",
-                                  "propose-approve"})
+        gating = {c["name"] for c in eval_chat.PROMPTS if c.get("gating", True)}
+        self.assertEqual(
+            gating,
+            {"turn-docs", "turn-tool-use", "usage-accounting", "propose-approve"},
+        )
 
     def test_golden_replies(self):
         turn_goldens = {
@@ -604,13 +666,14 @@ class TestChatPromptsSchema(unittest.TestCase):
             spec = c.get("approve")
             if spec is not None:
                 if spec["verdict"] == "approve":
-                    approval = ("PROPOSE issue\nTITLE: Buttons crash "
-                                "on load\nBODY:\nTapping Run crashes "
-                                "the page.\nEND PROPOSE")
+                    approval = (
+                        "PROPOSE issue\nTITLE: Buttons crash "
+                        "on load\nBODY:\nTapping Run crashes "
+                        "the page.\nEND PROPOSE"
+                    )
                 else:
                     approval = "Declined: I won't file the issue."
-                self.assertTrue(spec["anchor"].search(approval),
-                                c["name"])
+                self.assertTrue(spec["anchor"].search(approval), c["name"])
 
 
 class TestLiveTarget(unittest.TestCase):
@@ -625,8 +688,7 @@ class TestLiveTarget(unittest.TestCase):
         self.assertNotIn("chat_agent", eval_chat.__doc__)
 
     def test_exit_constant_tracks_live(self):
-        self.assertEqual(eval_chat.EXIT_NEEDS_APPROVAL,
-                         deep_chat.EXIT_NEEDS_APPROVAL)
+        self.assertEqual(eval_chat.EXIT_NEEDS_APPROVAL, deep_chat.EXIT_NEEDS_APPROVAL)
 
 
 class TestDeepChatContract(unittest.TestCase):
@@ -658,8 +720,7 @@ class TestDeepChatContract(unittest.TestCase):
         self.assertIn("write path is the propose_action tool", src)
 
     def test_interrupt_is_propose_only_approve_reject(self):
-        self.assertEqual(set(deep_chat.INTERRUPT_ON),
-                         {"propose_action"})
+        self.assertEqual(set(deep_chat.INTERRUPT_ON), {"propose_action"})
         cfg = deep_chat.INTERRUPT_ON["propose_action"]
         self.assertEqual(cfg["allowed_decisions"], ["approve", "reject"])
         self.assertEqual(deep_chat.EXIT_NEEDS_APPROVAL, 3)
@@ -680,24 +741,28 @@ class TestDeepChatContract(unittest.TestCase):
         # server's SSE chunk reader sees only the reply.
         tree = ast.parse(self.load())
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call)
-                    and getattr(node.func, "id", "") == "print"):
+            if not (
+                isinstance(node, ast.Call) and getattr(node.func, "id", "") == "print"
+            ):
                 continue
             keys = [k.arg for k in node.keywords]
             if "file" in keys:
                 continue
             src = ast.dump(node)
             self.assertTrue(
-                "chunk" in src or "salvaged" in src
-                or "INTERRUPT" in src or "json" in src
-                or "reply" in src or "flush" in src
+                "chunk" in src
+                or "salvaged" in src
+                or "INTERRUPT" in src
+                or "json" in src
+                or "reply" in src
+                or "flush" in src
                 or "text" in src,
                 f"non-answer print to stdout: {src[:200]}",
             )
 
     def test_ledger_records_usage(self):
         self.assertIn("usage=", self.load())
-        self.assertIn('"total_tokens"', self.load())
+        self.assertIn("ledger._usage_total([answer])", self.load())
 
     def test_budget_constant_positive(self):
         self.assertGreater(deep_chat.CHAT_TOOL_BUDGET, 0)

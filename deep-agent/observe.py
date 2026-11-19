@@ -16,7 +16,8 @@ Event shapes (one JSON object per line, `ts` epoch seconds always):
   tool_call  {name, args_preview, duration_s, ok, result_preview|error}
   run_end    {duration_s, ok}
 
-Previews are capped at 2000 chars. The recorder never raises:
+Previews are capped at 2000 chars; run_check also retains 4000 chars
+of bounded head/tail evidence. The recorder never raises:
 observability must not break runs.
 """
 
@@ -26,13 +27,18 @@ import re
 import secrets
 import time
 
+import ledger
+
 PREVIEW_LIMIT = 2000
 _THREAD_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 def _preview(value):
-    text = value if isinstance(value, str) else json.dumps(
-        value, default=str, ensure_ascii=False)
+    text = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, default=str, ensure_ascii=False)
+    )
     if len(text) > PREVIEW_LIMIT:
         return text[:PREVIEW_LIMIT] + "…[truncated]"
     return text
@@ -66,9 +72,12 @@ class TraceRecorder:
         self.path = path
         self._fh = None
         self.started = time.time()
-        self._usage = {"input_tokens": 0, "output_tokens": 0,
-                       "total_tokens": 0}
+        self._usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         self._calls = []
+        self._reported_cost = 0.0
+        self._cost_complete = True
+        self._responses = 0
+        self._twt_trace_ids = set()
         try:
             self._fh = open(path, "a", encoding="utf-8")
         except OSError:
@@ -92,35 +101,56 @@ class TraceRecorder:
         self.event("model_request", n_messages=n_messages)
 
     def model_response(self, usage):
-        snap = {k: (usage or {}).get(k, 0) or 0
-                for k in ("input_tokens", "output_tokens", "total_tokens")}
+        self._twt_trace_ids.update((usage or {}).get("twt_trace_ids", []))
+        self._responses += 1
+        if (usage or {}).get("reported_cost_usd") is None:
+            self._cost_complete = False
+        else:
+            self._reported_cost += usage["reported_cost_usd"]
+        snap = {
+            k: (usage or {}).get(k, 0) or 0
+            for k in ("input_tokens", "output_tokens", "total_tokens")
+        }
         self.event("model_response", usage=snap)
         for k in self._usage:
             self._usage[k] += snap[k]
 
-    def tool_call(self, name, args, duration_s, ok, result=None,
-                  error=None):
-        payload = {"name": name, "args_preview": _preview(args or ""),
-                   "duration_s": round(duration_s, 3), "ok": ok}
+    def tool_call(self, name, args, duration_s, ok, result=None, error=None):
+        payload = {
+            "name": name,
+            "args_preview": _preview(args or ""),
+            "duration_s": round(duration_s, 3),
+            "ok": ok,
+        }
         if ok:
             payload["result_preview"] = _preview(result or "")
+            if name == "run_check" and isinstance(result, str):
+                marker = "\n[check output truncated]\n"
+                keep = (2 * PREVIEW_LIMIT - len(marker)) // 2
+                truncated = len(result) > 2 * PREVIEW_LIMIT
+                payload["check_output"] = (
+                    result[:keep] + marker + result[-keep:] if truncated else result
+                )
+                payload["check_output_truncated"] = truncated
         else:
             payload["error"] = str(error or "")[:500]
         self.event("tool_call", **payload)
-        self._calls.append({"name": name,
-                            "args": str(args or "")[:300]})
+        self._calls.append({"name": name, "args": str(args or "")[:300]})
 
     def totals(self):
         """Aggregated (usage, tool_calls) for ledger rows. Never raises."""
         try:
-            return dict(self._usage), list(self._calls)
+            usage = dict(self._usage)
+            if self._twt_trace_ids:
+                usage["twt_trace_ids"] = sorted(self._twt_trace_ids)
+            if self._cost_complete and self._responses:
+                usage["reported_cost_usd"] = self._reported_cost
+            return usage, list(self._calls)
         except Exception:  # noqa: BLE001 - totals must never break a run
-            return ({"input_tokens": 0, "output_tokens": 0,
-                     "total_tokens": 0}, [])
+            return ({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, [])
 
     def run_end(self, ok=True):
-        self.event("run_end", duration_s=round(time.time() - self.started, 3),
-                   ok=ok)
+        self.event("run_end", duration_s=round(time.time() - self.started, 3), ok=ok)
 
     def close(self):
         fh, self._fh = self._fh, None
@@ -157,7 +187,7 @@ def trace_middleware(recorder):
         try:
             messages = (state or {}).get("messages", []) or []
             if messages:
-                usage = getattr(messages[-1], "usage_metadata", None)
+                usage = ledger._usage_total([messages[-1]])
         except (TypeError, IndexError, AttributeError):
             usage = None
         recorder.model_response(usage or {})
@@ -176,12 +206,10 @@ def trace_middleware(recorder):
         try:
             result = handler(request)
         except Exception as exc:
-            recorder.tool_call(name, args, time.time() - t0, False,
-                               error=exc)
+            recorder.tool_call(name, args, time.time() - t0, False, error=exc)
             raise
         content = getattr(result, "content", result)
-        recorder.tool_call(name, args, time.time() - t0, True,
-                           result=content)
+        recorder.tool_call(name, args, time.time() - t0, True, result=content)
         return result
 
     return [_log_request, _log_response, _log_tool]

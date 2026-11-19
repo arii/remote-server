@@ -1,0 +1,15 @@
+[Unit]
+Description=Tokens with Taste private LLM gateway
+
+[Service]
+Type=simple
+WorkingDirectory=%h/twt
+EnvironmentFile=%h/twt/environment
+ExecStart=%h/twt/venv/bin/python %h/twt/twt_service.py --port 8000 --uds %h/twt/run/gateway.sock
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

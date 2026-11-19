@@ -106,6 +106,7 @@ services:
       - --create
       - main
     volumes:
+      - ${HOST_HOME:-/home/ari}/twt/run:/run/twt:ro
       - .:/srv/remote-server # repo (compose, docs, .env) editable from the phone
       # Docker socket: manage this stack from the phone (docker compose ps/up/...).
       # This is root-equivalent — the GitHub OAuth single-user gate is the boundary.
@@ -168,6 +169,8 @@ services:
       # this container; the model_router default matches this value,
       # so the line documents the topology and offers one override.
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      TWT_BASE_URL: http://twt/v1
+      TWT_UDS: /run/twt/gateway.sock
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openrouter/free}
       OPENROUTER_ALLOW_PAID: ${OPENROUTER_ALLOW_PAID:-0}
@@ -303,6 +306,7 @@ services:
     # from pull; build it with `docker compose up -d --build buttons`.
     pull_policy: build
     volumes:
+      - ${HOST_HOME:-/home/ari}/twt/run:/run/twt:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_HOME:-/home/ari}/remote-server:/home/ari/remote-server
       # Host-identical repos mount, same trick as above: the webhook
@@ -353,6 +357,8 @@ services:
       # localhost is this container itself — the reachable default is
       # the ollama service alias (issue #966). Host override wins.
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434/api/generate}
+      TWT_BASE_URL: http://twt/v1
+      TWT_UDS: /run/twt/gateway.sock
       # Playwright browser home (#1118): must match the Dockerfile
       # bake path — the runtime HOME (/home/ari) differs from the
       # bake user (root), so the default ~/.cache lookup misses the

@@ -1408,7 +1408,7 @@ def _cmd_review_pr(repo, number, prefer=None):
     try:
         spec = model_router.resolve_llm(prefer=prefer)
         model, spec = model_router.build_structured_chat_model(
-            spec=spec, schema=ReviewVerdict
+            spec=spec, schema=ReviewVerdict, include_raw=True
         )
     except ImportError as exc:
         return cli.sorry(f"Sorry, the chat backend is not installed: {_short_err(exc)}")
@@ -1417,18 +1417,41 @@ def _cmd_review_pr(repo, number, prefer=None):
     print(f"deep_chat via {spec['provider']}:{spec['model']}", file=sys.stderr)
     recorder = observe.TraceRecorder(observe.default_trace_path("deep_chat", thread_id))
     recorder.run_start("deep_chat.py", thread_id, f"{spec['provider']}:{spec['model']}")
+    raw = None
     try:
         recorder.model_request(1)
         answer = model.invoke(REVIEW_PR_TASK.format(pr=pr_text))
-        verdict = ReviewVerdict.model_validate(answer)
-        recorder.model_response({})
+        raw = answer["raw"]
+        recorder.model_response(ledger._usage_total([raw]))
+        if answer["parsing_error"] is not None:
+            raise answer["parsing_error"]
+        verdict = ReviewVerdict.model_validate(answer["parsed"])
     except Exception as exc:
         recorder.run_end(False)
         recorder.close()
+        ledger.record(
+            "deep_chat.py",
+            spec["model"],
+            thread_id,
+            [raw] if raw is not None else [],
+            started,
+            provider=spec["provider"],
+            usage=ledger._usage_total([raw])
+            if raw is not None
+            else ledger.error_usage(exc),
+            extra={
+                "repo": repo,
+                "mode": "review-pr",
+                "llm_call": True,
+                "trace": recorder.path,
+                "error": str(exc)[:200],
+            },
+        )
         return cli.sorry(f"Sorry, the review failed: {_short_err(exc)}")
     recorder.run_end(True)
     recorder.close()
     _usage, _calls = recorder.totals()
+    _usage.update(ledger._usage_total([raw]))
     text = f"{verdict.verdict}: {verdict.reason}"
     print(text, flush=True)
     ledger.record(
@@ -1437,7 +1460,12 @@ def _cmd_review_pr(repo, number, prefer=None):
         thread_id,
         [
             {"type": "human", "content": REVIEW_PR_TASK.format(pr=pr_text)},
-            {"type": "ai", "content": text},
+            {
+                "type": "ai",
+                "content": text,
+                "usage_metadata": getattr(raw, "usage_metadata", None),
+                "response_metadata": getattr(raw, "response_metadata", None),
+            },
         ],
         started,
         extra={
@@ -1462,7 +1490,6 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
     run_start/model_request/model_response/run_end trace so the run
     expands in Past runs like full turns."""
     from langchain_core.messages import (  # noqa: E402
-        AIMessage,
         HumanMessage,
         SystemMessage,
     )
@@ -1493,17 +1520,12 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
                 "decisions": decisions.build_decisions([], [], reply, error=str(exc)),
                 "error": str(exc)[:200],
             },
+            usage=ledger.error_usage(exc),
         )
         return cli.sorry(reply)
     print(reply, flush=True)
-    raw_usage = getattr(answer, "usage_metadata", None)
-    usage = None
-    if isinstance(raw_usage, dict):
-        usage = {
-            k: raw_usage.get(k, 0)
-            for k in ("input_tokens", "output_tokens", "total_tokens")
-        }
-    recorder.model_response(raw_usage if isinstance(raw_usage, dict) else {})
+    usage = ledger._usage_total([answer])
+    recorder.model_response(usage)
     if failover:
         recorder.event("model_failover", **failover)
     recorder.run_end(True)
@@ -1513,7 +1535,7 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
         "deep_chat.py",
         served,
         thread_id,
-        messages + [AIMessage(content=reply)],
+        messages + [answer],
         started,
         extra={
             "repo": repo,

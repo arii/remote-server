@@ -198,11 +198,11 @@ def main() -> int:
                 spec, model=MODEL_ID, base_url="https://api.studio.nebius.com/v1"
             )
         kwargs = model_router.chat_kwargs(spec)
+        # Reasoning model: needs headroom for hidden reasoning tokens
+        # plus the visible reply + tool call.
+        kwargs["max_tokens"] = min(4000, model_router.PIPELINE_MAX_TOKENS)
         model = ChatOpenAI(
             api_key=model_router.api_key(spec),
-            # Reasoning model: needs headroom for hidden reasoning tokens
-            # plus the visible reply + tool call.
-            max_tokens=4000,
             **kwargs,
         )
         model_id = spec["model"]

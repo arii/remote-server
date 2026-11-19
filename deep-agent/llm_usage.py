@@ -30,6 +30,8 @@ def usage_callback(spec, thread_id, *, script, stage, phase):
             messages = [message] if message is not None else []
             self.messages.extend(messages)
             usage = ledger._usage_total(messages)
+            if error is not None:
+                usage = ledger.error_usage(error)
             known = bool(getattr(message, "usage_metadata", None)) or bool(
                 (getattr(message, "response_metadata", None) or {}).get(
                     "prompt_eval_count"
@@ -68,7 +70,7 @@ def usage_callback(spec, thread_id, *, script, stage, phase):
                 extra={
                     "stage": stage,
                     "phase": phase,
-                    "llm_call": True,
+                    "llm_call": usage.get("not_dispatched") is not True,
                     "usage_missing": not known,
                     "trace_path": recorder.path,
                     **({"error": type(error).__name__} if error is not None else {}),

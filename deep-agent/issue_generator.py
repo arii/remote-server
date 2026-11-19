@@ -362,8 +362,10 @@ class IssueGeneratorGraph:
         # Retain the resolved backend: ledger rows record the model
         # that actually ran, not the S5_ISSUE_MODEL default (issue
         # #1121). Injected model_fn (tests) leaves this unset.
-        self.last_spec = dict(spec)
-        model, _ = model_router.build_chat_model(spec=spec, think=False)
+        model, resolved = model_router.build_chat_model(
+            spec=spec, think=False, stage="spec"
+        )
+        self.last_spec = dict(resolved)
         return model
 
     def check_backend(self, timeout=5):
@@ -391,7 +393,7 @@ class IssueGeneratorGraph:
                 "http://ollama:11434), or set S5_ISSUE_PROVIDER=nebius "
                 "with NEBIUS_API_KEY for the metered fallback."
             )
-        if spec.get("provider") in ("nebius", "openrouter"):
+        if spec.get("provider") in ("nebius", "openrouter", "twt"):
             try:
                 model_router.api_key(spec)
             except RuntimeError as exc:

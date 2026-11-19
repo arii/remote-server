@@ -31,9 +31,11 @@ plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 """
 
 import argparse
+import contextvars
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -64,6 +66,7 @@ CODER_DB = os.path.join(HERE, ".coder_threads", "coder.db")
 # Coding needs more graph steps than chat turns (read/plan/edit/verify).
 RECURSION_LIMIT = 100
 DEFAULT_TIMEOUT = 1800
+MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 DEFAULT_VERIFY_ROUNDS = 2
 
 # Dithering guard (#1160 gap 3, #1176): this many consecutive
@@ -92,14 +95,17 @@ DITHER_EMPTY_NOTICE = (
 VERIFY_NUDGE = (
     "No passing run_check was recorded for your edits. Run the "
     "checks for your edits with run_check and fix any failures; "
-    "do not finish without a passing run."
+    "do not finish without a passing run. Invoke actual function tools; "
+    "printing JSON commands does not execute them."
 )
 
 CODER_RULES = (
     """You are implementing the task below in the checkout at {worktree}. Rules:
 - File paths are repo-relative like frontend/src/views/NowView.tsx; never use absolute paths or a leading /.
+- Start filesystem discovery with ls(path="."). The worktree above is your sole filesystem root; never list the parent checkout even if task context names it.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
+- Invoke tools through the function-calling interface. Never print JSON commands or pretend a prose command executed.
 - Verify with run_check (the touched area's tests/lint) before finishing.
 - Do NOT commit, push, or open PRs; leave changes in the working tree.
 - End with a short summary: files changed + verification run, then a final DONE #<issue> or BLOCKED #<issue> line."""
@@ -245,7 +251,7 @@ def build_model(model_override=None):
     if model_override:
         spec = dict(spec, model=model_override)
     think = os.environ.get("CODER_THINK", "") == "1"
-    return model_router.build_chat_model(spec=spec, think=think)
+    return model_router.build_chat_model(spec=spec, think=think, stage="coder")
 
 
 def _default_plan_fn(brief, worktree_root, context):
@@ -282,12 +288,14 @@ def _default_plan_fn(brief, worktree_root, context):
     try:
         reply = model.invoke(prompt)
     except Exception as exc:
-        error = type(exc).__name__
+        error = exc
         raise
     finally:
         if recorder is not None:
             messages = [reply] if reply is not None else []
             usage = ledger._usage_total(messages)
+            if error:
+                usage = ledger.error_usage(error)
             known = bool(getattr(reply, "usage_metadata", None)) or bool(
                 (getattr(reply, "response_metadata", None) or {}).get(
                     "prompt_eval_count"
@@ -307,10 +315,10 @@ def _default_plan_fn(brief, worktree_root, context):
                 extra={
                     "stage": "code",
                     "phase": "plan",
-                    "llm_call": True,
+                    "llm_call": usage.get("not_dispatched") is not True,
                     "usage_missing": not known,
                     "trace": recorder.path,
-                    **({"error": error} if error else {}),
+                    **({"error": type(error).__name__} if error else {}),
                 },
             )
     text = _model_text(reply)
@@ -413,13 +421,24 @@ def build_check_tool(worktree):
     return run_check
 
 
+def worktree_file_key(worktree, path):
+    root = os.path.abspath(worktree)
+    if (
+        os.path.isabs(path)
+        and os.path.commonpath((root, os.path.abspath(path))) == root
+    ):
+        return os.path.relpath(path, root)
+    return path.lstrip("/")
+
+
 def build_filesystem_backend(worktree):
     from deepagents.backends import FilesystemBackend
 
     class CoderFilesystemBackend(FilesystemBackend):
         def _resolve_path(self, key):
             try:
-                assert_inside(worktree, key.lstrip("/"))
+                key = worktree_file_key(worktree, key)
+                assert_inside(worktree, key)
             except ValueError as exc:
                 raise PermissionError(
                     "outside_worktree_root: use worktree-relative paths "
@@ -446,15 +465,18 @@ def worktree_file_middleware(worktree, written_files):
             "glob",
             "grep",
         }:
+            args = dict(call["args"])
             for key in ("path", "file_path"):
                 path = call["args"].get(key)
                 if path is None:
                     continue
                 try:
-                    target = assert_inside(worktree, path.lstrip("/"))
+                    relative = worktree_file_key(worktree, path)
+                    target = assert_inside(worktree, relative)
                     if (
                         os.path.isabs(path)
                         and path != "/"
+                        and relative == path.lstrip("/")
                         and not os.path.exists(target)
                     ):
                         raise ValueError("absolute host path")
@@ -466,6 +488,9 @@ def worktree_file_middleware(worktree, written_files):
                         name=call["name"],
                         status="error",
                     )
+                args[key] = relative
+            call = {**call, "args": args}
+            request = request.override(tool_call=call)
         result = handler(request)
         if (
             call["name"] in {"write_file", "edit_file", "delete"}
@@ -476,6 +501,27 @@ def worktree_file_middleware(worktree, written_files):
         return result
 
     return guard_file_call
+
+
+def implementation_tool_middleware():
+    from langchain.agents.middleware import AgentMiddleware
+
+    def grounded_request(request):
+        if request.tools and not any(
+            message.type == "tool" and message.status == "success"
+            for message in request.messages
+        ):
+            return request.override(tool_choice="required")
+        return request
+
+    class GroundImplementation(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            return handler(grounded_request(request))
+
+        async def awrap_model_call(self, request, handler):
+            return await handler(grounded_request(request))
+
+    return GroundImplementation()
 
 
 def build_agent(
@@ -502,6 +548,7 @@ def build_agent(
     file tools around the submit scope gate). (#539)
     """
     from deepagents import create_deep_agent  # noqa: E402
+    from deepagents.middleware.filesystem import FilesystemMiddleware
 
     import model_router  # noqa: E402
 
@@ -509,7 +556,25 @@ def build_agent(
         model, _ = build_model()
     if spec is not None:
         model_router.disable_general_purpose(spec)
-    middleware = [worktree_file_middleware(worktree, written_files)]
+
+    backend = build_filesystem_backend(worktree)
+    middleware = [
+        FilesystemMiddleware(
+            backend=backend,
+            tools=[
+                "ls",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "delete",
+                "glob",
+                "grep",
+            ],
+        ),
+        worktree_file_middleware(worktree, written_files),
+    ]
+    if written_files is not None:
+        middleware.append(implementation_tool_middleware())
     if recorder is not None:
         import observe  # noqa: E402
 
@@ -518,7 +583,7 @@ def build_agent(
         model=model,
         tools=(list(tools) if tools is not None else [build_check_tool(worktree)]),
         system_prompt=system,
-        backend=build_filesystem_backend(worktree),
+        backend=backend,
         interrupt_on=interrupt_on,
         permissions=permissions,
         checkpointer=checkpointer,
@@ -615,6 +680,7 @@ def trace_has_passing_check(trace_path):
     raises: unreadable traces read as unverified (fail closed into a
     verify re-prompt).
     """
+    verified = False
     try:
         with open(trace_path, encoding="utf-8") as fh:
             for line in fh:
@@ -626,14 +692,61 @@ def trace_has_passing_check(trace_path):
                     continue
                 if event.get("type") != "tool_call":
                     continue
+                if event.get("name") in MUTATING_TOOLS:
+                    verified = False
+                    continue
                 if event.get("name") != "run_check":
                     continue
                 preview = event.get("result_preview", "")
-                if preview == "exit=0" or preview.startswith("exit=0\n"):
-                    return True
+                if isinstance(preview, str) and (
+                    preview == "exit=0" or preview.startswith("exit=0\n")
+                ):
+                    verified = True
     except (OSError, TypeError):
         return False
-    return False
+    return verified
+
+
+def trace_verification_evidence(trace_path):
+    evidence = []
+    try:
+        with open(trace_path, encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    event = json.loads(line)
+                    if not isinstance(event, dict) or event.get("type") != "tool_call":
+                        continue
+                    if event.get("name") in MUTATING_TOOLS:
+                        for check in evidence:
+                            check["stale"] = True
+                        continue
+                    if event.get("name") != "run_check":
+                        continue
+                    command = json.loads(event.get("args_preview", "{}"))["command"]
+                    if not isinstance(command, str):
+                        continue
+                    parse_check_command(command)
+                except (ValueError, TypeError, KeyError):
+                    continue
+                output = event.get("check_output", event.get("result_preview", ""))
+                if not isinstance(output, str):
+                    continue
+                evidence.append(
+                    {
+                        "command": command,
+                        "passed": event.get("ok") is True
+                        and (output == "exit=0" or output.startswith("exit=0\n")),
+                        "output": output[:CHECK_OUTPUT_LIMIT],
+                        **(
+                            {"output_truncated": True}
+                            if event.get("check_output_truncated") is True
+                            else {}
+                        ),
+                    }
+                )
+    except (OSError, TypeError):
+        return []
+    return evidence
 
 
 def trace_check_history(trace_path):
@@ -747,7 +860,8 @@ def run_bounded(fn, timeout):
         except BaseException as exc:  # noqa: BLE001 - re-raised in caller
             box["error"] = exc
 
-    worker = threading.Thread(target=_target, daemon=True)
+    context = contextvars.copy_context()
+    worker = threading.Thread(target=lambda: context.run(_target), daemon=True)
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
@@ -802,7 +916,7 @@ def mark_unverified(summary):
     return "[unverified]"
 
 
-def run_coder(worktree, brief, system, thread, timeout):
+def run_coder(worktree, brief, system, thread, timeout, *, repair_files=()):
     """Invoke the coder with a verify gate.
 
     Returns (summary, usage, calls, started, label, trace, verified,
@@ -816,6 +930,7 @@ def run_coder(worktree, brief, system, thread, timeout):
     from langchain_core.messages import HumanMessage  # noqa: E402
 
     import deep_chat  # noqa: E402
+    import ledger  # noqa: E402
 
     started = time.time()
     recorder = observe.TraceRecorder(observe.default_trace_path("coder", thread))
@@ -823,26 +938,62 @@ def run_coder(worktree, brief, system, thread, timeout):
     label = f"{spec['provider']}:{spec['model']}"
     print(f"coder via {label}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label)
-    saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
-    written_files = set()
-    agent = build_agent(
-        worktree,
-        system,
-        model=model,
-        recorder=recorder,
-        checkpointer=saver,
-        spec=spec,
-        written_files=written_files,
-    )
-    config = {"configurable": {"thread_id": thread}}
+    invocation_started = False
 
-    def _invoke(msgs):
-        return agent.invoke(
-            {"messages": msgs}, config={**config, "recursion_limit": RECURSION_LIMIT}
+    def fail(error, reply=""):
+        if not invocation_started:
+            error.llm_not_dispatched = True
+        error_usage = ledger.error_usage(error)
+        if "reported_cost_usd" in error_usage:
+            recorder.model_response(error_usage)
+        recorder.run_end(False)
+        recorder.close()
+        usage, calls = recorder.totals()
+        ledger.record(
+            "coder.py",
+            spec["model"],
+            thread,
+            [
+                {"role": "user", "content": brief},
+                {"role": "assistant", "content": reply},
+            ],
+            started,
+            provider=spec["provider"],
+            usage=usage,
+            calls=calls,
+            extra={
+                "error": f"{type(error).__name__}: {error}",
+                "worktree": worktree,
+                "trace": recorder.path,
+                "verified": False,
+                "llm_call": invocation_started
+                or error_usage.get("not_dispatched") is not True,
+            },
         )
 
-    max_rounds = verify_rounds()
     try:
+        saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
+        written_files = set()
+        agent = build_agent(
+            worktree,
+            system,
+            model=model,
+            recorder=recorder,
+            checkpointer=saver,
+            spec=spec,
+            written_files=written_files,
+        )
+        config = {"configurable": {"thread_id": thread}}
+
+        def _invoke(msgs):
+            nonlocal invocation_started
+            invocation_started = True
+            return agent.invoke(
+                {"messages": msgs},
+                config={**config, "recursion_limit": RECURSION_LIMIT},
+            )
+
+        max_rounds = verify_rounds()
         result, rounds, verified = run_with_verify(
             lambda: run_bounded(
                 lambda: _invoke([HumanMessage(content=brief)]), timeout
@@ -854,31 +1005,51 @@ def run_coder(worktree, brief, system, thread, timeout):
             max_rounds,
             dithered=lambda: trace_has_dither(recorder.path),
         )
-    except TimeoutError:
-        recorder.run_end(False)
+        # Keep the checkpointer connection alive until the run returns.
+        _ = holder
+        reply = extract_reply(result)
+        if verified and repair_files:
+            written_files.update(existing_implementation_files(worktree, repair_files))
+        reason = implementation_failure(reply, written_files)
+        if reason:
+            recorder.event("coder_verdict", ok=False, reason=reason)
+            raise RuntimeError(reason)
+        if not verified and max_rounds > 0:
+            reply = mark_unverified(reply)
+        recorder.run_end(True)
         recorder.close()
-        raise RuntimeError(f"coder timed out after {timeout}s")
-    except Exception:
-        recorder.run_end(False)
-        recorder.close()
+        usage, calls = recorder.totals()
+        print(f"trace: {recorder.path}", file=sys.stderr)
+        return reply, usage, calls, started, label, recorder.path, verified, rounds
+    except BaseException as error:
+        fail(error)
+        if isinstance(error, TimeoutError):
+            raise RuntimeError(f"coder timed out after {timeout}s") from error
         raise
-    # holder stays referenced (with saver + agent) until return, so the
-    # DB connection outlives the run.
-    _ = holder
-    reply = extract_reply(result)
-    reason = implementation_failure(reply, written_files)
-    if reason:
-        recorder.event("coder_verdict", ok=False, reason=reason)
-        recorder.run_end(False)
-        recorder.close()
-        raise RuntimeError(reason)
-    if not verified and max_rounds > 0:
-        reply = mark_unverified(reply)
-    recorder.run_end(True)
-    recorder.close()
-    usage, calls = recorder.totals()
-    print(f"trace: {recorder.path}", file=sys.stderr)
-    return reply, usage, calls, started, label, recorder.path, verified, rounds
+
+
+def existing_implementation_files(worktree, allowed_files):
+    allowed = set()
+    for path in allowed_files:
+        key = os.path.normpath(worktree_file_key(worktree, path))
+        assert_inside(worktree, key)
+        allowed.add(key)
+    changed = set()
+    for args in (
+        ["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"],
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    ):
+        try:
+            output = subprocess.run(
+                ["git", "-C", worktree, *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError("cannot inspect existing implementation diff") from exc
+        changed.update(output.split("\0"))
+    return changed & allowed
 
 
 def implementation_failure(reply, written_files):

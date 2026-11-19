@@ -543,7 +543,13 @@ class TestReviewPr(unittest.TestCase):
             return {}
 
         model = SimpleNamespace(
-            invoke=mock.Mock(return_value={"verdict": "APPROVE", "reason": "clean"})
+            invoke=mock.Mock(
+                return_value={
+                    "raw": SimpleNamespace(content="APPROVE: clean"),
+                    "parsed": {"verdict": "APPROVE", "reason": "clean"},
+                    "parsing_error": None,
+                }
+            )
         )
         spec = {"provider": "ollama", "model": "qwen3:8b"}
         with tempfile.TemporaryDirectory() as tmp:
@@ -697,7 +703,10 @@ class TestTrivialTrace(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             code, _, trace_path = self._run_trivial(tmp, model, seen)
             self.assertEqual(code, 0)
-            self.assertIsNone(seen["usage"])
+            self.assertEqual(
+                seen["usage"],
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
             events = self._events(trace_path)
         responses = [e for e in events if e["type"] == "model_response"]
         self.assertEqual(len(responses), 1)

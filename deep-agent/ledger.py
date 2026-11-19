@@ -7,9 +7,11 @@ Reader: python ledger.py [n]  (prints last n entries, compact)
 
 import fcntl
 import json
+import math
 import os
 import sys
 import time
+from contextlib import contextmanager
 
 import cli
 import pricing
@@ -30,6 +32,22 @@ def state_dir():
 
 
 LEDGER = os.environ.get("EVAL_LEDGER") or os.path.join(state_dir(), "ledger.jsonl")
+
+
+@contextmanager
+def locked(path=None):
+    """Serialize ledger mutations across atomic file replacements."""
+    path = os.fspath(path or LEDGER)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    fd = os.open(path + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _as_dict(obj):
@@ -63,7 +81,41 @@ def _usage_total(messages):
             total["input_tokens"] += prompt_n
             total["output_tokens"] += eval_n
             total["total_tokens"] += prompt_n + eval_n
+    cost = _reported_cost(messages)
+    if cost is not None:
+        total["reported_cost_usd"] = cost
+    ids = set()
+    for message in messages or []:
+        data = (
+            message if isinstance(message, dict) else getattr(message, "__dict__", {})
+        )
+        metadata = data.get("response_metadata") or {}
+        headers = metadata.get("headers") if isinstance(metadata, dict) else None
+        if isinstance(headers, dict):
+            ids.update(
+                str(value)
+                for key, value in headers.items()
+                if isinstance(key, str) and key.lower() == "x-trace-id"
+            )
+    if ids:
+        total["twt_trace_ids"] = sorted(ids)
     return total
+
+
+def error_usage(error):
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    headers = dict(headers)
+    if getattr(error, "twt_trace_id", None):
+        headers["x-trace-id"] = error.twt_trace_id
+    usage = _usage_total([{"response_metadata": {"headers": headers}}])
+    if (
+        getattr(error, "llm_not_dispatched", False) is True
+        and response is None
+        and not getattr(error, "twt_trace_id", None)
+    ):
+        usage.update(reported_cost_usd=0.0, not_dispatched=True)
+    return usage
 
 
 def _model_provider(model):
@@ -79,6 +131,53 @@ def _model_provider(model):
             if model.startswith(prefix):
                 return prefix[:-1]
     return None
+
+
+def _reported_cost(messages):
+    total = 0.0
+    count = 0
+    for message in messages or []:
+        data = _as_dict(message)
+        metadata = (
+            data.get("response_metadata", {})
+            if data is not None
+            else getattr(message, "response_metadata", {})
+        ) or {}
+        if not isinstance(metadata, dict):
+            return None
+        kind = data.get("type") if data is not None else getattr(message, "type", None)
+        if kind in ("human", "system", "tool"):
+            continue
+        count += 1
+        headers = metadata.get("headers") or {}
+        if not isinstance(headers, dict):
+            headers = {}
+        header = next(
+            (
+                value
+                for key, value in headers.items()
+                if isinstance(key, str) and key.lower() == "x-cost-usd"
+            ),
+            None,
+        )
+        usage = metadata.get("token_usage") or metadata.get("usage") or {}
+        if not isinstance(usage, dict):
+            usage = {}
+        cost = None
+        for value in (header, usage.get("cost")):
+            if isinstance(value, bool):
+                continue
+            try:
+                candidate = float(value)
+            except (ValueError, TypeError, OverflowError):
+                continue
+            if math.isfinite(candidate) and candidate >= 0:
+                cost = candidate
+                break
+        if cost is None:
+            return None
+        total += cost
+    return total if count and math.isfinite(total) else None
 
 
 def _is_test_thread(thread_id):
@@ -189,6 +288,18 @@ def record(
             and pricing.rate_for(label) != (0.0, 0.0)
         ):
             cost_usd, metered = None, True
+        if provider == "twt":
+            cost_usd, metered = _reported_cost(messages), True
+            if "reported_cost_usd" in usage:
+                value = usage["reported_cost_usd"]
+                cost_usd = (
+                    float(value)
+                    if isinstance(value, (float, int))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                    and value >= 0
+                    else None
+                )
         if provider == "ollama":
             # The resolved backend is truth: a locally-run turn is
             # free even when the model string carries no prefix.
@@ -216,7 +327,7 @@ def record(
         parent = os.path.dirname(LEDGER)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        with open(LEDGER, "a", encoding="utf-8") as f:
+        with locked(), open(LEDGER, "a", encoding="utf-8") as f:
             # Matches runs._tombstone_lines: appends never interleave
             # with a delete/clear rewrite from another process.
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)

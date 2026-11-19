@@ -17,6 +17,8 @@ import os
 import subprocess
 import time
 
+import twt_receipts
+
 UNVERIFIED_CODER = "pipeline coder did not pass verification"
 MAX_AUDIT_CYCLES_DEFAULT = 2
 DRIVE_LIMIT_DEFAULT = 25
@@ -162,6 +164,7 @@ class Pipeline:
         self.max_audit_cycles = max_audit_cycles
         self.thread_id = thread_id or f"pipeline-{int(time.time())}"
         self.verification_commands = list(verification_commands or [])
+        self.verification_evidence = []
         self.drive_limit = drive_limit
         self.preview_url = preview_url
         self.events = []
@@ -240,14 +243,28 @@ class Pipeline:
                 f"{task}\n\nPlan:\n{plan}\n\n"
                 f"Repair notes:\n{repair_notes}\n\nErrors:\n{errors}"
             )
+            kwargs = {}
+            if errors or repair_notes:
+                kwargs["repair_files"] = [
+                    path
+                    for path in dict.fromkeys(
+                        [
+                            *coder.files_named(plan),
+                            *issue_generator.explicit_allowed_paths(brief),
+                        ]
+                    )
+                    if os.path.normpath(path) != os.path.normpath(spec_path)
+                ]
             result = coder.run_coder(
                 root,
                 prompt,
                 coder.build_system(root, ""),
                 f"{self.thread_id}-edit-{time.time_ns()}",
                 coder._timeout(),
+                **kwargs,
             )
             summary, usage, calls, started, label, trace, verified, _ = result
+            self.verification_evidence = coder.trace_verification_evidence(trace)
             provider, _, model = label.partition(":")
             graph.last_model_spec = {"provider": provider, "model": model}
             import ledger
@@ -359,6 +376,8 @@ class Pipeline:
             max_loops=1,
             preview_url=self.preview_url,
             spec_file=self.spec_path,
+            verification_commands=self.verification_commands,
+            verification_evidence=self.verification_evidence,
             thread_id=f"{self.thread_id}-audit-{int(time.time())}",
         )
         state = drive_to_settled(
@@ -431,6 +450,16 @@ class Pipeline:
 
     def run(self):
         """Execute all stages; returns a result dict (never raises)."""
+        with twt_receipts.run(self.thread_id) as receipts:
+            result = self._run_guarded()
+        if receipts.error:
+            result.update(
+                status=BLOCKED,
+                detail=f"TwT receipt reconciliation failed: {receipts.error}",
+            )
+        return result
+
+    def _run_guarded(self):
         started = time.time()
         try:
             return self._run(started)
@@ -489,6 +518,18 @@ class Pipeline:
             if audit_cycles > self.max_audit_cycles:
                 return self._result(
                     CHANGES_REQUESTED, worktree, detail, audit_cycles - 1, started
+                )
+
+        receipts = twt_receipts.current.get()
+        if receipts is not None:
+            receipts.reconcile()
+            if receipts.error:
+                return self._result(
+                    BLOCKED,
+                    worktree,
+                    f"TwT receipt reconciliation failed: {receipts.error}",
+                    audit_cycles,
+                    started,
                 )
 
         submit_url = ""

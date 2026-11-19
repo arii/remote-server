@@ -5,10 +5,11 @@ and reach for an LLM only for judgment/explanation/summarization. When an
 LLM is needed, this module picks the cheapest feasible one:
 
   1. S5_LOCAL_ONLY=1 forces local Ollama, otherwise explicit prefer wins,
-  2. otherwise local Ollama (``ASK_MODEL``, default qwen3:8b) when reachable,
-  3. otherwise keyed OpenRouter, free models by default,
-  4. otherwise keyed Nebius (``NEBIUS_MODEL``),
-  5. otherwise raise with an actionable message.
+  2. otherwise local Ollama via TwT (``ASK_MODEL``, default qwen3:8b) when reachable,
+  3. otherwise Tokens with Taste's free-first, Nebius-last waterfall.
+
+Explicit OpenRouter/Nebius preferences remain available for diagnostics;
+the automatic route never connects directly to either provider.
 
 Stdlib only on purpose: system-python tests import this without the
 deep-agent venv. Never touches secrets — no API keys in specs, kwargs, or
@@ -18,12 +19,15 @@ Env contract:
   ASK_MODEL (default qwen3:8b), OLLAMA_URL (default http://ollama:11434),
   S5_LOCAL_ONLY=1 (Ollama only; reject cloud models and remote overrides),
   OLLAMA_NUM_CTX (optional Ollama context window; server default when unset),
+  TWT_BASE_URL (default http://127.0.0.1:8000/v1); local calls use
+  the sibling /local native-Ollama endpoint of twt_service.py,
   NEBIUS_MODEL (default zai-org/GLM-5.3-Flash),
   NEBIUS_BASE_URL (default https://api.tokenfactory.nebius.com/v1),
   NEBIUS_API_KEY (required for the nebius path),
   OPENROUTER_API_KEY (required for OpenRouter), OPENROUTER_MODEL
   (default openrouter/free), OPENROUTER_ALLOW_PAID=1 (allow paid models),
-  NEBIUS_ONLY=1 (force cloud), OLLAMA_STRICT=1 (fail instead of falling back).
+  NEBIUS_ONLY=1 (legacy force-remote flag; now selects TwT),
+  OLLAMA_STRICT=1 (fail instead of falling back).
   NEBIUS_SPEND_CAP_USD (lifetime metered cap, default $5.00
   when unset; 0 blocks every metered call).
 
@@ -39,10 +43,13 @@ Routing ladder (policy, 2026-11-02):
   OLLAMA_STRICT=1 keeps the box usable offline (fail, never cloud).
 """
 
+import json
 import logging
 import os
 import re
 import sys
+
+import twt_transport
 import time
 import urllib.request
 
@@ -58,6 +65,97 @@ DEFAULT_OPENROUTER_MODEL = "openrouter/free"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
+DEFAULT_TWT_BASE_URL = "http://127.0.0.1:8000/v1"
+PIPELINE_MAX_TOKENS = 8192
+PIPELINE_HISTORY_CHARS = 64000
+
+
+def bounded_history(messages):
+    """Bound model input without mutating checkpoint history or splitting tools."""
+
+    def size(items):
+        return sum(len(json.dumps(m.model_dump(), default=str)) for m in items)
+
+    result = list(messages)
+    if size(result) <= PIPELINE_HISTORY_CHARS:
+        return result
+    for index, message in enumerate(result):
+        if message.type in ("tool", "ai") and len(str(message.content)) > 4096:
+            text = str(message.content)
+            result[index] = message.model_copy(
+                update={"content": text[:2048] + "\n[history trimmed]\n" + text[-2048:]}
+            )
+    groups = []
+    for message in result:
+        if message.type == "tool" and groups:
+            groups[-1].append(message)
+        else:
+            groups.append([message])
+    while size([m for group in groups for m in group]) > PIPELINE_HISTORY_CHARS:
+        removable = next(
+            (i for i, group in enumerate(groups[:-1]) if group[0].type == "ai"),
+            None,
+        )
+        if removable is None:
+            raise ValueError("Pipeline history exceeds the instruction/context budget")
+        groups.pop(removable)
+    return [message for group in groups for message in group]
+
+
+class _BoundedHistory:
+    def _bounded_kwargs(self, kwargs):
+        kwargs = dict(kwargs)
+        if hasattr(self, "num_predict") and "options" in kwargs:
+            options = dict(kwargs["options"] or {})
+            value = options.get("num_predict", PIPELINE_MAX_TOKENS)
+            if type(value) is not int or value <= 0:
+                raise ValueError("Pipeline output budget must be positive")
+            options["num_predict"] = min(value, PIPELINE_MAX_TOKENS)
+            kwargs["options"] = options
+        if hasattr(self, "max_tokens"):
+            for key in ("max_tokens", "max_completion_tokens"):
+                if key in kwargs:
+                    value = kwargs[key]
+                    if type(value) is not int or value <= 0:
+                        raise ValueError("Pipeline output budget must be positive")
+                    kwargs[key] = min(value, PIPELINE_MAX_TOKENS)
+        return kwargs
+
+    def _generate(self, messages, *args, **kwargs):
+        import twt_receipts
+
+        token = twt_receipts.latest.set(None)
+        dispatched = False
+        try:
+            messages = bounded_history(messages)
+            kwargs = self._bounded_kwargs(kwargs)
+            dispatched = True
+            result = super()._generate(messages, *args, **kwargs)
+            return twt_receipts.tag(result)
+        except BaseException as error:
+            error.twt_trace_id = twt_receipts.latest.get()
+            error.llm_not_dispatched = not dispatched
+            raise
+        finally:
+            twt_receipts.latest.reset(token)
+
+    async def _agenerate(self, messages, *args, **kwargs):
+        import twt_receipts
+
+        token = twt_receipts.latest.set(None)
+        dispatched = False
+        try:
+            messages = bounded_history(messages)
+            kwargs = self._bounded_kwargs(kwargs)
+            dispatched = True
+            result = await super()._agenerate(messages, *args, **kwargs)
+            return twt_receipts.tag(result)
+        except BaseException as error:
+            error.twt_trace_id = twt_receipts.latest.get()
+            error.llm_not_dispatched = not dispatched
+            raise
+        finally:
+            twt_receipts.latest.reset(token)
 
 
 def _default_ollama_model():
@@ -101,7 +199,10 @@ def _ollama_spec():
     return {
         "provider": "ollama",
         "model": _env("ASK_MODEL", _default_ollama_model()),
-        "base_url": _ollama_base(),
+        "base_url": _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL)
+        .rstrip("/")
+        .removesuffix("/v1")
+        + "/local",
     }
 
 
@@ -121,6 +222,8 @@ def validate_local_spec(spec):
 def api_key(spec):
     """Credential for the resolved remote backend. Keep out of specs and logs."""
     provider = spec["provider"]
+    if provider == "twt":
+        return "twt-loopback"
     if provider not in ("nebius", "openrouter"):
         raise ValueError(f"bad remote provider: {provider!r}")
     variable = f"{provider.upper()}_API_KEY"
@@ -176,6 +279,10 @@ def _nebius_spec():
     )
 
 
+def _twt_spec():
+    return _remote_spec("twt", "default", _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL))
+
+
 def _validate_openrouter_model(model):
     if (
         not pricing.is_free_openrouter(f"openrouter:{model}")
@@ -196,7 +303,7 @@ def resolve_llm(prefer=None):
     """Pick the cheapest feasible LLM. Returns {"provider","model","base_url"}.
 
     ``prefer`` selects a provider strictly. Default order is local Ollama,
-    keyed OpenRouter, then keyed Nebius.
+    then TwT. TwT owns the free-tier/paid waterfall.
     OLLAMA_STRICT=1 disables the fallback on the default path too.
     """
     if local_only():
@@ -208,13 +315,15 @@ def resolve_llm(prefer=None):
         return spec
     only_nebius = _env("NEBIUS_ONLY") == "1"
     strict_ollama = _env("OLLAMA_STRICT") == "1"
-    want = (prefer or ("nebius" if only_nebius else "")).strip().lower()
+    want = (prefer or ("twt" if only_nebius else "")).strip().lower()
     if want and want not in PROVIDERS:
         raise ValueError(f"bad provider {prefer!r}: want {', '.join(PROVIDERS)}")
     if want == "nebius":
         return _nebius_spec()
     if want == "openrouter":
         return _openrouter_spec()
+    if want == "twt":
+        return _twt_spec()
     if want == "ollama":
         if ollama_reachable():
             return _ollama_spec()
@@ -227,15 +336,7 @@ def resolve_llm(prefer=None):
         raise RuntimeError(
             "Ollama unreachable and OLLAMA_STRICT=1 refuses remote fallback"
         )
-    if _env("OPENROUTER_API_KEY"):
-        spec = _openrouter_spec()
-        _announce_fallback(spec)
-        return spec
-    logger.info("OpenRouter skipped: OPENROUTER_API_KEY is unset")
-    print(
-        "model_router: OpenRouter skipped: OPENROUTER_API_KEY is unset", file=sys.stderr
-    )
-    spec = _nebius_spec()
+    spec = _twt_spec()
     _announce_fallback(spec)
     return spec
 
@@ -245,7 +346,7 @@ def _announce_fallback(spec):
     url = _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
     model = spec.get("model", "?")
     provider = spec["provider"]
-    label = "metered nebius" if provider == "nebius" else "openrouter"
+    label = provider
     logger.warning("ollama unreachable at %s, using %s (%s)", url, label, model)
     print(
         f"model_router: ollama unreachable at {url}, using {label} ({model})",
@@ -258,7 +359,11 @@ def _announce_fallback(spec):
         thread_id="",
         messages=[],
         started=time.time(),
-        extra={"event": "metered-failover", "reason": "ollama unreachable"},
+        extra={
+            "event": "metered-failover",
+            "reason": "ollama unreachable",
+            "llm_call": False,
+        },
         usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         calls=[],
     )
@@ -379,6 +484,19 @@ def chat_kwargs(spec):
             "model": spec["model"],
             "base_url": spec["base_url"],
             "temperature": 0,
+            "num_predict": PIPELINE_MAX_TOKENS,
+            "disable_streaming": True,
+        }
+    if spec.get("provider") == "twt":
+        return {
+            "model": spec["model"],
+            "base_url": spec["base_url"],
+            "temperature": 0,
+            "include_response_headers": True,
+            "disable_streaming": True,
+            "max_retries": 0,
+            "max_tokens": PIPELINE_MAX_TOKENS,
+            **(twt_transport.openai_clients() if twt_transport.uds_path() else {}),
         }
     if spec.get("provider") in ("nebius", "openrouter"):
         if spec["provider"] == "openrouter":
@@ -403,10 +521,19 @@ def chat_kwargs(spec):
 # (our Nebius path) -> openai:<model>. Translate our spec provider
 # names; anything else passes through for custom model classes.
 # (Mirrors deep_chat.PROFILE_PROVIDERS for the chat gate.)
-PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai", "openrouter": "openai"}
+PROFILE_PROVIDERS = {
+    "ollama": "ollama",
+    "nebius": "openai",
+    "openrouter": "openai",
+    "twt": "openai",
+}
 
 
-def build_chat_model(spec=None, think=False, num_ctx=None):
+STAGE_NEBIUS_MODELS = dict.fromkeys(("coder", "spec", "audit"), "zai-org/GLM-5.3-Flash")
+STAGE_NVIDIA_MODELS = dict.fromkeys(("coder", "spec", "audit"), "z-ai/glm-5.3-flash")
+
+
+def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
     """Container-correct chat model (Ollama no-think default). Venv-only.
 
     resolve_llm() picks local or keyed remote through the spend choke;
@@ -415,11 +542,37 @@ def build_chat_model(spec=None, think=False, num_ctx=None):
     Ollama base_url. Returns (model, spec).
     """
     spec = dict(spec) if spec else resolve_llm()
+    if stage is not None and stage not in STAGE_NEBIUS_MODELS:
+        raise ValueError(f"unknown pipeline model stage: {stage}")
+    if spec.get("provider") == "twt" and stage is not None:
+        spec["provider_models"] = {
+            "nvidia": _env(
+                f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
+            ),
+            "nebius": _env(
+                f"TWT_{stage.upper()}_NEBIUS_MODEL", STAGE_NEBIUS_MODELS[stage]
+            ),
+        }
+        spec["provider_reasoning_effort"] = dict.fromkeys(("nvidia", "nebius"), "low")
     kwargs = chat_kwargs(spec)
+    if spec.get("provider") == "twt" and spec.get("provider_models"):
+        kwargs["extra_body"] = {"provider_models": spec["provider_models"]}
+        if spec.get("provider_reasoning_effort"):
+            kwargs["extra_body"]["provider_reasoning_effort"] = spec[
+                "provider_reasoning_effort"
+            ]
+    import twt_receipts
+
     if spec.get("provider") == "ollama":
         from langchain_ollama import ChatOllama  # noqa: E402
 
         kwargs["reasoning"] = think
+        kwargs["sync_client_kwargs"] = twt_transport.client_kwargs(
+            hook=twt_receipts.capture
+        )
+        kwargs["async_client_kwargs"] = twt_transport.client_kwargs(
+            asynchronous=True, hook=twt_receipts.acapture
+        )
         if num_ctx is None and _env("OLLAMA_NUM_CTX"):
             try:
                 num_ctx = int(_env("OLLAMA_NUM_CTX"))
@@ -429,13 +582,27 @@ def build_chat_model(spec=None, think=False, num_ctx=None):
                 raise ValueError("OLLAMA_NUM_CTX must be a positive integer")
         if num_ctx is not None:
             kwargs["num_ctx"] = num_ctx
-        return ChatOllama(**kwargs), spec
+
+        class PipelineOllama(_BoundedHistory, ChatOllama):
+            pass
+
+        return PipelineOllama(**kwargs), spec
     from langchain_openai import ChatOpenAI  # noqa: E402
 
-    return ChatOpenAI(api_key=api_key(spec), **kwargs), spec
+    if spec.get("provider") == "twt" and "http_client" not in kwargs:
+        kwargs.update(twt_transport.openai_clients())
+
+    class PipelineOpenAI(_BoundedHistory, ChatOpenAI):
+        def _get_request_payload(self, *args, **kwargs):
+            payload = super()._get_request_payload(*args, **kwargs)
+            limit = payload.pop("max_completion_tokens", PIPELINE_MAX_TOKENS)
+            payload["max_tokens"] = min(limit, PIPELINE_MAX_TOKENS)
+            return payload
+
+    return PipelineOpenAI(api_key=api_key(spec), **kwargs), spec
 
 
-def build_structured_chat_model(spec=None, schema=None, think=False):
+def build_structured_chat_model(spec=None, schema=None, think=False, include_raw=False):
     """Native structured-output chat model (no prompt-hinting).
 
     Binds the Pydantic schema at the protocol layer: Ollama gets
@@ -447,11 +614,12 @@ def build_structured_chat_model(spec=None, schema=None, think=False):
     model, resolved = build_chat_model(spec, think=think)
     if schema is None:
         return model, resolved
-    if resolved.get("provider") in ("nebius", "openrouter"):
-        return model.with_structured_output(
-            schema, method="json_schema", strict=True
-        ), resolved
-    return model.with_structured_output(schema, method="json_schema"), resolved
+    kwargs = {"method": "json_schema"}
+    if include_raw:
+        kwargs["include_raw"] = True
+    if resolved.get("provider") in ("nebius", "openrouter", "twt"):
+        kwargs["strict"] = True
+    return model.with_structured_output(schema, **kwargs), resolved
 
 
 def disable_general_purpose(spec):

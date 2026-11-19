@@ -1,4 +1,4 @@
-"""#1294 acceptance: local -> free OpenRouter -> paid Nebius.
+"""Local/TwT defaults and explicit OpenRouter diagnostic contracts.
 
 Run from the checkout root with PYTHONPATH=./deep-agent. No live keys,
 provider requests, shared ledger, or optional model SDK dependencies.
@@ -90,15 +90,12 @@ class OpenRouterContract(unittest.TestCase):
         self.assertEqual(runs.total_metered_spend(), {"spent": 0.0, "unknown": 0})
         self.assertFalse(self.path.exists())
 
-    def test_default_remote_is_openrouter_not_paid_nebius(self):
-        """#1294: OpenRouter is the first remote when both keys exist."""
+    def test_default_remote_is_gateway_not_a_direct_provider(self):
         os.environ.update(OPENROUTER_API_KEY=OR_KEY, NEBIUS_API_KEY=NEBIUS_KEY)
         spec = self.resolve()
-        self.assertEqual(spec["provider"], "openrouter")
-        self.assertEqual(spec["base_url"], "https://openrouter.ai/api/v1")
-        self.assertTrue(
-            spec["model"].endswith(":free") or spec["model"] == "openrouter/free"
-        )
+        self.assertEqual(spec["provider"], "twt")
+        self.assertEqual(spec["base_url"], model_router.DEFAULT_TWT_BASE_URL)
+        self.assertEqual(spec["model"], "default")
         serialized = json.dumps(spec) + self.logs.getvalue()
         self.assertNotIn(OR_KEY, serialized)
         self.assertNotIn(NEBIUS_KEY, serialized)
@@ -111,25 +108,24 @@ class OpenRouterContract(unittest.TestCase):
     def test_openrouter_does_not_require_a_nebius_key(self):
         """#1294: the free remote is usable independently of paid credentials."""
         os.environ["OPENROUTER_API_KEY"] = OR_KEY
-        self.assertEqual(self.resolve()["provider"], "openrouter")
+        self.assertEqual(self.resolve("openrouter")["provider"], "openrouter")
 
     def test_model_override_is_honored(self):
         """#1294: OPENROUTER_MODEL chooses a free reasoning model explicitly."""
         os.environ.update(OPENROUTER_API_KEY=OR_KEY, OPENROUTER_MODEL=FREE_MODEL)
-        spec = self.resolve()
+        spec = self.resolve("openrouter")
         self.assertEqual((spec["provider"], spec["model"]), ("openrouter", FREE_MODEL))
 
     def test_empty_model_override_keeps_a_free_default(self):
         """#1294: a blank override must not produce an empty or paid model."""
         os.environ.update(OPENROUTER_API_KEY=OR_KEY, OPENROUTER_MODEL="  ")
-        spec = self.resolve()
+        spec = self.resolve("openrouter")
         self.assertEqual(spec["provider"], "openrouter")
         self.assertTrue(
             spec["model"].endswith(":free") or spec["model"] == "openrouter/free"
         )
 
-    def test_missing_or_blank_key_is_visibly_skipped_before_nebius(self):
-        """#1294: missing OpenRouter credentials skip with a clear log, not silently."""
+    def test_default_gateway_does_not_require_client_provider_keys(self):
         for key in (None, "", "  "):
             with self.subTest(key=key):
                 self.logs.seek(0)
@@ -138,20 +134,13 @@ class OpenRouterContract(unittest.TestCase):
                 os.environ["NEBIUS_API_KEY"] = NEBIUS_KEY
                 if key is not None:
                     os.environ["OPENROUTER_API_KEY"] = key
-                self.assertEqual(self.resolve()["provider"], "nebius")
-                self.assertRegex(
-                    self.logs.getvalue().lower(),
-                    r"openrouter.*(?:skip|missing|unset|no.*key|not configured|without.*key)",
-                )
+                self.assertEqual(self.resolve()["provider"], "twt")
+                self.assertIn("using twt", self.logs.getvalue())
                 self.assertNotIn(NEBIUS_KEY, self.logs.getvalue())
 
-    def test_all_keys_missing_refuses_remote_and_explains_openrouter_skip(self):
-        """#1294: a keyless host never fabricates an authenticated remote route."""
-        with self.assertRaises(RuntimeError):
-            model_router.resolve_llm()
-        self.assertRegex(
-            self.logs.getvalue().lower(), r"openrouter.*(?:key|configured|skip)"
-        )
+    def test_keyless_client_uses_configured_gateway_without_spending(self):
+        self.assertEqual(model_router.resolve_llm()["provider"], "twt")
+        self.assertIn("using twt", self.logs.getvalue())
         self.assertEqual(runs.total_metered_spend(), {"spent": 0.0, "unknown": 0})
 
     def test_explicit_openrouter_uses_the_existing_strict_preference_interface(self):
@@ -180,7 +169,7 @@ class OpenRouterContract(unittest.TestCase):
             OPENROUTER_MODEL=PAID_MODEL,
             NEBIUS_API_KEY=NEBIUS_KEY,
         )
-        self.assert_rejected(None, r"free|paid")
+        self.assert_rejected("openrouter", r"free|paid")
         self.assertFalse(self.path.exists())
 
     def test_explicit_paid_opt_in_allows_the_selected_openrouter_model(self):
@@ -203,17 +192,23 @@ class OpenRouterContract(unittest.TestCase):
             NEBIUS_API_KEY=NEBIUS_KEY,
         )
         sdk = types.ModuleType("langchain_openai")
-        sdk.ChatOpenAI = mock.Mock()
+        constructor = mock.Mock()
+
+        class ChatOpenAI:
+            def __init__(self, **kwargs):
+                constructor(**kwargs)
+
+        sdk.ChatOpenAI = ChatOpenAI
         with mock.patch.dict(sys.modules, {"langchain_openai": sdk}):
-            model, spec = model_router.build_chat_model()
+            model, spec = model_router.build_chat_model(self.resolve("openrouter"))
         self.assertEqual(spec["provider"], "openrouter")
-        sdk.ChatOpenAI.assert_called_once()
-        kwargs = sdk.ChatOpenAI.call_args.kwargs
+        constructor.assert_called_once()
+        kwargs = constructor.call_args.kwargs
         self.assertEqual(kwargs["api_key"], OR_KEY)
         self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
         self.assertEqual(kwargs["model"], FREE_MODEL)
         self.assertTrue(kwargs["stream_usage"])
-        self.assertIs(model, sdk.ChatOpenAI.return_value)
+        self.assertIsInstance(model, sdk.ChatOpenAI)
         self.assertNotIn("api_key", model_router.chat_kwargs(spec))
 
     def test_zero_spend_cap_blocks_the_free_remote_too(self):
@@ -286,7 +281,7 @@ class OpenRouterContract(unittest.TestCase):
     def test_rate_limit_uses_one_existing_local_hop_and_never_paid_retry(self):
         """#1294: OpenRouter 429 keeps the existing single-hop local fallback semantics."""
         os.environ.update(OPENROUTER_API_KEY=OR_KEY, NEBIUS_API_KEY=NEBIUS_KEY)
-        self.assertEqual(self.resolve()["provider"], "openrouter")
+        self.assertEqual(self.resolve("openrouter")["provider"], "openrouter")
         error = RuntimeError("free quota exhausted")
         error.status_code = 429
         primary = mock.Mock(side_effect=error)

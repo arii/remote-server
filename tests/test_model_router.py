@@ -21,7 +21,7 @@ class TestModelRouter(unittest.TestCase):
                 spec = model_router.resolve_llm()
         self.assertEqual(spec["provider"], "ollama")
         self.assertEqual(spec["model"], "qwen3:8b")
-        self.assertEqual(spec["base_url"], "http://ollama:11434")
+        self.assertEqual(spec["base_url"], "http://127.0.0.1:8000/local")
 
     def test_ask_model_honored(self):
         with env(ASK_MODEL="qwen3:14b"):
@@ -38,15 +38,15 @@ class TestModelRouter(unittest.TestCase):
         self.assertEqual(spec["model"], "qwen3:8b")
         probe.assert_called_once_with()
 
-    def test_fallback_to_nebius(self):
+    def test_fallback_to_twt(self):
         with env(NEBIUS_API_KEY="k"):
             with mock.patch.object(
                 model_router, "ollama_reachable", return_value=False
             ):
                 with mock.patch.object(model_router.ledger, "record"):
                     spec = model_router.resolve_llm()
-        self.assertEqual(spec["provider"], "nebius")
-        self.assertEqual(spec["model"], "zai-org/GLM-5.3-Flash")
+        self.assertEqual(spec["provider"], "twt")
+        self.assertEqual(spec["model"], "default")
 
     def test_fallback_announces_outage_signal(self):
         # Ollama-down default resolve is always visible: one log
@@ -61,12 +61,12 @@ class TestModelRouter(unittest.TestCase):
                     with contextlib.redirect_stderr(err):
                         with mock.patch.object(model_router.ledger, "record"):
                             spec = model_router.resolve_llm()
-        self.assertEqual(spec["provider"], "nebius")
+        self.assertEqual(spec["provider"], "twt")
         self.assertEqual(len(logs.output), 1)
         self.assertIn("ollama unreachable", logs.output[0])
-        self.assertIn("metered nebius", logs.output[0])
+        self.assertIn("twt", logs.output[0])
         self.assertIn("ollama unreachable", err.getvalue())
-        self.assertIn("metered nebius", err.getvalue())
+        self.assertIn("twt", err.getvalue())
 
     def test_explicit_nebius_stays_silent(self):
         # prefer="nebius" is a choice, not a downgrade: no signal.
@@ -102,7 +102,7 @@ class TestModelRouter(unittest.TestCase):
         rec.assert_called_once()
         kwargs = rec.call_args.kwargs
         self.assertEqual(kwargs["script"], "model_router")
-        self.assertIn("zai-org/GLM-5.3-Flash", kwargs["model"])
+        self.assertEqual(kwargs["model"], "twt:default")
         self.assertEqual(kwargs["extra"]["event"], "metered-failover")
         self.assertEqual(kwargs["extra"]["reason"], "ollama unreachable")
         self.assertEqual(kwargs["usage"]["total_tokens"], 0)
@@ -127,7 +127,7 @@ class TestModelRouter(unittest.TestCase):
         row = json.loads(lines[0])
         self.assertIn("ts", row)
         self.assertEqual(row["script"], "model_router")
-        self.assertIn("zai-org/GLM-5.3-Flash", row["model"])
+        self.assertEqual(row["model"], "twt:default")
         self.assertEqual(row["extra"]["reason"], "ollama unreachable")
         self.assertEqual(row["cost_usd"], 0.0)
 
@@ -164,7 +164,7 @@ class TestModelRouter(unittest.TestCase):
                 model_router, "ollama_reachable", return_value=False
             ):
                 with mock.patch.object(model_router.ledger, "record"):
-                    spec = model_router.resolve_llm()
+                    spec = model_router.resolve_llm(prefer="nebius")
         self.assertEqual(spec["model"], "custom/model")
 
     def test_generate_suffix_stripped_from_probe(self):
@@ -181,15 +181,16 @@ class TestModelRouter(unittest.TestCase):
         with env(OLLAMA_URL="http://ollama:11434/api/generate"):
             with mock.patch.object(model_router, "ollama_reachable", return_value=True):
                 spec = model_router.resolve_llm()
-        self.assertEqual(spec["base_url"], "http://ollama:11434")
+        self.assertEqual(spec["base_url"], "http://127.0.0.1:8000/local")
 
-    def test_no_key_no_fallback(self):
+    def test_twt_needs_no_client_provider_keys(self):
         with env():
             with mock.patch.object(
                 model_router, "ollama_reachable", return_value=False
             ):
-                with self.assertRaises(RuntimeError):
-                    model_router.resolve_llm()
+                with mock.patch.object(model_router.ledger, "record"):
+                    spec = model_router.resolve_llm()
+        self.assertEqual(spec["provider"], "twt")
 
     def test_strict_means_no_fallback(self):
         with env(NEBIUS_API_KEY="k", OLLAMA_STRICT="1"):
@@ -305,7 +306,7 @@ class TestSpendCapGate(unittest.TestCase):
                     ):
                         with mock.patch.object(model_router.ledger, "record"):
                             spec = model_router.resolve_llm()
-        self.assertEqual(spec["provider"], "nebius")
+        self.assertEqual(spec["provider"], "twt")
 
     def test_default_cap_allows_small_spend(self):
         # #885: no more uncapped — unset now means the $5.00
@@ -318,7 +319,7 @@ class TestSpendCapGate(unittest.TestCase):
                     ):
                         with mock.patch.object(model_router.ledger, "record"):
                             spec = model_router.resolve_llm()
-        self.assertEqual(spec["provider"], "nebius")
+        self.assertEqual(spec["provider"], "twt")
 
     def test_cap_blocks_on_unknown_rates(self):
         with tempfile.TemporaryDirectory() as d:
@@ -345,7 +346,7 @@ class TestSpendCapGate(unittest.TestCase):
                     ):
                         with mock.patch.object(model_router.ledger, "record"):
                             spec = model_router.resolve_llm()
-        self.assertEqual(spec["provider"], "nebius")
+        self.assertEqual(spec["provider"], "twt")
 
     def test_default_cap_blocks_on_unknown_rates(self):
         # #885: unset used to ignore unrated spend; the $5.00

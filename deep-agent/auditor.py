@@ -7,6 +7,7 @@ audits persist the report via decisions.py + ledger.py.
 Only stdlib at module top; langgraph/langchain lazy (deep-agent venv).
 """
 
+import copy
 import json
 import os
 import re
@@ -246,6 +247,7 @@ class AuditorGraph:
         spec_file=None,
         verification_commands=None,
         preview_url=None,
+        verification_evidence=None,
     ):
         self.worktree_root = os.path.abspath(worktree_root)
         self.audit_fn = audit_fn
@@ -254,6 +256,7 @@ class AuditorGraph:
         self.thread_id = thread_id or f"audit-{int(time.time())}"
         self.spec_file = spec_file
         self.verification_commands = list(verification_commands or [])
+        self.verification_evidence = list(verification_evidence or [])
         self.preview_url = preview_url
         self.last_model_spec = None
         self.last_review_usage = None
@@ -309,7 +312,18 @@ class AuditorGraph:
                     )
             except Exception as exc:
                 return False, payloads, [f"verify {' '.join(argv)}: {exc}"]
+            verification = payloads.setdefault(
+                "verification", {"passed": True, "commands": []}
+            )
+            verification["commands"].append(
+                {
+                    "command": list(argv),
+                    "exit": proc.returncode,
+                    "output": ((proc.stdout or "") + (proc.stderr or ""))[-4000:],
+                }
+            )
             if proc.returncode != 0:
+                verification["passed"] = False
                 tail = (proc.stderr or proc.stdout or "")[-500:]
                 return (
                     False,
@@ -348,6 +362,83 @@ class AuditorGraph:
             "errors": state.get("errors", []),
         }
 
+    def semantic_prompt(self, payload):
+        user_content = (
+            "Audit these changes for rule violations and risky blast "
+            "radius against the supplied issue spec (Goal, Definition of Done and "
+            "acceptance criteria) and actual diff. Return only JSON "
+            '{"verified": true|false, "findings": [{"severity": "low|medium|high|critical", '
+            '"description": "..."}]}; use an empty findings list when clear.\n\n'
+            "Set verified=true only after verifying the diff against the spec. "
+            "Missing evidence, incomplete checks or uncertainty require verified=false. "
+            "Stale check evidence does not verify the final diff. "
+            "Deterministic gates alone are not semantic verification.\n\n"
+            f"Audit payload:\n{json.dumps(payload)}"
+        )
+        return skills_registry.SkillsRegistry().inject_skills_for_node(
+            "deep_semantic_auditor_node", user_content
+        )
+
+    def bound_verification(self, payload):
+        import model_router
+
+        def fits():
+            return (
+                len(json.dumps({"content": self.semantic_prompt(payload)})) + 1024
+                <= model_router.PIPELINE_HISTORY_CHARS
+            )
+
+        if fits():
+            return payload
+        records = []
+
+        def collect(value):
+            if isinstance(value, dict):
+                if isinstance(value.get("output"), str):
+                    records.append(
+                        (value, value["output"], value.get("output_truncated", False))
+                    )
+                for child in value.values():
+                    collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        collect(payload["verification"])
+        collect(payload["gate"].get("verification", {}))
+
+        def truncate(limit):
+            marker = "\n[check output truncated]\n"
+            for record, output, was_truncated in records:
+                cut = len(output) > limit
+                if cut:
+                    keep = max(0, limit - len(marker)) // 2
+                    record["output"] = (
+                        output[:keep] + marker + output[-keep:] if keep else ""
+                    )
+                else:
+                    record["output"] = output
+                if cut or was_truncated:
+                    record["output_truncated"] = True
+                else:
+                    record.pop("output_truncated", None)
+
+        truncate(0)
+        if not fits():
+            raise ValueError(
+                "Semantic audit diff/spec exceed the input budget even without check output"
+            )
+        low, high = 0, max((len(output) for _, output, _ in records), default=0)
+        while low < high:
+            middle = (low + high + 1) // 2
+            truncate(middle)
+            if fits():
+                low = middle
+            else:
+                high = middle - 1
+        truncate(low)
+        return payload
+
     def semantic_payload(self, gate_payload):
         if not self.spec_file:
             raise ValueError("Semantic audit requires an issue spec file")
@@ -355,7 +446,15 @@ class AuditorGraph:
         with open(spec_path, encoding="utf-8") as handle:
             spec = handle.read()
         subprocess.run(
-            ["git", "add", "--intent-to-add", "--all", "--", "."],
+            [
+                "git",
+                "add",
+                "--intent-to-add",
+                "--all",
+                "--",
+                ".",
+                ":(exclude,glob)**/node_modules",
+            ],
             cwd=self.worktree_root,
             capture_output=True,
             text=True,
@@ -378,7 +477,14 @@ class AuditorGraph:
         ).stdout
         if not diff.strip():
             raise ValueError("Semantic audit has no diff to verify")
-        return {"diff": diff, "spec": spec, "gate": gate_payload}
+        return self.bound_verification(
+            {
+                "diff": diff,
+                "spec": spec,
+                "gate": copy.deepcopy(gate_payload),
+                "verification": copy.deepcopy(self.verification_evidence),
+            }
+        )
 
     def audit_once(self, gate_payload):
         """LLM audit pass (injected in tests)."""
@@ -401,7 +507,7 @@ class AuditorGraph:
         spec = model_router.resolve_llm()
         if override:
             spec = dict(spec, model=override)
-        model, _spec = model_router.build_chat_model(spec=spec)
+        model, _spec = model_router.build_chat_model(spec=spec, stage="audit")
         self.last_model_spec = dict(_spec)
         callback = usage_callback(
             self.last_model_spec,
@@ -421,20 +527,7 @@ class AuditorGraph:
             ],
             middleware=[investigation_tool_guard(evidence)],
         )
-        user_content = (
-            "Audit these changes for rule violations and risky blast "
-            "radius against the supplied issue spec (Goal, Definition of Done and "
-            "acceptance criteria) and actual diff. Return only JSON "
-            '{"verified": true|false, "findings": [{"severity": "low|medium|high|critical", '
-            '"description": "..."}]}; use an empty findings list when clear.\n\n'
-            "Set verified=true only after verifying the diff against the spec. "
-            "Missing evidence, incomplete checks or uncertainty require verified=false. "
-            "Deterministic gates alone are not semantic verification.\n\n"
-            f"Audit payload:\n{json.dumps(payload)}"
-        )
-        user_content = skills_registry.SkillsRegistry().inject_skills_for_node(
-            "deep_semantic_auditor_node", user_content
-        )
+        user_content = self.semantic_prompt(payload)
         previous = ask_investigator._checkout
         ask_investigator._checkout = self.worktree_root
         error = None
@@ -555,7 +648,7 @@ class AuditorGraph:
                 think = os.environ.get("ASK_THINK", "") == "1"
                 try:
                     model, resolved = model_router.build_chat_model(
-                        spec=spec, think=think
+                        spec=spec, think=think, stage="audit"
                     )
                 except RuntimeError as exc:
                     raise ModelUnavailableError(str(exc)) from exc

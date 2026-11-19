@@ -267,14 +267,9 @@ def main() -> int:
                 "fanout: no Nebius key — triage on local model (weaker)",
                 file=sys.stderr,
             )
-        kwargs = model_router.chat_kwargs(spec)
-        # No-think default mirrors chat/coder: a qwen3 thinking trace
-        # takes 15+ min per prompt on this CPU-only box.
-        if os.environ.get("FANOUT_THINK", "") != "1":
-            kwargs["model_kwargs"] = {"think": False}
-        from langchain_ollama import ChatOllama  # noqa: E402
-
-        model = ChatOllama(**kwargs)
+        model, _ = model_router.build_chat_model(
+            spec=spec, think=os.environ.get("FANOUT_THINK", "") == "1"
+        )
         model_id = spec["model"]
     else:
         # Re-resolve after load_dotenv: the import-time MODEL_ID predates
@@ -297,9 +292,9 @@ def main() -> int:
                 spec, model=model_id, base_url="https://api.studio.nebius.com/v1"
             )
         kwargs = model_router.chat_kwargs(spec)
+        kwargs["max_tokens"] = min(2000, model_router.PIPELINE_MAX_TOKENS)
         model = ChatOpenAI(
             api_key=model_router.api_key(spec),
-            max_tokens=2000,
             **kwargs,
         )
     repo_list = ", ".join(repos)

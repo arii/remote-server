@@ -54,23 +54,20 @@ def muse_hits(path):
 class TestCutoffDrill(unittest.TestCase):
     def test_agy_argv_has_no_muse(self):
         sid = "00000000-0000-0000-0000-000000000000"
-        first = agent_turn.turn_argv("agy", "/srv/remote-server",
-                                     sid, "hi", False)
-        followup = agent_turn.turn_argv("agy", "/srv/remote-server",
-                                        sid, "hi", True, "cid-1")
+        first = agent_turn.turn_argv("agy", "/srv/remote-server", sid, "hi", False)
+        followup = agent_turn.turn_argv(
+            "agy", "/srv/remote-server", sid, "hi", True, "cid-1"
+        )
         for argv in (first, followup):
             joined = " ".join(argv).lower()
             self.assertNotIn("muse", joined, argv)
         self.assertIn("agy", first)
 
     def test_cutoff_flip_selects_agy(self):
-        with mock.patch.dict(os.environ,
-                             {"AGENT_DEFAULT_PROVIDER": "agy"}):
+        with mock.patch.dict(os.environ, {"AGENT_DEFAULT_PROVIDER": "agy"}):
             self.assertEqual(agent_turn.ordered_providers()[0], "agy")
-        with mock.patch.dict(os.environ,
-                             {"AGENT_DEFAULT_PROVIDER": "muse"}):
-            self.assertEqual(agent_turn.ordered_providers()[0],
-                             "muse")
+        with mock.patch.dict(os.environ, {"AGENT_DEFAULT_PROVIDER": "muse"}):
+            self.assertEqual(agent_turn.ordered_providers()[0], "muse")
 
     def test_router_rejects_muse_prefer(self):
         for bad in ("muse", "Muse", "MUSE"):
@@ -80,14 +77,15 @@ class TestCutoffDrill(unittest.TestCase):
             model_router.chat_kwargs({"provider": "muse"})
 
     def test_narrator_default_is_ollama(self):
-        from backend.api.routers.briefing import (narrator_prompt,
-                                                  narrator_spec)
+        from backend.api.routers.briefing import narrator_prompt, narrator_spec
+
         with mock.patch.dict(os.environ, {}, clear=True):
             spec = narrator_spec()
         self.assertIsNotNone(spec)
         self.assertEqual(spec["provider"], "ollama")
-        prompt = narrator_prompt({"repo": "x", "attention": [],
-                                  "narrative": "stale prose"})
+        prompt = narrator_prompt(
+            {"repo": "x", "attention": [], "narrative": "stale prose"}
+        )
         self.assertIn("Briefing JSON", prompt)
         self.assertNotIn("stale prose", prompt)
 
@@ -95,6 +93,7 @@ class TestCutoffDrill(unittest.TestCase):
         import eval_ask
         import eval_chat  # noqa: F401
         import eval_lib
+
         self.assertTrue(eval_ask.PROMPTS)
         self.assertTrue(eval_lib.resolve_exe("deep-agent"))
 
@@ -106,8 +105,7 @@ class TestCutoffDrill(unittest.TestCase):
         self.assertEqual(problems, [])
 
     def test_drill_proof_mode_scrubs_credentials(self):
-        text = Path("scripts/cutoff-drill.sh").read_text(
-            encoding="utf-8")
+        text = Path("scripts/cutoff-drill.sh").read_text(encoding="utf-8")
         self.assertIn("--proof", text)
         for var in ("NEBIUS_API_KEY", "GEMINI_API_KEY"):
             self.assertIn(var, text, var)
@@ -115,19 +113,18 @@ class TestCutoffDrill(unittest.TestCase):
         self.assertIn("still set after scrub", text)
         self.assertIn("OLLAMA_STRICT=1", text)
 
-    def test_keyless_router_refuses_cloud_fallback(self):
-        dead = {"OLLAMA_URL": "http://127.0.0.1:9",
-                "OLLAMA_STRICT": "1"}
+    def test_strict_router_refuses_fallback_and_default_uses_gateway(self):
+        dead = {"OLLAMA_URL": "http://127.0.0.1:9", "OLLAMA_STRICT": "1"}
         with mock.patch.dict(os.environ, dead, clear=True):
             with self.assertRaises(RuntimeError) as ctx:
                 model_router.resolve_llm()
         self.assertIn("OLLAMA_STRICT=1 refuses", str(ctx.exception))
-        with mock.patch.dict(os.environ,
-                              {"OLLAMA_URL": "http://127.0.0.1:9"},
-                              clear=True):
-            with self.assertRaises(RuntimeError) as ctx:
-                model_router.resolve_llm()
-        self.assertIn("NEBIUS_API_KEY", str(ctx.exception))
+        with mock.patch.dict(
+            os.environ, {"OLLAMA_URL": "http://127.0.0.1:9"}, clear=True
+        ):
+            spec = model_router.resolve_llm()
+        self.assertEqual(spec["provider"], "twt")
+        self.assertEqual(spec["base_url"], model_router.DEFAULT_TWT_BASE_URL)
 
     def test_proof_workflow_wires_drill(self):
         path = Path(".github/workflows/cutoff-proof.yml")
@@ -139,8 +136,10 @@ class TestCutoffDrill(unittest.TestCase):
         self.assertIn("deep-agent/**", text)
 
     def test_skill_content_has_no_muse(self):
-        self.assertFalse(Path("deep-agent/agent_skills").exists(),
-                         "agent_skills/ unified into deep-agent/skills/ (#1103)")
+        self.assertFalse(
+            Path("deep-agent/agent_skills").exists(),
+            "agent_skills/ unified into deep-agent/skills/ (#1103)",
+        )
         skills = Path("deep-agent/skills")
         problems = []
         for path in sorted(skills.rglob("*")):
