@@ -1,0 +1,14 @@
+{
+  "_comment": "Operator holds #2, #23 and #26 did not name a repository, so the runner conservatively holds those numbers in every repo. Human-decision hold #1377 applies only to arii/remote-server.",
+  "issues_file": "/absolute/remote-server/scripts/config/twt-queue-issues.json",
+  "state_dir": "/absolute/queue-state",
+  "runtime_state_dir": "/absolute/queue-state",
+  "pipeline_checkout": "/absolute/remote-server",
+  "repo_paths": {"arii/remote-server": "/absolute/remote-server"},
+  "runtime_command": [],
+  "worker_python": "/absolute/remote-server/deep-agent/.venv/bin/python",
+  "cap_usd": 0.5,
+  "max_common_failures": 3,
+  "inter_issue_delay_seconds": 60,
+  "environment": {"TWT_BASE_URL": "http://127.0.0.1:8000/v1"}
+}
