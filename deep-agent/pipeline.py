@@ -431,6 +431,18 @@ class Pipeline:
 
     def run(self):
         """Execute all stages; returns a result dict (never raises)."""
+        import twt_receipts
+
+        with twt_receipts.run(self.thread_id) as receipts:
+            result = self._run_guarded()
+        if receipts.error:
+            result.update(
+                status=BLOCKED,
+                detail=f"TwT receipt reconciliation failed: {receipts.error}",
+            )
+        return result
+
+    def _run_guarded(self):
         started = time.time()
         try:
             return self._run(started)

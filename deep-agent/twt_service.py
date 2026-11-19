@@ -3,6 +3,7 @@
 import argparse
 import json as jsonlib
 import os
+import uuid
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
@@ -191,6 +192,16 @@ def create_app(store=None, ollama_client=None, hosted_client=None):
                 {"error": "Expected the configured local model and nonempty messages"},
                 status_code=400,
             )
+        trace_id = request.headers.get("X-Trace-Id")
+        if trace_id is not None:
+            try:
+                trace_id = str(uuid.UUID(trace_id))
+            except ValueError:
+                return JSONResponse(
+                    {"error": "X-Trace-Id must be a UUID"}, status_code=400
+                )
+            if storage.trace(trace_id):
+                return JSONResponse({"error": "Trace ID already used"}, status_code=409)
         payload, status, headers = await gateway.complete(
             {
                 "model": f"ollama-local/{model}",
@@ -201,6 +212,8 @@ def create_app(store=None, ollama_client=None, hosted_client=None):
             },
             "strict",
             request.headers.get("X-Session-Id"),
+            trace_id,
+            request.is_disconnected,
         )
         if status != 200:
             return JSONResponse(payload, status_code=status, headers=headers)

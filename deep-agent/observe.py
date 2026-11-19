@@ -76,6 +76,7 @@ class TraceRecorder:
         self._reported_cost = 0.0
         self._cost_complete = True
         self._responses = 0
+        self._twt_trace_ids = set()
         try:
             self._fh = open(path, "a", encoding="utf-8")
         except OSError:
@@ -99,6 +100,7 @@ class TraceRecorder:
         self.event("model_request", n_messages=n_messages)
 
     def model_response(self, usage):
+        self._twt_trace_ids.update((usage or {}).get("twt_trace_ids", []))
         self._responses += 1
         if (usage or {}).get("reported_cost_usd") is None:
             self._cost_complete = False
@@ -130,6 +132,8 @@ class TraceRecorder:
         """Aggregated (usage, tool_calls) for ledger rows. Never raises."""
         try:
             usage = dict(self._usage)
+            if self._twt_trace_ids:
+                usage["twt_trace_ids"] = sorted(self._twt_trace_ids)
             if self._cost_complete and self._responses:
                 usage["reported_cost_usd"] = self._reported_cost
             return usage, list(self._calls)

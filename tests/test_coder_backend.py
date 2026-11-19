@@ -16,6 +16,52 @@ except ImportError:
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderBackend(unittest.TestCase):
+    def test_verification_tool_executes_in_worktree_without_dead_execute(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from tests.test_coder_outcome import LocalModel
+
+        bound = []
+
+        class Model(LocalModel):
+            def bind_tools(self, tools, **kwargs):
+                bound.extend(t.name for t in tools)
+                return self
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "test_location.py").write_text(
+                "from pathlib import Path\ndef test_location():\n"
+                "    assert Path('worktree-marker').read_text() == 'inside'\n"
+            )
+            Path(root, "worktree-marker").write_text("inside")
+            model = Model(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "run_check",
+                                "args": {
+                                    "command": "python3 -m pytest -q test_location.py"
+                                },
+                                "id": "verify",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+            agent = coder.build_agent(root, "Verify using run_check", model=model)
+            self.assertNotIn(
+                "execute", agent.get_graph().nodes["tools"].data.tools_by_name
+            )
+            result = agent.invoke({"messages": [HumanMessage(content="verify")]})
+            tool = next(m for m in result["messages"] if m.type == "tool")
+            self.assertIn("exit=0", tool.content)
+            self.assertIn("1 passed", tool.content)
+            self.assertIn("run_check", bound)
+            self.assertNotIn("execute", bound)
+
     def test_discovered_virtual_paths_can_be_read_and_edited(self):
         with tempfile.TemporaryDirectory() as root:
             Path(root, "src").mkdir()

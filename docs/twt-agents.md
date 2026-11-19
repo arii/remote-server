@@ -74,5 +74,22 @@ closed rather than being repriced from the gateway's dynamic model name.
 HTTP errors also retain TwT's cost headers in the ledger, independently
 of whether completion token usage is available.
 
+Each pipeline request carries a UUID trace ID, durably journaled under
+`<state>/receipts/`. On return, timeout, or cancellation the pipeline asks
+TwT's loopback-only `/v1/receipts` endpoint to stop undispatched fallbacks
+and waits at most 200 seconds for already-dispatched calls to settle.
+Reconciliation joins exact IDs against ledger rows, refreshes aggregate
+costs, and inserts missing receipts without double billing. Unsettled or
+unknown receipts fail closed; a journal can be resumed after a hard kill
+with `python3 deep-agent/twt_receipts.py <journal.jsonl>` using the original
+ledger/state environment. Receipt responses contain billing metadata, not
+prompts. TwT checks client disconnection again after cooldowns and before
+upstream dispatch, so a disconnected client cannot start paid fallback.
+
+Coder command execution remains the allowlisted `run_check` tool with its
+cwd pinned to the issue worktree. The disk backend deliberately does not
+implement an unrestricted sandbox shell; its unavailable `execute` tool
+is removed from the tool registry, not merely hidden from the model.
+
 The service adapter tests require installing the pinned TwT package in
 the test environment in addition to the deep-agent dependencies.

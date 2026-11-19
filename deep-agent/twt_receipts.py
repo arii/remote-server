@@ -1,0 +1,243 @@
+"""Durable per-request TwT receipts and bounded pipeline shutdown settlement."""
+
+import contextvars
+import fcntl
+import json
+import math
+import os
+import sys
+import threading
+import time
+import urllib.request
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import ledger
+
+current = contextvars.ContextVar("twt_run", default=None)
+latest = contextvars.ContextVar("twt_request", default=None)
+
+
+def capture(request):
+    scope = current.get()
+    if scope is None or not request.url.path.endswith(
+        ("/chat/completions", "/api/chat")
+    ):
+        return
+    trace_id = scope.request()
+    request.headers["X-Trace-Id"] = trace_id
+    request.headers["X-Session-Id"] = scope.run_id
+    latest.set(trace_id)
+
+
+async def acapture(request):
+    capture(request)
+
+
+def tag(result):
+    trace_id = latest.get()
+    if trace_id:
+        for generation in result.generations:
+            generation.message.response_metadata.setdefault("headers", {})[
+                "x-trace-id"
+            ] = trace_id
+    return result
+
+
+def fetch(base_url, ids):
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/receipts",
+        data=json.dumps({"trace_ids": ids, "cancel": True}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.load(response)["receipts"]
+
+
+def merge_receipts(ids, receipts, run_id, started):
+    """Refresh only identified rows; add missing receipts, never a cost delta."""
+    path = Path(ledger.LEDGER)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        rows = [json.loads(line) for line in handle if line.strip()]
+        represented = set()
+        for row in rows:
+            trace_ids = set(row.get("usage", {}).get("twt_trace_ids", []))
+            if not trace_ids.intersection(ids):
+                continue
+            if not trace_ids.issubset(ids) or represented.intersection(trace_ids):
+                raise ValueError("TwT receipt IDs overlap ledger rows or runs")
+            represented.update(trace_ids)
+        for trace_id in sorted(set(ids) - represented):
+            rows.append(
+                {
+                    "kind": "deep-agent-run",
+                    "ts": time.time(),
+                    "script": "twt_receipts.py",
+                    "model": "default",
+                    "provider": "twt",
+                    "thread_id": run_id,
+                    "duration_s": round(time.time() - started, 1),
+                    "tool_calls": [],
+                    "tool_results": [],
+                    "usage": {"twt_trace_ids": [trace_id]},
+                    "cost_usd": None,
+                    "metered": True,
+                    "final_preview": "",
+                    "extra": {
+                        "llm_call": True,
+                        "error": "response not delivered before pipeline shutdown",
+                    },
+                }
+            )
+        missing = set()
+        for row in rows:
+            trace_ids = set(row.get("usage", {}).get("twt_trace_ids", []))
+            if not trace_ids or not trace_ids.issubset(ids):
+                continue
+            found = [receipts.get(trace_id) for trace_id in trace_ids]
+            complete = all(
+                receipt is not None
+                and receipt.get("cost_complete") is True
+                and type(receipt.get("cost_usd")) in (int, float)
+                and math.isfinite(receipt["cost_usd"])
+                and receipt["cost_usd"] >= 0
+                for receipt in found
+            )
+            row.setdefault("extra", {})["twt_receipt_reconciled"] = complete
+            row["usage"].pop("reported_cost_usd", None)
+            row["cost_usd"] = None
+            if not complete:
+                missing.update(trace_ids)
+                continue
+            cost = sum(receipt["cost_usd"] for receipt in found)
+            prompt = sum(receipt.get("prompt_tokens") or 0 for receipt in found)
+            completion = sum(receipt.get("completion_tokens") or 0 for receipt in found)
+            row["usage"].update(
+                input_tokens=prompt,
+                output_tokens=completion,
+                total_tokens=prompt + completion,
+                reported_cost_usd=cost,
+            )
+            row["cost_usd"] = cost
+        handle.seek(0)
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+        handle.truncate()
+        handle.flush()
+        os.fsync(handle.fileno())
+    return sorted(missing)
+
+
+class ReceiptRun:
+    def __init__(self, run_id, base_url=None):
+        self.run_id = run_id
+        self.base_url = base_url or os.environ.get(
+            "TWT_BASE_URL", "http://127.0.0.1:8000/v1"
+        )
+        if urlsplit(self.base_url).username or urlsplit(self.base_url).password:
+            raise ValueError("TwT URL must not contain credentials")
+        self.started = time.time()
+        self.ids = set()
+        self.lock = threading.Lock()
+        self.stopped = False
+        self.error = None
+        self.path = (
+            Path(ledger.state_dir()) / "receipts" / (str(uuid.uuid4()) + ".jsonl")
+        )
+
+    def request(self):
+        with self.lock:
+            if self.stopped:
+                raise RuntimeError("Pipeline stopped; refusing a new TwT request")
+            trace_id = str(uuid.uuid4())
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "a") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "trace_id": trace_id,
+                            "run_id": self.run_id,
+                            "base_url": self.base_url,
+                            "started": self.started,
+                            "ledger_path": ledger.LEDGER,
+                        }
+                    )
+                    + "\n"
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            self.ids.add(trace_id)
+            return trace_id
+
+    def reconcile(
+        self, fetch_fn=fetch, *, timeout=200, clock=time.monotonic, sleep=time.sleep
+    ):
+        with self.lock:
+            self.stopped = True
+            ids = sorted(self.ids)
+        if not ids:
+            return
+        deadline = clock() + timeout
+        receipts = {}
+        failure = None
+        while True:
+            try:
+                for receipt in fetch_fn(self.base_url, ids):
+                    if receipt.get("trace_id") not in self.ids:
+                        raise ValueError("Unexpected TwT receipt ID")
+                    receipts[receipt["trace_id"]] = receipt
+            except Exception as error:
+                failure = type(error).__name__
+                break
+            if all(trace_id in receipts for trace_id in ids) or clock() >= deadline:
+                break
+            sleep(min(1, max(0, deadline - clock())))
+        missing = merge_receipts(set(ids), receipts, self.run_id, self.started)
+        self.error = (failure or "unsettled TwT receipts") if missing else None
+        self.path.with_suffix(".settlement.json").write_text(
+            json.dumps(
+                {
+                    "trace_ids": ids,
+                    "missing": missing,
+                    "error": self.error,
+                    "receipts": list(receipts.values()),
+                },
+                indent=2,
+            )
+        )
+        if self.error:
+            print(f"TwT receipt settlement incomplete: {self.error}", file=sys.stderr)
+
+
+@contextmanager
+def run(run_id):
+    scope = ReceiptRun(run_id)
+    token = current.set(scope)
+    try:
+        yield scope
+    finally:
+        try:
+            scope.reconcile()
+        finally:
+            current.reset(token)
+
+
+def main():
+    entries = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
+    ledger.LEDGER = entries[0]["ledger_path"]
+    scope = ReceiptRun(entries[0]["run_id"], entries[0]["base_url"])
+    scope.path = Path(sys.argv[1])
+    scope.started = entries[0]["started"]
+    scope.ids = {entry["trace_id"] for entry in entries}
+    scope.reconcile()
+    return int(bool(scope.error))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

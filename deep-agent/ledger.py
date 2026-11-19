@@ -67,13 +67,31 @@ def _usage_total(messages):
     cost = _reported_cost(messages)
     if cost is not None:
         total["reported_cost_usd"] = cost
+    ids = set()
+    for message in messages or []:
+        data = (
+            message if isinstance(message, dict) else getattr(message, "__dict__", {})
+        )
+        metadata = data.get("response_metadata") or {}
+        headers = metadata.get("headers") if isinstance(metadata, dict) else None
+        if isinstance(headers, dict):
+            ids.update(
+                str(value)
+                for key, value in headers.items()
+                if isinstance(key, str) and key.lower() == "x-trace-id"
+            )
+    if ids:
+        total["twt_trace_ids"] = sorted(ids)
     return total
 
 
 def error_usage(error):
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", {}) or {}
-    return _usage_total([{"response_metadata": {"headers": dict(headers)}}])
+    headers = dict(headers)
+    if getattr(error, "twt_trace_id", None):
+        headers["x-trace-id"] = error.twt_trace_id
+    return _usage_total([{"response_metadata": {"headers": headers}}])
 
 
 def _model_provider(model):

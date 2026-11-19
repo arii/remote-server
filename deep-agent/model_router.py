@@ -120,14 +120,34 @@ class _BoundedHistory:
         return kwargs
 
     def _generate(self, messages, *args, **kwargs):
-        return super()._generate(
-            bounded_history(messages), *args, **self._bounded_kwargs(kwargs)
-        )
+        import twt_receipts
+
+        token = twt_receipts.latest.set(None)
+        try:
+            result = super()._generate(
+                bounded_history(messages), *args, **self._bounded_kwargs(kwargs)
+            )
+            return twt_receipts.tag(result)
+        except BaseException as error:
+            error.twt_trace_id = twt_receipts.latest.get()
+            raise
+        finally:
+            twt_receipts.latest.reset(token)
 
     async def _agenerate(self, messages, *args, **kwargs):
-        return await super()._agenerate(
-            bounded_history(messages), *args, **self._bounded_kwargs(kwargs)
-        )
+        import twt_receipts
+
+        token = twt_receipts.latest.set(None)
+        try:
+            result = await super()._agenerate(
+                bounded_history(messages), *args, **self._bounded_kwargs(kwargs)
+            )
+            return twt_receipts.tag(result)
+        except BaseException as error:
+            error.twt_trace_id = twt_receipts.latest.get()
+            raise
+        finally:
+            twt_receipts.latest.reset(token)
 
 
 def _default_ollama_model():
@@ -510,10 +530,18 @@ def build_chat_model(spec=None, think=False, num_ctx=None):
     """
     spec = dict(spec) if spec else resolve_llm()
     kwargs = chat_kwargs(spec)
+    import twt_receipts
+
     if spec.get("provider") == "ollama":
         from langchain_ollama import ChatOllama  # noqa: E402
 
         kwargs["reasoning"] = think
+        kwargs["sync_client_kwargs"] = {
+            "event_hooks": {"request": [twt_receipts.capture]}
+        }
+        kwargs["async_client_kwargs"] = {
+            "event_hooks": {"request": [twt_receipts.acapture]}
+        }
         if num_ctx is None and _env("OLLAMA_NUM_CTX"):
             try:
                 num_ctx = int(_env("OLLAMA_NUM_CTX"))
@@ -529,6 +557,16 @@ def build_chat_model(spec=None, think=False, num_ctx=None):
 
         return PipelineOllama(**kwargs), spec
     from langchain_openai import ChatOpenAI  # noqa: E402
+
+    if spec.get("provider") == "twt":
+        import httpx
+
+        kwargs["http_client"] = httpx.Client(
+            event_hooks={"request": [twt_receipts.capture]}
+        )
+        kwargs["http_async_client"] = httpx.AsyncClient(
+            event_hooks={"request": [twt_receipts.acapture]}
+        )
 
     class PipelineOpenAI(_BoundedHistory, ChatOpenAI):
         def _get_request_payload(self, *args, **kwargs):

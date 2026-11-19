@@ -31,6 +31,7 @@ plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 """
 
 import argparse
+import contextvars
 import json
 import os
 import re
@@ -504,6 +505,7 @@ def build_agent(
     file tools around the submit scope gate). (#539)
     """
     from deepagents import create_deep_agent  # noqa: E402
+    from deepagents.middleware.filesystem import FilesystemMiddleware
 
     import model_router  # noqa: E402
 
@@ -511,7 +513,23 @@ def build_agent(
         model, _ = build_model()
     if spec is not None:
         model_router.disable_general_purpose(spec)
-    middleware = [worktree_file_middleware(worktree, written_files)]
+
+    backend = build_filesystem_backend(worktree)
+    middleware = [
+        FilesystemMiddleware(
+            backend=backend,
+            tools=[
+                "ls",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "delete",
+                "glob",
+                "grep",
+            ],
+        ),
+        worktree_file_middleware(worktree, written_files),
+    ]
     if recorder is not None:
         import observe  # noqa: E402
 
@@ -520,7 +538,7 @@ def build_agent(
         model=model,
         tools=(list(tools) if tools is not None else [build_check_tool(worktree)]),
         system_prompt=system,
-        backend=build_filesystem_backend(worktree),
+        backend=backend,
         interrupt_on=interrupt_on,
         permissions=permissions,
         checkpointer=checkpointer,
@@ -749,7 +767,8 @@ def run_bounded(fn, timeout):
         except BaseException as exc:  # noqa: BLE001 - re-raised in caller
             box["error"] = exc
 
-    worker = threading.Thread(target=_target, daemon=True)
+    context = contextvars.copy_context()
+    worker = threading.Thread(target=lambda: context.run(_target), daemon=True)
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
