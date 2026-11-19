@@ -95,6 +95,96 @@ class ReceiptTests(unittest.TestCase):
         self.assertIsNone(scope.error)
         self.assertEqual(self.rows()[0]["cost_usd"], 0.012)
 
+    def test_audit_call_rows_and_non_billable_summary_settle_idempotently(self):
+        scope = receipts.ReceiptRun("approved-audit")
+        ids = [scope.request(), scope.request()]
+        for trace_id in ids:
+            ledger.record(
+                "auditor.py",
+                "default",
+                "approved-audit",
+                [],
+                0,
+                provider="twt",
+                usage={"twt_trace_ids": [trace_id], "reported_cost_usd": 0.012},
+                extra={"stage": "audit", "phase": "semantic", "llm_call": True},
+            )
+        ledger.record(
+            "auditor.py",
+            "default",
+            "approved-audit",
+            [],
+            0,
+            provider="twt",
+            usage={"twt_trace_ids": ids, "reported_cost_usd": 0.024},
+            extra={"stage": "audit", "phase": "summary", "llm_call": False},
+        )
+        summary = self.rows()[-1]
+        for _ in range(2):
+            scope.reconcile(lambda *_: [self.reply(trace_id) for trace_id in ids])
+            self.assertIsNone(scope.error)
+            rows = self.rows()
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows[-1], summary)
+            self.assertEqual(sum(row["cost_usd"] for row in rows), 0.024)
+            self.assertTrue(
+                all(row["extra"]["twt_receipt_reconciled"] for row in rows[:2])
+            )
+
+    def test_provenance_alone_does_not_own_or_refresh_receipts(self):
+        scope = receipts.ReceiptRun("summary-only")
+        trace_id = scope.request()
+        ledger.record(
+            "auditor.py",
+            "default",
+            "summary-only",
+            [],
+            0,
+            provider="twt",
+            usage={"twt_trace_ids": [trace_id, "other-run"]},
+            extra={"llm_call": False},
+        )
+        summary = self.rows()[0]
+        scope.reconcile(lambda *_: [self.reply(trace_id)])
+        self.assertIsNone(scope.error)
+        self.assertEqual(self.rows()[0], summary)
+        self.assertEqual(self.rows()[1]["cost_usd"], 0.012)
+
+    def test_billable_duplicates_and_cross_run_ownership_still_fail(self):
+        for trace_ids in ((["id"], ["id"]), (["id", "other-run"],)):
+            with self.subTest(trace_ids=trace_ids):
+                rows = [
+                    {"metered": True, "usage": {"twt_trace_ids": ids}}
+                    for ids in trace_ids
+                ]
+                Path(ledger.LEDGER).write_text(json.dumps(rows[0]) + "\n")
+                if len(rows) > 1:
+                    with Path(ledger.LEDGER).open("a") as handle:
+                        handle.write(json.dumps(rows[1]) + "\n")
+                original = Path(ledger.LEDGER).read_text()
+                with self.assertRaisesRegex(ValueError, "overlap"):
+                    receipts.merge_receipts({"id"}, {"id": self.reply("id")}, "run", 0)
+                self.assertEqual(Path(ledger.LEDGER).read_text(), original)
+
+    def test_unmetered_llm_call_owns_its_free_receipt(self):
+        scope = receipts.ReceiptRun("free-local")
+        trace_id = scope.request()
+        ledger.record(
+            "coder.py",
+            "local",
+            "free-local",
+            [],
+            0,
+            provider="ollama",
+            usage={"twt_trace_ids": [trace_id]},
+            extra={"llm_call": True},
+        )
+        scope.reconcile(lambda *_: [self.reply(trace_id, cost=0)])
+        (row,) = self.rows()
+        self.assertFalse(row["metered"])
+        self.assertEqual(row["cost_usd"], 0)
+        self.assertTrue(row["extra"]["twt_receipt_reconciled"])
+
     def test_network_and_foreign_receipts_do_not_zero_unknown_spend(self):
         for response in (OSError("unavailable"), [{"trace_id": "other"}]):
             with self.subTest(response=response):

@@ -58,6 +58,11 @@ def fetch(base_url, ids):
         return json.load(response)["receipts"]
 
 
+def _owns_receipts(row):
+    llm_call = row.get("extra", {}).get("llm_call")
+    return llm_call is not False and (llm_call is True or row.get("metered") is True)
+
+
 def merge_receipts(ids, receipts, run_id, started):
     """Refresh only identified rows; add missing receipts, never a cost delta."""
     path = Path(ledger.LEDGER)
@@ -68,6 +73,8 @@ def merge_receipts(ids, receipts, run_id, started):
         rows = [json.loads(line) for line in handle if line.strip()]
         represented = set()
         for row in rows:
+            if not _owns_receipts(row):
+                continue
             trace_ids = set(row.get("usage", {}).get("twt_trace_ids", []))
             if not trace_ids.intersection(ids):
                 continue
@@ -98,6 +105,8 @@ def merge_receipts(ids, receipts, run_id, started):
             )
         missing = set()
         for row in rows:
+            if not _owns_receipts(row):
+                continue
             trace_ids = set(row.get("usage", {}).get("twt_trace_ids", []))
             if not trace_ids or not trace_ids.issubset(ids):
                 continue
