@@ -212,6 +212,8 @@ def coverage(state):
     import twt_receipts
 
     expected, local, receipts = set(), set(), {}
+    records, refresh = [], set()
+    settled = twt_receipts._settled_trace_ids()
     sources = collections.defaultdict(set)
     for journal in (state / "receipts").glob("*.jsonl"):
         entries = [
@@ -235,13 +237,23 @@ def coverage(state):
                 "automatic reconciliation failed: "
                 + str(record.get("error") or record["missing"])
             )
+        saved = {}
         for row in record.get("receipts", []):
             if row["trace_id"] not in journal_ids:
                 raise SafetyStop("settlement contains a foreign receipt")
-            if row["trace_id"] in receipts:
+            if row["trace_id"] in saved:
                 raise SafetyStop("duplicate settlement receipt")
-            receipts[row["trace_id"]] = row
-    missing_snapshots = expected - local - receipts.keys()
+            saved[row["trace_id"]] = row
+        promoted = twt_receipts.ledger_receipts(journal_ids, saved)
+        receipts.update(promoted)
+        refresh.update(
+            trace
+            for trace in journal_ids & settled
+            if promoted.get(trace, {}).get("cost_complete") is not True
+            or twt_receipts.receipt_cost(promoted.get(trace)) is None
+        )
+        records.append((settlement, record, journal_ids))
+    missing_snapshots = (expected - local - receipts.keys()) | refresh
     for (base_url, uds), ids in sources.items():
         missing = ids & missing_snapshots
         if missing:
@@ -269,6 +281,11 @@ def coverage(state):
     exact = receipt_total(expected, local, list(receipts.values()))
     if abs(totals["spent"] - exact) > 0.000002:
         raise SafetyStop("TwT receipts and issue ledger costs differ")
+    for settlement, record, ids in records:
+        snapshots = [receipts[trace] for trace in sorted(ids) if trace in receipts]
+        if snapshots != record.get("receipts", []):
+            record["receipts"] = snapshots
+            write_json(settlement, record)
     return {
         "reconciled": True,
         "trace_ids": sorted(expected),

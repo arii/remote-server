@@ -462,6 +462,8 @@ class RunnerTests(unittest.TestCase):
             )
             (modules / "twt_receipts.py").write_text(
                 "def receipt_cost(row):\n    return 0\n"
+                "def _settled_trace_ids(): return set()\n"
+                "def ledger_receipts(ids, receipts): return receipts\n"
             )
             (modules / "pipeline.py").write_text(
                 "class Pipeline:\n"
@@ -594,6 +596,79 @@ class AccountingTests(unittest.TestCase):
             "receipts"
         ]
         self.assertEqual({row["trace_id"] for row in snapshots}, {first, second})
+
+    def check_actual_charge_supersedes_reservation_after_snapshot_crash(self, count):
+        self.scope.path = self.root / "state/receipts/run.jsonl"
+        traces = [self.scope.request() for _ in range(count)]
+        self.record(traces)
+        self.scope.reconcile(lambda *_: [self.bound(trace, 0.4) for trace in traces])
+        path = self.scope.path.with_suffix(".settlement.json")
+        old_snapshot = runner.read_json(path)
+        actual = [
+            {"trace_id": trace, "cost_complete": True, "cost_usd": 0.1 * (index + 1)}
+            for index, trace in enumerate(traces)
+        ]
+        replace = os.replace
+
+        def crash(source, target):
+            if Path(target) == path:
+                raise OSError("crash after actual ledger commit")
+            return replace(source, target)
+
+        self.scope.settled = False
+        with mock.patch.object(twt_receipts.os, "replace", side_effect=crash):
+            with self.assertRaisesRegex(OSError, "actual ledger commit"):
+                self.scope.reconcile(lambda *_: actual)
+        total = sum(row["cost_usd"] for row in actual)
+        self.assertAlmostEqual(self.rows()[0]["cost_usd"], total)
+        self.assertAlmostEqual(runner.coverage(self.root / "state")["cost_usd"], total)
+        runner.write_json(path, old_snapshot)
+        runner.write_json(self.root / "job.json", {"environment": {}})
+        with (
+            mock.patch.dict(os.environ, {}),
+            mock.patch.object(
+                twt_receipts, "fetch", side_effect=OSError("gateway offline")
+            ) as fetch,
+        ):
+            self.assertEqual(runner.recover(self.root), 0)
+            fetch.assert_not_called()
+        self.assertTrue(
+            all(row["cost_complete"] for row in runner.read_json(path)["receipts"])
+        )
+        self.assertAlmostEqual(
+            sum(row["cost_usd"] for row in runner.read_json(path)["receipts"]), total
+        )
+
+    def test_actual_ledger_charge_repairs_stale_reservation_snapshot(self):
+        self.check_actual_charge_supersedes_reservation_after_snapshot_crash(1)
+
+    def test_aggregate_actual_ledger_charge_repairs_stale_reservation_snapshots(self):
+        self.check_actual_charge_supersedes_reservation_after_snapshot_crash(2)
+
+    def test_legacy_actual_aggregate_refetches_instead_of_inventing_allocation(self):
+        traces = [self.scope.request(), self.scope.request()]
+        self.record(traces)
+        self.scope.reconcile(lambda *_: [self.bound(trace) for trace in traces])
+        actual = [
+            {"trace_id": trace, "cost_complete": True, "cost_usd": 0.1 * (index + 1)}
+            for index, trace in enumerate(traces)
+        ]
+        twt_receipts.merge_receipts(
+            set(traces),
+            {row["trace_id"]: row for row in actual},
+            self.scope.run_id,
+            self.scope.started,
+        )
+        (legacy,) = self.rows()
+        legacy["usage"].pop("twt_receipt_costs")
+        Path(ledger.LEDGER).write_text(json.dumps(legacy) + "\n")
+        with mock.patch.object(
+            twt_receipts, "fetch", side_effect=OSError("gateway offline")
+        ):
+            with self.assertRaises(OSError):
+                runner.coverage(self.root)
+        with mock.patch.object(twt_receipts, "fetch", return_value=actual):
+            self.assertAlmostEqual(runner.coverage(self.root)["cost_usd"], 0.3)
 
     def test_recovery_refuses_a_still_running_worker(self):
         with (self.root / "worker.lock").open("a") as lock:

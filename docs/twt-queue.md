@@ -89,7 +89,11 @@ GitHub lookup or new dispatch; successful recovery records the attempt as comple
 without rerunning its pipeline. An existing explicit halt still requires operator
 clearance. Settlement snapshots are merged and replaced atomically. Fully reported
 saved receipts can reconcile offline; provisional reservations remain eligible for
-later actual charges without discarding their existing snapshots. Stopping
+later actual charges without discarding their existing snapshots. An actual,
+reconciled ledger charge supersedes a stale reservation snapshot. Aggregate actual
+rows retain per-trace costs in ledger usage so that recovery can repair snapshots
+offline after an interrupted replacement. Legacy aggregate rows without that
+breakdown refetch receipts rather than inventing a per-trace allocation. Stopping
 creates a persistent `STOP` sentinel, also checked before model dispatch. After a
 halt, inspect the issue, journal/settlement and ledger using supported receipt
 recovery tooling. Successful reconciliation does not clear a saved worker's

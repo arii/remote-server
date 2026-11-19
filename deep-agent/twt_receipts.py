@@ -117,10 +117,10 @@ def receipt_cost(receipt):
     return None
 
 
-def _settled_trace_ids():
+def _settled_rows():
     path = Path(ledger.LEDGER)
     path.parent.mkdir(parents=True, exist_ok=True)
-    settled = set()
+    settled = []
     with ledger.locked(path):
         try:
             with path.open(encoding="utf-8") as handle:
@@ -135,10 +135,61 @@ def _settled_trace_ids():
                         and _known_cost(row)
                         and row.get("cost_basis") != "upper_bound"
                     ):
-                        settled.update(row["usage"].get("twt_trace_ids", []))
+                        settled.append(row)
         except FileNotFoundError:
             pass
     return settled
+
+
+def _settled_trace_ids():
+    return {
+        trace
+        for row in _settled_rows()
+        for trace in row["usage"].get("twt_trace_ids", [])
+    }
+
+
+def ledger_receipts(ids, receipts):
+    """Promote snapshots using authoritative, already-reconciled actual charges."""
+    promoted = dict(receipts)
+    for row in _settled_rows():
+        traces = set(row["usage"].get("twt_trace_ids", []))
+        costs = row["usage"].get("twt_receipt_costs", {})
+        if len(traces) == 1:
+            costs = {next(iter(traces)): row["cost_usd"]}
+        if (
+            not isinstance(costs, dict)
+            or set(costs) != traces
+            or not all(_known_cost({"cost_usd": cost}) for cost in costs.values())
+            or not math.isclose(
+                sum(costs.values()), row["cost_usd"], rel_tol=0, abs_tol=1e-9
+            )
+        ):
+            continue
+        for trace in traces.intersection(ids):
+            old = promoted.get(trace, {})
+            if (
+                old.get("cost_complete") is True
+                and receipt_cost(old) == costs[trace]
+                and old.get("cost_basis") != "upper_bound"
+            ):
+                continue
+            actual = {
+                **old,
+                "trace_id": trace,
+                "cost_complete": True,
+                "cost_usd": costs[trace],
+                "cost_source": "ledger",
+            }
+            for key in (
+                "cost_basis",
+                "cost_upper_bound_usd",
+                "prompt_tokens_upper_bound",
+                "completion_tokens_upper_bound",
+            ):
+                actual.pop(key, None)
+            promoted[trace] = actual
+    return promoted
 
 
 def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
@@ -245,10 +296,12 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
                 row["cost_basis"] = "upper_bound"
                 row["cost_upper_bound_usd"] = cost
                 row["usage"].pop("reported_cost_usd", None)
+                row["usage"].pop("twt_receipt_costs", None)
             else:
                 row.pop("cost_basis", None)
                 row.pop("cost_upper_bound_usd", None)
                 row["usage"]["reported_cost_usd"] = cost
+                row["usage"]["twt_receipt_costs"] = dict(zip(trace_ids, charges))
             row["cost_usd"] = cost
         temporary = None
         try:
@@ -353,8 +406,16 @@ class ReceiptRun:
                 if trace_id not in self.ids or trace_id in receipts:
                     raise ValueError("Unexpected or duplicate saved TwT receipt ID")
                 receipts[trace_id] = receipt
+        receipts = ledger_receipts(set(ids), receipts)
         failure = None
-        pending = set(ids) - _settled_trace_ids()
+        settled = _settled_trace_ids()
+        pending = set(ids) - settled
+        pending.update(
+            trace
+            for trace in set(ids) & settled
+            if receipts.get(trace, {}).get("cost_complete") is not True
+            or receipt_cost(receipts.get(trace)) is None
+        )
         pending -= {
             trace_id
             for trace_id, receipt in receipts.items()
