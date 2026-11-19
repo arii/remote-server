@@ -667,11 +667,14 @@ class TestPipelineContracts(unittest.TestCase):
             graph = pipeline.Pipeline(root, "fix", issue_id=1359).make_coder(
                 "### Allowed Files\n- `a.py`\n- `docs/specs/issue-1359.md`\n"
             )
-            with mock.patch.object(
-                coder,
-                "run_coder",
-                return_value=("done", {}, [], 0, "ollama:test", "trace", True, 0),
-            ) as executor:
+            with (
+                mock.patch.object(
+                    coder,
+                    "run_coder",
+                    return_value=("done", {}, [], 0, "ollama:test", "trace", True, 0),
+                ) as executor,
+                mock.patch("ledger.record"),
+            ):
                 graph.implement_fn(
                     "task", "1. Fix [files: b.py]", root, ["scope failed"]
                 )
