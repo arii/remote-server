@@ -53,6 +53,24 @@ def clean_allowed_file_urls(text):
     return "".join(lines)
 
 
+def explicit_allowed_paths(text):
+    paths = []
+    allowed = False
+    for line in clean_allowed_file_urls(text).splitlines():
+        heading = re.match(r"^\s*#{1,6}\s+(.+)", line)
+        if heading:
+            allowed = heading[1].lower().startswith(("allowed files", "allowed paths"))
+        elif allowed:
+            match = re.match(r"^\s*[-*+]\s+`?([^`\s]+)", line)
+            if match:
+                path = match[1]
+                while path.startswith("./"):
+                    path = path[2:]
+                if ("/" in path or "." in path) and path not in paths:
+                    paths.append(path)
+    return paths
+
+
 class InvestigationTruncated(RuntimeError):
     pass
 
@@ -261,7 +279,13 @@ class IssueGeneratorGraph:
             for line in clean_allowed_file_urls(spec_text).splitlines(keepends=True):
                 if line.strip().startswith("```"):
                     in_fence = not in_fence
-                handle.write(line if in_fence else _URL_RE.sub("", line))
+                handle.write(
+                    line
+                    if in_fence
+                    else re.sub(
+                        r"(?<![\w./])(?:\./)+(?=[\w])", "", _URL_RE.sub("", line)
+                    )
+                )
             handle.close()
             try:
                 code, out = self.td_runner(
@@ -283,7 +307,22 @@ class IssueGeneratorGraph:
             errors = list(data.get("errors") or [])
             if code != 0 and not errors:
                 errors = [(data.get("message") or out[:300] or f"exit {code}")]
-            return bool(data.get("valid")), data, errors
+            paths = explicit_allowed_paths(spec_text)
+            scope_error = re.compile(
+                r"^allowed path not in checkout: (.+?) \(mark with"
+            )
+            original_errors = list(errors)
+            errors = [
+                error
+                for error in errors
+                if not (match := scope_error.match(error)) or match[1] in paths
+            ]
+            for path in paths:
+                if path.startswith("/") or ".." in path.split("/"):
+                    errors.append(f"allowed path must be repo-relative: {path}")
+            valid = bool(data.get("valid") or original_errors) and not errors
+            data.update(allowed_files=paths, valid=valid, errors=errors)
+            return valid, data, errors
         finally:
             try:
                 os.unlink(handle.name)
