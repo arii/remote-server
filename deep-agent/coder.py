@@ -282,12 +282,14 @@ def _default_plan_fn(brief, worktree_root, context):
     try:
         reply = model.invoke(prompt)
     except Exception as exc:
-        error = type(exc).__name__
+        error = exc
         raise
     finally:
         if recorder is not None:
             messages = [reply] if reply is not None else []
             usage = ledger._usage_total(messages)
+            if error:
+                usage = ledger.error_usage(error)
             known = bool(getattr(reply, "usage_metadata", None)) or bool(
                 (getattr(reply, "response_metadata", None) or {}).get(
                     "prompt_eval_count"
@@ -310,7 +312,7 @@ def _default_plan_fn(brief, worktree_root, context):
                     "llm_call": True,
                     "usage_missing": not known,
                     "trace": recorder.path,
-                    **({"error": error} if error else {}),
+                    **({"error": type(error).__name__} if error else {}),
                 },
             )
     text = _model_text(reply)

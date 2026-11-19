@@ -18,6 +18,31 @@ except ImportError:
 
 @unittest.skipUnless(AIMessage, "requires deep-agent requirements")
 class TestFailedCoderUsage(unittest.TestCase):
+    def test_planner_http_error_preserves_gateway_cost(self):
+        error = RuntimeError("gateway 502")
+        error.response = SimpleNamespace(headers={"x-cost-usd": "0.004"})
+        model = SimpleNamespace(invoke=mock.Mock(side_effect=error))
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "ledger.jsonl")
+            with (
+                mock.patch.object(
+                    coder,
+                    "build_model",
+                    return_value=(model, {"provider": "twt", "model": "default"}),
+                ),
+                mock.patch.object(ledger, "LEDGER", str(path)),
+                mock.patch.object(
+                    observe,
+                    "default_trace_path",
+                    return_value=str(Path(root, "trace.jsonl")),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "gateway 502"):
+                    coder._default_plan_fn("brief", root, {})
+            row = json.loads(path.read_text())
+            self.assertEqual(row["cost_usd"], 0.004)
+            self.assertEqual(row["extra"]["error"], "RuntimeError")
+
     def scenario(self, *, error=None, write=False, setup_error=False, cost=0.0123):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root, "ledger.jsonl")
