@@ -309,8 +309,8 @@ def _default_plan_fn(brief, worktree_root, context):
                     "phase": "plan",
                     "llm_call": True,
                     "usage_missing": not known,
-                    "error": error,
                     "trace": recorder.path,
+                    **({"error": error} if error else {}),
                 },
             )
     text = _model_text(reply)
