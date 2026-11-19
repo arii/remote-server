@@ -662,6 +662,23 @@ class TestPipelineContracts(unittest.TestCase):
             ):
                 graph.implement_fn("task", "plan", root, [])
 
+    def test_repair_passes_scoped_paths_but_not_generated_spec(self):
+        with tempfile.TemporaryDirectory() as root:
+            graph = pipeline.Pipeline(root, "fix", issue_id=1359).make_coder(
+                "### Allowed Files\n- `a.py`\n- `docs/specs/issue-1359.md`\n"
+            )
+            with mock.patch.object(
+                coder,
+                "run_coder",
+                return_value=("done", {}, [], 0, "ollama:test", "trace", True, 0),
+            ) as executor:
+                graph.implement_fn(
+                    "task", "1. Fix [files: b.py]", root, ["scope failed"]
+                )
+            self.assertEqual(
+                executor.call_args.kwargs["repair_files"], ["b.py", "a.py"]
+            )
+
     def test_prose_severity_words_only_block_as_labels(self):
         """A "High-level" summary line is not a high-severity finding."""
         self.assertFalse(auditor.blocking_findings("- High-level: nothing risky"))

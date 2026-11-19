@@ -81,10 +81,21 @@ class TestCoderOutcome(unittest.TestCase):
             self.assertIn("DONE #1261", result.stdout)
             self.assertEqual(Path(root, "result.txt").read_text(), "done")
 
-    def run_scenario(self, reply, operation=None, cli=False, rounds=0):
+    def run_scenario(
+        self,
+        reply,
+        operation=None,
+        cli=False,
+        rounds=0,
+        setup=None,
+        repair_files=(),
+        verified=False,
+    ):
         with tempfile.TemporaryDirectory() as root:
             trace = Path(root, "trace.jsonl")
             Path(root, "obsolete.txt").write_text("obsolete")
+            if setup:
+                setup(Path(root))
 
             calls = []
             actions = SimpleNamespace(
@@ -120,6 +131,9 @@ class TestCoderOutcome(unittest.TestCase):
                 ),
                 mock.patch.object(coder, "verify_rounds", return_value=rounds),
                 mock.patch.object(
+                    coder, "trace_has_passing_check", return_value=verified
+                ),
+                mock.patch.object(
                     deep_chat, "open_checkpointer", return_value=(None, False, None)
                 ),
                 mock.patch.object(
@@ -134,7 +148,12 @@ class TestCoderOutcome(unittest.TestCase):
                 else:
                     try:
                         result = coder.run_coder(
-                            root, "Implement #1261", "system", "thread", 5
+                            root,
+                            "Implement #1261",
+                            "system",
+                            "thread",
+                            5,
+                            repair_files=repair_files,
                         )
                     except RuntimeError as exc:
                         result = exc
@@ -152,6 +171,91 @@ class TestCoderOutcome(unittest.TestCase):
         result, events = self.run_scenario("DONE #1261")
         self.assertIsInstance(result, RuntimeError)
         self.assertFalse(events[-1]["ok"])
+
+    def test_verified_repair_counts_existing_scoped_diff(self):
+        result, events = self.run_scenario(
+            "DONE #1261",
+            setup=self.existing_diff,
+            repair_files=("a.py",),
+            verified=True,
+            rounds=1,
+        )
+        self.assertEqual(result[0], "DONE #1261")
+        self.assertTrue(events[-1]["ok"])
+
+    def test_existing_diff_does_not_bypass_empty_or_unverified_turns(self):
+        for files, verified in (((), True), (("other.py",), True), (("a.py",), False)):
+            with self.subTest(files=files, verified=verified):
+                result, _ = self.run_scenario(
+                    "DONE #1261",
+                    setup=self.existing_diff,
+                    repair_files=files,
+                    verified=verified,
+                )
+                self.assertIsInstance(result, RuntimeError)
+                self.assertIn("no written files", str(result))
+
+    def test_repair_diff_read_error_fails_closed(self):
+        result, _ = self.run_scenario(
+            "DONE #1261",
+            repair_files=("a.py",),
+            verified=True,
+        )
+        self.assertIsInstance(result, RuntimeError)
+        self.assertIn("cannot inspect", str(result))
+
+    def test_repair_with_reverted_diff_still_fails(self):
+        def setup(root):
+            self.existing_diff(root)
+            (root / "a.py").write_text("before\n")
+
+        result, _ = self.run_scenario(
+            "DONE #1261",
+            setup=setup,
+            repair_files=("a.py",),
+            verified=True,
+        )
+        self.assertIsInstance(result, RuntimeError)
+        self.assertIn("no written files", str(result))
+
+    def test_existing_diff_covers_staged_new_and_deleted_scoped_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.existing_diff(root)
+            subprocess.run(["git", "-C", directory, "add", "a.py"], check=True)
+            (root / "new.py").write_text("new\n")
+            (root / "outside.py").write_text("unrelated\n")
+            self.assertEqual(
+                coder.existing_implementation_files(directory, ("a.py", "new.py")),
+                {"a.py", "new.py"},
+            )
+            (root / "a.py").unlink()
+            self.assertEqual(
+                coder.existing_implementation_files(directory, ("a.py",)), {"a.py"}
+            )
+            with self.assertRaises(ValueError):
+                coder.existing_implementation_files(directory, ("../outside.py",))
+
+    @staticmethod
+    def existing_diff(root):
+        def git(*args):
+            subprocess.run(
+                ["git", "-C", str(root), *args], check=True, capture_output=True
+            )
+
+        git("init", "-q")
+        Path(root, "a.py").write_text("before\n")
+        git("add", "a.py")
+        git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "baseline",
+        )
+        Path(root, "a.py").write_text("after\n")
 
     def test_deletion_only_implementation_succeeds(self):
         result, events = self.run_scenario(

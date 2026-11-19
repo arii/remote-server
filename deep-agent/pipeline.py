@@ -240,12 +240,25 @@ class Pipeline:
                 f"{task}\n\nPlan:\n{plan}\n\n"
                 f"Repair notes:\n{repair_notes}\n\nErrors:\n{errors}"
             )
+            kwargs = {}
+            if errors or repair_notes:
+                kwargs["repair_files"] = [
+                    path
+                    for path in dict.fromkeys(
+                        [
+                            *coder.files_named(plan),
+                            *issue_generator.explicit_allowed_paths(brief),
+                        ]
+                    )
+                    if os.path.normpath(path) != os.path.normpath(spec_path)
+                ]
             result = coder.run_coder(
                 root,
                 prompt,
                 coder.build_system(root, ""),
                 f"{self.thread_id}-edit-{time.time_ns()}",
                 coder._timeout(),
+                **kwargs,
             )
             summary, usage, calls, started, label, trace, verified, _ = result
             provider, _, model = label.partition(":")

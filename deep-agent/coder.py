@@ -35,6 +35,7 @@ import contextvars
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -866,7 +867,7 @@ def mark_unverified(summary):
     return "[unverified]"
 
 
-def run_coder(worktree, brief, system, thread, timeout):
+def run_coder(worktree, brief, system, thread, timeout, *, repair_files=()):
     """Invoke the coder with a verify gate.
 
     Returns (summary, usage, calls, started, label, trace, verified,
@@ -951,6 +952,8 @@ def run_coder(worktree, brief, system, thread, timeout):
         # Keep the checkpointer connection alive until the run returns.
         _ = holder
         reply = extract_reply(result)
+        if verified and repair_files:
+            written_files.update(existing_implementation_files(worktree, repair_files))
         reason = implementation_failure(reply, written_files)
         if reason:
             recorder.event("coder_verdict", ok=False, reason=reason)
@@ -967,6 +970,30 @@ def run_coder(worktree, brief, system, thread, timeout):
         if isinstance(error, TimeoutError):
             raise RuntimeError(f"coder timed out after {timeout}s") from error
         raise
+
+
+def existing_implementation_files(worktree, allowed_files):
+    allowed = set()
+    for path in allowed_files:
+        key = os.path.normpath(worktree_file_key(worktree, path))
+        assert_inside(worktree, key)
+        allowed.add(key)
+    changed = set()
+    for args in (
+        ["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"],
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    ):
+        try:
+            output = subprocess.run(
+                ["git", "-C", worktree, *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError("cannot inspect existing implementation diff") from exc
+        changed.update(output.split("\0"))
+    return changed & allowed
 
 
 def implementation_failure(reply, written_files):
