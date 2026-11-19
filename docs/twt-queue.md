@@ -9,7 +9,9 @@ canonical `td`, GitHub authentication and TwT access in its own runtime.
 
 ## Configuration
 
-Save an operator-owned JSON configuration outside the checkout. Replace these
+Copy `scripts/config/twt-queue.example.json` to an operator-owned JSON configuration
+outside the checkout. Its `_comment` records why the operator holds are global.
+Replace these
 example absolute paths with persistent paths in your deployment:
 
 ```json
@@ -51,8 +53,10 @@ Copy and review it before operating a queue. Entries require `repo` and `number`
 Ties retain manifest order. Supply timestamps to ensure chronological ordering.
 Every issue is refreshed through GitHub before dispatch; closed issues are skipped.
 Explicit `skip_reason`, `merged: true`, `fixed: true`, or `requires_human: true`
-also skip an entry, including fixed issues that remain open. Holds #2/#23/#26 and
-human-decision #1377 cannot dispatch. remote-server #1359 is always skipped because
+also skip an entry, including fixed issues that remain open. Holds #2/#23/#26
+cannot dispatch in any repo: the operator did not name a repository for them.
+Human-decision #1377 is held only in `arii/remote-server`; the same number in
+another repository is not held. remote-server #1359 is always skipped because
 its change merged via #1381. The snapshot preserves other recorded human/operator
 holds; update the manifest deliberately rather than guessing whether an issue is fixed.
 

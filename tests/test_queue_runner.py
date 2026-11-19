@@ -124,6 +124,15 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(runner.main(), 0)
             supervise.assert_called_once_with(Path("/config.json"))
 
+    def test_human_decision_skips_are_repo_scoped_but_operator_holds_are_global(self):
+        self.assertTrue(
+            runner.skip_reason({"repo": "arii/remote-server", "number": 1377})
+        )
+        self.assertIsNone(runner.skip_reason({"repo": "arii/boomtick", "number": 1377}))
+        for repo in ("arii/remote-server", "arii/boomtick", "other/repo"):
+            for number in (2, 23, 26):
+                self.assertTrue(runner.skip_reason({"repo": repo, "number": number}))
+
     @mock.patch.object(runner.signal, "signal")
     def test_stop_sentinel_prevents_dispatch(self, _signal):
         with tempfile.TemporaryDirectory() as root:
@@ -284,10 +293,8 @@ class RunnerTests(unittest.TestCase):
                     "group": "code-reaper",
                     "created_at": "2020-01-01",
                 },
-                *[
-                    {"repo": "owner/repo", "number": number}
-                    for number in (2, 23, 26, 1377)
-                ],
+                *[{"repo": "owner/repo", "number": number} for number in (2, 23, 26)],
+                {"repo": "arii/remote-server", "number": 1377},
                 {"repo": "arii/remote-server", "number": 1359},
                 {"repo": "owner/repo", "number": 101, "fixed": True},
                 {"repo": "owner/repo", "number": 102, "requires_human": True},

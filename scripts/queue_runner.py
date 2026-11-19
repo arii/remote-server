@@ -183,8 +183,10 @@ def ordered_issues(issues):
 
 
 def skip_reason(issue):
-    if issue["number"] in (2, 23, 26, 1377):
-        return "held or requires a human decision"
+    if issue["number"] in (2, 23, 26):
+        return "global operator hold"
+    if (issue["repo"], issue["number"]) == ("arii/remote-server", 1377):
+        return "requires a human decision"
     if issue["repo"] == "arii/remote-server" and issue["number"] == 1359:
         return "already merged via arii/remote-server#1381"
     if issue.get("merged") is True or issue.get("fixed") is True:
