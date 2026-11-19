@@ -600,7 +600,7 @@ def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
     return PipelineOpenAI(api_key=api_key(spec), **kwargs), spec
 
 
-def build_structured_chat_model(spec=None, schema=None, think=False):
+def build_structured_chat_model(spec=None, schema=None, think=False, include_raw=False):
     """Native structured-output chat model (no prompt-hinting).
 
     Binds the Pydantic schema at the protocol layer: Ollama gets
@@ -612,11 +612,12 @@ def build_structured_chat_model(spec=None, schema=None, think=False):
     model, resolved = build_chat_model(spec, think=think)
     if schema is None:
         return model, resolved
+    kwargs = {"method": "json_schema"}
+    if include_raw:
+        kwargs["include_raw"] = True
     if resolved.get("provider") in ("nebius", "openrouter", "twt"):
-        return model.with_structured_output(
-            schema, method="json_schema", strict=True
-        ), resolved
-    return model.with_structured_output(schema, method="json_schema"), resolved
+        kwargs["strict"] = True
+    return model.with_structured_output(schema, **kwargs), resolved
 
 
 def disable_general_purpose(spec):
