@@ -346,14 +346,31 @@ class ReceiptRun:
             return
         deadline = clock() + timeout
         receipts = {}
+        settlement = self.path.with_suffix(".settlement.json")
+        if settlement.exists():
+            for receipt in json.loads(settlement.read_text()).get("receipts", []):
+                trace_id = receipt.get("trace_id")
+                if trace_id not in self.ids or trace_id in receipts:
+                    raise ValueError("Unexpected or duplicate saved TwT receipt ID")
+                receipts[trace_id] = receipt
         failure = None
         pending = set(ids) - _settled_trace_ids()
+        pending -= {
+            trace_id
+            for trace_id, receipt in receipts.items()
+            if receipt.get("cost_complete") is True
+            and receipt_cost(receipt) is not None
+        }
         while pending:
             try:
                 for receipt in fetch_fn(self.base_url, sorted(pending)):
                     if receipt.get("trace_id") not in self.ids:
                         raise ValueError("Unexpected TwT receipt ID")
-                    receipts[receipt["trace_id"]] = receipt
+                    if (
+                        receipt_cost(receipt) is not None
+                        or receipt["trace_id"] not in receipts
+                    ):
+                        receipts[receipt["trace_id"]] = receipt
             except Exception as error:
                 failure = type(error).__name__
                 break
@@ -375,8 +392,10 @@ class ReceiptRun:
             set(ids), receipts, self.run_id, self.started, local_ids=self.local_ids
         )
         self.error = (failure or "unsettled TwT receipts") if missing else None
-        self.path.with_suffix(".settlement.json").write_text(
-            json.dumps(
+        temporary = settlement.with_suffix(settlement.suffix + ".tmp")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(
                 {
                     "trace_ids": ids,
                     "local_trace_ids": sorted(self.local_ids),
@@ -384,9 +403,12 @@ class ReceiptRun:
                     "error": self.error,
                     "receipts": list(receipts.values()),
                 },
+                handle,
                 indent=2,
             )
-        )
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, settlement)
         if self.error:
             print(f"TwT receipt settlement incomplete: {self.error}", file=sys.stderr)
         else:

@@ -563,6 +563,38 @@ class AccountingTests(unittest.TestCase):
                     bound is not None,
                 )
 
+    def test_settled_recovery_preserves_snapshots_without_gateway_access(self):
+        self.scope.path = self.root / "state/receipts/run.jsonl"
+        trace = self.scope.request()
+        receipt = {"trace_id": trace, "cost_complete": True, "cost_usd": 0.1}
+        self.scope.reconcile(lambda *_: [receipt])
+        runner.write_json(self.root / "job.json", {"environment": {}})
+        with (
+            mock.patch.dict(os.environ, {}),
+            mock.patch.object(
+                twt_receipts, "fetch", side_effect=OSError("gateway offline")
+            ) as fetch,
+        ):
+            self.assertEqual(runner.recover(self.root), 0)
+            fetch.assert_not_called()
+        self.assertEqual(
+            runner.read_json(self.scope.path.with_suffix(".settlement.json"))[
+                "receipts"
+            ],
+            [receipt],
+        )
+
+    def test_partial_settlement_snapshots_merge_with_later_receipts(self):
+        first, second = self.scope.request(), self.scope.request()
+        one = {"trace_id": first, "cost_complete": True, "cost_usd": 0.1}
+        two = {"trace_id": second, "cost_complete": True, "cost_usd": 0.2}
+        self.scope.reconcile(lambda *_: [one], timeout=0)
+        self.scope.reconcile(lambda *_: [two], timeout=0)
+        snapshots = runner.read_json(self.scope.path.with_suffix(".settlement.json"))[
+            "receipts"
+        ]
+        self.assertEqual({row["trace_id"] for row in snapshots}, {first, second})
+
     def test_recovery_refuses_a_still_running_worker(self):
         with (self.root / "worker.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

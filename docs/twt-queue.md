@@ -87,7 +87,9 @@ has since closed or disappeared from the manifest. An active worker holds an
 issue lock, so recovery cannot race its writes. Failed recovery halts before any
 GitHub lookup or new dispatch; successful recovery records the attempt as completed
 without rerunning its pipeline. An existing explicit halt still requires operator
-clearance. Stopping
+clearance. Settlement snapshots are merged and replaced atomically. Fully reported
+saved receipts can reconcile offline; provisional reservations remain eligible for
+later actual charges without discarding their existing snapshots. Stopping
 creates a persistent `STOP` sentinel, also checked before model dispatch. After a
 halt, inspect the issue, journal/settlement and ledger using supported receipt
 recovery tooling. Successful reconciliation does not clear a saved worker's
