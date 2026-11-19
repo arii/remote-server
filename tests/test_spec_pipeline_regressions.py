@@ -269,3 +269,65 @@ class TestSpecUsage(unittest.TestCase):
                 self.assertTrue(row["metered"])
                 self.assertTrue(row["extra"]["usage_missing"])
                 self.assertEqual(row["extra"]["phase"], "investigation")
+
+
+class TestUnknownSpend(unittest.TestCase):
+    def test_recorded_unknown_remote_cost_blocks_router(self):
+        import ledger
+        import runs
+        import model_router
+
+        with tempfile.TemporaryDirectory() as root:
+            path = str(Path(root, "ledger.jsonl"))
+            with (
+                mock.patch.object(ledger, "LEDGER", path),
+                mock.patch.object(runs, "LEDGER", path),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "NEBIUS_ONLY": "1",
+                        "NEBIUS_API_KEY": "dummy",
+                        "NEBIUS_SPEND_CAP_USD": "5",
+                    },
+                    clear=True,
+                ),
+            ):
+                ledger.record(
+                    "issue_generator.py",
+                    "zai-org/GLM-5.3-Flash",
+                    "proof-unknown-spend",
+                    [],
+                    0,
+                    provider="nebius",
+                    extra={"usage_missing": True},
+                )
+                self.assertEqual(
+                    runs.total_metered_spend(), {"spent": 0.0, "unknown": 1}
+                )
+                with self.assertRaises(RuntimeError):
+                    model_router.resolve_llm(prefer="nebius")
+
+    def test_local_and_free_missing_usage_still_cost_zero(self):
+        import ledger
+        import runs
+
+        with tempfile.TemporaryDirectory() as root:
+            path = str(Path(root, "ledger.jsonl"))
+            with mock.patch.object(ledger, "LEDGER", path):
+                for provider, model in (
+                    ("ollama", "qwen3:8b"),
+                    ("openrouter", "some/model:free"),
+                ):
+                    row = ledger.record(
+                        "issue_generator.py",
+                        model,
+                        "proof-free-spend",
+                        [],
+                        0,
+                        provider=provider,
+                        extra={"usage_missing": True},
+                    )
+                    self.assertEqual(row["cost_usd"], 0)
+            self.assertEqual(
+                runs.total_metered_spend(ledger_path=path), {"spent": 0.0, "unknown": 0}
+            )

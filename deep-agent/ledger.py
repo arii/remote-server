@@ -182,7 +182,12 @@ def record(
         if provider not in pricing.PROVIDERS:
             provider = None
         cost_usd, metered = pricing.quote(model, usage, provider=provider)
-        if extra.get("usage_missing") and provider != "ollama":
+        label = f"{provider}:{model}" if provider else model
+        if (
+            extra.get("usage_missing")
+            and metered
+            and pricing.rate_for(label) != (0.0, 0.0)
+        ):
             cost_usd, metered = None, True
         if provider == "ollama":
             # The resolved backend is truth: a locally-run turn is
