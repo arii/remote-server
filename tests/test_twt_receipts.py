@@ -47,6 +47,29 @@ class ReceiptTests(unittest.TestCase):
         fetch.assert_not_called()
         self.assertFalse(Path(ledger.LEDGER).exists())
 
+    def test_malformed_history_is_preserved_without_aborting_merge(self):
+        prefix = 'broken\nnull\n[]\n\n{"metered": true, "usage": null, "extra": null}\n'
+        unrelated = {"thread_id": "legacy", "metered": False}
+        Path(ledger.LEDGER).write_text(prefix + json.dumps(unrelated) + "\n")
+        scope = receipts.ReceiptRun("historical-corruption")
+        trace_id = scope.request()
+        scope.reconcile(lambda *_: [self.reply(trace_id)])
+        self.assertIsNone(scope.error)
+        lines = Path(ledger.LEDGER).read_text().splitlines(keepends=True)
+        self.assertEqual(lines[:4], prefix.splitlines(keepends=True)[:4])
+        self.assertEqual(json.loads(lines[5]), unrelated)
+        self.assertEqual(json.loads(lines[6])["cost_usd"], 0.012)
+
+    def test_truncated_history_does_not_swallow_appended_receipt(self):
+        Path(ledger.LEDGER).write_text('{"unfinished"')
+        scope = receipts.ReceiptRun("truncated-history")
+        trace_id = scope.request()
+        scope.reconcile(lambda *_: [self.reply(trace_id)])
+        self.assertIsNone(scope.error)
+        lines = Path(ledger.LEDGER).read_text().splitlines()
+        self.assertEqual(lines[0], '{"unfinished"')
+        self.assertEqual(json.loads(lines[1])["cost_usd"], 0.012)
+
     def test_missing_native_receipt_is_free_but_missing_hosted_is_not(self):
         scope = receipts.ReceiptRun("mixed-routes")
         token = receipts.current.set(scope)

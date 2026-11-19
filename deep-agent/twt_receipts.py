@@ -60,7 +60,17 @@ def fetch(base_url, ids):
 
 
 def _owns_receipts(row):
-    llm_call = row.get("extra", {}).get("llm_call")
+    if not isinstance(row, dict):
+        return False
+    extra, usage = row.get("extra", {}), row.get("usage", {})
+    if not isinstance(extra, dict) or not isinstance(usage, dict):
+        return False
+    trace_ids = usage.get("twt_trace_ids", [])
+    if not isinstance(trace_ids, list) or any(
+        not isinstance(value, str) for value in trace_ids
+    ):
+        return False
+    llm_call = extra.get("llm_call")
     return llm_call is not False and (llm_call is True or row.get("metered") is True)
 
 
@@ -78,7 +88,13 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "r+", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
-        rows = [json.loads(line) for line in handle if line.strip()]
+        rows = []
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                row = None
+            rows.append(row if isinstance(row, dict) else line)
         represented = set()
         for row in rows:
             if not _owns_receipts(row):
@@ -171,7 +187,10 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
             ) as out:
                 temporary = out.name
                 for row in rows:
-                    out.write(json.dumps(row) + "\n")
+                    if isinstance(row, dict):
+                        out.write(json.dumps(row) + "\n")
+                    else:
+                        out.write(row if row.endswith("\n") else row + "\n")
                 out.flush()
                 os.fsync(out.fileno())
             os.replace(temporary, path)
