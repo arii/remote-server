@@ -48,6 +48,8 @@ import logging
 import os
 import re
 import sys
+
+import twt_transport
 import time
 import urllib.request
 
@@ -494,6 +496,7 @@ def chat_kwargs(spec):
             "disable_streaming": True,
             "max_retries": 0,
             "max_tokens": PIPELINE_MAX_TOKENS,
+            **(twt_transport.openai_clients() if twt_transport.uds_path() else {}),
         }
     if spec.get("provider") in ("nebius", "openrouter"):
         if spec["provider"] == "openrouter":
@@ -564,12 +567,12 @@ def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
         from langchain_ollama import ChatOllama  # noqa: E402
 
         kwargs["reasoning"] = think
-        kwargs["sync_client_kwargs"] = {
-            "event_hooks": {"request": [twt_receipts.capture]}
-        }
-        kwargs["async_client_kwargs"] = {
-            "event_hooks": {"request": [twt_receipts.acapture]}
-        }
+        kwargs["sync_client_kwargs"] = twt_transport.client_kwargs(
+            hook=twt_receipts.capture
+        )
+        kwargs["async_client_kwargs"] = twt_transport.client_kwargs(
+            asynchronous=True, hook=twt_receipts.acapture
+        )
         if num_ctx is None and _env("OLLAMA_NUM_CTX"):
             try:
                 num_ctx = int(_env("OLLAMA_NUM_CTX"))
@@ -586,15 +589,8 @@ def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
         return PipelineOllama(**kwargs), spec
     from langchain_openai import ChatOpenAI  # noqa: E402
 
-    if spec.get("provider") == "twt":
-        import httpx
-
-        kwargs["http_client"] = httpx.Client(
-            event_hooks={"request": [twt_receipts.capture]}
-        )
-        kwargs["http_async_client"] = httpx.AsyncClient(
-            event_hooks={"request": [twt_receipts.acapture]}
-        )
+    if spec.get("provider") == "twt" and "http_client" not in kwargs:
+        kwargs.update(twt_transport.openai_clients())
 
     class PipelineOpenAI(_BoundedHistory, ChatOpenAI):
         def _get_request_payload(self, *args, **kwargs):

@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import ledger
+import twt_transport
 
 current = contextvars.ContextVar("twt_run", default=None)
 latest = contextvars.ContextVar("twt_request", default=None)
@@ -49,7 +50,17 @@ def tag(result):
     return result
 
 
-def fetch(base_url, ids):
+def fetch(base_url, ids, *, uds=None):
+    if uds or twt_transport.uds_path():
+        import httpx
+
+        with httpx.Client(**twt_transport.client_kwargs(uds=uds), timeout=10) as client:
+            response = client.post(
+                base_url.rstrip("/") + "/receipts",
+                json={"trace_ids": ids, "cancel": True},
+            )
+            response.raise_for_status()
+            return response.json()["receipts"]
     request = urllib.request.Request(
         base_url.rstrip("/") + "/receipts",
         data=json.dumps({"trace_ids": ids, "cancel": True}).encode(),
@@ -214,6 +225,7 @@ class ReceiptRun:
         if urlsplit(self.base_url).username or urlsplit(self.base_url).password:
             raise ValueError("TwT URL must not contain credentials")
         self.started = time.time()
+        self.uds = twt_transport.uds_path()
         self.ids = set()
         self.local_ids = set()
         self.lock = threading.Lock()
@@ -241,6 +253,7 @@ class ReceiptRun:
                             "started": self.started,
                             "ledger_path": ledger.LEDGER,
                             "local_only": local_only,
+                            "uds": self.uds,
                         }
                     )
                     + "\n"
@@ -253,8 +266,13 @@ class ReceiptRun:
             return trace_id
 
     def reconcile(
-        self, fetch_fn=fetch, *, timeout=200, clock=time.monotonic, sleep=time.sleep
+        self, fetch_fn=None, *, timeout=200, clock=time.monotonic, sleep=time.sleep
     ):
+        if fetch_fn is None:
+
+            def fetch_fn(base, ids):
+                return fetch(base, ids, uds=self.uds)
+
         with self.lock:
             if self.settled:
                 return
@@ -325,6 +343,7 @@ def main():
     scope = ReceiptRun(entries[0]["run_id"], entries[0]["base_url"])
     scope.path = Path(sys.argv[1])
     scope.started = entries[0]["started"]
+    scope.uds = entries[0].get("uds")
     scope.ids = {entry["trace_id"] for entry in entries}
     scope.local_ids = {
         entry["trace_id"] for entry in entries if entry.get("local_only") is True

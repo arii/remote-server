@@ -6,10 +6,32 @@ on `devin/1795061083-scope-allowed-precedence`; the installed package's
 `/home/ari/repos/boomtick` is not used.
 
 The `twt.service` user unit runs a deployed copy of
-`deep-agent/twt_service.py`, listening only on `127.0.0.1:8000`.
+`deep-agent/twt_service.py`, listening on host `127.0.0.1:8000` and a
+private Unix socket, never a wildcard or bridge network interface.
 It is enabled under `default.target`; user lingering keeps it running
 without a login and across reboots. The unit uses `UMask=0077` and
 `NoNewPrivileges=yes`.
+
+The canonical user unit is `config/twt.service`. Deploy the service script
+and unit only while no pipeline is active, then reload the user manager
+and restart **only** `twt.service`. It creates `~/twt/run` mode 0700 and
+`gateway.sock` mode 0600. One process serves both listeners, sharing the
+same gateway policy state. Only terminal/buttons mount that directory,
+read-only at `/run/twt`; no keys or database directories are mounted.
+Their `TWT_BASE_URL=http://twt/v1` and
+`TWT_UDS=/run/twt/gateway.sock` select HTTPX Unix-socket transports for
+sync/async OpenAI and native Ollama clients, plus receipt lookup/recovery.
+Host runs leave `TWT_UDS` unset and keep loopback. Explicit diagnostic
+provider clients do not use the TwT socket. There is no TCP fallback when
+a configured socket is missing or unavailable.
+
+Compose mount/environment changes require a later container recreate;
+do not restart containers running jobs. After they are available, probe
+without inference:
+
+```sh
+docker compose exec -T terminal curl --fail --unix-socket /run/twt/gateway.sock http://twt/v1/models
+```
 
 `/home/ari/twt/environment` is mode 0600, inside a mode-0700 directory.
 It sets `TWT_DAILY_BUDGET_USD=5` and
