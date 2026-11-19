@@ -15,13 +15,43 @@ import pipeline
 
 
 class TestVerificationContract(unittest.TestCase):
+    def test_new_file_is_in_diff_and_empty_diff_rejects(self):
+        with tempfile.TemporaryDirectory() as root:
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", *args], cwd=root, capture_output=True, text=True, check=True
+                ).stdout
+
+            git("init", "-q")
+            Path(root, "spec.md").write_text("## Goal\nAdd helper")
+            git("add", "spec.md")
+            git(
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "baseline",
+            )
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            graph = auditor.AuditorGraph(root, spec_file="spec.md")
+            with self.assertRaisesRegex(ValueError, "no diff"):
+                graph.semantic_payload({})
+            Path(root, "helper.py").write_text("def helper():\n    return 1\n")
+            payload = graph.semantic_payload({})
+            self.assertIn("diff --git a/helper.py b/helper.py", payload["diff"])
+            self.assertIn("+def helper():", payload["diff"])
+            self.assertEqual(git("diff", "--cached", "--", "helper.py"), "")
+
     def test_pipeline_spec_scope_is_canonical_and_idempotent(self):
         draft = "## Goal\nFix\n### Allowed Files\n- `widget.py`\n## Acceptance Criteria\nHelper used\n"
         agent = pipeline.Pipeline("/tmp", "fix", issue_id=1357)
         with mock.patch.object(
             pipeline, "drive_to_settled", return_value={"valid": True, "draft": draft}
         ):
-            ok, state, spec = agent.stage_spec()
+            ok, _state, spec = agent.stage_spec()
         self.assertTrue(ok)
         self.assertEqual(
             issue_generator.explicit_allowed_paths(spec), [agent.spec_path, "widget.py"]

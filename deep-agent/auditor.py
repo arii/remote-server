@@ -354,6 +354,13 @@ class AuditorGraph:
         spec_path = os.path.join(self.worktree_root, self.spec_file)
         with open(spec_path, encoding="utf-8") as handle:
             spec = handle.read()
+        subprocess.run(
+            ["git", "add", "--intent-to-add", "--all", "--", "."],
+            cwd=self.worktree_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
         diff = subprocess.run(
             [
                 "git",
@@ -369,6 +376,8 @@ class AuditorGraph:
             text=True,
             check=True,
         ).stdout
+        if not diff.strip():
+            raise ValueError("Semantic audit has no diff to verify")
         return {"diff": diff, "spec": spec, "gate": gate_payload}
 
     def audit_once(self, gate_payload):
