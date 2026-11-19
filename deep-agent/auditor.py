@@ -401,7 +401,7 @@ class AuditorGraph:
         spec = model_router.resolve_llm()
         if override:
             spec = dict(spec, model=override)
-        model, _spec = model_router.build_chat_model(spec=spec)
+        model, _spec = model_router.build_chat_model(spec=spec, stage="audit")
         self.last_model_spec = dict(_spec)
         callback = usage_callback(
             self.last_model_spec,
@@ -555,7 +555,7 @@ class AuditorGraph:
                 think = os.environ.get("ASK_THINK", "") == "1"
                 try:
                     model, resolved = model_router.build_chat_model(
-                        spec=spec, think=think
+                        spec=spec, think=think, stage="audit"
                     )
                 except RuntimeError as exc:
                     raise ModelUnavailableError(str(exc)) from exc

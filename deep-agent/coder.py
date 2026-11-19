@@ -100,6 +100,7 @@ VERIFY_NUDGE = (
 CODER_RULES = (
     """You are implementing the task below in the checkout at {worktree}. Rules:
 - File paths are repo-relative like frontend/src/views/NowView.tsx; never use absolute paths or a leading /.
+- Start filesystem discovery with ls(path="."). The worktree above is your sole filesystem root; never list the parent checkout even if task context names it.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
 - Invoke tools through the function-calling interface. Never print JSON commands or pretend a prose command executed.
@@ -248,7 +249,7 @@ def build_model(model_override=None):
     if model_override:
         spec = dict(spec, model=model_override)
     think = os.environ.get("CODER_THINK", "") == "1"
-    return model_router.build_chat_model(spec=spec, think=think)
+    return model_router.build_chat_model(spec=spec, think=think, stage="coder")
 
 
 def _default_plan_fn(brief, worktree_root, context):

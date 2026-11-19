@@ -222,9 +222,10 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
                 "base_url": "http://ollama:11434",
             }
 
-        def fake_build(spec=None, think=True):
+        def fake_build(spec=None, think=True, stage=None):
             seen["spec"] = spec
             seen["think"] = think
+            seen["stage"] = stage
             return ("fake-model", spec)
 
         old_provider = os.environ.get("S5_ISSUE_PROVIDER")
@@ -240,6 +241,7 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
                 self.assertEqual(gen._model(), "fake-model")
             self.assertEqual(seen["prefer"], "ollama")
             self.assertFalse(seen["think"])
+            self.assertEqual(seen["stage"], "spec")
             self.assertEqual(seen["spec"].get("provider"), "ollama")
         finally:
             if old_provider is None:

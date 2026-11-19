@@ -520,7 +520,10 @@ PROFILE_PROVIDERS = {
 }
 
 
-def build_chat_model(spec=None, think=False, num_ctx=None):
+STAGE_NEBIUS_MODELS = dict.fromkeys(("coder", "spec", "audit"), "zai-org/GLM-5.3-Flash")
+
+
+def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
     """Container-correct chat model (Ollama no-think default). Venv-only.
 
     resolve_llm() picks local or keyed remote through the spend choke;
@@ -529,7 +532,17 @@ def build_chat_model(spec=None, think=False, num_ctx=None):
     Ollama base_url. Returns (model, spec).
     """
     spec = dict(spec) if spec else resolve_llm()
+    if stage is not None and stage not in STAGE_NEBIUS_MODELS:
+        raise ValueError(f"unknown pipeline model stage: {stage}")
+    if spec.get("provider") == "twt" and stage is not None:
+        spec["provider_models"] = {
+            "nebius": _env(
+                f"TWT_{stage.upper()}_NEBIUS_MODEL", STAGE_NEBIUS_MODELS[stage]
+            )
+        }
     kwargs = chat_kwargs(spec)
+    if spec.get("provider") == "twt" and spec.get("provider_models"):
+        kwargs["extra_body"] = {"provider_models": spec["provider_models"]}
     import twt_receipts
 
     if spec.get("provider") == "ollama":
