@@ -45,6 +45,15 @@ def message(cost=None, usage_cost=None):
 
 
 class TestTwTRouter(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        patcher = mock.patch.object(
+            ledger, "LEDGER", str(Path(directory.name, "ledger.jsonl"))
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_default_and_local_paths_are_both_gateway_urls(self):
         with mock.patch.dict(
             os.environ, {"TWT_BASE_URL": "http://localhost:18000/v1/"}, clear=True

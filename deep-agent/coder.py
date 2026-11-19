@@ -816,6 +816,7 @@ def run_coder(worktree, brief, system, thread, timeout):
     from langchain_core.messages import HumanMessage  # noqa: E402
 
     import deep_chat  # noqa: E402
+    import ledger  # noqa: E402
 
     started = time.time()
     recorder = observe.TraceRecorder(observe.default_trace_path("coder", thread))
@@ -823,26 +824,52 @@ def run_coder(worktree, brief, system, thread, timeout):
     label = f"{spec['provider']}:{spec['model']}"
     print(f"coder via {label}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label)
-    saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
-    written_files = set()
-    agent = build_agent(
-        worktree,
-        system,
-        model=model,
-        recorder=recorder,
-        checkpointer=saver,
-        spec=spec,
-        written_files=written_files,
-    )
-    config = {"configurable": {"thread_id": thread}}
 
-    def _invoke(msgs):
-        return agent.invoke(
-            {"messages": msgs}, config={**config, "recursion_limit": RECURSION_LIMIT}
+    def fail(error, reply=""):
+        recorder.run_end(False)
+        recorder.close()
+        usage, calls = recorder.totals()
+        ledger.record(
+            "coder.py",
+            spec["model"],
+            thread,
+            [
+                {"role": "user", "content": brief},
+                {"role": "assistant", "content": reply},
+            ],
+            started,
+            provider=spec["provider"],
+            usage=usage,
+            calls=calls,
+            extra={
+                "error": f"{type(error).__name__}: {error}",
+                "worktree": worktree,
+                "trace": recorder.path,
+                "verified": False,
+            },
         )
 
-    max_rounds = verify_rounds()
     try:
+        saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
+        written_files = set()
+        agent = build_agent(
+            worktree,
+            system,
+            model=model,
+            recorder=recorder,
+            checkpointer=saver,
+            spec=spec,
+            written_files=written_files,
+        )
+        config = {"configurable": {"thread_id": thread}}
+
+        def _invoke(msgs):
+            return agent.invoke(
+                {"messages": msgs},
+                config={**config, "recursion_limit": RECURSION_LIMIT},
+            )
+
+        max_rounds = verify_rounds()
         result, rounds, verified = run_with_verify(
             lambda: run_bounded(
                 lambda: _invoke([HumanMessage(content=brief)]), timeout
@@ -854,31 +881,25 @@ def run_coder(worktree, brief, system, thread, timeout):
             max_rounds,
             dithered=lambda: trace_has_dither(recorder.path),
         )
-    except TimeoutError:
-        recorder.run_end(False)
+        # Keep the checkpointer connection alive until the run returns.
+        _ = holder
+        reply = extract_reply(result)
+        reason = implementation_failure(reply, written_files)
+        if reason:
+            recorder.event("coder_verdict", ok=False, reason=reason)
+            raise RuntimeError(reason)
+        if not verified and max_rounds > 0:
+            reply = mark_unverified(reply)
+        recorder.run_end(True)
         recorder.close()
-        raise RuntimeError(f"coder timed out after {timeout}s")
-    except Exception:
-        recorder.run_end(False)
-        recorder.close()
+        usage, calls = recorder.totals()
+        print(f"trace: {recorder.path}", file=sys.stderr)
+        return reply, usage, calls, started, label, recorder.path, verified, rounds
+    except BaseException as error:
+        fail(error)
+        if isinstance(error, TimeoutError):
+            raise RuntimeError(f"coder timed out after {timeout}s") from error
         raise
-    # holder stays referenced (with saver + agent) until return, so the
-    # DB connection outlives the run.
-    _ = holder
-    reply = extract_reply(result)
-    reason = implementation_failure(reply, written_files)
-    if reason:
-        recorder.event("coder_verdict", ok=False, reason=reason)
-        recorder.run_end(False)
-        recorder.close()
-        raise RuntimeError(reason)
-    if not verified and max_rounds > 0:
-        reply = mark_unverified(reply)
-    recorder.run_end(True)
-    recorder.close()
-    usage, calls = recorder.totals()
-    print(f"trace: {recorder.path}", file=sys.stderr)
-    return reply, usage, calls, started, label, recorder.path, verified, rounds
 
 
 def implementation_failure(reply, written_files):
