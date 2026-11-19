@@ -182,6 +182,8 @@ def record(
         if provider not in pricing.PROVIDERS:
             provider = None
         cost_usd, metered = pricing.quote(model, usage, provider=provider)
+        if extra.get("usage_missing") and provider != "ollama":
+            cost_usd, metered = None, True
         if provider == "ollama":
             # The resolved backend is truth: a locally-run turn is
             # free even when the model string carries no prefix.

@@ -2,6 +2,7 @@ import json
 import importlib.util
 import shutil
 import tempfile
+import os
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -119,3 +120,152 @@ class TestFailureDetail(unittest.TestCase):
                     result = pipe.run()
                 self.assertEqual(result["detail"], expected)
                 self.assertEqual(result["status"], pipeline.BLOCKED)
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("langgraph"), "agent dependencies not installed"
+)
+class TestSpecUsage(unittest.TestCase):
+    def test_investigation_calls_survive_recursion_truncation(self):
+        from langchain_core.language_models.fake_chat_models import (
+            FakeMessagesListChatModel,
+        )
+        from langchain_core.messages import AIMessage
+        from langchain_core.tools import tool
+        import ledger
+
+        class Model(FakeMessagesListChatModel):
+            def bind_tools(self, tools, **kwargs):
+                return self
+
+        @tool(description="Read local evidence")
+        def lookup() -> str:
+            return "widget.py:1 evidence"
+
+        usage = {"input_tokens": 1000, "output_tokens": 100, "total_tokens": 1100}
+        for limit, calls in ((25, 2), (2, 1)):
+            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as root:
+                model = Model(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[{"id": "read", "name": "lookup", "args": {}}],
+                            usage_metadata=usage,
+                        ),
+                        AIMessage(content="widget.py:1 evidence", usage_metadata=usage),
+                    ]
+                )
+                graph = issue_generator.IssueGeneratorGraph(
+                    root, model_fn=lambda: model, thread_id="proof-investigation"
+                )
+                graph.last_spec = {
+                    "provider": "nebius",
+                    "model": "zai-org/GLM-5.3-Flash",
+                }
+                path = Path(root, "ledger.jsonl")
+                with (
+                    mock.patch.object(ledger, "LEDGER", str(path)),
+                    mock.patch.dict(
+                        os.environ,
+                        {
+                            "DEEP_AGENT_STATE_DIR": root,
+                            "S5_SPEC_RECURSION_LIMIT": str(limit),
+                        },
+                    ),
+                    mock.patch.object(
+                        graph, "_investigator_tools", return_value=[lookup]
+                    ),
+                ):
+                    evidence = graph.investigate_text("fix", "draft")
+                self.assertIn("widget.py", evidence)
+                rows = [json.loads(line) for line in path.read_text().splitlines()]
+                self.assertEqual(len(rows), calls)
+                self.assertEqual(sum(row["cost_usd"] for row in rows), calls * 0.0002)
+                self.assertTrue(
+                    all(row["extra"]["phase"] == "investigation" for row in rows)
+                )
+
+    def test_validation_failure_keeps_completed_draft_usage(self):
+        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+        from langchain_core.messages import AIMessage
+        import ledger
+
+        message = AIMessage(
+            content="draft",
+            usage_metadata={
+                "input_tokens": 1000,
+                "output_tokens": 100,
+                "total_tokens": 1100,
+            },
+        )
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "widget.py").write_text("pass\n")
+            graph = issue_generator.IssueGeneratorGraph(
+                root,
+                model_fn=lambda: GenericFakeChatModel(messages=iter([message])),
+                investigate_fn=lambda *args: "widget.py:1 evidence",
+                td_runner=lambda args: (
+                    0,
+                    json.dumps(
+                        {"status": "ready", "valid": False, "errors": ["bad spec"]}
+                    ),
+                ),
+                max_loops=1,
+                thread_id="proof-spec-accounting",
+            )
+            graph.last_spec = {"provider": "nebius", "model": "zai-org/GLM-5.3-Flash"}
+            path = Path(root, "ledger.jsonl")
+            with (
+                mock.patch.object(ledger, "LEDGER", str(path)),
+                mock.patch.dict(os.environ, {"DEEP_AGENT_STATE_DIR": root}),
+            ):
+                state = graph.run("fix widget")
+            self.assertFalse(state["valid"])
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["usage"], message.usage_metadata)
+            self.assertEqual(rows[0]["cost_usd"], 0.0002)
+            self.assertEqual(rows[0]["extra"]["phase"], "draft")
+            trace = Path(rows[0]["extra"]["trace_path"]).read_text()
+            self.assertIn('"input_tokens": 1000', trace)
+
+    def test_missing_usage_and_model_errors_are_unknown_not_free(self):
+        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+        from langchain_core.messages import AIMessage
+        import ledger
+
+        for failure in (False, True):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as root:
+                graph = issue_generator.IssueGeneratorGraph(
+                    root, thread_id="proof-missing-usage"
+                )
+                graph.last_spec = {
+                    "provider": "nebius",
+                    "model": "zai-org/GLM-5.3-Flash",
+                }
+                callback = graph._usage_callback("investigation")
+                model = GenericFakeChatModel(
+                    messages=iter([AIMessage(content="answer")])
+                )
+                path = Path(root, "ledger.jsonl")
+                with (
+                    mock.patch.object(ledger, "LEDGER", str(path)),
+                    mock.patch.dict(os.environ, {"DEEP_AGENT_STATE_DIR": root}),
+                ):
+                    if failure:
+                        with (
+                            mock.patch.object(
+                                GenericFakeChatModel,
+                                "_generate",
+                                side_effect=RuntimeError("failed"),
+                            ),
+                            self.assertRaises(RuntimeError),
+                        ):
+                            model.invoke("task", config={"callbacks": [callback]})
+                    else:
+                        model.invoke("task", config={"callbacks": [callback]})
+                row = json.loads(path.read_text())
+                self.assertIsNone(row["cost_usd"])
+                self.assertTrue(row["metered"])
+                self.assertTrue(row["extra"]["usage_missing"])
+                self.assertEqual(row["extra"]["phase"], "investigation")

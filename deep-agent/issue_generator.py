@@ -331,6 +331,85 @@ class IssueGeneratorGraph:
 
     # -- LLM pieces (injected in tests) -------------------------------
 
+    def _usage_callback(self, phase):
+        spec = dict(getattr(self, "last_spec", None) or {})
+        if not spec:
+            return None
+        import ledger
+        import observe
+        from langchain_core.callbacks import BaseCallbackHandler
+
+        thread_id = self.thread_id
+
+        class SpecUsage(BaseCallbackHandler):
+            def __init__(self):
+                self.active = {}
+
+            def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
+                recorder = observe.TraceRecorder(
+                    observe.default_trace_path("issue_generator", thread_id)
+                )
+                recorder.run_start("issue_generator.py", thread_id, spec["model"])
+                recorder.model_request(len(messages[0]) if messages else 0)
+                self.active[run_id] = (time.time(), recorder)
+
+            def finish(self, run_id, message=None, error=None):
+                started, recorder = self.active.pop(run_id)
+                messages = [message] if message is not None else []
+                usage = ledger._usage_total(messages)
+                known = bool(getattr(message, "usage_metadata", None)) or bool(
+                    (getattr(message, "response_metadata", None) or {}).get(
+                        "prompt_eval_count"
+                    )
+                )
+                recorder.model_response(usage)
+                recorder.event(
+                    "spec_response",
+                    phase=phase,
+                    tool_calls=getattr(message, "tool_calls", []) or [],
+                    metadata={
+                        key: value
+                        for key, value in (
+                            getattr(message, "response_metadata", {}) or {}
+                        ).items()
+                        if key
+                        in (
+                            "token_usage",
+                            "prompt_eval_count",
+                            "eval_count",
+                            "finish_reason",
+                            "model_name",
+                        )
+                    },
+                )
+                recorder.run_end(ok=error is None)
+                recorder.close()
+                ledger.record(
+                    "issue_generator.py",
+                    spec["model"],
+                    thread_id,
+                    messages,
+                    started,
+                    usage=usage,
+                    provider=spec.get("provider"),
+                    extra={
+                        "stage": "spec",
+                        "phase": phase,
+                        "llm_call": True,
+                        "usage_missing": not known,
+                        "trace_path": recorder.path,
+                        "error": type(error).__name__ if error is not None else "",
+                    },
+                )
+
+            def on_llm_end(self, response, *, run_id, **kwargs):
+                self.finish(run_id, response.generations[0][0].message)
+
+            def on_llm_error(self, error, *, run_id, **kwargs):
+                self.finish(run_id, error=error)
+
+        return SpecUsage()
+
     def _model(self):
         if self.model_fn is not None:
             return self.model_fn()
@@ -443,7 +522,12 @@ class IssueGeneratorGraph:
         prompt = skills_registry.SkillsRegistry().inject_skills_for_node(
             "draft_spec_node", prompt
         )
-        reply = model.invoke(prompt)
+        callback = self._usage_callback("draft")
+        reply = (
+            model.invoke(prompt, config={"callbacks": [callback]})
+            if callback
+            else model.invoke(prompt)
+        )
         text = getattr(reply, "content", reply) if not isinstance(reply, str) else reply
         return clean_allowed_file_urls(text)
 
@@ -483,6 +567,10 @@ class IssueGeneratorGraph:
         )
         previous = ask_investigator._checkout
         ask_investigator._checkout = self.repo_root
+        config = {"recursion_limit": limit}
+        callback = self._usage_callback("investigation")
+        if callback:
+            config["callbacks"] = [callback]
         try:
             result = agent.invoke(
                 {
@@ -499,7 +587,7 @@ class IssueGeneratorGraph:
                         }
                     ]
                 },
-                config={"recursion_limit": limit},
+                config=config,
             )
         except (InvestigationTruncated, GraphRecursionError) as exc:
             self.investigation_truncated = True
@@ -678,6 +766,9 @@ class IssueGeneratorGraph:
                 [],
                 time.time(),
                 extra={
+                    "stage": "spec",
+                    "phase": "summary",
+                    "llm_call": False,
                     "valid": state.get("valid"),
                     "attempts": state.get("attempts", 0),
                     "decisions": lines,
