@@ -16,6 +16,56 @@ import pipeline
 
 
 class TestVerificationContract(unittest.TestCase):
+    def test_check_logs_cannot_overflow_an_otherwise_valid_audit(self):
+        from langchain_core.messages import HumanMessage
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "spec.md").write_text("Fix helper")
+            diff = "+" + "code" * 14000
+            logs = [
+                {
+                    "command": "python3 -m pytest",
+                    "passed": passed,
+                    "output": "start" + "x" * 30000 + "summary",
+                }
+                for passed in (False, True)
+            ]
+            graph = auditor.AuditorGraph(
+                root, spec_file="spec.md", verification_evidence=logs
+            )
+            gate = {
+                "verification": {
+                    "passed": True,
+                    "commands": [{"exit": 0, "output": "y" * 20000 + "gate summary"}],
+                }
+            }
+            with mock.patch.object(
+                auditor.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout=diff),
+            ):
+                payload = graph.semantic_payload(gate)
+            model_router.bounded_history([HumanMessage(content=json.dumps(payload))])
+            model_router.bounded_history(
+                [HumanMessage(content=graph.semantic_prompt(payload))]
+            )
+            self.assertEqual(payload["diff"], diff)
+            self.assertEqual(
+                [entry["passed"] for entry in payload["verification"]], [False, True]
+            )
+            self.assertTrue(payload["verification"][0]["output"].endswith("summary"))
+            self.assertLess(len(payload["verification"][0]["output"]), 30000)
+            self.assertEqual(len(logs[0]["output"]), 30012)
+
+    def test_evidence_budget_does_not_silently_cut_diff_or_spec(self):
+        graph = auditor.AuditorGraph("/tmp")
+        with self.assertRaisesRegex(ValueError, "diff/spec"):
+            graph.bound_verification(
+                {"diff": "x" * 70000, "spec": "spec", "gate": {}, "verification": []}
+            )
+        payload = {"diff": "diff", "spec": "spec", "gate": {}, "verification": []}
+        self.assertEqual(graph.bound_verification(payload), payload)
+
     def test_configured_checks_include_observed_outputs_and_fail_closed(self):
         for code in (0, 1):
             with self.subTest(code=code):

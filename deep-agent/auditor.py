@@ -7,6 +7,7 @@ audits persist the report via decisions.py + ledger.py.
 Only stdlib at module top; langgraph/langchain lazy (deep-agent venv).
 """
 
+import copy
 import json
 import os
 import re
@@ -361,6 +362,82 @@ class AuditorGraph:
             "errors": state.get("errors", []),
         }
 
+    def semantic_prompt(self, payload):
+        user_content = (
+            "Audit these changes for rule violations and risky blast "
+            "radius against the supplied issue spec (Goal, Definition of Done and "
+            "acceptance criteria) and actual diff. Return only JSON "
+            '{"verified": true|false, "findings": [{"severity": "low|medium|high|critical", '
+            '"description": "..."}]}; use an empty findings list when clear.\n\n'
+            "Set verified=true only after verifying the diff against the spec. "
+            "Missing evidence, incomplete checks or uncertainty require verified=false. "
+            "Deterministic gates alone are not semantic verification.\n\n"
+            f"Audit payload:\n{json.dumps(payload)}"
+        )
+        return skills_registry.SkillsRegistry().inject_skills_for_node(
+            "deep_semantic_auditor_node", user_content
+        )
+
+    def bound_verification(self, payload):
+        import model_router
+
+        def fits():
+            return (
+                len(json.dumps({"content": self.semantic_prompt(payload)})) + 1024
+                <= model_router.PIPELINE_HISTORY_CHARS
+            )
+
+        if fits():
+            return payload
+        records = []
+
+        def collect(value):
+            if isinstance(value, dict):
+                if isinstance(value.get("output"), str):
+                    records.append(
+                        (value, value["output"], value.get("output_truncated", False))
+                    )
+                for child in value.values():
+                    collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        collect(payload["verification"])
+        collect(payload["gate"].get("verification", {}))
+
+        def truncate(limit):
+            marker = "\n[check output truncated]\n"
+            for record, output, was_truncated in records:
+                cut = len(output) > limit
+                if cut:
+                    keep = max(0, limit - len(marker)) // 2
+                    record["output"] = (
+                        output[:keep] + marker + output[-keep:] if keep else ""
+                    )
+                else:
+                    record["output"] = output
+                if cut or was_truncated:
+                    record["output_truncated"] = True
+                else:
+                    record.pop("output_truncated", None)
+
+        truncate(0)
+        if not fits():
+            raise ValueError(
+                "Semantic audit diff/spec exceed the input budget even without check output"
+            )
+        low, high = 0, max((len(output) for _, output, _ in records), default=0)
+        while low < high:
+            middle = (low + high + 1) // 2
+            truncate(middle)
+            if fits():
+                low = middle
+            else:
+                high = middle - 1
+        truncate(low)
+        return payload
+
     def semantic_payload(self, gate_payload):
         if not self.spec_file:
             raise ValueError("Semantic audit requires an issue spec file")
@@ -399,12 +476,14 @@ class AuditorGraph:
         ).stdout
         if not diff.strip():
             raise ValueError("Semantic audit has no diff to verify")
-        return {
-            "diff": diff,
-            "spec": spec,
-            "gate": gate_payload,
-            "verification": self.verification_evidence,
-        }
+        return self.bound_verification(
+            {
+                "diff": diff,
+                "spec": spec,
+                "gate": copy.deepcopy(gate_payload),
+                "verification": copy.deepcopy(self.verification_evidence),
+            }
+        )
 
     def audit_once(self, gate_payload):
         """LLM audit pass (injected in tests)."""
@@ -447,20 +526,7 @@ class AuditorGraph:
             ],
             middleware=[investigation_tool_guard(evidence)],
         )
-        user_content = (
-            "Audit these changes for rule violations and risky blast "
-            "radius against the supplied issue spec (Goal, Definition of Done and "
-            "acceptance criteria) and actual diff. Return only JSON "
-            '{"verified": true|false, "findings": [{"severity": "low|medium|high|critical", '
-            '"description": "..."}]}; use an empty findings list when clear.\n\n'
-            "Set verified=true only after verifying the diff against the spec. "
-            "Missing evidence, incomplete checks or uncertainty require verified=false. "
-            "Deterministic gates alone are not semantic verification.\n\n"
-            f"Audit payload:\n{json.dumps(payload)}"
-        )
-        user_content = skills_registry.SkillsRegistry().inject_skills_for_node(
-            "deep_semantic_auditor_node", user_content
-        )
+        user_content = self.semantic_prompt(payload)
         previous = ask_investigator._checkout
         ask_investigator._checkout = self.worktree_root
         error = None
