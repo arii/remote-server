@@ -1181,14 +1181,6 @@ def trim_history_by_count(messages, keep=MAX_HISTORY_MESSAGES):
     return kept, drop_ids
 
 
-def plan_history_trim(messages, keep=MAX_HISTORY_MESSAGES):
-    """Ids to drop from checkpoint history. Pure, no langchain import.
-
-    Count trim only; the history token share is carved on top of this
-    by trim_thread_history (D2: one derived context budget)."""
-    return trim_history_by_count(messages, keep=keep)[1]
-
-
 def _content_text(message):
     """Message content as str (multimodal content str()-ed)."""
     return str(getattr(message, "content", "") or "")
