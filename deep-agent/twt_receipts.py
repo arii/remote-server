@@ -27,7 +27,7 @@ def capture(request):
         ("/chat/completions", "/api/chat")
     ):
         return
-    trace_id = scope.request()
+    trace_id = scope.request(local_only=request.url.path.endswith("/local/api/chat"))
     request.headers["X-Trace-Id"] = trace_id
     request.headers["X-Session-Id"] = scope.run_id
     latest.set(trace_id)
@@ -64,15 +64,17 @@ def _owns_receipts(row):
     return llm_call is not False and (llm_call is True or row.get("metered") is True)
 
 
-def merge_receipts(ids, receipts, run_id, started):
+def merge_receipts(ids, receipts, run_id, started, *, local_ids=()):
     """Refresh only identified rows; add missing receipts, never a cost delta."""
     path = Path(ledger.LEDGER)
     path.parent.mkdir(parents=True, exist_ok=True)
     with ledger.locked(path):
-        return _merge_receipts_locked(path, ids, receipts, run_id, started)
+        return _merge_receipts_locked(
+            path, ids, receipts, run_id, started, set(local_ids)
+        )
 
 
-def _merge_receipts_locked(path, ids, receipts, run_id, started):
+def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "r+", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
@@ -94,14 +96,14 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started):
                     "ts": time.time(),
                     "script": "twt_receipts.py",
                     "model": "default",
-                    "provider": "twt",
+                    "provider": "ollama" if trace_id in local_ids else "twt",
                     "thread_id": run_id,
                     "duration_s": round(time.time() - started, 1),
                     "tool_calls": [],
                     "tool_results": [],
                     "usage": {"twt_trace_ids": [trace_id]},
                     "cost_usd": None,
-                    "metered": True,
+                    "metered": trace_id not in local_ids,
                     "final_preview": "",
                     "extra": {
                         "llm_call": True,
@@ -116,7 +118,19 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started):
             trace_ids = set(row.get("usage", {}).get("twt_trace_ids", []))
             if not trace_ids or not trace_ids.issubset(ids):
                 continue
-            found = [receipts.get(trace_id) for trace_id in trace_ids]
+            missing_local = (trace_ids & local_ids) - receipts.keys()
+            found = [
+                {"cost_complete": True, "cost_usd": 0.0}
+                if trace_id in missing_local
+                else receipts.get(trace_id)
+                for trace_id in trace_ids
+            ]
+            if missing_local:
+                row.setdefault("extra", {})["twt_local_receipt_missing"] = sorted(
+                    missing_local
+                )
+            else:
+                row.setdefault("extra", {}).pop("twt_local_receipt_missing", None)
             complete = all(
                 receipt is not None
                 and receipt.get("cost_complete") is True
@@ -132,14 +146,19 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started):
                 missing.update(trace_ids)
                 continue
             cost = sum(receipt["cost_usd"] for receipt in found)
+            if trace_ids.issubset(local_ids):
+                if cost != 0:
+                    raise ValueError("Local TwT receipt reported paid cost")
+                row.update(provider="ollama", metered=False)
             prompt = sum(receipt.get("prompt_tokens") or 0 for receipt in found)
             completion = sum(receipt.get("completion_tokens") or 0 for receipt in found)
-            row["usage"].update(
-                input_tokens=prompt,
-                output_tokens=completion,
-                total_tokens=prompt + completion,
-                reported_cost_usd=cost,
-            )
+            if not missing_local:
+                row["usage"].update(
+                    input_tokens=prompt,
+                    output_tokens=completion,
+                    total_tokens=prompt + completion,
+                )
+            row["usage"]["reported_cost_usd"] = cost
             row["cost_usd"] = cost
         temporary = None
         try:
@@ -177,6 +196,7 @@ class ReceiptRun:
             raise ValueError("TwT URL must not contain credentials")
         self.started = time.time()
         self.ids = set()
+        self.local_ids = set()
         self.lock = threading.Lock()
         self.stopped = False
         self.settled = False
@@ -185,7 +205,7 @@ class ReceiptRun:
             Path(ledger.state_dir()) / "receipts" / (str(uuid.uuid4()) + ".jsonl")
         )
 
-    def request(self):
+    def request(self, *, local_only=False):
         with self.lock:
             if self.stopped:
                 raise RuntimeError("Pipeline stopped; refusing a new TwT request")
@@ -201,6 +221,7 @@ class ReceiptRun:
                             "base_url": self.base_url,
                             "started": self.started,
                             "ledger_path": ledger.LEDGER,
+                            "local_only": local_only,
                         }
                     )
                     + "\n"
@@ -208,6 +229,8 @@ class ReceiptRun:
                 handle.flush()
                 os.fsync(handle.fileno())
             self.ids.add(trace_id)
+            if local_only:
+                self.local_ids.add(trace_id)
             return trace_id
 
     def reconcile(
@@ -233,15 +256,24 @@ class ReceiptRun:
             except Exception as error:
                 failure = type(error).__name__
                 break
-            if all(trace_id in receipts for trace_id in ids) or clock() >= deadline:
+            if (
+                all(
+                    trace_id in receipts or trace_id in self.local_ids
+                    for trace_id in ids
+                )
+                or clock() >= deadline
+            ):
                 break
             sleep(min(1, max(0, deadline - clock())))
-        missing = merge_receipts(set(ids), receipts, self.run_id, self.started)
+        missing = merge_receipts(
+            set(ids), receipts, self.run_id, self.started, local_ids=self.local_ids
+        )
         self.error = (failure or "unsettled TwT receipts") if missing else None
         self.path.with_suffix(".settlement.json").write_text(
             json.dumps(
                 {
                     "trace_ids": ids,
+                    "local_trace_ids": sorted(self.local_ids),
                     "missing": missing,
                     "error": self.error,
                     "receipts": list(receipts.values()),
@@ -275,6 +307,9 @@ def main():
     scope.path = Path(sys.argv[1])
     scope.started = entries[0]["started"]
     scope.ids = {entry["trace_id"] for entry in entries}
+    scope.local_ids = {
+        entry["trace_id"] for entry in entries if entry.get("local_only") is True
+    }
     scope.reconcile()
     return int(bool(scope.error))
 

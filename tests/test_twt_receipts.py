@@ -47,6 +47,53 @@ class ReceiptTests(unittest.TestCase):
         fetch.assert_not_called()
         self.assertFalse(Path(ledger.LEDGER).exists())
 
+    def test_missing_native_receipt_is_free_but_missing_hosted_is_not(self):
+        scope = receipts.ReceiptRun("mixed-routes")
+        token = receipts.current.set(scope)
+        try:
+            requests = [
+                SimpleNamespace(url=SimpleNamespace(path=path), headers={})
+                for path in ("/local/api/chat", "/v1/chat/completions")
+            ]
+            for request in requests:
+                receipts.capture(request)
+        finally:
+            receipts.current.reset(token)
+        scope.reconcile(lambda *_: [], timeout=0)
+        by_id = {row["usage"]["twt_trace_ids"][0]: row for row in self.rows()}
+        local_id, hosted_id = [request.headers["X-Trace-Id"] for request in requests]
+        self.assertEqual(by_id[local_id]["cost_usd"], 0)
+        self.assertFalse(by_id[local_id]["metered"])
+        self.assertIsNone(by_id[hosted_id]["cost_usd"])
+        self.assertTrue(by_id[hosted_id]["metered"])
+        settled = json.loads(scope.path.with_suffix(".settlement.json").read_text())
+        self.assertEqual(settled["missing"], [hosted_id])
+
+    def test_native_route_provenance_survives_journal_recovery(self):
+        scope = receipts.ReceiptRun("native-recovery")
+        token = receipts.current.set(scope)
+        try:
+            receipts.capture(
+                SimpleNamespace(
+                    url=SimpleNamespace(path="/prefix/local/api/chat"), headers={}
+                )
+            )
+        finally:
+            receipts.current.reset(token)
+        original = receipts.ReceiptRun.reconcile
+
+        def reconcile(recovered):
+            return original(recovered, lambda *_: [], timeout=0)
+
+        with (
+            mock.patch("sys.argv", ["twt_receipts.py", str(scope.path)]),
+            mock.patch.object(receipts.ReceiptRun, "reconcile", reconcile),
+        ):
+            self.assertEqual(receipts.main(), 0)
+        (row,) = self.rows()
+        self.assertEqual(row["cost_usd"], 0)
+        self.assertFalse(row["metered"])
+
     def test_failed_receipt_write_leaves_original_ledger_intact(self):
         scope = receipts.ReceiptRun("atomic")
         trace_id = scope.request()
