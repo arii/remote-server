@@ -386,6 +386,15 @@ def _tombstone_locked(indexes, path):
                 for key in ("model", "provider", "usage", "cost_usd", "metered"):
                     if key in row:
                         tomb[key] = row[key]
+                extra = row.get("extra") if isinstance(row, dict) else None
+                if isinstance(extra, dict):
+                    markers = {
+                        key: extra[key]
+                        for key in ("llm_call", "twt_receipt_reconciled")
+                        if key in extra
+                    }
+                    if markers:
+                        tomb["extra"] = markers
                 lines[i] = json.dumps(tomb) + "\n"
                 tombstoned += 1
             f.seek(0)

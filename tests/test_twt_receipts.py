@@ -9,6 +9,7 @@ from unittest import mock
 import coder
 import ledger
 import observe
+import runs
 import twt_receipts as receipts
 
 
@@ -46,6 +47,52 @@ class ReceiptTests(unittest.TestCase):
         receipts.ReceiptRun("empty").reconcile(fetch)
         fetch.assert_not_called()
         self.assertFalse(Path(ledger.LEDGER).exists())
+
+    def test_deleted_local_run_is_not_resurrected_by_journal_recovery(self):
+        scope = receipts.ReceiptRun("deleted-local")
+        trace_id = scope.request(local_only=True)
+        ledger.record(
+            "chat.py",
+            "qwen3:8b",
+            "deleted-local",
+            [],
+            0,
+            provider="ollama",
+            usage={"twt_trace_ids": [trace_id]},
+            extra={"llm_call": True, "prompt": "private text"},
+        )
+        scope.reconcile(lambda *_: [self.reply(trace_id, 0)])
+        self.assertTrue(runs.delete_run("run-0", ledger_path=ledger.LEDGER))
+        self.assertEqual(runs.list_runs(ledger_path=ledger.LEDGER), [])
+        with (
+            mock.patch("sys.argv", ["twt_receipts.py", str(scope.path)]),
+            mock.patch.object(
+                receipts, "fetch", return_value=[self.reply(trace_id, 0)]
+            ),
+        ):
+            receipts.main()
+            receipts.main()
+        self.assertEqual(runs.list_runs(ledger_path=ledger.LEDGER), [])
+        self.assertEqual(len(self.rows()), 1)
+        (row,) = self.rows()
+        self.assertTrue(row["deleted"])
+        self.assertNotIn("prompt", row["extra"])
+        self.assertEqual(row["cost_usd"], 0)
+
+    def test_deleted_unsettled_paid_run_can_settle_without_becoming_visible(self):
+        scope = receipts.ReceiptRun("deleted-paid")
+        trace_id = scope.request()
+        scope.reconcile(lambda *_: [], timeout=0)
+        self.assertTrue(runs.delete_run("run-0", ledger_path=ledger.LEDGER))
+        with (
+            mock.patch("sys.argv", ["twt_receipts.py", str(scope.path)]),
+            mock.patch.object(receipts, "fetch", return_value=[self.reply(trace_id)]),
+        ):
+            receipts.main()
+        self.assertEqual(runs.list_runs(ledger_path=ledger.LEDGER), [])
+        (row,) = self.rows()
+        self.assertTrue(row["deleted"])
+        self.assertEqual(row["cost_usd"], 0.012)
 
     def test_partial_settlement_survives_scope_exit_and_gateway_outage(self):
         with mock.patch.object(receipts, "fetch") as fetch:
