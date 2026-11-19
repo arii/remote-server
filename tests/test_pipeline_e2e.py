@@ -8,10 +8,14 @@ test skips when no td binary is on PATH.
 
 import os
 import shutil
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
+import ledger
 import pipeline as pipeline_mod
+import twt_receipts
 from backend.tests.agent_control_case import AgentControlTestCase
 
 try:
@@ -147,6 +151,71 @@ class TestPreviewUrlThreading(unittest.TestCase):
 
 
 class TestRouting(AgentControlTestCase):
+    def test_receipts_settle_before_publication_and_cleanup(self):
+        original = twt_receipts.ReceiptRun.reconcile
+        for mode in ("complete", "missing", "error"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root:
+                events = []
+                pipe = ScriptedPipeline([pipeline_mod.APPROVED], submit_pr=True)
+
+                def audit(_worktree):
+                    twt_receipts.current.get().request()
+                    return pipeline_mod.APPROVED, {}, "approved"
+
+                def fetch(_base, ids):
+                    events.append("receipts")
+                    if mode == "error":
+                        raise OSError("gateway unavailable")
+                    return (
+                        []
+                        if mode == "missing"
+                        else [
+                            {
+                                "trace_id": ids[0],
+                                "cost_complete": True,
+                                "cost_usd": 0.01,
+                            }
+                        ]
+                    )
+
+                def reconcile(scope):
+                    return original(scope, fetch, timeout=0)
+
+                def submit(*args):
+                    events.append("submit")
+                    return True, "https://example.invalid/pr/1"
+
+                def cleanup(*args):
+                    events.append("cleanup")
+                    return True, ""
+
+                with (
+                    mock.patch.object(
+                        ledger, "LEDGER", str(Path(root, "ledger.jsonl"))
+                    ),
+                    mock.patch.dict(os.environ, {"DEEP_AGENT_STATE_DIR": root}),
+                    mock.patch.object(twt_receipts.ReceiptRun, "reconcile", reconcile),
+                    mock.patch.object(pipe, "stage_audit", side_effect=audit),
+                    mock.patch.object(
+                        pipe, "stage_submit", side_effect=submit
+                    ) as publish,
+                    mock.patch.object(
+                        pipe, "stage_cleanup", side_effect=cleanup
+                    ) as remove,
+                ):
+                    result = pipe.run()
+                self.assertEqual(events[0], "receipts")
+                if mode == "complete":
+                    self.assertEqual(result["status"], pipeline_mod.APPROVED)
+                    self.assertEqual(events, ["receipts", "submit", "cleanup"])
+                else:
+                    self.assertEqual(result["status"], pipeline_mod.BLOCKED)
+                    publish.assert_not_called()
+                    remove.assert_not_called()
+                    self.assertFalse(result["cleaned"])
+                    self.assertEqual(result["submit_url"], "")
+                    self.assertEqual(result["worktree"], "/tmp/wt-1")
+
     def test_keep_worktree_skips_cleanup(self):
         pipe = ScriptedPipeline([pipeline_mod.APPROVED], keep_worktree=True)
         with mock.patch.object(pipe, "stage_cleanup") as cleanup:

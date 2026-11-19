@@ -179,6 +179,7 @@ class ReceiptRun:
         self.ids = set()
         self.lock = threading.Lock()
         self.stopped = False
+        self.settled = False
         self.error = None
         self.path = (
             Path(ledger.state_dir()) / "receipts" / (str(uuid.uuid4()) + ".jsonl")
@@ -213,9 +214,12 @@ class ReceiptRun:
         self, fetch_fn=fetch, *, timeout=200, clock=time.monotonic, sleep=time.sleep
     ):
         with self.lock:
+            if self.settled:
+                return
             self.stopped = True
             ids = sorted(self.ids)
         if not ids:
+            self.settled = True
             return
         deadline = clock() + timeout
         receipts = {}
@@ -247,6 +251,8 @@ class ReceiptRun:
         )
         if self.error:
             print(f"TwT receipt settlement incomplete: {self.error}", file=sys.stderr)
+        else:
+            self.settled = True
 
 
 @contextmanager

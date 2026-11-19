@@ -17,6 +17,8 @@ import os
 import subprocess
 import time
 
+import twt_receipts
+
 UNVERIFIED_CODER = "pipeline coder did not pass verification"
 MAX_AUDIT_CYCLES_DEFAULT = 2
 DRIVE_LIMIT_DEFAULT = 25
@@ -448,8 +450,6 @@ class Pipeline:
 
     def run(self):
         """Execute all stages; returns a result dict (never raises)."""
-        import twt_receipts
-
         with twt_receipts.run(self.thread_id) as receipts:
             result = self._run_guarded()
         if receipts.error:
@@ -518,6 +518,18 @@ class Pipeline:
             if audit_cycles > self.max_audit_cycles:
                 return self._result(
                     CHANGES_REQUESTED, worktree, detail, audit_cycles - 1, started
+                )
+
+        receipts = twt_receipts.current.get()
+        if receipts is not None:
+            receipts.reconcile()
+            if receipts.error:
+                return self._result(
+                    BLOCKED,
+                    worktree,
+                    f"TwT receipt reconciliation failed: {receipts.error}",
+                    audit_cycles,
+                    started,
                 )
 
         submit_url = ""
