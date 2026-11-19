@@ -98,3 +98,24 @@ class TestSpecResume(unittest.TestCase):
             self.assertEqual(state["brief"], "fix widget")
             self.assertEqual(state["answers"][question], "yes")
             self.assertIn("yes", text)
+
+
+class TestFailureDetail(unittest.TestCase):
+    def test_spec_failures_keep_their_reason_in_result(self):
+        for state, detail, expected in (
+            ({}, "spec drive exhausted", "spec drive exhausted"),
+            ({"errors": ["missing scope"]}, "invalid spec", "missing scope"),
+            ({"errors": []}, ["invalid spec"], "invalid spec"),
+            ({}, "", "spec failed"),
+        ):
+            with self.subTest(state=state, detail=detail):
+                pipe = pipeline.Pipeline("/tmp", "task")
+                with (
+                    mock.patch.object(pipe, "stage_init", return_value=(True, {})),
+                    mock.patch.object(
+                        pipe, "stage_spec", return_value=(False, state, detail)
+                    ),
+                ):
+                    result = pipe.run()
+                self.assertEqual(result["detail"], expected)
+                self.assertEqual(result["status"], pipeline.BLOCKED)

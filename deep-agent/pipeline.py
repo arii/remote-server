@@ -426,15 +426,14 @@ class Pipeline:
 
         ok, _spec_state, spec = self.stage_spec()
         if not ok:
-            reason = (
-                _spec_state
-                if isinstance(_spec_state, str)
-                else (
-                    "; ".join(_spec_state.get("errors", []))
-                    if isinstance(_spec_state, dict)
-                    else "spec failed"
-                )
+            errors = (
+                _spec_state.get("errors")
+                if isinstance(_spec_state, dict)
+                else _spec_state
             )
+            reason = errors or spec or "spec failed"
+            if isinstance(reason, (list, tuple)):
+                reason = "; ".join(str(error) for error in reason) or "spec failed"
             self.log("spec", f"BLOCKED: {reason}")
             return self._result(BLOCKED, "", reason, 0, started)
         self.log("spec", f"validated ({len(spec)} chars)")
