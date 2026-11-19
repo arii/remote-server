@@ -1,0 +1,16 @@
+[Unit]
+Description=Sequential audited TwT issue pipeline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/twt-queue/environment
+ExecStart=/usr/bin/python3 ${QUEUE_RUNNER} --config ${QUEUE_CONFIG}
+Restart=no
+UMask=0077
+KillMode=mixed
+TimeoutStopSec=420
+
+[Install]
+WantedBy=default.target

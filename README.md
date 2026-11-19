@@ -7,6 +7,19 @@ DDNS + certbot** for the terminal's TLS. Tailscale provides the VPN mesh for
 admin access. Pi + local Ollama are **active** (see `docs/pi-setup.md`); the
 rest of the agent harnesses stay on hold (see `docs/agent-harness.md`).
 
+## Durable issue queue
+
+The sequential, restart-safe TwT queue is kept in
+[`scripts/queue_runner.py`](scripts/queue_runner.py), with its
+[`systemd --user` unit](scripts/twt-queue.service),
+[triaged manifest](scripts/config/twt-queue-issues.json) and tests. Configure paths
+and runtimes through `--config` or `QUEUE_CONFIG`; nothing depends on a Devin
+session directory. It uses the canonical pipeline, separate per-issue state and
+ledgers, and a maximum $0.50 recorded-spend cap. Bounded reservations count toward
+that cap; unknown unbounded spend still halts. See the
+[queue runbook](docs/twt-queue.md) for configuration, ordering/holds, service setup
+and safe recovery. Nothing starts automatically when installing this repository.
+
 ## Architecture
 
 ```

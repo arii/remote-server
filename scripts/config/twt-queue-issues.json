@@ -1,0 +1,247 @@
+[
+  {
+    "repo": "arii/remote-server",
+    "number": 1356,
+    "title": "[dead-code] Remove unreferenced estimate_tokens and _split_diff",
+    "created_at": "2026-11-18T17:42:02Z",
+    "group": "code-reaper"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1357,
+    "title": "[dead-code] Use or remove unused ollama_tags_url",
+    "created_at": "2026-11-18T17:42:04Z",
+    "group": "code-reaper"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1358,
+    "title": "[dead-code] Remove td_run_async left after run-plan cutover",
+    "created_at": "2026-11-18T17:42:05Z",
+    "group": "code-reaper"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1359,
+    "title": "[dead-code] Remove plan_history_trim wrapper left after rebuild",
+    "created_at": "2026-11-18T17:42:06Z",
+    "group": "code-reaper",
+    "skip_reason": "Already merged via arii/remote-server#1381"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1360,
+    "title": "[dead-code] Remove test-only pipeline helpers from #982",
+    "created_at": "2026-11-18T17:42:07Z",
+    "group": "code-reaper"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1361,
+    "title": "[dead-code] Wire or remove require_mcp_healthy dispatch guard",
+    "created_at": "2026-11-18T17:42:08Z",
+    "group": "code-reaper",
+    "skip_reason": "Human/design choice: adopt or retire MCP guard"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1362,
+    "title": "[dead-code] Wire or remove unused verdicts.py schema",
+    "created_at": "2026-11-18T17:42:09Z",
+    "group": "code-reaper",
+    "skip_reason": "Human/design choice: wire verdict schema or remove planned public API"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1363,
+    "title": "[dead-code] Remove test-only validate_skill_file and handoff_pending",
+    "created_at": "2026-11-18T17:42:10Z",
+    "group": "code-reaper"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1364,
+    "title": "[dead-code] Confirm stack-probe.sh caller before removing",
+    "created_at": "2026-11-18T17:42:11Z",
+    "group": "code-reaper",
+    "skip_reason": "Operator check required: external S5 scheduler caller"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1292,
+    "title": "Remove orphaned orchestration and support helpers in cli/",
+    "created_at": "2026-11-18T17:43:37Z",
+    "group": "code-reaper"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1293,
+    "title": "Remove uncalled GitHubClient PR/issue/archive wrappers",
+    "created_at": "2026-11-18T17:43:39Z",
+    "group": "code-reaper"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1294,
+    "title": "Retire unused Python AI stubs and utils helpers",
+    "created_at": "2026-11-18T17:43:39Z",
+    "group": "code-reaper"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1295,
+    "title": "Drop unused duckduckgo-search dependency from cli/",
+    "created_at": "2026-11-18T17:43:40Z",
+    "group": "code-reaper"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1296,
+    "title": "Unexport locally-used MCP and review helpers",
+    "created_at": "2026-11-18T17:43:41Z",
+    "group": "code-reaper"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1299,
+    "title": "Preserve rejected upstream token usage in receipts",
+    "created_at": "2026-11-19T07:01:31Z",
+    "group": "filed-followups"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1366,
+    "title": "Fail proof preflight on stale gateway capabilities/provenance",
+    "created_at": "2026-11-19T07:01:32Z",
+    "group": "filed-followups"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1300,
+    "title": "Recognize qualified headings in raw scope specs",
+    "created_at": "2026-11-19T07:01:33Z",
+    "group": "filed-followups",
+    "skip_reason": "Already fixed in merged main: qualified raw scope headings"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1301,
+    "title": "Investigate NVIDIA GLM free-route inference timeouts",
+    "created_at": "2026-11-19T07:39:04Z",
+    "group": "filed-followups",
+    "skip_reason": "Operator/provider investigation and timeout-policy decision"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1367,
+    "title": "Keep provisioned dependency symlinks out of code-review diffs",
+    "created_at": "2026-11-19T07:53:15Z",
+    "group": "filed-followups",
+    "skip_reason": "Already fixed in merged main: dependency caches excluded from intent-to-add"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1368,
+    "title": "Preflight the coder verification Python runtime",
+    "created_at": "2026-11-19T07:53:15Z",
+    "group": "filed-followups"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1369,
+    "title": "Exclude non-billable audit summaries from receipt ownership collisions",
+    "created_at": "2026-11-19T07:53:15Z",
+    "group": "filed-followups",
+    "skip_reason": "Already fixed in merged main: billable-only receipt ownership"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1302,
+    "title": "Fix td test cli working-directory resolution",
+    "created_at": "2026-11-19T08:08:29Z",
+    "group": "filed-followups"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1303,
+    "title": "Clear baseline strict Ruff violations in Tokens with Taste",
+    "created_at": "2026-11-19T08:08:29Z",
+    "group": "filed-followups"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1370,
+    "title": "Restore full-suite validation for the TwT agent branch",
+    "created_at": "2026-11-19T08:08:29Z",
+    "group": "filed-followups",
+    "skip_reason": "Branch validation restored; merged CI green"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1304,
+    "title": "Provide a configured runner for root Vitest unit tests",
+    "created_at": "2026-11-19T08:08:30Z",
+    "group": "filed-followups"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1371,
+    "title": "Restore a green root-test baseline on origin/main",
+    "created_at": "2026-11-19T08:08:30Z",
+    "group": "filed-followups"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1305,
+    "title": "Establish billing completeness for Nebius HTTP 529 overload receipts",
+    "created_at": "2026-11-19T08:10:21Z",
+    "group": "filed-followups",
+    "skip_reason": "Needs authoritative provider billing confirmation"
+  },
+  {
+    "repo": "arii/boomtick",
+    "number": 1306,
+    "title": "Explicit allowed paths lose to forbidden basenames extracted from exception prose",
+    "created_at": "2026-11-19T08:36:57Z",
+    "group": "filed-followups",
+    "skip_reason": "Already fixed in merged main: exact allowed path precedence"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1372,
+    "title": "Preserve existing edits during read-only coder repair turns",
+    "created_at": "2026-11-19T08:36:57Z",
+    "group": "filed-followups",
+    "skip_reason": "Already fixed in merged main: existing repair diffs retained"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1374,
+    "title": "Unchanged successful inspection calls evade coder dither detection",
+    "created_at": "2026-11-19T09:32:56Z",
+    "group": "filed-followups"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1375,
+    "title": "Generated spec can contradict its literal acceptance checks and semantic audit approves an exception",
+    "created_at": "2026-11-19T09:46:16Z",
+    "group": "filed-followups",
+    "skip_reason": "Human policy choice: literal criteria versus semantic exceptions"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1376,
+    "title": "Root unittest suite can abort during shutdown with daemon HTTP fixture threads",
+    "created_at": "2026-11-19T10:18:12Z",
+    "group": "filed-followups"
+  },
+  {
+    "repo": "arii/remote-server",
+    "number": 1377,
+    "title": "Generalize the issue pipeline to non-remote-server repos (first target: arii/portfolio #424)",
+    "created_at": "2026-11-19T10:21:07Z",
+    "group": "filed-followups",
+    "skip_reason": "Explicit hold: non-remote-server pipeline generalization/design"
+  }
+]
