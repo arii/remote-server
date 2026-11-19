@@ -126,12 +126,13 @@ class TestFailedCoderUsage(unittest.TestCase):
                 self.assertEqual(rows[0]["cost_usd"], 0.0123)
                 self.assertIn(type(error).__name__, rows[0]["extra"]["error"])
 
-    def test_empty_setup_failure_is_unknown_not_free(self):
+    def test_empty_setup_failure_is_not_dispatched_and_free(self):
         result, rows = self.scenario(setup_error=True)
         self.assertIsInstance(result, ValueError)
         self.assertEqual(len(rows), 1)
-        self.assertIsNone(rows[0]["cost_usd"])
-        self.assertTrue(rows[0]["metered"])
+        self.assertEqual(rows[0]["cost_usd"], 0)
+        self.assertFalse(rows[0]["metered"])
+        self.assertFalse(rows[0]["extra"]["llm_call"])
 
     def test_missing_reported_cost_stays_unknown_on_failure(self):
         _, rows = self.scenario(cost=None)

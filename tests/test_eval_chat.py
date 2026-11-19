@@ -697,7 +697,7 @@ class TestDeepChatContract(unittest.TestCase):
 
     def test_ledger_records_usage(self):
         self.assertIn("usage=", self.load())
-        self.assertIn('"total_tokens"', self.load())
+        self.assertIn("ledger._usage_total([answer])", self.load())
 
     def test_budget_constant_positive(self):
         self.assertGreater(deep_chat.CHAT_TOOL_BUDGET, 0)
