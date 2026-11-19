@@ -16,6 +16,29 @@ except ImportError:
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderBackend(unittest.TestCase):
+    def test_host_absolute_paths_inside_worktree_are_normalized(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, "new.py")
+            written = set()
+            write = self.tool_call(
+                root,
+                "write_file",
+                {"file_path": str(target), "content": "inside"},
+                written,
+            )
+            self.assertEqual(write.status, "success", write.content)
+            self.assertEqual(target.read_text(), "inside")
+            self.assertEqual(written, {"new.py"})
+            read = self.tool_call(root, "read_file", {"file_path": str(target)})
+            self.assertEqual(read.status, "success", read.content)
+            self.assertIn("inside", read.content)
+            self.assertEqual(
+                self.tool_call(root, "ls", {"path": root}).status, "success"
+            )
+            backend = coder.build_filesystem_backend(root)
+            self.assertIsNone(backend.read(str(target)).error)
+            self.assertIsNone(asyncio.run(backend.aread(str(target))).error)
+
     def test_verification_tool_executes_in_worktree_without_dead_execute(self):
         from langchain_core.messages import AIMessage, HumanMessage
         from tests.test_coder_outcome import LocalModel
@@ -103,6 +126,8 @@ class TestCoderBackend(unittest.TestCase):
                 "/link/secret",
                 "link/secret",
                 "/etc/passwd",
+                str(Path(root, "link/secret")),
+                str(Path(root, "../outside")),
             ):
                 with self.subTest(path=path):
                     result = self.tool_call(root, "read_file", {"file_path": path})
@@ -110,7 +135,7 @@ class TestCoderBackend(unittest.TestCase):
                     self.assertIn("outside_worktree_root", result.content)
                     self.assertNotIn("private", result.content)
 
-    def tool_call(self, root, name, args):
+    def tool_call(self, root, name, args, written_files=None):
         from langchain_core.messages import AIMessage, HumanMessage
         from tests.test_coder_outcome import LocalModel
 
@@ -130,7 +155,9 @@ class TestCoderBackend(unittest.TestCase):
                 AIMessage(content="finished"),
             ]
         )
-        agent = coder.build_agent(root, "test", model=model)
+        agent = coder.build_agent(
+            root, "test", model=model, written_files=written_files
+        )
         result = agent.invoke({"messages": [HumanMessage(content="probe")]})
         return next(message for message in result["messages"] if message.type == "tool")
 
@@ -150,7 +177,7 @@ class TestCoderBackend(unittest.TestCase):
                 ),
                 ("glob", {"pattern": "*", "path": "/etc"}),
                 ("grep", {"pattern": "x", "path": "/etc"}),
-                ("ls", {"path": root}),
+                ("ls", {"path": root + "-outside"}),
             ):
                 with self.subTest(name=name):
                     result = self.tool_call(root, name, args)

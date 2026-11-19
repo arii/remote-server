@@ -416,13 +416,24 @@ def build_check_tool(worktree):
     return run_check
 
 
+def worktree_file_key(worktree, path):
+    root = os.path.abspath(worktree)
+    if (
+        os.path.isabs(path)
+        and os.path.commonpath((root, os.path.abspath(path))) == root
+    ):
+        return os.path.relpath(path, root)
+    return path.lstrip("/")
+
+
 def build_filesystem_backend(worktree):
     from deepagents.backends import FilesystemBackend
 
     class CoderFilesystemBackend(FilesystemBackend):
         def _resolve_path(self, key):
             try:
-                assert_inside(worktree, key.lstrip("/"))
+                key = worktree_file_key(worktree, key)
+                assert_inside(worktree, key)
             except ValueError as exc:
                 raise PermissionError(
                     "outside_worktree_root: use worktree-relative paths "
@@ -449,15 +460,18 @@ def worktree_file_middleware(worktree, written_files):
             "glob",
             "grep",
         }:
+            args = dict(call["args"])
             for key in ("path", "file_path"):
                 path = call["args"].get(key)
                 if path is None:
                     continue
                 try:
-                    target = assert_inside(worktree, path.lstrip("/"))
+                    relative = worktree_file_key(worktree, path)
+                    target = assert_inside(worktree, relative)
                     if (
                         os.path.isabs(path)
                         and path != "/"
+                        and relative == path.lstrip("/")
                         and not os.path.exists(target)
                     ):
                         raise ValueError("absolute host path")
@@ -469,6 +483,9 @@ def worktree_file_middleware(worktree, written_files):
                         name=call["name"],
                         status="error",
                     )
+                args[key] = relative
+            call = {**call, "args": args}
+            request = request.override(tool_call=call)
         result = handler(request)
         if (
             call["name"] in {"write_file", "edit_file", "delete"}
