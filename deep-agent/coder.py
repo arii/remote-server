@@ -700,6 +700,41 @@ def trace_has_passing_check(trace_path):
     return False
 
 
+def trace_verification_evidence(trace_path):
+    evidence = []
+    try:
+        with open(trace_path, encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    event = json.loads(line)
+                    if (
+                        not isinstance(event, dict)
+                        or event.get("type") != "tool_call"
+                        or event.get("name") != "run_check"
+                    ):
+                        continue
+                    command = json.loads(event.get("args_preview", "{}"))["command"]
+                    if not isinstance(command, str):
+                        continue
+                    parse_check_command(command)
+                except (ValueError, TypeError, KeyError):
+                    continue
+                output = event.get("result_preview", "")
+                if not isinstance(output, str):
+                    continue
+                evidence.append(
+                    {
+                        "command": command,
+                        "passed": event.get("ok") is True
+                        and (output == "exit=0" or output.startswith("exit=0\n")),
+                        "output": output[:CHECK_OUTPUT_LIMIT],
+                    }
+                )
+    except (OSError, TypeError):
+        return []
+    return evidence
+
+
 def trace_check_history(trace_path):
     """[(command, exit_code, output_empty)] for run_check calls, in order.
 

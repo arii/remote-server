@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import auditor
+import coder
 import issue_generator
 import ledger
 import model_router
@@ -15,6 +16,154 @@ import pipeline
 
 
 class TestVerificationContract(unittest.TestCase):
+    def test_configured_checks_include_observed_outputs_and_fail_closed(self):
+        for code in (0, 1):
+            with self.subTest(code=code):
+                graph = auditor.AuditorGraph(
+                    "/tmp",
+                    td_runner=lambda args: (0, '{"status":"success","passed":true}'),
+                    verification_commands=[["python3", "-m", "pytest"]],
+                )
+                with mock.patch.object(
+                    auditor.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        [], code, stdout="observed stdout", stderr="observed stderr"
+                    ),
+                ):
+                    valid, gates, errors = graph.hard_gate()
+                self.assertEqual(valid, code == 0)
+                self.assertEqual(gates["verification"]["passed"], code == 0)
+                self.assertEqual(
+                    gates["verification"]["commands"][0],
+                    {
+                        "command": ["python3", "-m", "pytest"],
+                        "exit": code,
+                        "output": "observed stdoutobserved stderr",
+                    },
+                )
+                self.assertEqual(bool(errors), code != 0)
+
+    def test_untracked_dependencies_omitted_but_tracked_changes_still_reviewed(self):
+        with tempfile.TemporaryDirectory() as root:
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", *args], cwd=root, capture_output=True, text=True, check=True
+                ).stdout
+
+            git("init", "-q")
+            Path(root, "spec.md").write_text("## Goal\nFix helper")
+            Path(root, ".gitignore").write_text("node_modules/\n")
+            for directory in ("cache-a", "cache-b", "frontend", "vendor"):
+                Path(root, directory).mkdir()
+            tracked = Path(root, "vendor/node_modules")
+            tracked.symlink_to(Path(root, "cache-a"), target_is_directory=True)
+            git("add", "-f", "spec.md", ".gitignore", "vendor/node_modules")
+            git(
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "baseline",
+            )
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            for name in ("node_modules", "frontend/node_modules"):
+                Path(root, name).symlink_to(
+                    Path(root, "cache-a"), target_is_directory=True
+                )
+            graph = auditor.AuditorGraph(root, spec_file="spec.md")
+            with self.assertRaisesRegex(ValueError, "no diff"):
+                graph.semantic_payload({})
+            tracked.unlink()
+            tracked.symlink_to(Path(root, "cache-b"), target_is_directory=True)
+            Path(root, "helper.py").write_text("def helper():\n    return 1\n")
+            Path(root, "link.py").symlink_to("helper.py")
+            diff = graph.semantic_payload({})["diff"]
+            self.assertNotIn("diff --git a/node_modules ", diff)
+            self.assertNotIn("diff --git a/frontend/node_modules ", diff)
+            for name in ("helper.py", "link.py", "vendor/node_modules"):
+                self.assertIn(f"diff --git a/{name} ", diff)
+
+    def test_actual_check_evidence_reaches_semantic_review(self):
+        with tempfile.TemporaryDirectory() as root:
+            trace = Path(root, "trace.jsonl")
+            events = [
+                {
+                    "type": "tool_call",
+                    "name": "run_check",
+                    "ok": True,
+                    "args_preview": json.dumps(
+                        {"command": "python3 -m pytest tests/test_helper.py -q"}
+                    ),
+                    "result_preview": output,
+                }
+                for output in ("exit=1\n1 failed", "exit=0\n1 passed")
+            ]
+            trace.write_text(
+                "bad json\n"
+                + "\n".join(json.dumps(e) for e in events)
+                + '\n{"type":"tool_call","name":"run_check","args_preview":"broken"}\n'
+            )
+            evidence = coder.trace_verification_evidence(trace)
+            self.assertEqual([e["passed"] for e in evidence], [False, True])
+            self.assertIn("1 passed", evidence[-1]["output"])
+            self.assertEqual(coder.trace_verification_evidence(None), [])
+            self.assertEqual(
+                coder.trace_verification_evidence(Path(root, "missing")), []
+            )
+            agent = pipeline.Pipeline(
+                root,
+                "fix",
+                issue_id=1359,
+                verification_commands=[["python3", "-m", "pytest"]],
+            )
+            with (
+                mock.patch.object(
+                    coder,
+                    "run_coder",
+                    return_value=(
+                        "DONE #1359",
+                        {},
+                        [],
+                        0,
+                        "ollama:test",
+                        str(trace),
+                        True,
+                        0,
+                    ),
+                ),
+                mock.patch.object(ledger, "record"),
+            ):
+                agent.make_coder("fix").implement_fn("task", "plan", root, [])
+            self.assertEqual(agent.verification_evidence, evidence)
+            with (
+                mock.patch.object(auditor, "AuditorGraph") as graph,
+                mock.patch.object(
+                    pipeline,
+                    "drive_to_settled",
+                    return_value={"valid": True, "verdict": {"status": "APPROVED"}},
+                ),
+            ):
+                agent.stage_audit(root)
+            self.assertEqual(graph.call_args.kwargs["verification_evidence"], evidence)
+            self.assertEqual(
+                graph.call_args.kwargs["verification_commands"],
+                agent.verification_commands,
+            )
+            Path(root, "spec.md").write_text("## Goal\nFix")
+            review = auditor.AuditorGraph(
+                root, spec_file="spec.md", verification_evidence=evidence
+            )
+            with mock.patch.object(
+                auditor.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout="+helper()"),
+            ):
+                self.assertEqual(review.semantic_payload({})["verification"], evidence)
+
     def test_new_file_is_in_diff_and_empty_diff_rejects(self):
         with tempfile.TemporaryDirectory() as root:
 
@@ -307,7 +456,14 @@ class TestSemanticLimits(unittest.TestCase):
                 graph.audit_once({"passed": True})
             prompt = agent.invoke.call_args.args[0]["messages"][0]["content"]
             self.assertIn(
-                json.dumps({"diff": diff, "spec": spec, "gate": {"passed": True}}),
+                json.dumps(
+                    {
+                        "diff": diff,
+                        "spec": spec,
+                        "gate": {"passed": True},
+                        "verification": [],
+                    }
+                ),
                 prompt,
             )
 

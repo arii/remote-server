@@ -246,6 +246,7 @@ class AuditorGraph:
         spec_file=None,
         verification_commands=None,
         preview_url=None,
+        verification_evidence=None,
     ):
         self.worktree_root = os.path.abspath(worktree_root)
         self.audit_fn = audit_fn
@@ -254,6 +255,7 @@ class AuditorGraph:
         self.thread_id = thread_id or f"audit-{int(time.time())}"
         self.spec_file = spec_file
         self.verification_commands = list(verification_commands or [])
+        self.verification_evidence = list(verification_evidence or [])
         self.preview_url = preview_url
         self.last_model_spec = None
         self.last_review_usage = None
@@ -309,7 +311,18 @@ class AuditorGraph:
                     )
             except Exception as exc:
                 return False, payloads, [f"verify {' '.join(argv)}: {exc}"]
+            verification = payloads.setdefault(
+                "verification", {"passed": True, "commands": []}
+            )
+            verification["commands"].append(
+                {
+                    "command": list(argv),
+                    "exit": proc.returncode,
+                    "output": ((proc.stdout or "") + (proc.stderr or ""))[-4000:],
+                }
+            )
             if proc.returncode != 0:
+                verification["passed"] = False
                 tail = (proc.stderr or proc.stdout or "")[-500:]
                 return (
                     False,
@@ -355,7 +368,15 @@ class AuditorGraph:
         with open(spec_path, encoding="utf-8") as handle:
             spec = handle.read()
         subprocess.run(
-            ["git", "add", "--intent-to-add", "--all", "--", "."],
+            [
+                "git",
+                "add",
+                "--intent-to-add",
+                "--all",
+                "--",
+                ".",
+                ":(exclude,glob)**/node_modules",
+            ],
             cwd=self.worktree_root,
             capture_output=True,
             text=True,
@@ -378,7 +399,12 @@ class AuditorGraph:
         ).stdout
         if not diff.strip():
             raise ValueError("Semantic audit has no diff to verify")
-        return {"diff": diff, "spec": spec, "gate": gate_payload}
+        return {
+            "diff": diff,
+            "spec": spec,
+            "gate": gate_payload,
+            "verification": self.verification_evidence,
+        }
 
     def audit_once(self, gate_payload):
         """LLM audit pass (injected in tests)."""

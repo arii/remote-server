@@ -162,6 +162,7 @@ class Pipeline:
         self.max_audit_cycles = max_audit_cycles
         self.thread_id = thread_id or f"pipeline-{int(time.time())}"
         self.verification_commands = list(verification_commands or [])
+        self.verification_evidence = []
         self.drive_limit = drive_limit
         self.preview_url = preview_url
         self.events = []
@@ -261,6 +262,7 @@ class Pipeline:
                 **kwargs,
             )
             summary, usage, calls, started, label, trace, verified, _ = result
+            self.verification_evidence = coder.trace_verification_evidence(trace)
             provider, _, model = label.partition(":")
             graph.last_model_spec = {"provider": provider, "model": model}
             import ledger
@@ -372,6 +374,8 @@ class Pipeline:
             max_loops=1,
             preview_url=self.preview_url,
             spec_file=self.spec_path,
+            verification_commands=self.verification_commands,
+            verification_evidence=self.verification_evidence,
             thread_id=f"{self.thread_id}-audit-{int(time.time())}",
         )
         state = drive_to_settled(
