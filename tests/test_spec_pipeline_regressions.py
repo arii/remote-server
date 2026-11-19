@@ -1,8 +1,8 @@
-import json
 import importlib.util
+import json
+import os
 import shutil
 import tempfile
-import os
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -127,12 +127,12 @@ class TestFailureDetail(unittest.TestCase):
 )
 class TestSpecUsage(unittest.TestCase):
     def test_investigation_calls_survive_recursion_truncation(self):
+        import ledger
         from langchain_core.language_models.fake_chat_models import (
             FakeMessagesListChatModel,
         )
         from langchain_core.messages import AIMessage
         from langchain_core.tools import tool
-        import ledger
 
         class Model(FakeMessagesListChatModel):
             def bind_tools(self, tools, **kwargs):
@@ -156,7 +156,9 @@ class TestSpecUsage(unittest.TestCase):
                     ]
                 )
                 graph = issue_generator.IssueGeneratorGraph(
-                    root, model_fn=lambda: model, thread_id="proof-investigation"
+                    root,
+                    model_fn=lambda model=model: model,
+                    thread_id="proof-investigation",
                 )
                 graph.last_spec = {
                     "provider": "nebius",
@@ -186,9 +188,9 @@ class TestSpecUsage(unittest.TestCase):
                 )
 
     def test_validation_failure_keeps_completed_draft_usage(self):
+        import ledger
         from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
         from langchain_core.messages import AIMessage
-        import ledger
 
         message = AIMessage(
             content="draft",
@@ -230,9 +232,9 @@ class TestSpecUsage(unittest.TestCase):
             self.assertIn('"input_tokens": 1000', trace)
 
     def test_missing_usage_and_model_errors_are_unknown_not_free(self):
+        import ledger
         from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
         from langchain_core.messages import AIMessage
-        import ledger
 
         for failure in (False, True):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as root:
@@ -274,9 +276,9 @@ class TestSpecUsage(unittest.TestCase):
 class TestUnknownSpend(unittest.TestCase):
     def test_unrated_usage_is_repriced_when_rates_become_available(self):
         import ledger
-        import runs
-        import pricing
         import model_router
+        import pricing
+        import runs
 
         with tempfile.TemporaryDirectory() as root:
             path = str(Path(root, "ledger.jsonl"))
@@ -318,8 +320,8 @@ class TestUnknownSpend(unittest.TestCase):
 
     def test_recorded_unknown_remote_cost_blocks_router(self):
         import ledger
-        import runs
         import model_router
+        import runs
 
         with tempfile.TemporaryDirectory() as root:
             path = str(Path(root, "ledger.jsonl"))
