@@ -7,6 +7,7 @@ Reader: python ledger.py [n]  (prints last n entries, compact)
 
 import fcntl
 import json
+import math
 import os
 import sys
 import time
@@ -63,6 +64,9 @@ def _usage_total(messages):
             total["input_tokens"] += prompt_n
             total["output_tokens"] += eval_n
             total["total_tokens"] += prompt_n + eval_n
+    cost = _reported_cost(messages)
+    if cost is not None:
+        total["reported_cost_usd"] = cost
     return total
 
 
@@ -79,6 +83,53 @@ def _model_provider(model):
             if model.startswith(prefix):
                 return prefix[:-1]
     return None
+
+
+def _reported_cost(messages):
+    total = 0.0
+    count = 0
+    for message in messages or []:
+        data = _as_dict(message)
+        metadata = (
+            data.get("response_metadata", {})
+            if data is not None
+            else getattr(message, "response_metadata", {})
+        ) or {}
+        if not isinstance(metadata, dict):
+            return None
+        kind = data.get("type") if data is not None else getattr(message, "type", None)
+        if kind in ("human", "system", "tool"):
+            continue
+        count += 1
+        headers = metadata.get("headers") or {}
+        if not isinstance(headers, dict):
+            headers = {}
+        header = next(
+            (
+                value
+                for key, value in headers.items()
+                if isinstance(key, str) and key.lower() == "x-cost-usd"
+            ),
+            None,
+        )
+        usage = metadata.get("token_usage") or metadata.get("usage") or {}
+        if not isinstance(usage, dict):
+            usage = {}
+        cost = None
+        for value in (header, usage.get("cost")):
+            if isinstance(value, bool):
+                continue
+            try:
+                candidate = float(value)
+            except (ValueError, TypeError, OverflowError):
+                continue
+            if math.isfinite(candidate) and candidate >= 0:
+                cost = candidate
+                break
+        if cost is None:
+            return None
+        total += cost
+    return total if count and math.isfinite(total) else None
 
 
 def _is_test_thread(thread_id):
@@ -189,6 +240,18 @@ def record(
             and pricing.rate_for(label) != (0.0, 0.0)
         ):
             cost_usd, metered = None, True
+        if provider == "twt":
+            cost_usd, metered = _reported_cost(messages), True
+            if "reported_cost_usd" in usage:
+                value = usage["reported_cost_usd"]
+                cost_usd = (
+                    float(value)
+                    if isinstance(value, (float, int))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                    and value >= 0
+                    else None
+                )
         if provider == "ollama":
             # The resolved backend is truth: a locally-run turn is
             # free even when the model string carries no prefix.

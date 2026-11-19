@@ -1,0 +1,65 @@
+# Audited local and hosted agents on S5
+
+TwT is installed in `/home/ari/twt/venv` from BoomTick commit
+`6e448723675f8bd5e3043dc717024ec8387ee634`, with its source checkout at
+`/home/ari/twt/src`. The existing `/home/ari/repos/boomtick` is not used.
+
+The `twt.service` user unit runs a deployed copy of
+`deep-agent/twt_service.py`, listening only on `127.0.0.1:8000`.
+It is enabled under `default.target`; user lingering keeps it running
+without a login and across reboots. The unit uses `UMask=0077` and
+`NoNewPrivileges=yes`.
+
+`/home/ari/twt/environment` is mode 0600, inside a mode-0700 directory.
+It sets `TWT_DAILY_BUDGET_USD=5` and
+`TWT_DB=/home/ari/twt/catalog.sqlite3`. Provider keys are environment-file
+entries; map `GEMINI_API_KEY` from the approved source to `GOOGLE_API_KEY`.
+Only available credentials are copied. Missing providers remain disabled.
+Additional entries such as `NVIDIA_API_KEY`, `GROQ_API_KEY`,
+`CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_ACCOUNT_ID` are read on restart:
+
+```sh
+systemctl --user restart twt.service
+systemd-run --user --wait --pipe \
+  --property=EnvironmentFile=/home/ari/twt/environment \
+  /home/ari/twt/venv/bin/twt sync
+/home/ari/twt/venv/bin/twt --db /home/ari/twt/catalog.sqlite3 models
+/home/ari/twt/venv/bin/twt --db /home/ari/twt/catalog.sqlite3 report
+```
+
+## Routing
+
+`TWT_BASE_URL` defaults to `http://127.0.0.1:8000/v1`. Preferred/reachable
+Ollama requests use its sibling `/local/api/chat` endpoint; hosted
+requests use TwT's OpenAI-compatible `/v1/chat/completions` default route.
+Automatic hosted selection never connects directly to OpenRouter/Nebius.
+Explicit diagnostic provider preferences remain available.
+
+The local adapter uses **the pinned TwT Gateway and trace store**, not a
+separate audit format. Its provider is named `ollama-local`. Native
+Ollama options, JSON format, thinking, images, and tool calls are retained.
+`S5_LOCAL_ONLY=1` forces this local-only endpoint, which has no hosted
+provider in its configuration. `NEBIUS_ONLY=1` is a legacy force-remote
+flag and now selects TwT, not direct Nebius.
+
+The adapter defaults to `S5_TWT_OLLAMA_MODEL=qwen3:8b` and
+`S5_TWT_OLLAMA_URL=http://127.0.0.1:11434`. It permits only a loopback
+upstream and that exact model; `cloud` names are rejected. Immediately
+before each inference, `/api/show` must identify a completion-capable
+model with neither `remote_model` nor `remote_host`. This restricts the
+route to installed local models without disabling cloud globally or
+restarting the shared Ollama daemon. Keep agent `ASK_MODEL` aligned with
+the service's configured model.
+
+Hosted provider order is Google, Groq, NVIDIA, Mistral, OpenRouter,
+SambaNova, Cloudflare, Nebius. All preceding providers are free-only;
+Nebius is last. Local and hosted traces share the same private database
+and appear together in `twt inspect` and `twt report`.
+
+Hosted ledger costs use TwT's `x-cost-usd` header or `usage.cost`.
+Coder trace aggregation preserves the reported cost. Missing, partial,
+negative, or non-finite costs remain unknown and fail the spend gate
+closed rather than being repriced from the gateway's dynamic model name.
+
+The service adapter tests require installing the pinned TwT package in
+the test environment in addition to the deep-agent dependencies.

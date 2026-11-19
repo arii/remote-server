@@ -33,7 +33,7 @@ RATE_CARD = {
 }
 
 FREE_PREFIX = "ollama:"
-PROVIDERS = ("ollama", "openrouter", "nebius")
+PROVIDERS = ("ollama", "openrouter", "nebius", "twt")
 
 
 def is_free_openrouter(model):
@@ -133,6 +133,8 @@ def rate_for(model):
 
 
 def _model_rate(model):
+    if model.startswith("twt:"):
+        return None
     if is_free_openrouter(model):
         return (0.0, 0.0)
     if model.startswith("openrouter:"):

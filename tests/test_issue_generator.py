@@ -4,6 +4,7 @@ Graph integration cases need langgraph (deep-agent venv) and skip
 otherwise. Run agent cases with: deep-agent/.venv/bin/python
 tests/test_issue_generator.py
 """
+
 import json
 import os
 import tempfile
@@ -20,10 +21,17 @@ except ImportError:
 
 
 def _valid_td(args):
-    return 0, json.dumps({"status": "success", "valid": True,
-                          "allowed_files": [], "forbidden_files": [],
-                          "verification_commands": ["make check"],
-                          "acceptance_criteria": ["done"], "errors": []})
+    return 0, json.dumps(
+        {
+            "status": "success",
+            "valid": True,
+            "allowed_files": [],
+            "forbidden_files": [],
+            "verification_commands": ["make check"],
+            "acceptance_criteria": ["done"],
+            "errors": [],
+        }
+    )
 
 
 class TestEvidenceCitesRepoFile(unittest.TestCase):
@@ -34,55 +42,55 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
                 handle.write("x = 1\n")
             self.assertEqual(
                 issue_generator.evidence_cites_repo_file(
-                    "see widget.py:3 for the bug", tmp),
-                ["widget.py"])
+                    "see widget.py:3 for the bug", tmp
+                ),
+                ["widget.py"],
+            )
 
     def test_misses_have_no_hits(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
                 issue_generator.evidence_cites_repo_file(
-                    "researched the Kubernetes Python client at length",
-                    tmp),
-                [])
+                    "researched the Kubernetes Python client at length", tmp
+                ),
+                [],
+            )
 
     def test_nonexistent_and_absolute_paths_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
                 issue_generator.evidence_cites_repo_file(
-                    "see missing.py:1 and /etc/hosts and ../up.py", tmp),
-                [])
+                    "see missing.py:1 and /etc/hosts and ../up.py", tmp
+                ),
+                [],
+            )
 
     def test_ollama_url_default_is_compose_host(self):
         old = os.environ.get("OLLAMA_URL")
         os.environ.pop("OLLAMA_URL", None)
         try:
-            self.assertEqual(issue_generator._ollama_base_url(),
-                             "http://ollama:11434")
+            self.assertEqual(issue_generator._ollama_base_url(), "http://ollama:11434")
         finally:
             if old is not None:
                 os.environ["OLLAMA_URL"] = old
 
     def test_backend_probe_skipped_for_injected_model(self):
         gen = issue_generator.IssueGeneratorGraph(
-            repo_root=tempfile.gettempdir(),
-            model_fn=lambda: None)
+            repo_root=tempfile.gettempdir(), model_fn=lambda: None
+        )
         ok, _ = gen.check_backend()
         self.assertTrue(ok)
 
     def test_backend_probe_fails_closed_on_dead_port(self):
-        # Fails closed only when NO backend is viable: dead Ollama URL
-        # and no Nebius key. (With NEBIUS_API_KEY set the default path
-        # legitimately resolves the metered fallback — that is the
-        # backend-switch contract, not a probe failure.)
+        # An explicit local preference must never fall back to TwT hosted.
         old_url = os.environ.get("OLLAMA_URL")
         old_provider = os.environ.get("S5_ISSUE_PROVIDER")
         old_key = os.environ.get("NEBIUS_API_KEY")
         os.environ["OLLAMA_URL"] = "http://127.0.0.1:1"
-        os.environ.pop("S5_ISSUE_PROVIDER", None)
+        os.environ["S5_ISSUE_PROVIDER"] = "ollama"
         os.environ.pop("NEBIUS_API_KEY", None)
         try:
-            gen = issue_generator.IssueGeneratorGraph(
-                repo_root=tempfile.gettempdir())
+            gen = issue_generator.IssueGeneratorGraph(repo_root=tempfile.gettempdir())
             ok, message = gen.check_backend(timeout=2)
             self.assertFalse(ok)
             self.assertIn("OLLAMA_URL", message)
@@ -93,6 +101,8 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
                 os.environ["OLLAMA_URL"] = old_url
             if old_provider is not None:
                 os.environ["S5_ISSUE_PROVIDER"] = old_provider
+            else:
+                os.environ.pop("S5_ISSUE_PROVIDER", None)
             if old_key is not None:
                 os.environ["NEBIUS_API_KEY"] = old_key
 
@@ -126,8 +136,7 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
         old = os.environ.get("OLLAMA_URL")
         os.environ["OLLAMA_URL"] = f"http://127.0.0.1:{port}"
         try:
-            gen = issue_generator.IssueGeneratorGraph(
-                repo_root=tempfile.gettempdir())
+            gen = issue_generator.IssueGeneratorGraph(repo_root=tempfile.gettempdir())
             ok, _ = gen.check_backend(timeout=2)
             self.assertTrue(ok)
         finally:
@@ -139,15 +148,14 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
             else:
                 os.environ["OLLAMA_URL"] = old
 
-
     def test_issue_provider_nebius_skips_socket_probe(self):
         import unittest.mock as mock
+
         seen = {}
 
         def fake_resolve(prefer=None):
             seen["prefer"] = prefer
-            return {"provider": "nebius", "model": "m",
-                    "base_url": "https://b"}
+            return {"provider": "nebius", "model": "m", "base_url": "https://b"}
 
         old_provider = os.environ.get("S5_ISSUE_PROVIDER")
         old_key = os.environ.get("NEBIUS_API_KEY")
@@ -156,18 +164,20 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
         os.environ["NEBIUS_API_KEY"] = "test-key"
         os.environ["OLLAMA_URL"] = "http://127.0.0.1:1"
         try:
-            with mock.patch("model_router.resolve_llm",
-                            side_effect=fake_resolve):
+            with mock.patch("model_router.resolve_llm", side_effect=fake_resolve):
                 gen = issue_generator.IssueGeneratorGraph(
-                    repo_root=tempfile.gettempdir())
+                    repo_root=tempfile.gettempdir()
+                )
                 ok, message = gen.check_backend(timeout=2)
             self.assertTrue(ok)
             self.assertIn("Nebius", message)
             self.assertEqual(seen["prefer"], "nebius")
         finally:
-            for key, val in (("S5_ISSUE_PROVIDER", old_provider),
-                             ("NEBIUS_API_KEY", old_key),
-                             ("OLLAMA_URL", old_url)):
+            for key, val in (
+                ("S5_ISSUE_PROVIDER", old_provider),
+                ("NEBIUS_API_KEY", old_key),
+                ("OLLAMA_URL", old_url),
+            ):
                 if val is None:
                     os.environ.pop(key, None)
                 else:
@@ -177,18 +187,17 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
         import unittest.mock as mock
 
         def fake_resolve(prefer=None):
-            return {"provider": "nebius", "model": "m",
-                    "base_url": "https://b"}
+            return {"provider": "nebius", "model": "m", "base_url": "https://b"}
 
         old_provider = os.environ.get("S5_ISSUE_PROVIDER")
         old_key = os.environ.get("NEBIUS_API_KEY")
         os.environ["S5_ISSUE_PROVIDER"] = "nebius"
         os.environ.pop("NEBIUS_API_KEY", None)
         try:
-            with mock.patch("model_router.resolve_llm",
-                            side_effect=fake_resolve):
+            with mock.patch("model_router.resolve_llm", side_effect=fake_resolve):
                 gen = issue_generator.IssueGeneratorGraph(
-                    repo_root=tempfile.gettempdir())
+                    repo_root=tempfile.gettempdir()
+                )
                 ok, message = gen.check_backend(timeout=2)
             self.assertFalse(ok)
             self.assertIn("NEBIUS_API_KEY", message)
@@ -202,12 +211,16 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
 
     def test_model_delegates_to_router_without_think(self):
         import unittest.mock as mock
+
         seen = {}
 
         def fake_resolve(prefer=None):
             seen["prefer"] = prefer
-            return {"provider": "ollama", "model": "m",
-                    "base_url": "http://ollama:11434"}
+            return {
+                "provider": "ollama",
+                "model": "m",
+                "base_url": "http://ollama:11434",
+            }
 
         def fake_build(spec=None, think=True):
             seen["spec"] = spec
@@ -217,12 +230,13 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
         old_provider = os.environ.get("S5_ISSUE_PROVIDER")
         os.environ["S5_ISSUE_PROVIDER"] = "ollama"
         try:
-            with mock.patch("model_router.resolve_llm",
-                            side_effect=fake_resolve), \
-                 mock.patch("model_router.build_chat_model",
-                            side_effect=fake_build):
+            with (
+                mock.patch("model_router.resolve_llm", side_effect=fake_resolve),
+                mock.patch("model_router.build_chat_model", side_effect=fake_build),
+            ):
                 gen = issue_generator.IssueGeneratorGraph(
-                    repo_root=tempfile.gettempdir())
+                    repo_root=tempfile.gettempdir()
+                )
                 self.assertEqual(gen._model(), "fake-model")
             self.assertEqual(seen["prefer"], "ollama")
             self.assertFalse(seen["think"])
@@ -243,10 +257,12 @@ class TestDraftPrompt(unittest.TestCase):
                 def invoke(self, prompt):
                     seen.append(prompt)
                     return "draft"
+
             return FakeModel()
 
         gen = issue_generator.IssueGeneratorGraph(
-            repo_root=tempfile.gettempdir(), model_fn=model_fn)
+            repo_root=tempfile.gettempdir(), model_fn=model_fn
+        )
         gen.draft_text("Fix it", "ctx", [], {})
         self.assertTrue(seen)
         self.assertIn("read one repo file", seen[0].lower())
@@ -255,28 +271,37 @@ class TestDraftPrompt(unittest.TestCase):
 
 class TestAssembleSpec(unittest.TestCase):
     def test_required_sections_present(self):
-        spec = issue_generator.assemble_spec("Fix the widget", "ctx",
-                                             {"Q?": "A."})
-        for section in ("Problem Statement", "Goal", "Scope",
-                        "Definition of Done", "Scope & File Boundaries",
-                        "Implementation Plan", "Acceptance Criteria",
-                        "Verification Commands"):
+        spec = issue_generator.assemble_spec("Fix the widget", "ctx", {"Q?": "A."})
+        for section in (
+            "Problem Statement",
+            "Goal",
+            "Scope",
+            "Definition of Done",
+            "Scope & File Boundaries",
+            "Implementation Plan",
+            "Acceptance Criteria",
+            "Verification Commands",
+        ):
             self.assertIn(section, spec)
         self.assertIn("Q?", spec)
 
     def test_extract_questions(self):
-        text = ("Some prose.\n- What files are in scope?\n"
-                "1. Who owns this?\n- Not a question\n")
+        text = (
+            "Some prose.\n- What files are in scope?\n"
+            "1. Who owns this?\n- Not a question\n"
+        )
         self.assertEqual(
             issue_generator.extract_questions(text),
-            ["What files are in scope?", "Who owns this?"])
+            ["What files are in scope?", "Who owns this?"],
+        )
         self.assertEqual(issue_generator.extract_questions("none"), [])
 
 
 class TestValidateSpec(unittest.TestCase):
     def _gen(self, td_runner):
         return issue_generator.IssueGeneratorGraph(
-            repo_root=tempfile.gettempdir(), td_runner=td_runner)
+            repo_root=tempfile.gettempdir(), td_runner=td_runner
+        )
 
     def test_valid(self):
         gen = self._gen(_valid_td)
@@ -287,11 +312,18 @@ class TestValidateSpec(unittest.TestCase):
 
     def test_invalid_loops_with_errors(self):
         def runner(args):
-            return 1, json.dumps({"status": "success", "valid": False,
-                                  "allowed_files": [], "forbidden_files": [],
-                                  "verification_commands": [],
-                                  "acceptance_criteria": [],
-                                  "errors": ["missing section: Goal"]})
+            return 1, json.dumps(
+                {
+                    "status": "success",
+                    "valid": False,
+                    "allowed_files": [],
+                    "forbidden_files": [],
+                    "verification_commands": [],
+                    "acceptance_criteria": [],
+                    "errors": ["missing section: Goal"],
+                }
+            )
+
         gen = self._gen(runner)
         valid, _data, errors = gen.validate_spec("# T\n\nbody\n")
         self.assertFalse(valid)
@@ -300,6 +332,7 @@ class TestValidateSpec(unittest.TestCase):
     def test_missing_td_is_an_error(self):
         def runner(args):
             raise FileNotFoundError("no td")
+
         gen = self._gen(runner)
         valid, _data, errors = gen.validate_spec("x")
         self.assertFalse(valid)
@@ -315,15 +348,14 @@ class TestValidateSpec(unittest.TestCase):
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langgraph)")
 class TestGraphLoop(unittest.TestCase):
     def _gen(self, tmp):
-        with open(os.path.join(tmp, "widget.py"), "w",
-                  encoding="utf-8") as handle:
+        with open(os.path.join(tmp, "widget.py"), "w", encoding="utf-8") as handle:
             handle.write("x = 1\n")
 
         def model_fn():
             class FakeModel:
                 def invoke(self, prompt):
-                    return ("Draft spec body.\n\n"
-                            "- What files are in scope?\n")
+                    return "Draft spec body.\n\n- What files are in scope?\n"
+
             return FakeModel()
 
         def investigate_fn(brief, draft):
@@ -335,12 +367,17 @@ class TestGraphLoop(unittest.TestCase):
             return _valid_td(args)
 
         return issue_generator.IssueGeneratorGraph(
-            repo_root=tmp, model_fn=model_fn,
-            investigate_fn=investigate_fn, td_runner=td_runner,
-            max_loops=3, thread_id="test-thread-1")
+            repo_root=tmp,
+            model_fn=model_fn,
+            investigate_fn=investigate_fn,
+            td_runner=td_runner,
+            max_loops=3,
+            thread_id="test-thread-1",
+        )
 
     def test_interrupt_resume_validates_and_persists(self):
         import ledger
+
         with tempfile.TemporaryDirectory() as tmp:
             ledger_path = os.path.join(tmp, "ledger.jsonl")
             old = ledger.LEDGER
@@ -352,8 +389,8 @@ class TestGraphLoop(unittest.TestCase):
                 questions = state["__interrupt__"][0].value["questions"]
                 self.assertIn("What files are in scope?", questions)
                 final = gen.run(
-                    "Fix the widget",
-                    resume={"What files are in scope?": "widget.py"})
+                    "Fix the widget", resume={"What files are in scope?": "widget.py"}
+                )
                 self.assertTrue(final.get("valid"))
                 self.assertTrue(final.get("persisted"))
             finally:
@@ -371,28 +408,36 @@ class TestGraphLoop(unittest.TestCase):
             calls.append(1)
             if len(calls) == 1:
                 return 1, json.dumps(
-                    {"status": "success", "valid": False,
-                     "allowed_files": [], "forbidden_files": [],
-                     "verification_commands": [],
-                     "acceptance_criteria": [],
-                     "errors": ["missing section: Goal"]})
+                    {
+                        "status": "success",
+                        "valid": False,
+                        "allowed_files": [],
+                        "forbidden_files": [],
+                        "verification_commands": [],
+                        "acceptance_criteria": [],
+                        "errors": ["missing section: Goal"],
+                    }
+                )
             return _valid_td(args)
 
         def model_fn():
             class FakeModel:
                 def invoke(self, prompt):
                     return "Draft spec body, no questions."
+
             return FakeModel()
 
         with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "ev.py"), "w",
-                      encoding="utf-8") as handle:
+            with open(os.path.join(tmp, "ev.py"), "w", encoding="utf-8") as handle:
                 handle.write("x = 1\n")
             gen = issue_generator.IssueGeneratorGraph(
-                repo_root=tmp, model_fn=model_fn,
+                repo_root=tmp,
+                model_fn=model_fn,
                 investigate_fn=lambda b, d: "evidence: ev.py",
-                td_runner=td_runner, max_loops=3,
-                thread_id="test-thread-2")
+                td_runner=td_runner,
+                max_loops=3,
+                thread_id="test-thread-2",
+            )
             final = gen.run("Fix the widget")
             self.assertTrue(final.get("valid"))
             self.assertGreaterEqual(final.get("attempts", 0), 2)
@@ -402,26 +447,35 @@ class TestGraphLoop(unittest.TestCase):
             if args and args[0] == "init":
                 return 0, json.dumps({"status": "ready"})
             return 1, json.dumps(
-                {"status": "success", "valid": False, "allowed_files": [],
-                 "forbidden_files": [], "verification_commands": [],
-                 "acceptance_criteria": [],
-                 "errors": ["always invalid"]})
+                {
+                    "status": "success",
+                    "valid": False,
+                    "allowed_files": [],
+                    "forbidden_files": [],
+                    "verification_commands": [],
+                    "acceptance_criteria": [],
+                    "errors": ["always invalid"],
+                }
+            )
 
         def model_fn():
             class FakeModel:
                 def invoke(self, prompt):
                     return "Draft, no questions."
+
             return FakeModel()
 
         with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "ev.py"), "w",
-                      encoding="utf-8") as handle:
+            with open(os.path.join(tmp, "ev.py"), "w", encoding="utf-8") as handle:
                 handle.write("x = 1\n")
             gen = issue_generator.IssueGeneratorGraph(
-                repo_root=tmp, model_fn=model_fn,
+                repo_root=tmp,
+                model_fn=model_fn,
                 investigate_fn=lambda b, d: "evidence: ev.py",
-                td_runner=td_runner, max_loops=2,
-                thread_id="test-thread-3")
+                td_runner=td_runner,
+                max_loops=2,
+                thread_id="test-thread-3",
+            )
             final = gen.run("Fix the widget")
             self.assertFalse(final.get("valid"))
             self.assertIn("always invalid", final.get("errors", []))
@@ -436,20 +490,24 @@ class TestGraphLoop(unittest.TestCase):
             class FakeModel:
                 def invoke(self, prompt):
                     return "Draft spec body, no questions."
+
             return FakeModel()
 
         with tempfile.TemporaryDirectory() as tmp:
             gen = issue_generator.IssueGeneratorGraph(
-                repo_root=tmp, model_fn=model_fn,
+                repo_root=tmp,
+                model_fn=model_fn,
                 investigate_fn=lambda b, d: (
-                    "researched the Kubernetes Python client at length"),
-                td_runner=td_runner, max_loops=5,
-                thread_id="test-thread-4")
+                    "researched the Kubernetes Python client at length"
+                ),
+                td_runner=td_runner,
+                max_loops=5,
+                thread_id="test-thread-4",
+            )
             final = gen.run("Fix the widget")
             self.assertFalse(final.get("valid"))
             self.assertTrue(final.get("off_brief"))
-            self.assertTrue(any("off-brief" in e
-                               for e in final.get("errors", [])))
+            self.assertTrue(any("off-brief" in e for e in final.get("errors", [])))
             self.assertLessEqual(final.get("attempts", 0), 1)
 
 

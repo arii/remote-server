@@ -40,7 +40,7 @@ class TestLocalRouting(unittest.TestCase):
     def test_local_only_overrides_paid_provider_preferences(self):
         """Local-only wins even when cloud preferences and keys are present."""
         with mock.patch.object(model_router, "ollama_reachable", return_value=True):
-            for prefer in (None, "nebius", "openrouter"):
+            for prefer in (None, "nebius", "openrouter", "twt"):
                 with self.subTest(prefer=prefer):
                     spec = model_router.resolve_llm(prefer=prefer)
                     self.assertEqual(spec["provider"], "ollama")

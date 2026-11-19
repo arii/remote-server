@@ -391,7 +391,7 @@ class IssueGeneratorGraph:
                 "http://ollama:11434), or set S5_ISSUE_PROVIDER=nebius "
                 "with NEBIUS_API_KEY for the metered fallback."
             )
-        if spec.get("provider") in ("nebius", "openrouter"):
+        if spec.get("provider") in ("nebius", "openrouter", "twt"):
             try:
                 model_router.api_key(spec)
             except RuntimeError as exc:

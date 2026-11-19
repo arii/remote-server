@@ -5,10 +5,11 @@ and reach for an LLM only for judgment/explanation/summarization. When an
 LLM is needed, this module picks the cheapest feasible one:
 
   1. S5_LOCAL_ONLY=1 forces local Ollama, otherwise explicit prefer wins,
-  2. otherwise local Ollama (``ASK_MODEL``, default qwen3:8b) when reachable,
-  3. otherwise keyed OpenRouter, free models by default,
-  4. otherwise keyed Nebius (``NEBIUS_MODEL``),
-  5. otherwise raise with an actionable message.
+  2. otherwise local Ollama via TwT (``ASK_MODEL``, default qwen3:8b) when reachable,
+  3. otherwise Tokens with Taste's free-first, Nebius-last waterfall.
+
+Explicit OpenRouter/Nebius preferences remain available for diagnostics;
+the automatic route never connects directly to either provider.
 
 Stdlib only on purpose: system-python tests import this without the
 deep-agent venv. Never touches secrets — no API keys in specs, kwargs, or
@@ -18,12 +19,15 @@ Env contract:
   ASK_MODEL (default qwen3:8b), OLLAMA_URL (default http://ollama:11434),
   S5_LOCAL_ONLY=1 (Ollama only; reject cloud models and remote overrides),
   OLLAMA_NUM_CTX (optional Ollama context window; server default when unset),
+  TWT_BASE_URL (default http://127.0.0.1:8000/v1); local calls use
+  the sibling /local native-Ollama endpoint of twt_service.py,
   NEBIUS_MODEL (default zai-org/GLM-5.3-Flash),
   NEBIUS_BASE_URL (default https://api.tokenfactory.nebius.com/v1),
   NEBIUS_API_KEY (required for the nebius path),
   OPENROUTER_API_KEY (required for OpenRouter), OPENROUTER_MODEL
   (default openrouter/free), OPENROUTER_ALLOW_PAID=1 (allow paid models),
-  NEBIUS_ONLY=1 (force cloud), OLLAMA_STRICT=1 (fail instead of falling back).
+  NEBIUS_ONLY=1 (legacy force-remote flag; now selects TwT),
+  OLLAMA_STRICT=1 (fail instead of falling back).
   NEBIUS_SPEND_CAP_USD (lifetime metered cap, default $5.00
   when unset; 0 blocks every metered call).
 
@@ -58,6 +62,7 @@ DEFAULT_OPENROUTER_MODEL = "openrouter/free"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
+DEFAULT_TWT_BASE_URL = "http://127.0.0.1:8000/v1"
 
 
 def _default_ollama_model():
@@ -101,7 +106,10 @@ def _ollama_spec():
     return {
         "provider": "ollama",
         "model": _env("ASK_MODEL", _default_ollama_model()),
-        "base_url": _ollama_base(),
+        "base_url": _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL)
+        .rstrip("/")
+        .removesuffix("/v1")
+        + "/local",
     }
 
 
@@ -121,6 +129,8 @@ def validate_local_spec(spec):
 def api_key(spec):
     """Credential for the resolved remote backend. Keep out of specs and logs."""
     provider = spec["provider"]
+    if provider == "twt":
+        return "twt-loopback"
     if provider not in ("nebius", "openrouter"):
         raise ValueError(f"bad remote provider: {provider!r}")
     variable = f"{provider.upper()}_API_KEY"
@@ -176,6 +186,10 @@ def _nebius_spec():
     )
 
 
+def _twt_spec():
+    return _remote_spec("twt", "default", _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL))
+
+
 def _validate_openrouter_model(model):
     if (
         not pricing.is_free_openrouter(f"openrouter:{model}")
@@ -196,7 +210,7 @@ def resolve_llm(prefer=None):
     """Pick the cheapest feasible LLM. Returns {"provider","model","base_url"}.
 
     ``prefer`` selects a provider strictly. Default order is local Ollama,
-    keyed OpenRouter, then keyed Nebius.
+    then TwT. TwT owns the free-tier/paid waterfall.
     OLLAMA_STRICT=1 disables the fallback on the default path too.
     """
     if local_only():
@@ -208,13 +222,15 @@ def resolve_llm(prefer=None):
         return spec
     only_nebius = _env("NEBIUS_ONLY") == "1"
     strict_ollama = _env("OLLAMA_STRICT") == "1"
-    want = (prefer or ("nebius" if only_nebius else "")).strip().lower()
+    want = (prefer or ("twt" if only_nebius else "")).strip().lower()
     if want and want not in PROVIDERS:
         raise ValueError(f"bad provider {prefer!r}: want {', '.join(PROVIDERS)}")
     if want == "nebius":
         return _nebius_spec()
     if want == "openrouter":
         return _openrouter_spec()
+    if want == "twt":
+        return _twt_spec()
     if want == "ollama":
         if ollama_reachable():
             return _ollama_spec()
@@ -227,15 +243,7 @@ def resolve_llm(prefer=None):
         raise RuntimeError(
             "Ollama unreachable and OLLAMA_STRICT=1 refuses remote fallback"
         )
-    if _env("OPENROUTER_API_KEY"):
-        spec = _openrouter_spec()
-        _announce_fallback(spec)
-        return spec
-    logger.info("OpenRouter skipped: OPENROUTER_API_KEY is unset")
-    print(
-        "model_router: OpenRouter skipped: OPENROUTER_API_KEY is unset", file=sys.stderr
-    )
-    spec = _nebius_spec()
+    spec = _twt_spec()
     _announce_fallback(spec)
     return spec
 
@@ -245,7 +253,7 @@ def _announce_fallback(spec):
     url = _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
     model = spec.get("model", "?")
     provider = spec["provider"]
-    label = "metered nebius" if provider == "nebius" else "openrouter"
+    label = provider
     logger.warning("ollama unreachable at %s, using %s (%s)", url, label, model)
     print(
         f"model_router: ollama unreachable at {url}, using {label} ({model})",
@@ -258,7 +266,11 @@ def _announce_fallback(spec):
         thread_id="",
         messages=[],
         started=time.time(),
-        extra={"event": "metered-failover", "reason": "ollama unreachable"},
+        extra={
+            "event": "metered-failover",
+            "reason": "ollama unreachable",
+            "llm_call": False,
+        },
         usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         calls=[],
     )
@@ -380,6 +392,15 @@ def chat_kwargs(spec):
             "base_url": spec["base_url"],
             "temperature": 0,
         }
+    if spec.get("provider") == "twt":
+        return {
+            "model": spec["model"],
+            "base_url": spec["base_url"],
+            "temperature": 0,
+            "include_response_headers": True,
+            "disable_streaming": True,
+            "max_retries": 0,
+        }
     if spec.get("provider") in ("nebius", "openrouter"):
         if spec["provider"] == "openrouter":
             _validate_openrouter_model(spec["model"])
@@ -403,7 +424,12 @@ def chat_kwargs(spec):
 # (our Nebius path) -> openai:<model>. Translate our spec provider
 # names; anything else passes through for custom model classes.
 # (Mirrors deep_chat.PROFILE_PROVIDERS for the chat gate.)
-PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai", "openrouter": "openai"}
+PROFILE_PROVIDERS = {
+    "ollama": "ollama",
+    "nebius": "openai",
+    "openrouter": "openai",
+    "twt": "openai",
+}
 
 
 def build_chat_model(spec=None, think=False, num_ctx=None):
@@ -447,7 +473,7 @@ def build_structured_chat_model(spec=None, schema=None, think=False):
     model, resolved = build_chat_model(spec, think=think)
     if schema is None:
         return model, resolved
-    if resolved.get("provider") in ("nebius", "openrouter"):
+    if resolved.get("provider") in ("nebius", "openrouter", "twt"):
         return model.with_structured_output(
             schema, method="json_schema", strict=True
         ), resolved
