@@ -76,7 +76,23 @@ def run_td(argv, cwd=None, timeout=300):
         return 127, "td CLI not found on PATH"
     except Exception as exc:
         return 1, f"td {' '.join(argv)} failed: {exc}"
-    return proc.returncode, (proc.stdout or "").strip()
+    stdout = (proc.stdout or "").strip()
+    if proc.returncode:
+        try:
+            payload = json.loads(stdout)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            payload["_td_diagnostics"] = {
+                "exit_code": proc.returncode,
+                "stderr": (proc.stderr or "").strip(),
+            }
+            return proc.returncode, json.dumps(payload)
+        stderr = (proc.stderr or "").strip()
+        return proc.returncode, (
+            f"td exited with code {proc.returncode}\nstdout: {stdout}\nstderr: {stderr}"
+        )
+    return proc.returncode, stdout
 
 
 def parse_json_output(out):
@@ -406,6 +422,7 @@ class Pipeline:
     def stage_submit(self, worktree_root, title, body=""):
         """Submit via td agent submit-pr. Returns (ok, url-or-error)."""
         argv = [
+            "--json",
             "agent",
             "submit-pr",
             "--worktree",
@@ -414,14 +431,15 @@ class Pipeline:
             title,
             "--body",
             body,
-            "--json",
         ]
         if self.issue_id:
             argv += ["--issue", str(self.issue_id)]
         code, out = self.td_run(argv, self.repo)
+        if code != 0:
+            return False, out or f"td agent submit-pr exited with code {code}"
         payload, error = parse_json_output(out)
-        if code != 0 or error:
-            return False, error or out[:300]
+        if error:
+            return False, error
         url = (payload or {}).get("url") or (payload or {}).get("pr_url")
         return True, url or json.dumps(payload)
 
