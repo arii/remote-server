@@ -445,6 +445,13 @@ class AuditorGraph:
         spec_path = os.path.join(self.worktree_root, self.spec_file)
         with open(spec_path, encoding="utf-8") as handle:
             spec = handle.read()
+        paths = [
+            ".",
+            ":(exclude,glob)**/.venv",
+            ":(exclude,glob)**/.venv/**",
+            ":(exclude,glob)**/node_modules",
+            ":(exclude,glob)**/node_modules/**",
+        ]
         subprocess.run(
             [
                 "git",
@@ -452,8 +459,7 @@ class AuditorGraph:
                 "--intent-to-add",
                 "--all",
                 "--",
-                ".",
-                ":(exclude,glob)**/node_modules",
+                *paths,
             ],
             cwd=self.worktree_root,
             capture_output=True,
@@ -469,6 +475,7 @@ class AuditorGraph:
                 "--no-color",
                 "origin/main",
                 "--",
+                *paths,
             ],
             cwd=self.worktree_root,
             capture_output=True,
