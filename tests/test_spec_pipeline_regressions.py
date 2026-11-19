@@ -1,10 +1,13 @@
 import json
+import importlib.util
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import issue_generator
+import pipeline
 
 
 class TestExplicitScope(unittest.TestCase):
@@ -54,3 +57,44 @@ class TestExplicitScope(unittest.TestCase):
             ),
         )
         self.assertEqual(graph.validate_spec("")[2], ["missing required section: Goal"])
+
+
+class TestSpecResume(unittest.TestCase):
+    @unittest.skipUnless(
+        importlib.util.find_spec("langgraph"), "langgraph not installed"
+    )
+    def test_real_spec_interrupt_resumes_with_answers(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "widget.py").write_text("pass\n")
+            pipe = pipeline.Pipeline(
+                root,
+                "fix widget",
+                spec_model_fn=lambda: object(),
+                investigate_fn=lambda *args: "widget.py:1 evidence",
+                td_run=lambda *args: (
+                    0,
+                    json.dumps({"status": "ready", "valid": True}),
+                ),
+            )
+            question = "Keep the helper?"
+
+            def answer(interrupts, state):
+                self.assertEqual(
+                    pipeline.final_interrupt(interrupts)["questions"], [question]
+                )
+                return {question: "yes"}
+
+            pipe._spec_policy = answer
+            with (
+                mock.patch.object(
+                    issue_generator.IssueGeneratorGraph,
+                    "draft_text",
+                    return_value=f"### Allowed Files\n- `widget.py`\n- {question}",
+                ),
+                mock.patch("ledger.record"),
+            ):
+                ok, state, text = pipe.stage_spec()
+            self.assertTrue(ok, text)
+            self.assertEqual(state["brief"], "fix widget")
+            self.assertEqual(state["answers"][question], "yes")
+            self.assertIn("yes", text)

@@ -115,7 +115,9 @@ def final_interrupt(interrupts):
     if not interrupts:
         return {}
     last = interrupts[-1]
-    return last.get("value", {}) if isinstance(last, dict) else {}
+    return (
+        last.get("value", {}) if isinstance(last, dict) else getattr(last, "value", {})
+    )
 
 
 class Pipeline:
@@ -202,7 +204,7 @@ class Pipeline:
         )
         state = drive_to_settled(
             lambda: gen.run(self.intent, answers=dict(self.answers)),
-            gen.run,
+            lambda reply: gen.run(self.intent, resume=reply),
             self._spec_policy,
             limit=self.drive_limit,
         )
