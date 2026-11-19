@@ -394,6 +394,61 @@ class TestSpendCapGate(unittest.TestCase):
 class TestBuildChatModel(unittest.TestCase):
     """Container-correct constructor (#1103): no bare ChatOllama."""
 
+    def test_ollama_context_env_and_explicit_override(self):
+        try:
+            import langchain_ollama  # noqa: F401
+        except ImportError:
+            self.skipTest("langchain-ollama is required")
+        spec = {"provider": "ollama", "model": "qwen3:8b", "base_url": "http://x"}
+        for value, explicit, expected in (
+            ("", None, None),
+            ("16384", None, 16384),
+            ("16384", 8192, 8192),
+        ):
+            with (
+                self.subTest(value=value, explicit=explicit),
+                env(OLLAMA_NUM_CTX=value),
+            ):
+                model, _ = model_router.build_chat_model(spec=spec, num_ctx=explicit)
+                self.assertEqual(model.num_ctx, expected)
+                self.assertEqual(
+                    model._chat_params([])["options"].get("num_ctx"), expected
+                )
+
+    def test_invalid_ollama_context_is_rejected(self):
+        try:
+            import langchain_ollama  # noqa: F401
+        except ImportError:
+            self.skipTest("langchain-ollama is required")
+        spec = {"provider": "ollama", "model": "qwen3:8b", "base_url": "http://x"}
+        for value in ("bad", "0", "-1"):
+            with (
+                self.subTest(value=value),
+                env(OLLAMA_NUM_CTX=value),
+                self.assertRaisesRegex(ValueError, "OLLAMA_NUM_CTX"),
+            ):
+                model_router.build_chat_model(spec=spec)
+
+    def test_real_ollama_no_think(self):
+        try:
+            from langchain_ollama import ChatOllama
+        except ImportError:
+            self.skipTest("langchain-ollama is required")
+        import deep_chat
+
+        spec = {
+            "provider": "ollama",
+            "model": "qwen3:8b",
+            "base_url": "http://127.0.0.1:11434",
+        }
+        with env(), mock.patch.object(model_router, "resolve_llm", return_value=spec):
+            for build in (model_router.build_chat_model, deep_chat.build_model):
+                with self.subTest(builder=build.__module__):
+                    model, _ = build()
+                    self.assertIsInstance(model, ChatOllama)
+                    self.assertIs(model.reasoning, False)
+                    self.assertIs(model._chat_params([])["think"], False)
+
     def test_ollama_uses_container_base_url(self):
         import sys
         import types
@@ -415,7 +470,7 @@ class TestBuildChatModel(unittest.TestCase):
             _model, out = model_router.build_chat_model(spec=spec)
         self.assertEqual(out, spec)
         self.assertEqual(calls[0]["base_url"], "http://ollama:11434")
-        self.assertEqual(calls[0]["model_kwargs"], {"think": False})
+        self.assertIs(calls[0]["reasoning"], False)
 
     def test_nebius_gets_key_and_low_effort(self):
         import sys

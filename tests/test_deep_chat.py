@@ -2019,7 +2019,7 @@ class TestBuildModelNumCtx(unittest.TestCase):
         os.environ.pop("OLLAMA_NUM_CTX", None)
         seen = self._model_kwargs()
         self.assertEqual(seen.get("num_ctx"), 16384)
-        self.assertEqual(seen.get("model_kwargs"), {"think": False})
+        self.assertIs(seen.get("reasoning"), False)
 
     def test_env_override(self):
         os.environ["OLLAMA_NUM_CTX"] = "4096"

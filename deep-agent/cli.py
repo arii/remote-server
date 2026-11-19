@@ -9,6 +9,7 @@ stay plain `-> int` and directly testable.
 """
 
 import base64
+import json
 import os
 import sys
 
@@ -95,7 +96,7 @@ def _option(argv, *names):
             if idx + 1 >= len(rest):
                 return None, rest
             value = rest[idx + 1]
-            del rest[idx:idx + 2]
+            del rest[idx : idx + 2]
             return value, rest
     return None, rest
 
@@ -106,32 +107,59 @@ def main(argv=None):
     if not args:
         return usage_error(
             "usage: cli.py run-pipeline --intent <text> --repo <path>",
-            "               [--issue <id>] [--submit-pr]",
-            "       cli.py eval-pipeline")
+            "               [--issue <id>] [--submit-pr] [--local-only]",
+            "               [--keep-worktree] [--qna-file PATH]",
+            "       cli.py eval-pipeline",
+        )
     command, args = args[0], args[1:]
     if command == "eval-pipeline":
         if args:
             return usage_error("usage: cli.py eval-pipeline")
         import eval_pipeline
+
         return eval_pipeline.main()
     if command != "run-pipeline":
-        return usage_error(f"unknown command: {command}",
-                           "want: run-pipeline | eval-pipeline")
+        return usage_error(
+            f"unknown command: {command}", "want: run-pipeline | eval-pipeline"
+        )
     intent, args = _option(args, "--intent")
     repo, args = _option(args, "--repo")
     issue, args = _option(args, "--issue")
     submit, args = _flag(args, "--submit-pr")
+    local, args = _flag(args, "--local-only")
+    keep, args = _flag(args, "--keep-worktree")
+    qna_file, args = _option(args, "--qna-file")
     if not intent or not repo or args:
         return usage_error(
             "usage: cli.py run-pipeline --intent <text> --repo <path>",
-            "               [--issue <id>] [--submit-pr]")
+            "               [--issue <id>] [--submit-pr] [--local-only]",
+            "               [--keep-worktree] [--qna-file PATH]",
+        )
     try:
         issue_id = int(issue) if issue else None
     except ValueError:
         return usage_error(f"bad --issue: {issue!r}")
+    answers = {}
+    if qna_file:
+        try:
+            with open(qna_file, encoding="utf-8") as handle:
+                answers = json.load(handle)
+        except (OSError, ValueError) as exc:
+            return usage_error(f"cannot read Q&A file: {exc}")
+        if not isinstance(answers, dict):
+            return usage_error("Q&A file must contain a JSON object")
+    if local:
+        os.environ["S5_LOCAL_ONLY"] = "1"
     import pipeline as pipeline_mod
+
     pipe = pipeline_mod.Pipeline(
-        repo, intent, issue_id=issue_id, submit_pr=submit)
+        repo,
+        intent,
+        issue_id=issue_id,
+        submit_pr=submit,
+        answers=answers,
+        keep_worktree=keep,
+    )
     result = pipe.run()
     print(json_dumps(result))
     return 0 if result["status"] == pipeline_mod.APPROVED else 1
@@ -140,6 +168,7 @@ def main(argv=None):
 def json_dumps(payload):
     """Compact JSON for CLI output (stdlib, testable)."""
     import json as _json
+
     return _json.dumps(payload, indent=2)
 
 

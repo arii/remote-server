@@ -14,16 +14,17 @@ trigger_nodes:
 ## 2. Mandatory Structural Sections
 Every spec issue generated must contain these exact Markdown headers:
 1. `## Problem Statement`: Must cite exact existing file paths and line numbers (`file.py#L12-L34`) identified during investigation.
-2. `## Objective`: Single paragraph describing the target functional state.
+2. `## Goal`: Single paragraph describing the target functional state.
 3. `## Scope & File Boundaries`:
-   - `### Allowed Files (Create / Modify / Delete)`: Explicit list of file paths. No wildcards in write scopes.
+   - `### Allowed Files (Create / Modify / Delete)`: Explicit list of repo-relative file paths only. No URLs, protocol-relative links (`//host`), absolute paths, or wildcards. Do not put commit citations or links in this section, including beside a valid path; put those in a separate References section.
    - `### Forbidden Files`: Explicit list of critical infrastructure or out-of-scope files.
 4. `## Implementation Plan`: Numbered step-by-step technical plan.
-5. `## Acceptance Criteria`: Unchecked markdown checklist (`- [ ]`) verifying every required functional behavior.
-6. `## Verification Commands`: A single fenced bash code block containing non-empty, executable test and lint commands that exit with code 0 on success.
+5. `## Definition of Done`: Concrete, measurable completion conditions.
+6. `## Acceptance Criteria`: Unchecked markdown checklist (`- [ ]`) verifying every required functional behavior.
+7. `## Verification Commands`: A single fenced bash code block containing non-empty, executable test and lint commands accepted by the injected run_check verification policy. Use existing repository test paths/modules, one command per line. For backend Python changes prefer targeted `python3 -m unittest backend.tests.test_NAME` (replace NAME with an existing module) or `python3 -m pytest` with existing test paths. Never copy an unsupported command from the issue, use arbitrary npm scripts, or install dependencies.
 
 ## 3. Repair Protocol on Validation Failure
 When `td validate-issue` returns `valid == false`:
 - Inspect `validation_result["errors"]`.
 - If an allowed file does not exist on disk and is not marked `(CREATE)`, correct the path using findings from `codebase_investigator_node`.
-- If verification commands are missing or non-executable, look up the repository's `project_config.json` test scripts and supply the exact command.
+- If verification commands are missing, non-executable, or rejected, inspect existing repository tests and supply an exact command accepted by the injected run_check verification policy. Do not change flags repeatedly to bypass a rejection.

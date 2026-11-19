@@ -15,8 +15,8 @@ Pipeline:
      primitives, never raw gh.
   2. plan: per-file entries (risk prompts, test-coverage check,
      scope-vs-title inputs).
-  3. synthesize: deep_chat.build_model(prefer="ollama") with a
-     prefer="nebius" fallback; s5tools context reads when a local
+  3. synthesize: deep_chat.build_model with the selected provider;
+     S5_LOCAL_ONLY forces Ollama; s5tools context reads when a local
      checkout exists.
   4. output: findings JSON [{file, line, severity, claim,
      suggestion}] plus a markdown body with the Gemini review
@@ -29,7 +29,7 @@ Modes:
   --json      print the findings envelope instead of markdown.
   --post      post the markdown body to the PR. Explicit human flag
               only — the default prints and never posts.
-  --prefer P  ollama (default, nebius fallback) or nebius (no fallback).
+  --prefer P  ollama (default) or nebius. No provider retry.
 
 Stdlib-only at import: deep-agent modules (deep_chat, s5tools) import
 lazily inside the run path, so --dry-run and the hermetic tests work
@@ -215,7 +215,7 @@ def build_plan(repo, pr, meta, files, diff_text):
         "pr": pr,
         "title": title,
         "state": str(meta.get("state") or "UNKNOWN"),
-        "model": {"preferred": "ollama", "fallback": "nebius"},
+        "model": {"preferred": "ollama"},
         "scope": {"file_count": len(entries), "top_dirs": top_dirs, "title": title},
         "test_coverage": {
             "tests_changed": bool(test_files),
@@ -398,31 +398,17 @@ def _response_text(resp):
 def synthesize(plan, diff_text, context="", prefer="ollama", model_factory=None):
     """(findings, summary, verdict, model_label) from the local model.
 
-    prefer="ollama" tries Ollama then falls back to Nebius;
-    prefer="nebius" is a single cloud leg. model_factory(name) is the
+    Provider selection follows model_router, including S5_LOCAL_ONLY.
+    model_factory(name) is the
     hermetic seam (default: deep_chat.build_model); it returns
     (model, spec) where model.invoke(str) answers.
     """
     factory = model_factory or _default_model_factory
-    order = ["ollama", "nebius"] if prefer == "ollama" else ["nebius"]
-    model, spec, last_exc, falled_back = None, None, None, False
-    for name in order:
-        try:
-            model, spec = factory(name)
-            break
-        except Exception as exc:
-            last_exc = exc
-            falled_back = True
-    if model is None:
-        raise ReviewError(f"no model available ({'/'.join(order)}): {_short(last_exc)}")
+    try:
+        model, spec = factory(prefer)
+    except Exception as exc:
+        raise ReviewError(f"no model available ({prefer}): {_short(exc)}") from exc
     label = f"{spec.get('provider', '?')}:{spec.get('model', '?')}"
-    if falled_back:
-        label += " (fallback)"
-        print(
-            f"review: ollama unavailable ({_short(last_exc)}); "
-            f"using {spec.get('provider')}",
-            file=sys.stderr,
-        )
     prompt = _review_prompt(plan, diff_text, context)
     try:
         raw = _extract_json(_response_text(model.invoke(prompt)))
@@ -579,7 +565,7 @@ def build_parser():
         "--prefer",
         default="ollama",
         choices=["ollama", "nebius"],
-        help="ollama (default, nebius fallback) or nebius.",
+        help="ollama (default) or nebius; S5_LOCAL_ONLY forces Ollama.",
     )
     return parser
 

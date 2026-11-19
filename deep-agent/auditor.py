@@ -6,15 +6,75 @@ audits persist the report via decisions.py + ledger.py.
 
 Only stdlib at module top; langgraph/langchain lazy (deep-agent venv).
 """
+
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 
 import skills_registry
+from s5tools import verification_env
 
 MAX_AUDIT_LOOPS_DEFAULT = 3
+
+
+def parse_review(value):
+    if isinstance(value, str):
+        text = value.strip()
+        fence = re.fullmatch(r"```(?:json)?\s*\n(.*)\n```", text, re.DOTALL)
+        try:
+            value = json.loads(fence[1] if fence else text)
+        except ValueError:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def review_verified(value):
+    review = parse_review(value)
+    findings = review.get("findings")
+    return (
+        review.get("verified") is True
+        and isinstance(findings, list)
+        and all(
+            isinstance(item, dict)
+            and isinstance(item.get("severity"), str)
+            and item.get("severity")
+            in {"low", "medium", "high", "critical", "blocking"}
+            and isinstance(item.get("description"), str)
+            for item in findings
+        )
+    )
+
+
+def blocking_findings(findings):
+    if isinstance(findings, str):
+        text = findings.strip()
+        if text.startswith("```"):
+            text = "\n".join(text.splitlines()[1:-1])
+        try:
+            findings = json.loads(text)
+        except ValueError:
+            return bool(
+                re.search(
+                    r"(?im)^\s*(?:[-*]|\d+[.)])?\s*[*\[]*(?:high|critical|blocking)\b(?!-level\b)"
+                    r'|"severity"\s*:\s*"(?:high|critical|blocking)"',
+                    text,
+                )
+            )
+    if isinstance(findings, dict):
+        if str(findings.get("severity", "")).strip().lower() in {
+            "high",
+            "critical",
+            "blocking",
+        }:
+            return True
+        return blocking_findings(findings.get("findings", []))
+    if isinstance(findings, list):
+        return any(blocking_findings(item) for item in findings)
+    return False
+
 
 # Ask voice for the eval_ask gate (issue #1139): the pre-#1131 ask CLI
 # system prompt, recovered verbatim. The PROPOSE protocol shapes below
@@ -49,9 +109,18 @@ ASK_SYSTEM = (
 # Same tool set the deleted ask CLI wired (issue #1139): the eval_ask
 # cases anchor on grep_repo/read_repo_file/pr_state behavior.
 ASK_TOOL_NAMES = (
-    "search_docs", "read_repo_file", "grep_repo", "pr_state",
-    "run_repo_command", "fetch_url", "search_web", "search_turns",
-    "run_ux_capture", "diff_versions", "ask_diff", "lighthouse_read",
+    "search_docs",
+    "read_repo_file",
+    "grep_repo",
+    "pr_state",
+    "run_repo_command",
+    "fetch_url",
+    "search_web",
+    "search_turns",
+    "run_ux_capture",
+    "diff_versions",
+    "ask_diff",
+    "lighthouse_read",
 )
 
 
@@ -66,32 +135,36 @@ class ModelUnavailableError(RuntimeError):
 
 def _message_tool_calls(message):
     """Tool-call dicts on one agent message (object or plain dict)."""
-    calls = (message.get("tool_calls") if isinstance(message, dict)
-             else getattr(message, "tool_calls", None)) or []
+    calls = (
+        message.get("tool_calls")
+        if isinstance(message, dict)
+        else getattr(message, "tool_calls", None)
+    ) or []
     return [c for c in calls if isinstance(c, dict)]
 
 
 def _message_text(message):
     """Readable text of one agent message (object or plain dict)."""
-    content = (message.get("content") if isinstance(message, dict)
-               else getattr(message, "content", ""))
+    content = (
+        message.get("content")
+        if isinstance(message, dict)
+        else getattr(message, "content", "")
+    )
     if isinstance(content, list):
         content = " ".join(
-            str(p.get("text", "")) if isinstance(p, dict) else str(p)
-            for p in content)
+            str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in content
+        )
     return str(content or "")
 
 
 def _is_tool_message(message):
     if isinstance(message, dict):
-        return (message.get("type") == "tool"
-                or "tool_call_id" in message)
+        return message.get("type") == "tool" or "tool_call_id" in message
     cls = message.__class__.__name__
     return cls == "ToolMessage" or hasattr(message, "tool_call_id")
 
 
-def run_td_gate(command, worktree_root, timeout=300, runner=None,
-                extra_args=None):
+def run_td_gate(command, worktree_root, timeout=300, runner=None, extra_args=None):
     """Run `td <command> --worktree <root> [--json]`; (ok, payload|error).
 
     Fail-closed: missing td, non-JSON, or status=error all return False.
@@ -110,8 +183,8 @@ def run_td_gate(command, worktree_root, timeout=300, runner=None,
     else:
         try:
             proc = subprocess.run(
-                ["td", *argv, "--json"],
-                capture_output=True, text=True, timeout=timeout)
+                ["td", *argv, "--json"], capture_output=True, text=True, timeout=timeout
+            )
         except FileNotFoundError:
             return False, "td CLI not found on PATH"
         except Exception as exc:
@@ -128,14 +201,16 @@ def run_td_gate(command, worktree_root, timeout=300, runner=None,
     return True, payload
 
 
-def run_td_audit_impact(worktree_root, top_k=25, timeout=300,
-                        runner=None, preview_url=None):
+def run_td_audit_impact(
+    worktree_root, top_k=25, timeout=300, runner=None, preview_url=None
+):
     """td audit-impact --json; returns (ok, payload-or-error)."""
     extra = ["--top-k", str(top_k)]
     if preview_url:
         extra += ["--preview-url", preview_url]
-    return run_td_gate("audit-impact", worktree_root, timeout=timeout,
-                       runner=runner, extra_args=extra)
+    return run_td_gate(
+        "audit-impact", worktree_root, timeout=timeout, runner=runner, extra_args=extra
+    )
 
 
 def collect_gate_violations(named_payloads):
@@ -149,7 +224,8 @@ def collect_gate_violations(named_payloads):
             if isinstance(item, dict):
                 errors.append(
                     f"{name}:{item.get('file')}:{item.get('line')}: "
-                    f"{item.get('rule')}: {item.get('message')}")
+                    f"{item.get('rule')}: {item.get('message')}"
+                )
             else:
                 errors.append(f"{name}: {item}")
         if not payload.get("violations") and payload.get("passed") is False:
@@ -160,10 +236,17 @@ def collect_gate_violations(named_payloads):
 class AuditorGraph:
     """Gated audit loop. Inject audit_fn/td_runner for tests."""
 
-    def __init__(self, worktree_root, audit_fn=None, td_runner=None,
-                 max_loops=MAX_AUDIT_LOOPS_DEFAULT, thread_id=None,
-                 spec_file=None, verification_commands=None,
-                 preview_url=None):
+    def __init__(
+        self,
+        worktree_root,
+        audit_fn=None,
+        td_runner=None,
+        max_loops=MAX_AUDIT_LOOPS_DEFAULT,
+        thread_id=None,
+        spec_file=None,
+        verification_commands=None,
+        preview_url=None,
+    ):
         self.worktree_root = os.path.abspath(worktree_root)
         self.audit_fn = audit_fn
         self.td_runner = td_runner
@@ -174,6 +257,8 @@ class AuditorGraph:
         self.preview_url = preview_url
         self.last_model_spec = None
         self.last_review_usage = None
+        self.audit_truncated = False
+        self.review_calls_metered = False
 
     def hard_gate(self):
         """Zero-LLM deterministic gate.
@@ -188,9 +273,9 @@ class AuditorGraph:
             extra = None
             if name == "audit-impact" and self.preview_url:
                 extra = ["--preview-url", self.preview_url]
-            ok, payload = run_td_gate(name, self.worktree_root,
-                                      runner=self.td_runner,
-                                      extra_args=extra)
+            ok, payload = run_td_gate(
+                name, self.worktree_root, runner=self.td_runner, extra_args=extra
+            )
             if not ok:
                 return False, payloads, [payload]
             payloads[name] = payload
@@ -200,9 +285,11 @@ class AuditorGraph:
                 return False, payloads, gate_errors
         if self.spec_file:
             ok, payload = run_td_gate(
-                "verify-scope", self.worktree_root,
+                "verify-scope",
+                self.worktree_root,
                 runner=self.td_runner,
-                extra_args=["--spec-file", self.spec_file])
+                extra_args=["--spec-file", self.spec_file],
+            )
             if not ok:
                 return False, payloads, [payload]
             payloads["verify-scope"] = payload
@@ -210,19 +297,30 @@ class AuditorGraph:
                 errors.append("verify-scope: gate reported passed=false")
         for argv in self.verification_commands:
             try:
-                proc = subprocess.run(
-                    list(argv), capture_output=True, text=True,
-                    timeout=600, cwd=self.worktree_root)
+                with verification_env(self.worktree_root) as env:
+                    proc = subprocess.run(
+                        list(argv),
+                        capture_output=True,
+                        text=True,
+                        timeout=600,
+                        cwd=self.worktree_root,
+                        env=env,
+                        check=False,
+                    )
             except Exception as exc:
                 return False, payloads, [f"verify {' '.join(argv)}: {exc}"]
             if proc.returncode != 0:
                 tail = (proc.stderr or proc.stdout or "")[-500:]
-                return False, payloads, [
-                    f"verify {' '.join(argv)}: exit "
-                    f"{proc.returncode}: {tail}"]
-        failed = [(n, p) for n, p in payloads.items()
-                  if isinstance(p, dict) and
-                  (p.get("violations") or p.get("passed") is False)]
+                return (
+                    False,
+                    payloads,
+                    [f"verify {' '.join(argv)}: exit {proc.returncode}: {tail}"],
+                )
+        failed = [
+            (n, p)
+            for n, p in payloads.items()
+            if isinstance(p, dict) and (p.get("violations") or p.get("passed") is False)
+        ]
         errors.extend(collect_gate_violations(failed))
         if errors:
             return False, payloads, errors
@@ -230,17 +328,57 @@ class AuditorGraph:
 
     def build_verdict(self, state):
         """Structured audit verdict (status + evidence)."""
-        approved = bool(state.get("approved"))
+        verified = review_verified(state.get("findings", ""))
+        approved = (
+            bool(state.get("approved"))
+            and verified
+            and not blocking_findings(state.get("findings", ""))
+        )
         gate = state.get("gate", {}) or {}
         impacted = []
         for payload in gate.values():
             if isinstance(payload, dict):
                 impacted.extend(payload.get("impacted_files") or [])
-        return {"status": "APPROVED" if approved else "CHANGES_REQUESTED",
-                "valid": state.get("valid"),
-                "impacted_files": sorted(set(impacted)),
-                "findings": state.get("findings", ""),
-                "errors": state.get("errors", [])}
+        return {
+            "status": "APPROVED" if approved else "CHANGES_REQUESTED",
+            "verified": verified,
+            "valid": state.get("valid"),
+            "impacted_files": sorted(set(impacted)),
+            "findings": state.get("findings", ""),
+            "errors": state.get("errors", []),
+        }
+
+    def semantic_payload(self, gate_payload):
+        if not self.spec_file:
+            raise ValueError("Semantic audit requires an issue spec file")
+        spec_path = os.path.join(self.worktree_root, self.spec_file)
+        with open(spec_path, encoding="utf-8") as handle:
+            spec = handle.read()
+        subprocess.run(
+            ["git", "add", "--intent-to-add", "--all", "--", "."],
+            cwd=self.worktree_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        diff = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "origin/main",
+                "--",
+            ],
+            cwd=self.worktree_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        if not diff.strip():
+            raise ValueError("Semantic audit has no diff to verify")
+        return {"diff": diff, "spec": spec, "gate": gate_payload}
 
     def audit_once(self, gate_payload):
         """LLM audit pass (injected in tests)."""
@@ -249,41 +387,122 @@ class AuditorGraph:
         from langchain.agents import create_agent
         import model_router
         import ask_investigator
+        from issue_generator import InvestigationTruncated, investigation_tool_guard
+        from langgraph.errors import GraphRecursionError
+        from llm_usage import usage_callback
+
+        self.audit_truncated = False
+        limit = int(os.environ.get("S5_AUDIT_RECURSION_LIMIT", "25"))
+        if limit <= 0:
+            raise ValueError("S5_AUDIT_RECURSION_LIMIT must be a positive integer")
+        payload = self.semantic_payload(gate_payload)
+
         override = os.environ.get("S5_AUDIT_MODEL", "").strip()
         spec = model_router.resolve_llm()
         if override:
             spec = dict(spec, model=override)
         model, _spec = model_router.build_chat_model(spec=spec)
         self.last_model_spec = dict(_spec)
+        callback = usage_callback(
+            self.last_model_spec,
+            self.thread_id,
+            script="auditor.py",
+            stage="audit",
+            phase="semantic",
+        )
+        self.review_calls_metered = True
+        evidence = []
         agent = create_agent(
-            model, [ask_investigator.search_docs,
-                    ask_investigator.read_repo_file,
-                    ask_investigator.grep_repo])
+            model,
+            [
+                ask_investigator.search_docs,
+                ask_investigator.read_repo_file,
+                ask_investigator.grep_repo,
+            ],
+            middleware=[investigation_tool_guard(evidence)],
+        )
         user_content = (
             "Audit these changes for rule violations and risky blast "
-            "radius. Reply with numbered findings.\n\n"
-            f"Gate payload:\n{json.dumps(gate_payload)[:4000]}")
+            "radius against the supplied issue spec (Goal, Definition of Done and "
+            "acceptance criteria) and actual diff. Return only JSON "
+            '{"verified": true|false, "findings": [{"severity": "low|medium|high|critical", '
+            '"description": "..."}]}; use an empty findings list when clear.\n\n'
+            "Set verified=true only after verifying the diff against the spec. "
+            "Missing evidence, incomplete checks or uncertainty require verified=false. "
+            "Deterministic gates alone are not semantic verification.\n\n"
+            f"Audit payload:\n{json.dumps(payload)}"
+        )
         user_content = skills_registry.SkillsRegistry().inject_skills_for_node(
-            "deep_semantic_auditor_node", user_content)
-        result = agent.invoke(
-            {"messages": [{"role": "user", "content": user_content}]})
-        messages = result.get("messages", []) if isinstance(
-            result, dict) else []
+            "deep_semantic_auditor_node", user_content
+        )
+        previous = ask_investigator._checkout
+        ask_investigator._checkout = self.worktree_root
+        error = None
+        try:
+            result = agent.invoke(
+                {"messages": [{"role": "user", "content": user_content}]},
+                config={"recursion_limit": limit, "callbacks": [callback]},
+            )
+        except (InvestigationTruncated, GraphRecursionError) as exc:
+            self.audit_truncated = True
+            text = next(
+                (
+                    m.content
+                    for m in reversed(callback.messages)
+                    if not getattr(m, "tool_calls", []) and m.content
+                ),
+                "",
+            )
+            return json.dumps(
+                {
+                    "status": "CHANGES_REQUESTED",
+                    "verified": False,
+                    "truncated": True,
+                    "findings": [
+                        {
+                            "severity": "high",
+                            "description": f"Semantic audit truncated ({type(exc).__name__}: {exc}); verification incomplete, human review required.",
+                            "evidence": evidence,
+                            "last_ai_text": text,
+                        }
+                    ],
+                }
+            )
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            callback.close(
+                error or RuntimeError("audit ended with an unfinished model call")
+            )
+            self.record_review_usage(callback.messages)
+            ask_investigator._checkout = previous
+        messages = result.get("messages", []) if isinstance(result, dict) else []
         self.record_review_usage(messages)
-        texts = [getattr(m, "content", "") or "" for m in messages]
-        return "\n\n".join(t for t in texts if t) or "no findings"
+        final = messages[-1] if messages else None
+        text = (
+            getattr(final, "content", "")
+            if getattr(final, "type", "") == "ai"
+            and not getattr(final, "tool_calls", [])
+            else ""
+        )
+        review = parse_review(text)
+        return json.dumps(
+            {
+                "verified": review_verified(review),
+                "findings": review.get("findings")
+                if isinstance(review.get("findings"), list)
+                else [
+                    {
+                        "severity": "high",
+                        "description": "Semantic audit returned no final AI verdict in the required JSON schema; human review required.",
+                    }
+                ],
+            }
+        )
 
     def record_review_usage(self, messages):
-        """Stash summed review-turn token usage for the persist row.
-
-        Review LLM calls were metered nowhere (only coder
-        implement+fixup rows carried spend, so per-task cost was
-        incomplete — #1160): the persist node files this usage, so
-        review tokens price like any other turn. Pure aggregation
-        over message usage_metadata; None until a real review runs
-        (injected audit_fn in tests records no usage). Never
-        raises.
-        """
+        """Keep aggregate usage as verdict metadata; calls are ledgered separately."""
         try:
             import ledger
 
@@ -317,12 +536,12 @@ class AuditorGraph:
         ask_investigator._repo = repo
         ask_investigator._checkout = s5tools.checkout_for(repo)
         try:
-            tools = [getattr(ask_investigator, name)
-                     for name in ASK_TOOL_NAMES]
-            from backend.exec.engine import (
-                ALLOWED_TD_COMMANDS as allowed_td)
-            system = (f"Repo: {repo}. " + ASK_SYSTEM.format(
-                allowed_td="\n".join(allowed_td)))
+            tools = [getattr(ask_investigator, name) for name in ASK_TOOL_NAMES]
+            from backend.exec.engine import ALLOWED_TD_COMMANDS as allowed_td
+
+            system = f"Repo: {repo}. " + ASK_SYSTEM.format(
+                allowed_td="\n".join(allowed_td)
+            )
             if agent_factory is None:
                 import model_router
 
@@ -336,15 +555,14 @@ class AuditorGraph:
                 think = os.environ.get("ASK_THINK", "") == "1"
                 try:
                     model, resolved = model_router.build_chat_model(
-                        spec=spec, think=think)
+                        spec=spec, think=think
+                    )
                 except RuntimeError as exc:
                     raise ModelUnavailableError(str(exc)) from exc
-                model_label = (f"{resolved.get('provider')}:"
-                               f"{resolved.get('model')}")
+                model_label = f"{resolved.get('provider')}:{resolved.get('model')}"
                 from langchain.agents import create_agent
 
-                agent = create_agent(model=model, tools=tools,
-                                     system_prompt=system)
+                agent = create_agent(model=model, tools=tools, system_prompt=system)
             else:
                 model_label = "test:model"
                 agent = agent_factory(tools, system)
@@ -355,22 +573,22 @@ class AuditorGraph:
         finally:
             ask_investigator._repo = prev_repo
             ask_investigator._checkout = prev_checkout
-        if not isinstance(result, dict) or not isinstance(
-                result.get("messages"), list):
+        if not isinstance(result, dict) or not isinstance(result.get("messages"), list):
             # Flag, don't silently ledger an empty clean row: the
             # driver records this as the run error (issue #1157).
-            raise ValueError(
-                f"malformed agent result: {type(result).__name__}")
+            raise ValueError(f"malformed agent result: {type(result).__name__}")
         messages = result["messages"]
-        tool_names = [c.get("name", "?")
-                      for m in messages
-                      for c in _message_tool_calls(m)]
-        texts = [_message_text(m) for m in messages
-                 if not _is_tool_message(m)]
-        reply = next((t for t in reversed(texts) if t.strip()),
-                     "")
-        return {"reply": reply, "tool_names": tool_names,
-                "messages": messages, "model_label": model_label}
+        tool_names = [
+            c.get("name", "?") for m in messages for c in _message_tool_calls(m)
+        ]
+        texts = [_message_text(m) for m in messages if not _is_tool_message(m)]
+        reply = next((t for t in reversed(texts) if t.strip()), "")
+        return {
+            "reply": reply,
+            "tool_names": tool_names,
+            "messages": messages,
+            "model_label": model_label,
+        }
 
     def build_graph(self):
         """Compile the audit loop (needs langgraph)."""
@@ -395,8 +613,12 @@ class AuditorGraph:
 
         def hard_gate_node(state):
             valid, payloads, errors = outer.hard_gate()
-            return {"valid": valid, "gate": payloads, "errors": errors,
-                    "attempts": state.get("attempts", 0) + 1}
+            return {
+                "valid": valid,
+                "gate": payloads,
+                "errors": errors,
+                "attempts": state.get("attempts", 0) + 1,
+            }
 
         def ux_audit_node(state):
             if state.get("findings") and not state.get("errors"):
@@ -407,14 +629,23 @@ class AuditorGraph:
             if state.get("approved"):
                 return {}
             gate = state.get("gate", {}) or {}
-            impacted = sorted({
-                f for p in gate.values() if isinstance(p, dict)
-                for f in (p.get("impacted_files") or [])})
-            reply = interrupt({"findings": state.get("findings", ""),
-                               "impacted": impacted,
-                               "errors": state.get("errors", [])})
+            impacted = sorted(
+                {
+                    f
+                    for p in gate.values()
+                    if isinstance(p, dict)
+                    for f in (p.get("impacted_files") or [])
+                }
+            )
+            reply = interrupt(
+                {
+                    "findings": state.get("findings", ""),
+                    "impacted": impacted,
+                    "errors": state.get("errors", []),
+                }
+            )
             decision = (reply or {}).get("decision", "approve")
-            if decision == "approve":
+            if decision == "approve" and review_verified(state.get("findings")):
                 return {"approved": True}
             notes = (reply or {}).get("notes", "")
             errors = list(state.get("errors", []))
@@ -432,26 +663,42 @@ class AuditorGraph:
         def persist_node(state):
             import decisions
             import ledger
+
             verdict = outer.build_verdict(dict(state))
-            calls = [{"name": "td audit-code + td audit-impact",
-                      "args": outer.worktree_root}]
+            calls = [
+                {"name": "td audit-code + td audit-impact", "args": outer.worktree_root}
+            ]
             lines = decisions.build_decisions(
-                calls, [f"valid={state.get('valid')}"],
+                calls,
+                [f"valid={state.get('valid')}"],
                 (state.get("findings", "") or "")[:500],
-                reason="audit loop closed")
+                reason="audit loop closed",
+            )
             model_spec = outer.last_model_spec or {}
-            model_label = (model_spec.get("model")
-                           or os.environ.get("S5_AUDIT_MODEL", "qwen3:8b"))
+            model_label = model_spec.get("model") or os.environ.get(
+                "S5_AUDIT_MODEL", "qwen3:8b"
+            )
             ledger.record(
-                "auditor.py", model_label,
-                outer.thread_id, [], time.time(),
-                extra={"valid": state.get("valid"),
-                       "worktree_root": outer.worktree_root,
-                       "decisions": lines,
-                       "verdict": verdict,
-                       "gate": state.get("gate", {})},
+                "auditor.py",
+                model_label,
+                outer.thread_id,
+                [],
+                time.time(),
+                extra={
+                    "valid": state.get("valid"),
+                    **(
+                        {"stage": "audit", "phase": "summary", "llm_call": False}
+                        if outer.review_calls_metered
+                        else {}
+                    ),
+                    "worktree_root": outer.worktree_root,
+                    "decisions": lines,
+                    "verdict": verdict,
+                    "gate": state.get("gate", {}),
+                },
                 usage=outer.last_review_usage,
-                provider=model_spec.get("provider"))
+                provider=model_spec.get("provider"),
+            )
             return {"persisted": True, "verdict": verdict}
 
         builder = StateGraph(AuditState)
@@ -463,30 +710,33 @@ class AuditorGraph:
         builder.add_conditional_edges(
             "hard_gate",
             lambda s: "ux_audit" if s.get("valid") else END,
-            {"ux_audit": "ux_audit", END: END})
+            {"ux_audit": "ux_audit", END: END},
+        )
         builder.add_edge("ux_audit", "human_review")
         builder.add_conditional_edges(
-            "human_review", route_review,
-            {"persist": "persist", "gate": "hard_gate", END: END})
+            "human_review",
+            route_review,
+            {"persist": "persist", "gate": "hard_gate", END: END},
+        )
         builder.add_edge("persist", END)
         return builder.compile(checkpointer=self._checkpointer)
 
     def run(self, resume=None):
         """Invoke to completion (or interrupt); resume via Command."""
         from langgraph.types import Command
+
         graph = self.build_graph()
         config = {"configurable": {"thread_id": self.thread_id}}
         if resume is None:
-            return graph.invoke({"errors": [], "attempts": 0,
-                                 "valid": False, "approved": False},
-                                config)
+            return graph.invoke(
+                {"errors": [], "attempts": 0, "valid": False, "approved": False}, config
+            )
         return graph.invoke(Command(resume=resume), config)
 
 
 def _short_line(content, limit=160):
     """First line of a tool result, capped for phone-sized tails."""
-    line = str(content).strip().splitlines()[0] \
-        if str(content).strip() else ""
+    line = str(content).strip().splitlines()[0] if str(content).strip() else ""
     return line if len(line) <= limit else line[:limit] + "…"
 
 
@@ -506,8 +756,7 @@ def main(argv=None) -> int:
 
     argv = sys.argv if argv is None else argv
     if len(argv) < 3 or not s5tools.valid_repo(argv[1]):
-        return cli.usage_error(
-            "usage: auditor.py owner/repo <b64-prompt> [thread]")
+        return cli.usage_error("usage: auditor.py owner/repo <b64-prompt> [thread]")
     repo = argv[1]
     if len(argv) > 3:
         thread, raw = argv[2], argv[3]
@@ -520,47 +769,62 @@ def main(argv=None) -> int:
     started = time.time()
     print(f"Asking {repo} (auditor tool path)…", flush=True)
     try:
-        out = AuditorGraph(worktree_root=os.getcwd()).ask_once(
-            prompt, repo)
+        out = AuditorGraph(worktree_root=os.getcwd()).ask_once(prompt, repo)
     except ModelUnavailableError as exc:
         # No model to ask (resolve/build fail-closed): sorry on
         # stdout + exit 1 with no ledger row is the documented
         # invalid shape (eval_lib.INVALID_RE), not an agent failure.
-        return cli.sorry(
-            f"Sorry, no model is available right now: {exc}")
+        return cli.sorry(f"Sorry, no model is available right now: {exc}")
     except RuntimeError as exc:
         # Tool-impl / create_agent failure: a real agent failure, not
         # infra. Clean error line (no traceback) + error row, so the
         # gate verdicts FAIL instead of masking as invalid (#1157).
         ledger.record(
-            "auditor.py", "unknown:model", thread,
-            [], started,
-            extra={"repo": repo, "mode": "ask", "prompt": prompt,
-                   "error": str(exc)[:200]},
+            "auditor.py",
+            "unknown:model",
+            thread,
+            [],
+            started,
+            extra={
+                "repo": repo,
+                "mode": "ask",
+                "prompt": prompt,
+                "error": str(exc)[:200],
+            },
         )
         print(f"error: {exc}", flush=True)
         return 1
     except Exception as exc:
         try:
             ledger.record(
-                "auditor.py", "unknown:model", thread,
-                [], started,
-                extra={"repo": repo, "mode": "ask", "prompt": prompt,
-                       "error": str(exc)[:200]},
+                "auditor.py",
+                "unknown:model",
+                thread,
+                [],
+                started,
+                extra={
+                    "repo": repo,
+                    "mode": "ask",
+                    "prompt": prompt,
+                    "error": str(exc)[:200],
+                },
             )
         finally:
             raise
     messages = out["messages"]
     ledger.record(
-        "auditor.py", out["model_label"], thread, messages, started,
+        "auditor.py",
+        out["model_label"],
+        thread,
+        messages,
+        started,
         extra={"repo": repo, "mode": "ask", "prompt": prompt},
     )
     calls = sum(len(_message_tool_calls(m)) for m in messages)
     print(f"tool_calls_made: {calls}")
     elapsed = time.time() - started
     print(f"done in {elapsed:.1f}s")
-    outcomes = [_short_line(_message_text(m))
-                for m in messages if _is_tool_message(m)]
+    outcomes = [_short_line(_message_text(m)) for m in messages if _is_tool_message(m)]
     outcomes = [line for line in outcomes if line]
     print("REPORT (authoritative, from tool results):")
     if outcomes:

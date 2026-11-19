@@ -54,6 +54,8 @@ from s5tools import (  # noqa: E402,F401
     check_allowed,
     check_env,
     parse_check_command,
+    verification_env,
+    verification_guidance,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -93,13 +95,17 @@ VERIFY_NUDGE = (
     "do not finish without a passing run."
 )
 
-CODER_RULES = """You are implementing the task below in the checkout at {worktree}. Rules:
+CODER_RULES = (
+    """You are implementing the task below in the checkout at {worktree}. Rules:
 - File paths are repo-relative like frontend/src/views/NowView.tsx; never use absolute paths or a leading /.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
 - Verify with run_check (the touched area's tests/lint) before finishing.
 - Do NOT commit, push, or open PRs; leave changes in the working tree.
 - End with a short summary: files changed + verification run, then a final DONE #<issue> or BLOCKED #<issue> line."""
+    + "\n\n"
+    + verification_guidance()
+)
 
 # Plan-then-implement (#654): deterministic multi-file bar, no LLM
 # judge. CODER_PLAN=always forces planning, =never skips it.
@@ -118,7 +124,8 @@ FILE_TOKEN_RE = re.compile(
 URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 PROSE_ABBREVS = frozenset({"e.g", "i.e"})
 
-PLAN_PROMPT = """Before writing any code, produce an implementation plan for the task below. Call the propose_plan tool exactly once with your plan, then stop. Do not call any other tool. Do not write or edit any file.
+PLAN_PROMPT = (
+    """Before writing any code, produce an implementation plan for the task below. Call the propose_plan tool exactly once with your plan, then stop. Do not call any other tool. Do not write or edit any file.
 
 Plan shape — numbered steps; each step names its files and its checks:
 PLAN:
@@ -127,6 +134,9 @@ PLAN:
 
 Task:
 {brief}"""
+    + "\n\n"
+    + verification_guidance()
+)
 
 # Replan/runbook skill for the plan + validated_replanner loop. The
 # registry tolerates a missing skills dir (worktrees), yielding PLAN_PROMPT
@@ -231,6 +241,7 @@ def build_model(model_override=None):
     import model_router  # noqa: E402
 
     spec = model_router.resolve_llm()
+    model_override = model_override or os.environ.get("CODER_MODEL", "").strip()
     if model_override:
         spec = dict(spec, model=model_override)
     think = os.environ.get("CODER_THINK", "") == "1"
@@ -241,7 +252,7 @@ def _default_plan_fn(brief, worktree_root, context):
     """Out-of-the-box planner: model proposes plan + files, parsed
     deterministically. Injectable seam is build_model (monkeypatch in
     tests); the graph signature stays (brief, root, context)."""
-    model, _spec = build_model()
+    model, spec = build_model()
     context = dict(context or {})
     skills = (context.get("skills") or "").strip()
     skills_block = "\n\n---\n\nSkills:\n" + skills if skills else ""
@@ -250,14 +261,64 @@ def _default_plan_fn(brief, worktree_root, context):
         "Reply with a numbered step list, one step per line, each "
         "naming its files like [files: path1, path2]. "
         "Keep it to the brief; no questions."
+        f"\n\n{verification_guidance()}"
         f"{skills_block}"
         f"\n\nBrief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
     )
-    text = _model_text(model.invoke(prompt))
+    reply = None
+    error = ""
+    started = time.time()
+    recorder = None
+    if spec.get("model"):
+        import ledger
+        import observe
+
+        thread = context.get("thread_id") or f"coder-plan-{time.time_ns()}"
+        recorder = observe.TraceRecorder(
+            observe.default_trace_path("coder_plan", thread)
+        )
+        recorder.run_start("coder.py", thread, spec["model"])
+        recorder.model_request(1)
+    try:
+        reply = model.invoke(prompt)
+    except Exception as exc:
+        error = type(exc).__name__
+        raise
+    finally:
+        if recorder is not None:
+            messages = [reply] if reply is not None else []
+            usage = ledger._usage_total(messages)
+            known = bool(getattr(reply, "usage_metadata", None)) or bool(
+                (getattr(reply, "response_metadata", None) or {}).get(
+                    "prompt_eval_count"
+                )
+            )
+            recorder.model_response(usage)
+            recorder.run_end(ok=reply is not None)
+            recorder.close()
+            ledger.record(
+                "coder.py",
+                spec["model"],
+                thread,
+                messages,
+                started,
+                usage=usage,
+                provider=spec.get("provider"),
+                extra={
+                    "stage": "code",
+                    "phase": "plan",
+                    "llm_call": True,
+                    "usage_missing": not known,
+                    "trace": recorder.path,
+                    **({"error": error} if error else {}),
+                },
+            )
+    text = _model_text(reply)
     return {
         "plan": text.strip(),
         "allowed_files": files_named(text),
         "verification_commands": [],
+        "model_spec": spec,
     }
 
 
@@ -321,14 +382,16 @@ def build_check_tool(worktree):
         import subprocess  # noqa: E402
 
         try:
-            proc = subprocess.run(
-                argv,
-                cwd=worktree,
-                capture_output=True,
-                text=True,
-                timeout=CHECK_TIMEOUT,
-                env={**os.environ, **check_env(worktree)},
-            )
+            with verification_env(worktree) as env:
+                proc = subprocess.run(
+                    argv,
+                    cwd=worktree,
+                    capture_output=True,
+                    text=True,
+                    timeout=CHECK_TIMEOUT,
+                    env=env,
+                    check=False,
+                )
         except subprocess.TimeoutExpired:
             return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
         except OSError as exc:
@@ -1299,6 +1362,8 @@ def _cmd_resume(
 
 def main(argv=None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
+    if args.model:
+        os.environ["CODER_MODEL"] = args.model
     if args.resume:
         if not args.thread:
             return cli.usage_error("--thread is required with --resume")
@@ -1425,6 +1490,7 @@ class InitCoderGraph:
         self.max_fix_loops = max_fix_loops
         self.max_replans = max_replans
         self.thread_id = thread_id or f"coder-{issue_id}-{int(time.time())}"
+        self.last_model_spec = {}
 
     @staticmethod
     def _default_td_runner(args, cwd):
@@ -1556,7 +1622,7 @@ class InitCoderGraph:
         """Compile the coding loop (needs langgraph)."""
         from langgraph.checkpoint.memory import InMemorySaver
         from langgraph.graph import END, START, StateGraph
-        from langgraph.types import Command, interrupt
+        from langgraph.types import interrupt
         from typing_extensions import TypedDict
 
         if getattr(self, "_checkpointer", None) is None:
@@ -1608,7 +1674,10 @@ class InitCoderGraph:
             result = outer.plan_fn(
                 outer.brief,
                 state.get("worktree_root", ""),
-                {"errors": state.get("errors", [])},
+                {"errors": state.get("errors", []), "thread_id": outer.thread_id},
+            )
+            outer.last_model_spec = dict(
+                result.get("model_spec") or outer.last_model_spec
             )
             allowed = list(result.get("allowed_files", []))
             commands = list(result.get("verification_commands", []))
@@ -1693,6 +1762,9 @@ class InitCoderGraph:
             if skills_text:
                 context["skills"] = skills_text
             result = outer.plan_fn(outer.brief, state.get("worktree_root", ""), context)
+            outer.last_model_spec = dict(
+                result.get("model_spec") or outer.last_model_spec
+            )
             return {
                 "plan": result.get("plan", ""),
                 "allowed_files": list(result.get("allowed_files", [])),
@@ -1723,16 +1795,20 @@ class InitCoderGraph:
             )
             ledger.record(
                 "coder.py",
-                os.environ.get("S5_CODER_MODEL", "qwen3:8b"),
+                outer.last_model_spec.get("model") or "none",
                 outer.thread_id,
                 [],
                 time.time(),
                 extra={
+                    "stage": "code",
+                    "phase": "summary",
+                    "llm_call": False,
                     "valid": state.get("valid"),
                     "issue_id": outer.issue_id,
                     "worktree_root": state.get("worktree_root", ""),
                     "decisions": lines,
                 },
+                provider=outer.last_model_spec.get("provider"),
             )
             return {"persisted": True}
 

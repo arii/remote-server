@@ -966,7 +966,6 @@ def build_model(prefer=None):
     prefer is the per-turn provider override; None keeps
     today's ladder (env contract applies)."""
     spec = model_router.resolve_llm(prefer=prefer)
-    kwargs = model_router.chat_kwargs(spec)
     # No-think is the production setting: on this CPU-only box a qwen3
     # thinking trace takes 15+ min per prompt. CHAT_THINK=1 re-enables.
     # Bounded context for the same reason: the default Ollama window
@@ -974,18 +973,12 @@ def build_model(prefer=None):
     # in context_budget (16384, matching .env.example) — OLLAMA_NUM_CTX
     # overrides, and every share derives from this one number.
     think = os.environ.get("CHAT_THINK", "") == "1"
+    num_ctx = None
     if spec["provider"] == "ollama":
-        from langchain_ollama import ChatOllama  # noqa: E402
-
         from backend.exec import context_budget  # noqa: E402
 
-        kwargs["num_ctx"] = context_budget.num_ctx()
-        if not think:
-            kwargs["model_kwargs"] = {"think": False}
-        return ChatOllama(**kwargs), spec
-    from langchain_openai import ChatOpenAI  # noqa: E402
-
-    return ChatOpenAI(api_key=model_router.api_key(spec), **kwargs), spec
+        num_ctx = context_budget.num_ctx()
+    return model_router.build_chat_model(spec=spec, think=think, num_ctx=num_ctx)
 
 
 def _invoke_with_failover(model, spec, messages):

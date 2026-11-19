@@ -16,8 +16,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
+from threading import Lock
 
 import skills_registry
+from s5tools import verification_guidance
 
 REQUIRED_SECTIONS = (
     "Problem Statement",
@@ -27,6 +30,123 @@ REQUIRED_SECTIONS = (
 )
 
 MAX_LOOPS_DEFAULT = 5
+SPEC_RECURSION_LIMIT_DEFAULT = 25
+_URL_RE = re.compile(
+    r"https?://[^\s`<>()[\]]+|(?<![\w:/])//[^\s`<>()[\]]+", re.IGNORECASE
+)
+
+
+def clean_allowed_file_urls(text):
+    lines = []
+    allowed = False
+    for line in text.splitlines(keepends=True):
+        heading = re.match(r"^\s*#{1,6}\s+(.+)", line)
+        if heading:
+            allowed = heading[1].lower().startswith(("allowed files", "allowed paths"))
+        elif allowed and _URL_RE.search(line):
+            line = _URL_RE.sub("", line)
+            line = re.sub(r"\[[^\]]*\]\(\s*\)", "", line)
+            line = re.sub(r"`{2,}", "", line)
+            if not line.strip(" \t\r\n-*+`[]()"):
+                continue
+        lines.append(line)
+    return "".join(lines)
+
+
+def explicit_allowed_paths(text):
+    paths = []
+    allowed = False
+    for line in clean_allowed_file_urls(text).splitlines():
+        heading = re.match(r"^\s*#{1,6}\s+(.+)", line)
+        if heading:
+            allowed = heading[1].lower().startswith(("allowed files", "allowed paths"))
+        elif allowed:
+            match = re.match(r"^\s*[-*+]\s+`?([^`\s]+)", line)
+            if match:
+                path = match[1]
+                while path.startswith("./"):
+                    path = path[2:]
+                if ("/" in path or "." in path) and path not in paths:
+                    paths.append(path)
+    return paths
+
+
+class InvestigationTruncated(RuntimeError):
+    pass
+
+
+def investigation_tool_guard(results=None):
+    from langchain.agents.middleware import wrap_tool_call
+    from langchain_core.messages import ToolMessage
+
+    seen = set()
+    repeats = 0
+    lock = Lock()
+
+    @wrap_tool_call
+    def stop_repeated_call(request, handler):
+        nonlocal repeats
+        call = request.tool_call
+        key = (call["name"], json.dumps(call["args"], sort_keys=True))
+        with lock:
+            if key in seen:
+                repeats += 1
+                if repeats >= 3:
+                    raise InvestigationTruncated(
+                        "Repeated investigation tool call limit reached (3 repeats): "
+                        f"{key[0]} {key[1]}"
+                    )
+                return ToolMessage(
+                    content="Already called with these args; result was shown earlier "
+                    "— use it or call a different tool.",
+                    tool_call_id=call["id"],
+                    status="error",
+                )
+            seen.add(key)
+        result = handler(request)
+        content = getattr(result, "content", result)
+        if (
+            results is not None
+            and str(content).strip()
+            and getattr(result, "status", "") != "error"
+        ):
+            with lock:
+                results.append(f"{key[0]} {key[1]}: {str(content)[:500]}")
+        return result
+
+    return stop_repeated_call
+
+
+def completed_spec(state, allowed_path=None):
+    parts = [state.get("draft", "")]
+    if state.get("evidence"):
+        parts.append("## Investigation Evidence\n" + state["evidence"])
+    if state.get("answers"):
+        parts.append(
+            "## Q&A Context\n"
+            + "\n".join(f"- **{k}**: {v}" for k, v in sorted(state["answers"].items()))
+        )
+    text = clean_allowed_file_urls(
+        "\n\n".join(part for part in parts if part).rstrip() + "\n"
+    )
+    if allowed_path and allowed_path not in explicit_allowed_paths(text):
+        entry = f"- `{allowed_path}` (new)\n"
+        text, count = re.subn(
+            r"(?im)^(\s*#{1,6}\s+Allowed (?:Files|Paths)[^\n]*\n)",
+            lambda match: match[0] + entry,
+            text,
+            count=1,
+        )
+        if not count:
+            text += "\n## Scope\n### Allowed Files\n" + entry
+    return text
+
+
+def write_spec(path, text):
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+
 
 # Sanctioned Ollama endpoint (issue #1085): OLLAMA_URL override, else
 # the compose-network host. Never raw localhost — unreachable inside
@@ -130,6 +250,7 @@ class IssueGeneratorGraph:
         td_runner=None,
         max_loops=MAX_LOOPS_DEFAULT,
         thread_id=None,
+        event_fn=None,
     ):
         self.repo_root = os.path.abspath(repo_root or os.getcwd())
         self.model_fn = model_fn
@@ -138,6 +259,8 @@ class IssueGeneratorGraph:
         self.max_loops = max_loops
         self.thread_id = thread_id or f"issuegen-{int(time.time())}"
         self.last_spec = None
+        self.event_fn = event_fn
+        self.investigation_truncated = False
 
     # -- deterministic pieces (pure, unit-tested) --------------------
 
@@ -158,12 +281,22 @@ class IssueGeneratorGraph:
         return True, payload
 
     def validate_spec(self, spec_text):
-        """Validate via td validate-issue; return (valid, data, errors)."""
+        """Validate citation-free scope text, preserving commands and stored links."""
         handle = tempfile.NamedTemporaryFile(
             mode="w", suffix=".md", delete=False, encoding="utf-8"
         )
         try:
-            handle.write(spec_text)
+            in_fence = False
+            for line in clean_allowed_file_urls(spec_text).splitlines(keepends=True):
+                if line.strip().startswith("```"):
+                    in_fence = not in_fence
+                handle.write(
+                    line
+                    if in_fence
+                    else re.sub(
+                        r"(?<![\w./])(?:\./)+(?=[\w])", "", _URL_RE.sub("", line)
+                    )
+                )
             handle.close()
             try:
                 code, out = self.td_runner(
@@ -185,7 +318,22 @@ class IssueGeneratorGraph:
             errors = list(data.get("errors") or [])
             if code != 0 and not errors:
                 errors = [(data.get("message") or out[:300] or f"exit {code}")]
-            return bool(data.get("valid")), data, errors
+            paths = explicit_allowed_paths(spec_text)
+            scope_error = re.compile(
+                r"^allowed path not in checkout: (.+?) \(mark with"
+            )
+            original_errors = list(errors)
+            errors = [
+                error
+                for error in errors
+                if not (match := scope_error.match(error)) or match[1] in paths
+            ]
+            for path in paths:
+                if path.startswith("/") or ".." in path.split("/"):
+                    errors.append(f"allowed path must be repo-relative: {path}")
+            valid = bool(data.get("valid") or original_errors) and not errors
+            data.update(allowed_files=paths, valid=valid, errors=errors)
+            return valid, data, errors
         finally:
             try:
                 os.unlink(handle.name)
@@ -193,6 +341,16 @@ class IssueGeneratorGraph:
                 pass
 
     # -- LLM pieces (injected in tests) -------------------------------
+
+    def _usage_callback(self, phase):
+        spec = dict(getattr(self, "last_spec", None) or {})
+        if not spec:
+            return None
+        from llm_usage import usage_callback
+
+        return usage_callback(
+            spec, self.thread_id, script="issue_generator.py", stage="spec", phase=phase
+        )
 
     def _model(self):
         if self.model_fn is not None:
@@ -288,6 +446,7 @@ class IssueGeneratorGraph:
             "relevant to the task and quote it — a spec that cites no "
             "repo file is rejected outright. Ask any blocking "
             "questions as a trailing bulleted list of questions.\n\n"
+            f"{verification_guidance()}\n\n"
             f"Task: {brief}\n\nContext:\n{context}\n"
         )
         if errors:
@@ -305,35 +464,91 @@ class IssueGeneratorGraph:
         prompt = skills_registry.SkillsRegistry().inject_skills_for_node(
             "draft_spec_node", prompt
         )
-        reply = model.invoke(prompt)
-        return getattr(reply, "content", reply) if not isinstance(reply, str) else reply
+        callback = self._usage_callback("draft")
+        reply = (
+            model.invoke(prompt, config={"callbacks": [callback]})
+            if callback
+            else model.invoke(prompt)
+        )
+        text = getattr(reply, "content", reply) if not isinstance(reply, str) else reply
+        return clean_allowed_file_urls(text)
 
     def investigate_text(self, brief, draft):
         """One investigate pass (LLM + tools). Tests inject this."""
+        self.investigation_truncated = False
         if self.investigate_fn is not None:
             return self.investigate_fn(brief, draft)
+        import ask_investigator
         from langchain.agents import create_agent
+        from langchain.agents.middleware import wrap_model_call
+        from langgraph.errors import GraphRecursionError
 
-        agent = create_agent(self._model(), self._investigator_tools())
-        result = agent.invoke(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": f"Gather evidence for: {brief}\n\n"
-                        f"Draft so far:\n{draft}\n\n"
-                        "Cite every factual claim with a "
-                        "repo file path (path:line). If you "
-                        "cannot read any repo file, say so "
-                        "explicitly instead of inventing "
-                        "content.",
-                    }
-                ]
-            }
+        try:
+            limit = int(
+                os.environ.get("S5_SPEC_RECURSION_LIMIT", SPEC_RECURSION_LIMIT_DEFAULT)
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "S5_SPEC_RECURSION_LIMIT must be a positive integer"
+            ) from exc
+        if limit <= 0:
+            raise ValueError("S5_SPEC_RECURSION_LIMIT must be a positive integer")
+        observed = {"messages": []}
+        results = []
+
+        @wrap_model_call
+        def capture_messages(request, handler):
+            response = handler(request)
+            observed["messages"].extend(response.result)
+            return response
+
+        agent = create_agent(
+            self._model(),
+            self._investigator_tools(),
+            middleware=[investigation_tool_guard(results), capture_messages],
         )
+        previous = ask_investigator._checkout
+        ask_investigator._checkout = self.repo_root
+        config = {"recursion_limit": limit}
+        callback = self._usage_callback("investigation")
+        if callback:
+            config["callbacks"] = [callback]
+        try:
+            result = agent.invoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"Gather evidence for: {brief}\n\n"
+                            f"Draft so far:\n{draft}\n\n"
+                            "Cite every factual claim with a "
+                            "repo file path (path:line). If you "
+                            "cannot read any repo file, say so "
+                            "explicitly instead of inventing "
+                            "content.",
+                        }
+                    ]
+                },
+                config=config,
+            )
+        except (InvestigationTruncated, GraphRecursionError) as exc:
+            self.investigation_truncated = True
+            if self.event_fn is not None:
+                self.event_fn(f"{type(exc).__name__}: {exc}")
+            result = observed
+        finally:
+            ask_investigator._checkout = previous
         messages = result.get("messages", []) if isinstance(result, dict) else []
-        texts = [getattr(m, "content", "") or "" for m in messages]
-        return "\n\n".join(t for t in texts if t) or draft
+        for message in reversed(messages):
+            if (
+                getattr(message, "type", "") == "ai"
+                and not getattr(message, "tool_calls", [])
+                and getattr(message, "content", "")
+            ):
+                return message.content
+        if self.investigation_truncated:
+            return "\n".join(results)[:6000]
+        return ""
 
     # -- graph ---------------------------------------------------------
 
@@ -402,7 +617,18 @@ class IssueGeneratorGraph:
                     ],
                     "off_brief": True,
                 }
-            return {"evidence": evidence}
+            update = {"evidence": evidence}
+            if outer.investigation_truncated:
+                update["draft"] = outer.draft_text(
+                    state.get("brief", ""),
+                    state.get("context", "")
+                    + "\n\nInvestigation evidence:\n"
+                    + evidence,
+                    state.get("errors", []),
+                    state.get("answers", {}),
+                )
+                update["attempts"] = state.get("attempts", 0) + 1
+            return update
 
         def qa_loop_node(state):
             answers = dict(state.get("answers", {}))
@@ -482,6 +708,9 @@ class IssueGeneratorGraph:
                 [],
                 time.time(),
                 extra={
+                    "stage": "spec",
+                    "phase": "summary",
+                    "llm_call": False,
                     "valid": state.get("valid"),
                     "attempts": state.get("attempts", 0),
                     "decisions": lines,
@@ -534,7 +763,7 @@ class IssueGeneratorGraph:
 
 
 def main(argv=None):
-    """CLI: --spec-file <path|-> [--qna-file <path>] [--max-loops N]."""
+    """CLI: --spec-file <path|-> [--out PATH] [--qna-file PATH] [--max-loops N]."""
     import cli as cli_helpers
 
     args = list(argv if argv is not None else sys.argv[1:])
@@ -542,10 +771,13 @@ def main(argv=None):
     qna_file = None
     max_loops = MAX_LOOPS_DEFAULT
     repo_root = None
+    out = None
     i = 0
     while i < len(args):
         if args[i] == "--spec-file" and i + 1 < len(args):
             spec_file, i = args[i + 1], i + 2
+        elif args[i] == "--out" and i + 1 < len(args):
+            out, i = args[i + 1], i + 2
         elif args[i] == "--qna-file" and i + 1 < len(args):
             qna_file, i = args[i + 1], i + 2
         elif args[i] == "--max-loops" and i + 1 < len(args):
@@ -584,10 +816,6 @@ def main(argv=None):
         return cli_helpers.sorry("Sorry, empty brief, nothing to do.")
     gen = IssueGeneratorGraph(repo_root=repo_root, max_loops=max_loops)
     try:
-        # Dead Command import; south lane owns this file
-        # (fix-issue-gen-backend): fold the removal in there.
-        from langgraph.types import Command  # noqa: F401
-
         state = gen.run(brief)
         rounds = 0
         while "__interrupt__" in state and rounds < max_loops + 1:
@@ -611,6 +839,11 @@ def main(argv=None):
     except RuntimeError as exc:
         return cli_helpers.sorry(f"Sorry, {exc}")
     if state.get("valid"):
+        if out:
+            try:
+                write_spec(out, completed_spec(state))
+            except OSError as exc:
+                return cli_helpers.sorry(f"Sorry, cannot write spec: {exc}")
         print(
             json.dumps(
                 {"status": "ready", "valid": True, "attempts": state.get("attempts", 0)}
