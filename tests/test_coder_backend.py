@@ -16,6 +16,54 @@ except ImportError:
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderBackend(unittest.TestCase):
+    def test_implementation_requires_tool_call_until_successful_grounding(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from tests.test_coder_outcome import LocalModel
+
+        choices = []
+
+        class Model(LocalModel):
+            def bind_tools(self, tools, **kwargs):
+                choices.append(kwargs.get("tool_choice"))
+                return self
+
+        with tempfile.TemporaryDirectory() as root:
+            model = Model(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/etc/passwd"},
+                                "id": "outside",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "ls",
+                                "args": {"path": "."},
+                                "id": "inside",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="BLOCKED #1"),
+                ]
+            )
+            agent = coder.build_agent(
+                root, coder.build_system(root, ""), model=model, written_files=set()
+            )
+            result = agent.invoke(
+                {"messages": [HumanMessage(content="Inspect repository")]}
+            )
+            self.assertEqual(choices, ["required", "required", None])
+            self.assertEqual(result["messages"][-1].content, "BLOCKED #1")
+
     def test_host_absolute_paths_inside_worktree_are_normalized(self):
         with tempfile.TemporaryDirectory() as root:
             target = Path(root, "new.py")

@@ -93,7 +93,8 @@ DITHER_EMPTY_NOTICE = (
 VERIFY_NUDGE = (
     "No passing run_check was recorded for your edits. Run the "
     "checks for your edits with run_check and fix any failures; "
-    "do not finish without a passing run."
+    "do not finish without a passing run. Invoke actual function tools; "
+    "printing JSON commands does not execute them."
 )
 
 CODER_RULES = (
@@ -101,6 +102,7 @@ CODER_RULES = (
 - File paths are repo-relative like frontend/src/views/NowView.tsx; never use absolute paths or a leading /.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
+- Invoke tools through the function-calling interface. Never print JSON commands or pretend a prose command executed.
 - Verify with run_check (the touched area's tests/lint) before finishing.
 - Do NOT commit, push, or open PRs; leave changes in the working tree.
 - End with a short summary: files changed + verification run, then a final DONE #<issue> or BLOCKED #<issue> line."""
@@ -498,6 +500,27 @@ def worktree_file_middleware(worktree, written_files):
     return guard_file_call
 
 
+def implementation_tool_middleware():
+    from langchain.agents.middleware import AgentMiddleware
+
+    def grounded_request(request):
+        if request.tools and not any(
+            message.type == "tool" and message.status == "success"
+            for message in request.messages
+        ):
+            return request.override(tool_choice="required")
+        return request
+
+    class GroundImplementation(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            return handler(grounded_request(request))
+
+        async def awrap_model_call(self, request, handler):
+            return await handler(grounded_request(request))
+
+    return GroundImplementation()
+
+
 def build_agent(
     worktree,
     system,
@@ -547,6 +570,8 @@ def build_agent(
         ),
         worktree_file_middleware(worktree, written_files),
     ]
+    if written_files is not None:
+        middleware.append(implementation_tool_middleware())
     if recorder is not None:
         import observe  # noqa: E402
 
