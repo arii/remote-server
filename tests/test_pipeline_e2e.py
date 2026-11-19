@@ -310,9 +310,55 @@ class TestSubmitArgv(unittest.TestCase):
         ok, url = pipe.stage_submit("/tmp/wt", "title", "body")
         self.assertTrue(ok)
         self.assertEqual(url, "https://example.invalid/pr/9")
-        self.assertEqual(seen[0][:3], ["agent", "submit-pr", "--worktree"])
+        self.assertEqual(seen[0][:4], ["--json", "agent", "submit-pr", "--worktree"])
+        self.assertEqual(seen[0].count("--json"), 1)
         self.assertIn("--issue", seen[0])
         self.assertIn("7", seen[0])
+
+    def test_submit_surfaces_stderr_and_exit_code(self):
+        result = mock.Mock(returncode=2, stdout="", stderr="No such option '--json'.")
+        pipe = pipeline_mod.Pipeline("/tmp", "intent")
+        with mock.patch.object(pipeline_mod.subprocess, "run", return_value=result):
+            ok, error = pipe.stage_submit("/tmp/wt", "title")
+        self.assertFalse(ok)
+        self.assertIn("exited with code 2", error)
+        self.assertIn("stderr: No such option '--json'.", error)
+        self.assertNotIn("non-object", error)
+
+    def test_submit_keeps_success_json_separate_from_stderr(self):
+        result = mock.Mock(
+            returncode=0,
+            stdout='{"url": "https://example.invalid/pr/9"}',
+            stderr="warning on stderr",
+        )
+        pipe = pipeline_mod.Pipeline("/tmp", "intent")
+        with mock.patch.object(pipeline_mod.subprocess, "run", return_value=result):
+            self.assertEqual(
+                pipe.stage_submit("/tmp/wt", "title"),
+                (True, "https://example.invalid/pr/9"),
+            )
+
+    def test_submit_preserves_both_failed_output_streams(self):
+        result = mock.Mock(returncode=1, stdout='{"status":"error"}', stderr="denied")
+        pipe = pipeline_mod.Pipeline("/tmp", "intent")
+        with mock.patch.object(pipeline_mod.subprocess, "run", return_value=result):
+            ok, error = pipe.stage_submit("/tmp/wt", "title")
+        self.assertFalse(ok)
+        self.assertIn('stdout: {"status":"error"}', error)
+        self.assertIn("stderr: denied", error)
+
+    def test_submit_empty_success_is_not_a_pr(self):
+        pipe = pipeline_mod.Pipeline("/tmp", "intent", td_run=lambda *args: (0, ""))
+        self.assertEqual(
+            pipe.stage_submit("/tmp/wt", "title"), (False, "non-object output: ")
+        )
+
+    def test_submit_nonzero_empty_output_reports_exit_code(self):
+        pipe = pipeline_mod.Pipeline("/tmp", "intent", td_run=lambda *args: (1, ""))
+        self.assertEqual(
+            pipe.stage_submit("/tmp/wt", "title"),
+            (False, "td agent submit-pr exited with code 1"),
+        )
 
 
 class TestRealTdSmoke(unittest.TestCase):
