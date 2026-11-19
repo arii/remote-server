@@ -47,6 +47,51 @@ class ReceiptTests(unittest.TestCase):
         fetch.assert_not_called()
         self.assertFalse(Path(ledger.LEDGER).exists())
 
+    def test_partial_settlement_survives_scope_exit_and_gateway_outage(self):
+        with mock.patch.object(receipts, "fetch") as fetch:
+            with receipts.run("partial") as scope:
+                first, second = scope.request(), scope.request()
+                fetch.side_effect = [[self.reply(first)], OSError("gateway down")]
+                scope.reconcile(timeout=0)
+                known = next(
+                    row
+                    for row in self.rows()
+                    if row["usage"]["twt_trace_ids"] == [first]
+                )
+            rows = {row["usage"]["twt_trace_ids"][0]: row for row in self.rows()}
+            self.assertEqual(rows[first], known)
+            self.assertIsNone(rows[second]["cost_usd"])
+            self.assertEqual(fetch.call_args.args[1], [second])
+            self.assertIsNotNone(scope.error)
+        recovered = receipts.ReceiptRun("partial")
+        recovered.ids, recovered.path = scope.ids, scope.path
+        fetch = mock.Mock(return_value=[self.reply(second)])
+        recovered.reconcile(fetch, timeout=0)
+        self.assertIsNone(recovered.error)
+        self.assertEqual(fetch.call_args.args[1], [second])
+        self.assertEqual(sum(row["cost_usd"] for row in self.rows()), 0.024)
+        recovered.reconcile(fetch)
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_missing_receipt_does_not_erase_known_response_cost(self):
+        scope = receipts.ReceiptRun("known-response")
+        trace_id = scope.request()
+        ledger.record(
+            "chat.py",
+            "default",
+            "known-response",
+            [],
+            0,
+            provider="twt",
+            usage={"twt_trace_ids": [trace_id], "reported_cost_usd": 0.05},
+            extra={"llm_call": True},
+        )
+        scope.reconcile(lambda *_: [], timeout=0)
+        (row,) = self.rows()
+        self.assertEqual(row["cost_usd"], 0.05)
+        self.assertEqual(row["usage"]["reported_cost_usd"], 0.05)
+        self.assertIsNotNone(scope.error)
+
     def test_malformed_history_is_preserved_without_aborting_merge(self):
         prefix = 'broken\nnull\n[]\n\n{"metered": true, "usage": null, "extra": null}\n'
         unrelated = {"thread_id": "legacy", "metered": False}

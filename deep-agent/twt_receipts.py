@@ -95,6 +95,34 @@ def merge_receipts(ids, receipts, run_id, started, *, local_ids=()):
         )
 
 
+def _known_cost(row):
+    cost = row.get("cost_usd")
+    return type(cost) in (int, float) and math.isfinite(cost) and cost >= 0
+
+
+def _settled_trace_ids():
+    path = Path(ledger.LEDGER)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    settled = set()
+    with ledger.locked(path):
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except (ValueError, TypeError):
+                        continue
+                    if (
+                        _owns_receipts(row)
+                        and row.get("extra", {}).get("twt_receipt_reconciled") is True
+                        and _known_cost(row)
+                    ):
+                        settled.update(row["usage"].get("twt_trace_ids", []))
+        except FileNotFoundError:
+            pass
+    return settled
+
+
 def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "r+", encoding="utf-8") as handle:
@@ -145,6 +173,10 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
             trace_ids = set(row.get("usage", {}).get("twt_trace_ids", []))
             if not trace_ids or not trace_ids.issubset(ids):
                 continue
+            if row.get("extra", {}).get(
+                "twt_receipt_reconciled"
+            ) is True and _known_cost(row):
+                continue
             missing_local = (trace_ids & local_ids) - receipts.keys()
             found = [
                 {"cost_complete": True, "cost_usd": 0.0}
@@ -167,9 +199,10 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
                 for receipt in found
             )
             row.setdefault("extra", {})["twt_receipt_reconciled"] = complete
-            row["usage"].pop("reported_cost_usd", None)
-            row["cost_usd"] = None
             if not complete:
+                if not _known_cost(row):
+                    row["usage"].pop("reported_cost_usd", None)
+                    row["cost_usd"] = None
                 missing.update(trace_ids)
                 continue
             cost = sum(receipt["cost_usd"] for receipt in found)
@@ -284,9 +317,10 @@ class ReceiptRun:
         deadline = clock() + timeout
         receipts = {}
         failure = None
-        while True:
+        pending = set(ids) - _settled_trace_ids()
+        while pending:
             try:
-                for receipt in fetch_fn(self.base_url, ids):
+                for receipt in fetch_fn(self.base_url, sorted(pending)):
                     if receipt.get("trace_id") not in self.ids:
                         raise ValueError("Unexpected TwT receipt ID")
                     receipts[receipt["trace_id"]] = receipt
@@ -296,11 +330,16 @@ class ReceiptRun:
             if (
                 all(
                     trace_id in receipts or trace_id in self.local_ids
-                    for trace_id in ids
+                    for trace_id in pending
                 )
                 or clock() >= deadline
             ):
                 break
+            pending -= {
+                trace_id
+                for trace_id, receipt in receipts.items()
+                if receipt.get("cost_complete") is True and _known_cost(receipt)
+            }
             sleep(min(1, max(0, deadline - clock())))
         missing = merge_receipts(
             set(ids), receipts, self.run_id, self.started, local_ids=self.local_ids
