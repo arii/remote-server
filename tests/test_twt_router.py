@@ -53,6 +53,9 @@ class TestTwTRouter(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        reader = mock.patch.object(runs, "LEDGER", ledger.LEDGER)
+        reader.start()
+        self.addCleanup(reader.stop)
 
     def test_default_and_local_paths_are_both_gateway_urls(self):
         with mock.patch.dict(

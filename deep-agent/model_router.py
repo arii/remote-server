@@ -43,6 +43,7 @@ Routing ladder (policy, 2026-11-02):
   OLLAMA_STRICT=1 keeps the box usable offline (fail, never cloud).
 """
 
+import json
 import logging
 import os
 import re
@@ -63,6 +64,70 @@ DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 DEFAULT_TWT_BASE_URL = "http://127.0.0.1:8000/v1"
+PIPELINE_MAX_TOKENS = 8192
+PIPELINE_HISTORY_CHARS = 64000
+
+
+def bounded_history(messages):
+    """Bound model input without mutating checkpoint history or splitting tools."""
+
+    def size(items):
+        return sum(len(json.dumps(m.model_dump(), default=str)) for m in items)
+
+    result = list(messages)
+    if size(result) <= PIPELINE_HISTORY_CHARS:
+        return result
+    for index, message in enumerate(result):
+        if message.type in ("tool", "ai") and len(str(message.content)) > 4096:
+            text = str(message.content)
+            result[index] = message.model_copy(
+                update={"content": text[:2048] + "\n[history trimmed]\n" + text[-2048:]}
+            )
+    groups = []
+    for message in result:
+        if message.type == "tool" and groups:
+            groups[-1].append(message)
+        else:
+            groups.append([message])
+    while size([m for group in groups for m in group]) > PIPELINE_HISTORY_CHARS:
+        removable = next(
+            (i for i, group in enumerate(groups[:-1]) if group[0].type == "ai"),
+            None,
+        )
+        if removable is None:
+            raise ValueError("Pipeline history exceeds the instruction/context budget")
+        groups.pop(removable)
+    return [message for group in groups for message in group]
+
+
+class _BoundedHistory:
+    def _bounded_kwargs(self, kwargs):
+        kwargs = dict(kwargs)
+        if hasattr(self, "num_predict") and "options" in kwargs:
+            options = dict(kwargs["options"] or {})
+            value = options.get("num_predict", PIPELINE_MAX_TOKENS)
+            if type(value) is not int or value <= 0:
+                raise ValueError("Pipeline output budget must be positive")
+            options["num_predict"] = min(value, PIPELINE_MAX_TOKENS)
+            kwargs["options"] = options
+        if hasattr(self, "max_tokens"):
+            for key in ("max_tokens", "max_completion_tokens"):
+                if key in kwargs:
+                    value = kwargs[key]
+                    if type(value) is not int or value <= 0:
+                        raise ValueError("Pipeline output budget must be positive")
+                    kwargs[key] = min(value, PIPELINE_MAX_TOKENS)
+        return kwargs
+
+    def _generate(self, messages, *args, **kwargs):
+        return super()._generate(
+            bounded_history(messages), *args, **self._bounded_kwargs(kwargs)
+        )
+
+    async def _agenerate(self, messages, *args, **kwargs):
+        return await super()._agenerate(
+            bounded_history(messages), *args, **self._bounded_kwargs(kwargs)
+        )
 
 
 def _default_ollama_model():
@@ -391,6 +456,8 @@ def chat_kwargs(spec):
             "model": spec["model"],
             "base_url": spec["base_url"],
             "temperature": 0,
+            "num_predict": PIPELINE_MAX_TOKENS,
+            "disable_streaming": True,
         }
     if spec.get("provider") == "twt":
         return {
@@ -400,6 +467,7 @@ def chat_kwargs(spec):
             "include_response_headers": True,
             "disable_streaming": True,
             "max_retries": 0,
+            "max_tokens": PIPELINE_MAX_TOKENS,
         }
     if spec.get("provider") in ("nebius", "openrouter"):
         if spec["provider"] == "openrouter":
@@ -455,10 +523,21 @@ def build_chat_model(spec=None, think=False, num_ctx=None):
                 raise ValueError("OLLAMA_NUM_CTX must be a positive integer")
         if num_ctx is not None:
             kwargs["num_ctx"] = num_ctx
-        return ChatOllama(**kwargs), spec
+
+        class PipelineOllama(_BoundedHistory, ChatOllama):
+            pass
+
+        return PipelineOllama(**kwargs), spec
     from langchain_openai import ChatOpenAI  # noqa: E402
 
-    return ChatOpenAI(api_key=api_key(spec), **kwargs), spec
+    class PipelineOpenAI(_BoundedHistory, ChatOpenAI):
+        def _get_request_payload(self, *args, **kwargs):
+            payload = super()._get_request_payload(*args, **kwargs)
+            limit = payload.pop("max_completion_tokens", PIPELINE_MAX_TOKENS)
+            payload["max_tokens"] = min(limit, PIPELINE_MAX_TOKENS)
+            return payload
+
+    return PipelineOpenAI(api_key=api_key(spec), **kwargs), spec
 
 
 def build_structured_chat_model(spec=None, schema=None, think=False):

@@ -70,6 +70,12 @@ def _usage_total(messages):
     return total
 
 
+def error_usage(error):
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    return _usage_total([{"response_metadata": {"headers": dict(headers)}}])
+
+
 def _model_provider(model):
     """Provider slot from a ledger model label, or None.
 

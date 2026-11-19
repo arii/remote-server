@@ -826,6 +826,9 @@ def run_coder(worktree, brief, system, thread, timeout):
     recorder.run_start("coder.py", thread, label)
 
     def fail(error, reply=""):
+        error_usage = ledger.error_usage(error)
+        if "reported_cost_usd" in error_usage:
+            recorder.model_response(error_usage)
         recorder.run_end(False)
         recorder.close()
         usage, calls = recorder.totals()

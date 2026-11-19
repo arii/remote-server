@@ -85,6 +85,13 @@ class TestFailedCoderUsage(unittest.TestCase):
         self.assertEqual(rows[0]["usage"]["total_tokens"], 120)
         self.assertIn("no written files", rows[0]["extra"]["error"])
 
+    def test_gateway_error_cost_is_added_to_completed_calls(self):
+        error = RuntimeError("gateway 502")
+        error.response = SimpleNamespace(headers={"x-cost-usd": "0.004"})
+        _, rows = self.scenario(error=error)
+        self.assertAlmostEqual(rows[0]["cost_usd"], 0.0163)
+        self.assertIn("gateway 502", rows[0]["extra"]["error"])
+
     def test_exception_timeout_and_interrupt_flush_usage(self):
         for error in (ValueError("failed"), TimeoutError(), KeyboardInterrupt()):
             with self.subTest(error=type(error).__name__):

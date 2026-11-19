@@ -196,6 +196,7 @@ def create_app(store=None, ollama_client=None, hosted_client=None):
                 "model": f"ollama-local/{model}",
                 "messages": body["messages"],
                 "tools": body.get("tools"),
+                "max_tokens": (body.get("options") or {}).get("num_predict", 8192),
                 "ollama_request": body,
             },
             "strict",

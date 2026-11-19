@@ -1,8 +1,9 @@
 # Audited local and hosted agents on S5
 
-TwT is installed in `/home/ari/twt/venv` from BoomTick commit
-`6e448723675f8bd5e3043dc717024ec8387ee634`, with its source checkout at
-`/home/ari/twt/src`. The existing `/home/ari/repos/boomtick` is not used.
+TwT is installed in `/home/ari/twt/venv` from a pinned BoomTick commit
+on `devin/1795061083-scope-allowed-precedence`; the installed package's
+`direct_url.json` records the exact revision. The existing
+`/home/ari/repos/boomtick` is not used.
 
 The `twt.service` user unit runs a deployed copy of
 `deep-agent/twt_service.py`, listening only on `127.0.0.1:8000`.
@@ -56,10 +57,22 @@ SambaNova, Cloudflare, Nebius. All preceding providers are free-only;
 Nebius is last. Local and hosted traces share the same private database
 and appear together in `twt inspect` and `twt report`.
 
+The shared model router caps every pipeline stage at 8192 output tokens
+and 64000 serialized history characters. Oversized tool results and old
+assistant output are compacted before complete old tool exchanges are
+dropped; system/user instructions and the latest exchange are preserved.
+Oversized instructions fail rather than being silently discarded.
+TwT waits up to 60 seconds total per request for free-provider RPM or
+Retry-After cooldowns, with at most one retry of a free-provider 429.
+Paid fallback follows only after the free routes fail or exceed that bound.
+Zero-priced free attempts cost zero even when errors omit token usage.
+
 Hosted ledger costs use TwT's `x-cost-usd` header or `usage.cost`.
 Coder trace aggregation preserves the reported cost. Missing, partial,
 negative, or non-finite costs remain unknown and fail the spend gate
 closed rather than being repriced from the gateway's dynamic model name.
+HTTP errors also retain TwT's cost headers in the ledger, independently
+of whether completion token usage is available.
 
 The service adapter tests require installing the pinned TwT package in
 the test environment in addition to the deep-agent dependencies.
