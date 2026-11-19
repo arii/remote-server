@@ -90,8 +90,13 @@ without rerunning its pipeline. An existing explicit halt still requires operato
 clearance. Stopping
 creates a persistent `STOP` sentinel, also checked before model dispatch. After a
 halt, inspect the issue, journal/settlement and ledger using supported receipt
-recovery tooling. Only an operator should clear `halted` and remove `STOP` after
-resolving the blocker. Do not delete an unfinished directory to force a retry or
+recovery tooling. Successful reconciliation does not clear a saved worker's
+`halt_queue` or an explicit supervisor halt. After inspecting and resolving the
+blocker, an operator can acknowledge the saved halt and resume with
+`python3 scripts/queue_runner.py --config /absolute/queue-config.json --clear-halt`.
+This first reconciles the current issue, preserves the acknowledged halt reasons,
+then clears the halt and `STOP`. Failed reconciliation cannot be overridden by
+this flag. Do not delete an unfinished directory to force a retry or
 edit ledger costs by hand. Keep state on persistent storage, not `/tmp`.
 
 ## User service

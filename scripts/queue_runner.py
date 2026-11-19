@@ -467,7 +467,7 @@ def worker_command(config, mode, directory):
     ]
 
 
-def supervise(config_path):
+def supervise(config_path, *, clear_halt=False):
     config = read_json(config_path)
     cap = checked_cap(config.get("cap_usd", 0.5))
     failure_limit = config.get("max_common_failures", 3)
@@ -513,6 +513,24 @@ def supervise(config_path):
                     or read_json(recovery).get("reconciled") is not True
                 ):
                     raise SafetyStop("startup receipt reconciliation failed")
+                summary_path = directory / "summary.json"
+                summary = read_json(summary_path) if summary_path.exists() else {}
+                if summary.get("halt_queue") is True:
+                    if not clear_halt:
+                        status.update(
+                            halted=True,
+                            reason=summary.get("halt_reasons")
+                            or "saved worker halt requires operator clearance",
+                        )
+                        write_json(status_path, status)
+                        return 2
+                    summary.update(
+                        halt_queue=False,
+                        acknowledged_halt_reasons=summary.get("halt_reasons", []),
+                        halt_reasons=[],
+                        halt_acknowledged_at=time.time(),
+                    )
+                    write_json(summary_path, summary)
                 if current not in status["completed"]:
                     status["completed"].append(current)
                 status.update(current=None, last_recovery=read_json(recovery))
@@ -521,10 +539,14 @@ def supervise(config_path):
                 status.update(halted=True, reason=f"startup reconciliation: {error}")
                 write_json(status_path, status)
                 return 2
-        if status.get("halted"):
+        if status.get("halted") and not clear_halt:
             raise SafetyStop(
                 "queue is halted; inspect status before an explicit recovery"
             )
+        if clear_halt:
+            status.update(halted=False, reason=None, halt_acknowledged_at=time.time())
+            (root / "STOP").unlink(missing_ok=True)
+            write_json(status_path, status)
         stopping = []
 
         def stop(_number, _frame):
@@ -660,13 +682,20 @@ def main():
     )
     group.add_argument("--worker", type=Path)
     group.add_argument("--reconcile", type=Path)
+    parser.add_argument(
+        "--clear-halt",
+        action="store_true",
+        help="acknowledge saved halts after successful reconciliation and resume",
+    )
     args = parser.parse_args()
     directory = args.worker or args.reconcile
     if directory:
+        if args.clear_halt:
+            parser.error("--clear-halt requires supervisor configuration")
         with (directory / "worker.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return worker(directory) if args.worker else recover(directory)
-    return supervise(args.config)
+    return supervise(args.config, clear_halt=args.clear_halt)
 
 
 if __name__ == "__main__":

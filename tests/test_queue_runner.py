@@ -122,7 +122,7 @@ class RunnerTests(unittest.TestCase):
             mock.patch.object(runner, "supervise", return_value=0) as supervise,
         ):
             self.assertEqual(runner.main(), 0)
-            supervise.assert_called_once_with(Path("/config.json"))
+            supervise.assert_called_once_with(Path("/config.json"), clear_halt=False)
 
     def test_human_decision_skips_are_repo_scoped_but_operator_holds_are_global(self):
         self.assertTrue(
@@ -197,6 +197,48 @@ class RunnerTests(unittest.TestCase):
                 status = runner.read_json(state / "status.json")
                 self.assertEqual(
                     status["completed"], ["owner/repo#7"] if success else []
+                )
+
+    @mock.patch.object(runner.signal, "signal")
+    def test_successful_recovery_preserves_worker_halt_until_operator_clears_it(
+        self, _signal
+    ):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            directory = state / "owner_repo-7"
+            directory.mkdir(parents=True)
+            runner.write_json(
+                directory / "job.json", {"issue": {"repo": "owner/repo", "number": 7}}
+            )
+            runner.write_json(
+                directory / "summary.json",
+                {"halt_queue": True, "halt_reasons": ["ownership mismatch"]},
+            )
+            runner.write_json(
+                state / "status.json", {"current": "owner/repo#7", "completed": []}
+            )
+            process = mock.Mock(returncode=0)
+            process.communicate.side_effect = lambda _: runner.write_json(
+                directory / "recovery.json", {"reconciled": True}
+            )
+            with mock.patch.object(runner.subprocess, "Popen", return_value=process):
+                self.assertEqual(runner.supervise(config), 2)
+                self.assertTrue(
+                    runner.read_json(directory / "summary.json")["halt_queue"]
+                )
+                self.assertTrue(runner.read_json(state / "status.json")["halted"])
+                (state / "STOP").touch()
+                self.assertEqual(runner.supervise(config, clear_halt=True), 0)
+                self.assertFalse(
+                    runner.read_json(directory / "summary.json")["halt_queue"]
+                )
+                self.assertFalse(runner.read_json(state / "status.json")["halted"])
+                self.assertFalse((state / "STOP").exists())
+                self.assertEqual(
+                    runner.read_json(directory / "summary.json")[
+                        "acknowledged_halt_reasons"
+                    ],
+                    ["ownership mismatch"],
                 )
 
     @mock.patch.object(runner.signal, "signal")
