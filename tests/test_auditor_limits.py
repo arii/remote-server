@@ -16,6 +16,55 @@ import pipeline
 
 
 class TestVerificationContract(unittest.TestCase):
+    def test_edits_invalidate_prior_checks_until_a_fresh_check(self):
+        check = {
+            "type": "tool_call",
+            "name": "run_check",
+            "ok": True,
+            "args_preview": json.dumps({"command": "python3 -m pytest"}),
+            "result_preview": "exit=0\n1 passed",
+        }
+        with tempfile.TemporaryDirectory() as root:
+            trace = Path(root, "trace.jsonl")
+            for name in ("write_file", "edit_file", "delete"):
+                for ok in (True, False):
+                    with self.subTest(name=name, ok=ok):
+                        events = [check, {"type": "tool_call", "name": name, "ok": ok}]
+                        trace.write_text(
+                            "\n".join(json.dumps(event) for event in events)
+                        )
+                        self.assertTrue(
+                            coder.trace_verification_evidence(trace)[0].get("stale")
+                        )
+                        self.assertFalse(coder.trace_has_passing_check(trace))
+                        events.append(check)
+                        trace.write_text(
+                            "\n".join(json.dumps(event) for event in events)
+                        )
+                        evidence = coder.trace_verification_evidence(trace)
+                        self.assertTrue(evidence[0]["stale"])
+                        self.assertFalse(evidence[-1].get("stale", False))
+                        self.assertTrue(coder.trace_has_passing_check(trace))
+
+    def test_read_only_events_do_not_invalidate_a_check(self):
+        with tempfile.TemporaryDirectory() as root:
+            trace = Path(root, "trace.jsonl")
+            events = [
+                {
+                    "type": "tool_call",
+                    "name": "run_check",
+                    "ok": True,
+                    "args_preview": json.dumps({"command": "python3 -m pytest"}),
+                    "result_preview": "exit=0\n1 passed",
+                },
+                {"type": "tool_call", "name": "read_file", "ok": True},
+            ]
+            trace.write_text("\n".join(json.dumps(event) for event in events))
+            self.assertFalse(
+                coder.trace_verification_evidence(trace)[0].get("stale", False)
+            )
+            self.assertTrue(coder.trace_has_passing_check(trace))
+
     def test_check_logs_cannot_overflow_an_otherwise_valid_audit(self):
         from langchain_core.messages import HumanMessage
 

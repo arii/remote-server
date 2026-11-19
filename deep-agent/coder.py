@@ -66,6 +66,7 @@ CODER_DB = os.path.join(HERE, ".coder_threads", "coder.db")
 # Coding needs more graph steps than chat turns (read/plan/edit/verify).
 RECURSION_LIMIT = 100
 DEFAULT_TIMEOUT = 1800
+MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 DEFAULT_VERIFY_ROUNDS = 2
 
 # Dithering guard (#1160 gap 3, #1176): this many consecutive
@@ -679,6 +680,7 @@ def trace_has_passing_check(trace_path):
     raises: unreadable traces read as unverified (fail closed into a
     verify re-prompt).
     """
+    verified = False
     try:
         with open(trace_path, encoding="utf-8") as fh:
             for line in fh:
@@ -690,14 +692,19 @@ def trace_has_passing_check(trace_path):
                     continue
                 if event.get("type") != "tool_call":
                     continue
+                if event.get("name") in MUTATING_TOOLS:
+                    verified = False
+                    continue
                 if event.get("name") != "run_check":
                     continue
                 preview = event.get("result_preview", "")
-                if preview == "exit=0" or preview.startswith("exit=0\n"):
-                    return True
+                if isinstance(preview, str) and (
+                    preview == "exit=0" or preview.startswith("exit=0\n")
+                ):
+                    verified = True
     except (OSError, TypeError):
         return False
-    return False
+    return verified
 
 
 def trace_verification_evidence(trace_path):
@@ -707,11 +714,13 @@ def trace_verification_evidence(trace_path):
             for line in handle:
                 try:
                     event = json.loads(line)
-                    if (
-                        not isinstance(event, dict)
-                        or event.get("type") != "tool_call"
-                        or event.get("name") != "run_check"
-                    ):
+                    if not isinstance(event, dict) or event.get("type") != "tool_call":
+                        continue
+                    if event.get("name") in MUTATING_TOOLS:
+                        for check in evidence:
+                            check["stale"] = True
+                        continue
+                    if event.get("name") != "run_check":
                         continue
                     command = json.loads(event.get("args_preview", "{}"))["command"]
                     if not isinstance(command, str):

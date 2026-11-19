@@ -371,6 +371,7 @@ class AuditorGraph:
             '"description": "..."}]}; use an empty findings list when clear.\n\n'
             "Set verified=true only after verifying the diff against the spec. "
             "Missing evidence, incomplete checks or uncertainty require verified=false. "
+            "Stale check evidence does not verify the final diff. "
             "Deterministic gates alone are not semantic verification.\n\n"
             f"Audit payload:\n{json.dumps(payload)}"
         )
