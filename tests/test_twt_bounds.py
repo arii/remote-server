@@ -16,11 +16,23 @@ import coder
 import deep_chat
 import llm_usage
 import model_router
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_openai import ChatOpenAI
+
+try:
+    from langchain_core.messages import (
+        AIMessage,
+        HumanMessage,
+        SystemMessage,
+        ToolMessage,
+    )
+    from langchain_core.outputs import ChatGeneration, ChatResult
+    from langchain_openai import ChatOpenAI
+
+    HAS_AGENT_DEPS = True
+except ImportError:
+    HAS_AGENT_DEPS = False
 
 
+@unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class BoundsTests(unittest.TestCase):
     def test_client_side_history_rejection_records_no_dispatch_zero_cost(self):
         for asynchronous in (False, True):

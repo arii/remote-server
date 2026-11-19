@@ -1,5 +1,6 @@
 import os
 import asyncio
+import importlib.util
 import stat
 import tempfile
 import unittest
@@ -61,6 +62,9 @@ class TestUDSResolution(unittest.TestCase):
                 with self.assertRaises(httpx.ConnectError):
                     client.get("http://127.0.0.1:8000/v1/models")
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("langchain_ollama"), "needs deep-agent venv"
+    )
     def test_native_sync_and_async_clients_use_socket(self):
         path = "/run/twt/gateway.sock"
         with mock.patch.dict(os.environ, {"TWT_UDS": path}):

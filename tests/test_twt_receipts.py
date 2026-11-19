@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import tempfile
 import threading
@@ -490,6 +491,13 @@ class ReceiptTests(unittest.TestCase):
         self.assertIsNone(receipts.current.get())
         self.assertEqual(self.rows()[0]["cost_usd"], 0.012)
 
+    @unittest.skipUnless(
+        all(
+            importlib.util.find_spec(name)
+            for name in ("langchain_openai", "langchain_ollama")
+        ),
+        "needs deep-agent venv",
+    )
     def test_real_sync_and_async_model_hooks_tag_hosted_and_native_requests(self):
         import asyncio
         import httpx

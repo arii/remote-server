@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import json
 import os
 import unittest
@@ -8,6 +9,9 @@ import model_router
 
 
 class TestTwtStageModels(unittest.TestCase):
+    @unittest.skipUnless(
+        importlib.util.find_spec("langchain_openai"), "needs deep-agent venv"
+    )
     def test_stage_policy_reaches_openai_request_body_without_selecting_paid_route(
         self,
     ):
@@ -38,6 +42,9 @@ class TestTwtStageModels(unittest.TestCase):
                 )
                 self.assertNotIn("provider_models", spec)
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("langchain_openai"), "needs deep-agent venv"
+    )
     def test_unstaged_request_keeps_default_route(self):
         model, spec = model_router.build_chat_model(
             spec={
@@ -49,6 +56,9 @@ class TestTwtStageModels(unittest.TestCase):
         self.assertEqual(model.extra_body, None)
         self.assertNotIn("provider_models", spec)
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("langchain_ollama"), "needs deep-agent venv"
+    )
     def test_local_stage_never_gets_paid_model_selection(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             model, spec = model_router.build_chat_model(
@@ -61,6 +71,9 @@ class TestTwtStageModels(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown pipeline model stage"):
             model_router.build_chat_model(spec={"provider": "twt"}, stage="typo")
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("langchain_openai"), "needs deep-agent venv"
+    )
     def test_per_stage_override_is_centralized(self):
         with mock.patch.dict(os.environ, {"TWT_AUDIT_NEBIUS_MODEL": "other"}):
             _, spec = model_router.build_chat_model(
@@ -73,6 +86,7 @@ class TestTwtStageModels(unittest.TestCase):
             )
         self.assertEqual(spec["provider_models"]["nebius"], "other")
 
+    @unittest.skipUnless(importlib.util.find_spec("openai"), "needs deep-agent venv")
     def test_stage_controls_on_actual_sync_and_async_sdk_wire(self):
         import httpx
         from openai import AsyncOpenAI, OpenAI

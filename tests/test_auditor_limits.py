@@ -92,6 +92,9 @@ class TestVerificationContract(unittest.TestCase):
             )
             self.assertTrue(coder.trace_has_passing_check(trace))
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("langchain_core"), "needs deep-agent venv"
+    )
     def test_check_logs_cannot_overflow_an_otherwise_valid_audit(self):
         from langchain_core.messages import HumanMessage
 
