@@ -111,7 +111,9 @@ def _recording_stubs():
         ),
         "deepagents.middleware": _stub_module("deepagents.middleware"),
         "deepagents.middleware.filesystem": _stub_module(
-            "deepagents.middleware.filesystem", FilesystemPermission=_Permission
+            "deepagents.middleware.filesystem",
+            FilesystemPermission=_Permission,
+            FilesystemMiddleware=_Dummy,
         ),
     }
 

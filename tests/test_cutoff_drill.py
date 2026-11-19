@@ -115,7 +115,7 @@ class TestCutoffDrill(unittest.TestCase):
         self.assertIn("still set after scrub", text)
         self.assertIn("OLLAMA_STRICT=1", text)
 
-    def test_keyless_router_refuses_cloud_fallback(self):
+    def test_strict_router_refuses_fallback_and_default_uses_gateway(self):
         dead = {"OLLAMA_URL": "http://127.0.0.1:9",
                 "OLLAMA_STRICT": "1"}
         with mock.patch.dict(os.environ, dead, clear=True):
@@ -125,9 +125,9 @@ class TestCutoffDrill(unittest.TestCase):
         with mock.patch.dict(os.environ,
                               {"OLLAMA_URL": "http://127.0.0.1:9"},
                               clear=True):
-            with self.assertRaises(RuntimeError) as ctx:
-                model_router.resolve_llm()
-        self.assertIn("NEBIUS_API_KEY", str(ctx.exception))
+            spec = model_router.resolve_llm()
+        self.assertEqual(spec["provider"], "twt")
+        self.assertEqual(spec["base_url"], model_router.DEFAULT_TWT_BASE_URL)
 
     def test_proof_workflow_wires_drill(self):
         path = Path(".github/workflows/cutoff-proof.yml")

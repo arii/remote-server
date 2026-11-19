@@ -13,8 +13,8 @@ import model_router
 import runs
 
 
-class OpenRouterSkipVisibilityTest(unittest.TestCase):
-    def test_missing_keys_are_visible_with_logging_disabled(self):
+class GatewayFallbackVisibilityTest(unittest.TestCase):
+    def test_gateway_fallback_is_visible_with_logging_disabled(self):
         with tempfile.TemporaryDirectory() as root:
             path = str(Path(root) / "ledger.jsonl")
             with (
@@ -34,8 +34,8 @@ class OpenRouterSkipVisibilityTest(unittest.TestCase):
                             contextlib.redirect_stderr(output),
                         ):
                             spec = model_router.resolve_llm()
-                        self.assertEqual(spec["provider"], "nebius")
-                        self.assertIn("OpenRouter skipped", output.getvalue())
+                        self.assertEqual(spec["provider"], "twt")
+                        self.assertIn("using twt", output.getvalue())
 
 
 class OpenRouterLedgerIdentityTest(unittest.TestCase):
@@ -198,7 +198,14 @@ class OpenRouterFinalModelPolicyTest(unittest.TestCase):
             )
         )
         self.sdk = types.ModuleType("langchain_openai")
-        self.sdk.ChatOpenAI = mock.Mock()
+        self.constructor = mock.Mock()
+        constructor = self.constructor
+
+        class ChatOpenAI:
+            def __init__(self, **kwargs):
+                constructor(**kwargs)
+
+        self.sdk.ChatOpenAI = ChatOpenAI
         self.enterContext(
             mock.patch.dict("sys.modules", {"langchain_openai": self.sdk})
         )
@@ -209,14 +216,14 @@ class OpenRouterFinalModelPolicyTest(unittest.TestCase):
         final = dict(self.spec, model=os.environ["S5_AUDIT_MODEL"])
         with self.assertRaisesRegex(RuntimeError, "OPENROUTER_ALLOW_PAID"):
             model_router.build_chat_model(spec=final)
-        self.sdk.ChatOpenAI.assert_not_called()
+        self.constructor.assert_not_called()
 
     def test_structured_builder_cannot_bypass_paid_override_policy(self):
         with self.assertRaisesRegex(RuntimeError, "OPENROUTER_ALLOW_PAID"):
             model_router.build_structured_chat_model(
                 spec=dict(self.spec, model="contract/paid-reasoner"), schema=object()
             )
-        self.sdk.ChatOpenAI.assert_not_called()
+        self.constructor.assert_not_called()
 
     def test_free_and_empty_environment_overrides_build_free_models(self):
         for override in ("contract/reasoner:free", "openrouter/free", "", "  "):
@@ -229,7 +236,7 @@ class OpenRouterFinalModelPolicyTest(unittest.TestCase):
                 _, spec = model_router.build_chat_model(spec=final)
                 self.assertEqual(spec["model"], override.strip() or self.spec["model"])
                 self.assertEqual(
-                    self.sdk.ChatOpenAI.call_args.kwargs["model"], spec["model"]
+                    self.constructor.call_args.kwargs["model"], spec["model"]
                 )
 
     def test_explicit_paid_opt_in_allows_the_final_override(self):
@@ -238,4 +245,4 @@ class OpenRouterFinalModelPolicyTest(unittest.TestCase):
             spec=dict(self.spec, model="contract/paid-reasoner")
         )
         self.assertEqual(final["model"], "contract/paid-reasoner")
-        self.assertEqual(self.sdk.ChatOpenAI.call_args.kwargs["api_key"], "synthetic")
+        self.assertEqual(self.constructor.call_args.kwargs["api_key"], "synthetic")
