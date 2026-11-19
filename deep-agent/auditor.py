@@ -229,6 +229,8 @@ class AuditorGraph:
         self.preview_url = preview_url
         self.last_model_spec = None
         self.last_review_usage = None
+        self.audit_truncated = False
+        self.review_calls_metered = False
 
     def hard_gate(self):
         """Zero-LLM deterministic gate.
@@ -321,6 +323,14 @@ class AuditorGraph:
         from langchain.agents import create_agent
         import model_router
         import ask_investigator
+        from issue_generator import InvestigationTruncated, investigation_tool_guard
+        from langgraph.errors import GraphRecursionError
+        from llm_usage import usage_callback
+
+        self.audit_truncated = False
+        limit = int(os.environ.get("S5_AUDIT_RECURSION_LIMIT", "25"))
+        if limit <= 0:
+            raise ValueError("S5_AUDIT_RECURSION_LIMIT must be a positive integer")
 
         override = os.environ.get("S5_AUDIT_MODEL", "").strip()
         spec = model_router.resolve_llm()
@@ -328,6 +338,15 @@ class AuditorGraph:
             spec = dict(spec, model=override)
         model, _spec = model_router.build_chat_model(spec=spec)
         self.last_model_spec = dict(_spec)
+        callback = usage_callback(
+            self.last_model_spec,
+            self.thread_id,
+            script="auditor.py",
+            stage="audit",
+            phase="semantic",
+        )
+        self.review_calls_metered = True
+        evidence = []
         agent = create_agent(
             model,
             [
@@ -335,6 +354,7 @@ class AuditorGraph:
                 ask_investigator.read_repo_file,
                 ask_investigator.grep_repo,
             ],
+            middleware=[investigation_tool_guard(evidence)],
         )
         user_content = (
             "Audit these changes for rule violations and risky blast "
@@ -347,28 +367,67 @@ class AuditorGraph:
         )
         previous = ask_investigator._checkout
         ask_investigator._checkout = self.worktree_root
+        error = None
         try:
             result = agent.invoke(
-                {"messages": [{"role": "user", "content": user_content}]}
+                {"messages": [{"role": "user", "content": user_content}]},
+                config={"recursion_limit": limit, "callbacks": [callback]},
             )
+        except (InvestigationTruncated, GraphRecursionError) as exc:
+            self.audit_truncated = True
+            text = next(
+                (
+                    m.content
+                    for m in reversed(callback.messages)
+                    if not getattr(m, "tool_calls", []) and m.content
+                ),
+                "",
+            )
+            return json.dumps(
+                {
+                    "status": "CHANGES_REQUESTED",
+                    "truncated": True,
+                    "findings": [
+                        {
+                            "severity": "high",
+                            "description": f"Semantic audit truncated ({type(exc).__name__}: {exc}); verification incomplete, human review required.",
+                            "evidence": evidence,
+                            "last_ai_text": text,
+                        }
+                    ],
+                }
+            )
+        except BaseException as exc:
+            error = exc
+            raise
         finally:
+            callback.close(
+                error or RuntimeError("audit ended with an unfinished model call")
+            )
+            self.record_review_usage(callback.messages)
             ask_investigator._checkout = previous
         messages = result.get("messages", []) if isinstance(result, dict) else []
         self.record_review_usage(messages)
         final = messages[-1] if messages else None
-        return getattr(final, "content", "") or "no findings"
+        text = (
+            getattr(final, "content", "")
+            if getattr(final, "type", "") == "ai"
+            and not getattr(final, "tool_calls", [])
+            else ""
+        )
+        return text or json.dumps(
+            {
+                "findings": [
+                    {
+                        "severity": "high",
+                        "description": "Semantic audit returned no final AI verdict; verification incomplete, human review required.",
+                    }
+                ]
+            }
+        )
 
     def record_review_usage(self, messages):
-        """Stash summed review-turn token usage for the persist row.
-
-        Review LLM calls were metered nowhere (only coder
-        implement+fixup rows carried spend, so per-task cost was
-        incomplete — #1160): the persist node files this usage, so
-        review tokens price like any other turn. Pure aggregation
-        over message usage_metadata; None until a real review runs
-        (injected audit_fn in tests records no usage). Never
-        raises.
-        """
+        """Keep aggregate usage as verdict metadata; calls are ledgered separately."""
         try:
             import ledger
 
@@ -552,6 +611,11 @@ class AuditorGraph:
                 time.time(),
                 extra={
                     "valid": state.get("valid"),
+                    **(
+                        {"stage": "audit", "phase": "summary", "llm_call": False}
+                        if outer.review_calls_metered
+                        else {}
+                    ),
                     "worktree_root": outer.worktree_root,
                     "decisions": lines,
                     "verdict": verdict,
