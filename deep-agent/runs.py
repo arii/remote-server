@@ -64,15 +64,19 @@ def _row_cost(row):
     current card (display estimate, the row is untouched)."""
     cost_usd = row.get("cost_usd")
     metered = row.get("metered")
-    if (
-        "cost_usd" in row
-        and (cost_usd is None or isinstance(cost_usd, (int, float)))
-        and isinstance(metered, bool)
-    ):
+    if isinstance(cost_usd, (int, float)) and isinstance(metered, bool):
         return cost_usd, metered
-    return pricing.quote(
-        row.get("model"), row.get("usage") or {}, provider=row.get("provider")
-    )
+    model, provider = row.get("model"), row.get("provider")
+    usage = row.get("usage") or {}
+    quote = pricing.quote(model, usage, provider=provider)
+    label = f"{provider}:{model}" if provider else model
+    if (
+        quote[1]
+        and not any(pricing._tokens(usage))
+        and pricing.rate_for(label) != (0.0, 0.0)
+    ):
+        return None, True
+    return quote
 
 
 def _row_provider(model):

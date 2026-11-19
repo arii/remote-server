@@ -272,6 +272,50 @@ class TestSpecUsage(unittest.TestCase):
 
 
 class TestUnknownSpend(unittest.TestCase):
+    def test_unrated_usage_is_repriced_when_rates_become_available(self):
+        import ledger
+        import runs
+        import pricing
+        import model_router
+
+        with tempfile.TemporaryDirectory() as root:
+            path = str(Path(root, "ledger.jsonl"))
+            with (
+                mock.patch.object(ledger, "LEDGER", path),
+                mock.patch.object(runs, "LEDGER", path),
+                mock.patch.dict(
+                    os.environ,
+                    {"NEBIUS_API_KEY": "dummy", "NEBIUS_SPEND_CAP_USD": "5"},
+                    clear=True,
+                ),
+            ):
+                ledger.record(
+                    "issue_generator.py",
+                    "Future/Model",
+                    "proof-unrated",
+                    [],
+                    0,
+                    provider="nebius",
+                    usage={
+                        "input_tokens": 1000,
+                        "output_tokens": 1000,
+                        "total_tokens": 2000,
+                    },
+                )
+                self.assertEqual(
+                    runs.total_metered_spend(), {"spent": 0.0, "unknown": 1}
+                )
+                with self.assertRaises(RuntimeError):
+                    model_router.resolve_llm(prefer="nebius")
+                with mock.patch.dict(pricing.RATE_CARD, {"Future/Model": (1.0, 2.0)}):
+                    self.assertEqual(
+                        runs.total_metered_spend(), {"spent": 0.003, "unknown": 0}
+                    )
+                    self.assertEqual(
+                        model_router.resolve_llm(prefer="nebius")["provider"], "nebius"
+                    )
+                self.assertIsNone(json.loads(Path(path).read_text())["cost_usd"])
+
     def test_recorded_unknown_remote_cost_blocks_router(self):
         import ledger
         import runs
