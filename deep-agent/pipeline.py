@@ -240,6 +240,8 @@ class Pipeline:
                 coder._timeout(),
             )
             summary, usage, calls, started, label, trace, verified, _ = result
+            provider, _, model = label.partition(":")
+            graph.last_model_spec = {"provider": provider, "model": model}
             import ledger
 
             ledger.record(

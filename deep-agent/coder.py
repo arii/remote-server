@@ -54,6 +54,7 @@ from s5tools import (  # noqa: E402,F401
     check_allowed,
     check_env,
     parse_check_command,
+    verification_env,
     verification_guidance,
 )
 
@@ -251,7 +252,7 @@ def _default_plan_fn(brief, worktree_root, context):
     """Out-of-the-box planner: model proposes plan + files, parsed
     deterministically. Injectable seam is build_model (monkeypatch in
     tests); the graph signature stays (brief, root, context)."""
-    model, _spec = build_model()
+    model, spec = build_model()
     context = dict(context or {})
     skills = (context.get("skills") or "").strip()
     skills_block = "\n\n---\n\nSkills:\n" + skills if skills else ""
@@ -264,11 +265,55 @@ def _default_plan_fn(brief, worktree_root, context):
         f"{skills_block}"
         f"\n\nBrief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
     )
-    text = _model_text(model.invoke(prompt))
+    reply = None
+    started = time.time()
+    recorder = None
+    if spec.get("model"):
+        import ledger
+        import observe
+
+        thread = context.get("thread_id") or f"coder-plan-{time.time_ns()}"
+        recorder = observe.TraceRecorder(
+            observe.default_trace_path("coder_plan", thread)
+        )
+        recorder.run_start("coder.py", thread, spec["model"])
+        recorder.model_request(1)
+    try:
+        reply = model.invoke(prompt)
+    finally:
+        if recorder is not None:
+            messages = [reply] if reply is not None else []
+            usage = ledger._usage_total(messages)
+            known = bool(getattr(reply, "usage_metadata", None)) or bool(
+                (getattr(reply, "response_metadata", None) or {}).get(
+                    "prompt_eval_count"
+                )
+            )
+            recorder.model_response(usage)
+            recorder.run_end(ok=reply is not None)
+            recorder.close()
+            ledger.record(
+                "coder.py",
+                spec["model"],
+                thread,
+                messages,
+                started,
+                usage=usage,
+                provider=spec.get("provider"),
+                extra={
+                    "stage": "code",
+                    "phase": "plan",
+                    "llm_call": True,
+                    "usage_missing": not known,
+                    "trace": recorder.path,
+                },
+            )
+    text = _model_text(reply)
     return {
         "plan": text.strip(),
         "allowed_files": files_named(text),
         "verification_commands": [],
+        "model_spec": spec,
     }
 
 
@@ -332,14 +377,16 @@ def build_check_tool(worktree):
         import subprocess  # noqa: E402
 
         try:
-            proc = subprocess.run(
-                argv,
-                cwd=worktree,
-                capture_output=True,
-                text=True,
-                timeout=CHECK_TIMEOUT,
-                env={**os.environ, **check_env(worktree)},
-            )
+            with verification_env(worktree) as env:
+                proc = subprocess.run(
+                    argv,
+                    cwd=worktree,
+                    capture_output=True,
+                    text=True,
+                    timeout=CHECK_TIMEOUT,
+                    env=env,
+                    check=False,
+                )
         except subprocess.TimeoutExpired:
             return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
         except OSError as exc:
@@ -1438,6 +1485,7 @@ class InitCoderGraph:
         self.max_fix_loops = max_fix_loops
         self.max_replans = max_replans
         self.thread_id = thread_id or f"coder-{issue_id}-{int(time.time())}"
+        self.last_model_spec = {}
 
     @staticmethod
     def _default_td_runner(args, cwd):
@@ -1621,7 +1669,10 @@ class InitCoderGraph:
             result = outer.plan_fn(
                 outer.brief,
                 state.get("worktree_root", ""),
-                {"errors": state.get("errors", [])},
+                {"errors": state.get("errors", []), "thread_id": outer.thread_id},
+            )
+            outer.last_model_spec = dict(
+                result.get("model_spec") or outer.last_model_spec
             )
             allowed = list(result.get("allowed_files", []))
             commands = list(result.get("verification_commands", []))
@@ -1706,6 +1757,9 @@ class InitCoderGraph:
             if skills_text:
                 context["skills"] = skills_text
             result = outer.plan_fn(outer.brief, state.get("worktree_root", ""), context)
+            outer.last_model_spec = dict(
+                result.get("model_spec") or outer.last_model_spec
+            )
             return {
                 "plan": result.get("plan", ""),
                 "allowed_files": list(result.get("allowed_files", [])),
@@ -1736,16 +1790,20 @@ class InitCoderGraph:
             )
             ledger.record(
                 "coder.py",
-                os.environ.get("S5_CODER_MODEL", "qwen3:8b"),
+                outer.last_model_spec.get("model") or "none",
                 outer.thread_id,
                 [],
                 time.time(),
                 extra={
+                    "stage": "code",
+                    "phase": "summary",
+                    "llm_call": False,
                     "valid": state.get("valid"),
                     "issue_id": outer.issue_id,
                     "worktree_root": state.get("worktree_root", ""),
                     "decisions": lines,
                 },
+                provider=outer.last_model_spec.get("provider"),
             )
             return {"persisted": True}
 

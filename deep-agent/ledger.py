@@ -193,6 +193,8 @@ def record(
             # The resolved backend is truth: a locally-run turn is
             # free even when the model string carries no prefix.
             metered, cost_usd = False, 0.0
+        if extra.get("llm_call") is False:
+            metered, cost_usd = False, 0.0
         if _is_test_thread(thread_id):
             metered, cost_usd = False, 0.0
         entry = {

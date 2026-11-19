@@ -15,6 +15,7 @@ import sys
 import time
 
 import skills_registry
+from s5tools import verification_env
 
 MAX_AUDIT_LOOPS_DEFAULT = 3
 
@@ -266,13 +267,16 @@ class AuditorGraph:
                 errors.append("verify-scope: gate reported passed=false")
         for argv in self.verification_commands:
             try:
-                proc = subprocess.run(
-                    list(argv),
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                    cwd=self.worktree_root,
-                )
+                with verification_env(self.worktree_root) as env:
+                    proc = subprocess.run(
+                        list(argv),
+                        capture_output=True,
+                        text=True,
+                        timeout=600,
+                        cwd=self.worktree_root,
+                        env=env,
+                        check=False,
+                    )
             except Exception as exc:
                 return False, payloads, [f"verify {' '.join(argv)}: {exc}"]
             if proc.returncode != 0:

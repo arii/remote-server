@@ -20,10 +20,12 @@ import re
 import shlex
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CHECKOUTS = {"arii/remote-server": "/srv/remote-server"}
@@ -139,6 +141,17 @@ def check_env(checkout):
         return {"PYTHONPATH": checkout}
 
 
+@contextmanager
+def verification_env(checkout):
+    with tempfile.TemporaryDirectory(prefix="agent-verification-") as state:
+        yield {
+            **os.environ,
+            **check_env(checkout),
+            "DEEP_AGENT_STATE_DIR": state,
+            "EVAL_LEDGER": os.path.join(state, "ledger.jsonl"),
+        }
+
+
 def run_repo_command(checkout, command):
     """Run an allowlisted verification command in checkout. Never
     raises: returns "exit=<n>\\n<tail>", "REJECTED: ...", "TIMEOUT
@@ -149,14 +162,16 @@ def run_repo_command(checkout, command):
     except ValueError as exc:
         return f"REJECTED: bad command line: {exc}"
     try:
-        proc = subprocess.run(
-            argv,
-            cwd=checkout,
-            capture_output=True,
-            text=True,
-            timeout=CHECK_TIMEOUT,
-            env={**os.environ, **check_env(checkout)},
-        )
+        with verification_env(checkout) as env:
+            proc = subprocess.run(
+                argv,
+                cwd=checkout,
+                capture_output=True,
+                text=True,
+                timeout=CHECK_TIMEOUT,
+                env=env,
+                check=False,
+            )
     except subprocess.TimeoutExpired:
         return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
     except OSError as exc:
