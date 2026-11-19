@@ -197,6 +197,33 @@ class ReceiptTests(unittest.TestCase):
         self.assertTrue(row["deleted"])
         self.assertEqual(row["cost_usd"], 0.012)
 
+    def test_deleted_reservation_remains_provisional_and_accepts_actual_charge(self):
+        scope = receipts.ReceiptRun("deleted-reservation")
+        trace_id = scope.request()
+        scope.reconcile(lambda *_: [self.bounded(trace_id, 0.6)])
+        self.assertTrue(runs.delete_run("run-0", ledger_path=ledger.LEDGER))
+        (row,) = self.rows()
+        self.assertEqual(row.get("cost_basis"), "upper_bound")
+        self.assertEqual(row.get("cost_upper_bound_usd"), 0.6)
+        self.assertNotIn(trace_id, receipts._settled_trace_ids())
+        with (
+            mock.patch("sys.argv", ["twt_receipts.py", str(scope.path)]),
+            mock.patch.object(
+                receipts, "fetch", return_value=[self.reply(trace_id, 0.8)]
+            ) as fetch,
+        ):
+            self.assertEqual(receipts.main(), 0)
+            fetch.assert_called_once()
+        (row,) = self.rows()
+        self.assertTrue(row["deleted"])
+        self.assertEqual(row["cost_usd"], 0.8)
+        self.assertNotIn("cost_basis", row)
+        self.assertNotIn("cost_upper_bound_usd", row)
+        self.assertEqual(runs.list_runs(ledger_path=ledger.LEDGER), [])
+        self.assertEqual(
+            runs.total_metered_spend(ledger.LEDGER), {"spent": 0.8, "unknown": 0}
+        )
+
     def test_partial_settlement_survives_scope_exit_and_gateway_outage(self):
         with mock.patch.object(receipts, "fetch") as fetch:
             with receipts.run("partial") as scope:

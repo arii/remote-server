@@ -396,7 +396,15 @@ def _tombstone_locked(indexes, path):
                 # Spend is spend: the tombstone keeps cost evidence
                 # so deletes hide runs without erasing the meter.
                 tomb = {"deleted": True, "ts": time.time()}
-                for key in ("model", "provider", "usage", "cost_usd", "metered"):
+                for key in (
+                    "model",
+                    "provider",
+                    "usage",
+                    "cost_usd",
+                    "metered",
+                    "cost_basis",
+                    "cost_upper_bound_usd",
+                ):
                     if key in row:
                         tomb[key] = row[key]
                 extra = row.get("extra") if isinstance(row, dict) else None
