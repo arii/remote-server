@@ -70,6 +70,7 @@ MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 DEFAULT_VERIFY_ROUNDS = 2
 REPAIR_TOOL_LIMIT = 20
 REPAIR_REPEAT_LIMIT = 3
+REPAIR_MODEL_LIMIT = 12
 
 # Dithering guard (#1160 gap 3, #1176): this many consecutive
 # identical unproductive run_check calls means the agent is spinning,
@@ -624,7 +625,15 @@ def build_agent(
     if written_files is not None:
         middleware.append(implementation_tool_middleware())
     if repair:
+        from langchain.agents.middleware import ModelCallLimitMiddleware
+
         middleware.insert(0, repair_tool_middleware())
+        middleware.insert(
+            0,
+            ModelCallLimitMiddleware(
+                thread_limit=REPAIR_MODEL_LIMIT, exit_behavior="error"
+            ),
+        )
     if recorder is not None:
         import observe  # noqa: E402
 

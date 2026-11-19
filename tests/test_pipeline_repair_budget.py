@@ -127,6 +127,36 @@ class TestRepairBudget(unittest.TestCase):
             self.assertTrue(executor.call_args.kwargs["repair"])
             self.assertEqual(executor.call_args.kwargs["repair_files"], ["a.py"])
 
+    def test_model_budget_bounds_loops_even_when_tool_ids_are_reused(self):
+        from langchain.agents.middleware.model_call_limit import (
+            ModelCallLimitExceededError,
+        )
+        from langchain_core.messages import AIMessage, HumanMessage
+        from tests.test_coder_outcome import LocalModel
+
+        with tempfile.TemporaryDirectory() as root:
+            model = LocalModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "ls",
+                                "args": {"path": "."},
+                                "id": "reused",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            )
+            graph = coder.build_agent(root, "repair", model=model, repair=True)
+            with self.assertRaises(ModelCallLimitExceededError):
+                graph.invoke(
+                    {"messages": [HumanMessage(content="fix")]},
+                    config={"recursion_limit": 100},
+                )
+
     def test_default_planner_includes_repair_notes(self):
         model = mock.Mock()
         model.invoke.return_value = "1. Fix [files: a.py]"
