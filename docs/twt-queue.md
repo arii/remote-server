@@ -76,7 +76,13 @@ holds; update the manifest deliberately rather than guessing whether an issue is
 
 `status.json` persists completed/skipped issues, the current issue and halt reason.
 A global file lock prevents concurrent supervisors. Restarting skips completed
-issues but never blindly retries an existing unfinished issue directory. Stopping
+issues but never blindly retries an existing unfinished issue directory. Startup
+first reconciles the saved `current` issue in its configured runtime, even if it
+has since closed or disappeared from the manifest. An active worker holds an
+issue lock, so recovery cannot race its writes. Failed recovery halts before any
+GitHub lookup or new dispatch; successful recovery records the attempt as completed
+without rerunning its pipeline. An existing explicit halt still requires operator
+clearance. Stopping
 creates a persistent `STOP` sentinel, also checked before model dispatch. After a
 halt, inspect the issue, journal/settlement and ledger using supported receipt
 recovery tooling. Only an operator should clear `halted` and remove `STOP` after

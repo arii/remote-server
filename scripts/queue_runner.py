@@ -391,6 +391,70 @@ def worker(job_dir):
     return 2 if fatal else code
 
 
+def recover(job_dir):
+    directory = Path(job_dir).resolve()
+    job = read_json(directory / "job.json")
+    state = directory / "state"
+    os.environ.update(job.get("environment", {}))
+    os.environ.update(
+        EVAL_LEDGER=str(directory / "ledger.jsonl"), DEEP_AGENT_STATE_DIR=str(state)
+    )
+    owner = (directory.stat().st_uid, directory.stat().st_gid)
+    try:
+        import twt_receipts
+
+        for journal in (state / "receipts").glob("*.jsonl"):
+            entries = [
+                json.loads(line) for line in journal.read_text().splitlines() if line
+            ]
+            if not entries or any(
+                Path(entry["ledger_path"]).resolve() != directory / "ledger.jsonl"
+                for entry in entries
+            ):
+                raise SafetyStop(
+                    "receipt journal has no entries or names a foreign ledger"
+                )
+            first = entries[0]
+            if any(
+                (entry["run_id"], entry["base_url"], entry.get("uds"))
+                != (first["run_id"], first["base_url"], first.get("uds"))
+                for entry in entries
+            ):
+                raise SafetyStop("receipt journal mixes runs or endpoints")
+            scope = twt_receipts.ReceiptRun(first["run_id"], first["base_url"])
+            scope.path, scope.started, scope.uds = (
+                journal,
+                first["started"],
+                first.get("uds"),
+            )
+            scope.ids = {entry["trace_id"] for entry in entries}
+            scope.local_ids = {
+                entry["trace_id"]
+                for entry in entries
+                if entry.get("local_only") is True
+            }
+            scope.reconcile()
+            if scope.error:
+                raise SafetyStop(scope.error)
+        result = coverage(state)
+    except Exception as error:
+        result = {"reconciled": False, "error": f"{type(error).__name__}: {error}"}
+    write_json(directory / "recovery.json", result, owner)
+    return 0 if result["reconciled"] else 2
+
+
+def worker_command(config, mode, directory):
+    source = Path(config["pipeline_checkout"])
+    return config.get("runtime_command", []) + [
+        "env",
+        "PYTHONPATH=" + os.pathsep.join((str(source / "deep-agent"), str(source))),
+        config["worker_python"],
+        "-",
+        mode,
+        str(directory),
+    ]
+
+
 def supervise(config_path):
     config = read_json(config_path)
     cap = checked_cap(config.get("cap_usd", 0.5))
@@ -410,6 +474,41 @@ def supervise(config_path):
     with (root / "queue.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status = read_json(status_path) if status_path.exists() else {"completed": []}
+        if status.get("current"):
+            current = status["current"]
+            try:
+                repo, number = current.rsplit("#", 1)
+                issue = {"repo": repo, "number": int(number)}
+                ordered_issues([issue])
+                name = repo.replace("/", "_") + "-" + str(issue["number"])
+                directory = root / name
+                saved = read_json(directory / "job.json")["issue"]
+                if (saved["repo"], saved["number"]) != (repo, issue["number"]):
+                    raise SafetyStop("current issue differs from saved job")
+                recovery = directory / "recovery.json"
+                recovery.unlink(missing_ok=True)
+                with (directory / "recovery.log").open("a") as log:
+                    process = subprocess.Popen(
+                        worker_command(config, "--reconcile", runtime_root / name),
+                        stdin=subprocess.PIPE,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                    process.communicate(source)
+                if (
+                    process.returncode != 0
+                    or read_json(recovery).get("reconciled") is not True
+                ):
+                    raise SafetyStop("startup receipt reconciliation failed")
+                if current not in status["completed"]:
+                    status["completed"].append(current)
+                status.update(current=None, last_recovery=read_json(recovery))
+                write_json(status_path, status)
+            except Exception as error:
+                status.update(halted=True, reason=f"startup reconciliation: {error}")
+                write_json(status_path, status)
+                return 2
         if status.get("halted"):
             raise SafetyStop(
                 "queue is halted; inspect status before an explicit recovery"
@@ -478,21 +577,7 @@ def supervise(config_path):
             print("START " + key, flush=True)
             with (directory / "run.log").open("w") as log:
                 process = subprocess.Popen(
-                    config.get("runtime_command", [])
-                    + [
-                        "env",
-                        "PYTHONPATH="
-                        + os.pathsep.join(
-                            (
-                                str(pipeline_checkout / "deep-agent"),
-                                str(pipeline_checkout),
-                            )
-                        ),
-                        config["worker_python"],
-                        "-",
-                        "--worker",
-                        str(runtime_directory),
-                    ],
+                    worker_command(config, "--worker", runtime_directory),
                     stdin=subprocess.PIPE,
                     stdout=log,
                     stderr=subprocess.STDOUT,
@@ -562,8 +647,14 @@ def main():
         "--config", type=Path, default=Path(default_config) if default_config else None
     )
     group.add_argument("--worker", type=Path)
+    group.add_argument("--reconcile", type=Path)
     args = parser.parse_args()
-    return worker(args.worker) if args.worker else supervise(args.config)
+    directory = args.worker or args.reconcile
+    if directory:
+        with (directory / "worker.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return worker(directory) if args.worker else recover(directory)
+    return supervise(args.config)
 
 
 if __name__ == "__main__":

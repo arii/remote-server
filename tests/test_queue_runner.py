@@ -1,4 +1,5 @@
 import json
+import fcntl
 import os
 import sys
 import tempfile
@@ -151,6 +152,45 @@ class RunnerTests(unittest.TestCase):
 
     @mock.patch.object(runner.signal, "signal")
     @mock.patch.object(
+        runner.subprocess, "check_output", return_value=json.dumps({"state": "closed"})
+    )
+    def test_saved_current_is_reconciled_before_closed_issue_can_be_skipped(
+        self, github, _signal
+    ):
+        for success in (False, True):
+            with self.subTest(success=success), tempfile.TemporaryDirectory() as root:
+                config, state = self.fixture(root)
+                directory = state / "owner_repo-7"
+                directory.mkdir(parents=True)
+                runner.write_json(
+                    directory / "job.json",
+                    {"issue": {"repo": "owner/repo", "number": 7}},
+                )
+                runner.write_json(
+                    state / "status.json", {"current": "owner/repo#7", "completed": []}
+                )
+                process = mock.Mock(returncode=0 if success else 2)
+
+                def finish(_source):
+                    runner.write_json(
+                        directory / "recovery.json", {"reconciled": success}
+                    )
+
+                process.communicate.side_effect = finish
+                with mock.patch.object(
+                    runner.subprocess, "Popen", return_value=process
+                ) as spawn:
+                    self.assertEqual(runner.supervise(config), 0 if success else 2)
+                spawn.assert_called_once()
+                self.assertIn("--reconcile", spawn.call_args.args[0])
+                github.assert_not_called()
+                status = runner.read_json(state / "status.json")
+                self.assertEqual(
+                    status["completed"], ["owner/repo#7"] if success else []
+                )
+
+    @mock.patch.object(runner.signal, "signal")
+    @mock.patch.object(
         runner.subprocess,
         "check_output",
         return_value=json.dumps(
@@ -213,8 +253,10 @@ class RunnerTests(unittest.TestCase):
             config, state = self.fixture(root)
             with mock.patch.object(runner.subprocess, "Popen"):
                 self.assertEqual(runner.supervise(config), 2)
-            with self.assertRaises(runner.SafetyStop):
-                runner.supervise(config)
+            with mock.patch.object(
+                runner.subprocess, "Popen", side_effect=OSError("runtime unavailable")
+            ):
+                self.assertEqual(runner.supervise(config), 2)
             self.assertTrue(runner.read_json(state / "status.json")["halted"])
 
     @mock.patch.object(runner.signal, "signal")
@@ -451,6 +493,33 @@ class AccountingTests(unittest.TestCase):
     def test_empty_budget_and_coverage(self):
         self.assertEqual(runner.check_budget(None, 0.5), 0)
         self.assertTrue(runner.coverage(self.root)["reconciled"])
+
+    def test_startup_recovery_uses_canonical_settlement_for_bounds_and_unknowns(self):
+        self.scope.path = self.root / "state/receipts/run.jsonl"
+        trace = self.scope.request()
+        runner.write_json(self.root / "job.json", {"environment": {}})
+        for bound in (None, 0.4):
+            with (
+                self.subTest(bound=bound),
+                mock.patch.dict(os.environ, {}),
+                mock.patch.object(
+                    twt_receipts, "fetch", return_value=[self.bound(trace, bound)]
+                ),
+            ):
+                self.assertEqual(runner.recover(self.root), 2 if bound is None else 0)
+                self.assertEqual(
+                    runner.read_json(self.root / "recovery.json")["reconciled"],
+                    bound is not None,
+                )
+
+    def test_recovery_refuses_a_still_running_worker(self):
+        with (self.root / "worker.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with mock.patch(
+                "sys.argv", ["queue_runner.py", "--reconcile", str(self.root)]
+            ):
+                with self.assertRaises(BlockingIOError):
+                    runner.main()
 
     def test_refresh_existing_owner_before_unknown_check_and_enforce_cap(self):
         first = self.scope.request()
