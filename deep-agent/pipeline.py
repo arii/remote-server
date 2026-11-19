@@ -83,7 +83,11 @@ def run_td(argv, cwd=None, timeout=300):
         except ValueError:
             payload = None
         if isinstance(payload, dict):
-            return proc.returncode, stdout
+            payload["_td_diagnostics"] = {
+                "exit_code": proc.returncode,
+                "stderr": (proc.stderr or "").strip(),
+            }
+            return proc.returncode, json.dumps(payload)
         stderr = (proc.stderr or "").strip()
         return proc.returncode, (
             f"td exited with code {proc.returncode}\nstdout: {stdout}\nstderr: {stderr}"

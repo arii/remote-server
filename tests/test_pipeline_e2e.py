@@ -293,6 +293,25 @@ class TestCliCommands(unittest.TestCase):
 
 
 class TestSubmitArgv(unittest.TestCase):
+    def test_failed_json_submit_keeps_findings_and_process_diagnostics(self):
+        import json
+
+        result = mock.Mock(
+            returncode=1,
+            stdout='{"status":"error","violations":["a.py"]}',
+            stderr="permission denied",
+        )
+        pipe = pipeline_mod.Pipeline("/tmp", "intent")
+        with mock.patch.object(pipeline_mod.subprocess, "run", return_value=result):
+            ok, error = pipe.stage_submit("/tmp/wt", "title")
+        self.assertFalse(ok)
+        payload = json.loads(error)
+        self.assertEqual(payload["violations"], ["a.py"])
+        self.assertEqual(
+            payload["_td_diagnostics"],
+            {"exit_code": 1, "stderr": "permission denied"},
+        )
+
     def test_failed_gate_json_reaches_coder_repair_findings(self):
         import json
 
@@ -315,8 +334,9 @@ class TestSubmitArgv(unittest.TestCase):
         with mock.patch.object(pipeline_mod.subprocess, "run", side_effect=results):
             gate = graph.run_gate("/tmp", ["a.py"], [])
         self.assertFalse(gate["passed"])
-        self.assertEqual(gate["scope"], scope)
-        self.assertEqual(gate["audit"], audit)
+        diagnostics = {"exit_code": 1, "stderr": "gate failed"}
+        self.assertEqual(gate["scope"], {**scope, "_td_diagnostics": diagnostics})
+        self.assertEqual(gate["audit"], {**audit, "_td_diagnostics": diagnostics})
         self.assertIn("scope violation: outside.py", gate["errors"])
         self.assertIn("audit: a.py:9: unsafe: fix this", gate["errors"])
 
