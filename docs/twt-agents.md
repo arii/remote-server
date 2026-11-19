@@ -95,11 +95,18 @@ The service adapter tests require installing the pinned TwT package in
 the test environment in addition to the deep-agent dependencies.
 
 Coder, spec and audit models keep the default TwT waterfall but send
-`provider_models: {"nebius": "zai-org/GLM-5.3-Flash"}`. This selects the model
-only when TwT reaches Nebius; it does not bypass local or free routes.
-The policy lives in `model_router.STAGE_NEBIUS_MODELS`; optional
+`provider_models: {"nvidia": "z-ai/glm-5.3-flash", "nebius": "zai-org/GLM-5.3-Flash"}`.
+NVIDIA serves the free GLM tier before Nebius; local and other free routes remain intact.
+Each stage sends `provider_reasoning_effort: {"nvidia": "low", "nebius": "low"}`.
+TwT translates this into `reasoning_effort=low` and GLM chat-template
+`reasoning_effort=low, clear_thinking=true` only at those providers.
+GLM thinking cannot be disabled; omitted effort defaults to `max`.
+See [NVIDIA's model guide](https://docs.nvidia.com/nim/large-language-models/latest/get-started/advanced/get-started-glm-5.3-flash.html)
+and [Nebius's API](https://docs.tokenfactory.nebius.com/api-reference/inference/create-chat-completion).
+The policy lives in `model_router.STAGE_NVIDIA_MODELS` and `STAGE_NEBIUS_MODELS`; optional
 `TWT_CODER_NEBIUS_MODEL`, `TWT_SPEC_NEBIUS_MODEL` and `TWT_AUDIT_NEBIUS_MODEL`
-override individual stages. Local-only models never carry paid selections.
+override individual stages, with corresponding `TWT_<STAGE>_NVIDIA_MODEL` overrides.
+Local-only models never carry hosted selections or reasoning controls.
 TwT validates provider selections, preserves them in traces and strips this
 gateway-only field before upstream dispatch. An unavailable selected model
 fails closed rather than silently substituting a cheaper model at that step.

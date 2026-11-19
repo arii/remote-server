@@ -521,6 +521,7 @@ PROFILE_PROVIDERS = {
 
 
 STAGE_NEBIUS_MODELS = dict.fromkeys(("coder", "spec", "audit"), "zai-org/GLM-5.3-Flash")
+STAGE_NVIDIA_MODELS = dict.fromkeys(("coder", "spec", "audit"), "z-ai/glm-5.3-flash")
 
 
 def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
@@ -536,13 +537,21 @@ def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
         raise ValueError(f"unknown pipeline model stage: {stage}")
     if spec.get("provider") == "twt" and stage is not None:
         spec["provider_models"] = {
+            "nvidia": _env(
+                f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
+            ),
             "nebius": _env(
                 f"TWT_{stage.upper()}_NEBIUS_MODEL", STAGE_NEBIUS_MODELS[stage]
-            )
+            ),
         }
+        spec["provider_reasoning_effort"] = dict.fromkeys(("nvidia", "nebius"), "low")
     kwargs = chat_kwargs(spec)
     if spec.get("provider") == "twt" and spec.get("provider_models"):
         kwargs["extra_body"] = {"provider_models": spec["provider_models"]}
+        if spec.get("provider_reasoning_effort"):
+            kwargs["extra_body"]["provider_reasoning_effort"] = spec[
+                "provider_reasoning_effort"
+            ]
     import twt_receipts
 
     if spec.get("provider") == "ollama":

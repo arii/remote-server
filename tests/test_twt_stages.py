@@ -1,3 +1,5 @@
+import asyncio
+import json
 import os
 import unittest
 from unittest import mock
@@ -23,7 +25,13 @@ class TestTwtStageModels(unittest.TestCase):
                 self.assertEqual(body["model"], "default")
                 self.assertEqual(
                     body["extra_body"],
-                    {"provider_models": {"nebius": "zai-org/GLM-5.3-Flash"}},
+                    {
+                        "provider_models": {
+                            "nvidia": "z-ai/glm-5.3-flash",
+                            "nebius": "zai-org/GLM-5.3-Flash",
+                        },
+                        "provider_reasoning_effort": {"nvidia": "low", "nebius": "low"},
+                    },
                 )
                 self.assertEqual(
                     resolved["provider_models"], body["extra_body"]["provider_models"]
@@ -63,4 +71,89 @@ class TestTwtStageModels(unittest.TestCase):
                 },
                 stage="audit",
             )
-        self.assertEqual(spec["provider_models"], {"nebius": "other"})
+        self.assertEqual(spec["provider_models"]["nebius"], "other")
+
+    def test_stage_controls_on_actual_sync_and_async_sdk_wire(self):
+        import httpx
+        from openai import AsyncOpenAI, OpenAI
+
+        sent = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            sent.append(body)
+            self.assertEqual(body["model"], "default")
+            self.assertEqual(body["max_tokens"], 8192)
+            self.assertEqual(body["provider_models"]["nvidia"], "z-ai/glm-5.3-flash")
+            self.assertEqual(body["provider_models"]["nebius"], "zai-org/GLM-5.3-Flash")
+            self.assertEqual(
+                body["provider_reasoning_effort"], {"nvidia": "low", "nebius": "low"}
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "wire",
+                    "object": "chat.completion",
+                    "model": "glm",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "OK"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                },
+            )
+
+        for stage in ("spec", "coder", "audit"):
+            for tools in (False, True):
+                with self.subTest(stage=stage, tools=tools):
+                    model, _ = model_router.build_chat_model(
+                        {
+                            "provider": "twt",
+                            "model": "default",
+                            "base_url": "http://gateway.test/v1",
+                        },
+                        stage=stage,
+                    )
+                    model.client = OpenAI(
+                        api_key="test",
+                        base_url="http://gateway.test/v1",
+                        http_client=httpx.Client(
+                            transport=httpx.MockTransport(handler)
+                        ),
+                    ).chat.completions
+                    model.async_client = AsyncOpenAI(
+                        api_key="test",
+                        base_url="http://gateway.test/v1",
+                        http_client=httpx.AsyncClient(
+                            transport=httpx.MockTransport(handler)
+                        ),
+                    ).chat.completions
+                    bound = (
+                        model.bind_tools(
+                            [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "read",
+                                        "parameters": {
+                                            "type": "object",
+                                            "properties": {},
+                                        },
+                                    },
+                                }
+                            ]
+                        )
+                        if tools
+                        else model
+                    )
+                    bound.invoke("task")
+                    asyncio.run(bound.ainvoke("task"))
+                    self.assertEqual(bool(sent[-1].get("tools")), tools)
+        self.assertEqual(len(sent), 12)
