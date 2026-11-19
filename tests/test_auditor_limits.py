@@ -8,12 +8,33 @@ from pathlib import Path
 from unittest import mock
 
 import auditor
+import issue_generator
 import ledger
 import model_router
 import pipeline
 
 
 class TestVerificationContract(unittest.TestCase):
+    def test_pipeline_spec_scope_is_canonical_and_idempotent(self):
+        draft = "## Goal\nFix\n### Allowed Files\n- `widget.py`\n## Acceptance Criteria\nHelper used\n"
+        agent = pipeline.Pipeline("/tmp", "fix", issue_id=1357)
+        with mock.patch.object(
+            pipeline, "drive_to_settled", return_value={"valid": True, "draft": draft}
+        ):
+            ok, state, spec = agent.stage_spec()
+        self.assertTrue(ok)
+        self.assertEqual(
+            issue_generator.explicit_allowed_paths(spec), [agent.spec_path, "widget.py"]
+        )
+        self.assertEqual(spec.count(agent.spec_path), 1)
+        self.assertEqual(
+            issue_generator.completed_spec(
+                {"draft": spec}, allowed_path=agent.spec_path
+            ),
+            spec,
+        )
+        self.assertIn("(new)", spec)
+
     def test_pipeline_passes_written_spec_to_auditor(self):
         agent = pipeline.Pipeline("/tmp", "fix", issue_id=1357)
         with (

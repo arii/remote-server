@@ -74,6 +74,13 @@ calc.add subtracts instead of adding.
 ## Goal
 calc.add returns the sum.
 
+## Scope
+### Allowed Files
+- `calc.py`
+
+## Definition of Done
+The acceptance suite passes.
+
 ## Acceptance Criteria
 - [ ] `calc.add(2, 3) == 5` with `file:line` evidence in calc.py
 """
@@ -196,14 +203,18 @@ class FixtureTd:
         )
 
     def _changed(self, worktree):
-        out = _git(worktree, "status", "--porcelain")
+        out = _git(worktree, "status", "--porcelain", "--untracked-files=all")
         names = []
         for line in out.splitlines():
             parts = line.strip().split()
             if len(parts) < 2:
                 continue
-            name = os.path.basename(parts[-1].rstrip("/"))
-            if not name or name == "__pycache__" or name.endswith((".pyc", ".pyo")):
+            name = parts[-1]
+            if (
+                not name
+                or "__pycache__" in name.split("/")
+                or name.endswith((".pyc", ".pyo"))
+            ):
                 continue
             names.append(name)
         return names
@@ -211,7 +222,7 @@ class FixtureTd:
     def _verify_scope(self, argv):
         spec = argv[argv.index("--spec-file") + 1]
         worktree = argv[argv.index("--worktree") + 1]
-        with open(spec, encoding="utf-8") as handle:
+        with open(os.path.join(worktree, spec), encoding="utf-8") as handle:
             text = handle.read()
         allowed = set(re.findall(r"- `([^`]+)`", text))
         changed = set(self._changed(worktree))
@@ -282,7 +293,7 @@ def _investigate_ok(messages, tools):
 
 
 def _audit_ok(gate):
-    return "1. calc.add now sums; test_calc.py covers it."
+    return json.dumps({"verified": True, "findings": []})
 
 
 def _run_pipeline(fixture, **overrides):

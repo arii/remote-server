@@ -212,7 +212,15 @@ class Pipeline:
             return False, {}, "spec drive exhausted"
         if not state.get("valid"):
             return False, state, (state.get("errors") or ["invalid spec"])
-        return True, state, issue_generator.completed_spec(state)
+        return (
+            True,
+            state,
+            issue_generator.completed_spec(state, allowed_path=self.spec_path),
+        )
+
+    @property
+    def spec_path(self):
+        return f"docs/specs/issue-{self.issue_id or 0}.md"
 
     def _plan_policy(self, interrupts, _state):
         if self.auto_approve_plan:
@@ -225,7 +233,7 @@ class Pipeline:
         import coder
         import issue_generator
 
-        spec_path = f"docs/specs/issue-{self.issue_id or 0}.md"
+        spec_path = self.spec_path
 
         def implement(task, plan, root, errors):
             prompt = (
@@ -270,7 +278,12 @@ class Pipeline:
             result = (self.plan_fn or coder._default_plan_fn)(task, root, context)
             result = dict(result)
             result["allowed_files"] = list(
-                dict.fromkeys([*result.get("allowed_files", []), spec_path])
+                dict.fromkeys(
+                    [
+                        *result.get("allowed_files", []),
+                        *issue_generator.explicit_allowed_paths(brief),
+                    ]
+                )
             )
             return result
 
@@ -345,7 +358,7 @@ class Pipeline:
             # internal loop) owns the repair cycle.
             max_loops=1,
             preview_url=self.preview_url,
-            spec_file=f"docs/specs/issue-{self.issue_id or 0}.md",
+            spec_file=self.spec_path,
             thread_id=f"{self.thread_id}-audit-{int(time.time())}",
         )
         state = drive_to_settled(

@@ -117,7 +117,7 @@ def investigation_tool_guard(results=None):
     return stop_repeated_call
 
 
-def completed_spec(state):
+def completed_spec(state, allowed_path=None):
     parts = [state.get("draft", "")]
     if state.get("evidence"):
         parts.append("## Investigation Evidence\n" + state["evidence"])
@@ -126,9 +126,20 @@ def completed_spec(state):
             "## Q&A Context\n"
             + "\n".join(f"- **{k}**: {v}" for k, v in sorted(state["answers"].items()))
         )
-    return clean_allowed_file_urls(
+    text = clean_allowed_file_urls(
         "\n\n".join(part for part in parts if part).rstrip() + "\n"
     )
+    if allowed_path and allowed_path not in explicit_allowed_paths(text):
+        entry = f"- `{allowed_path}` (new)\n"
+        text, count = re.subn(
+            r"(?im)^(\s*#{1,6}\s+Allowed (?:Files|Paths)[^\n]*\n)",
+            lambda match: match[0] + entry,
+            text,
+            count=1,
+        )
+        if not count:
+            text += "\n## Scope\n### Allowed Files\n" + entry
+    return text
 
 
 def write_spec(path, text):
