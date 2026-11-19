@@ -12,10 +12,37 @@ import coder
 import issue_generator
 import ledger
 import model_router
+import observe
 import pipeline
 
 
 class TestVerificationContract(unittest.TestCase):
+    def test_long_recorded_checks_keep_the_summary_tail(self):
+        for code in (0, 1):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as root:
+                trace = Path(root, "trace.jsonl")
+                recorder = observe.TraceRecorder(trace)
+                output = (
+                    f"exit={code}\nstart\n"
+                    + "log line\n" * 1000
+                    + f"summary exit {code}"
+                )
+                recorder.tool_call(
+                    "run_check",
+                    {"command": "python3 -m pytest"},
+                    0.1,
+                    True,
+                    result=output,
+                )
+                recorder.close()
+                evidence = coder.trace_verification_evidence(trace)
+                self.assertEqual(evidence[0]["passed"], code == 0)
+                self.assertTrue(evidence[0]["output"].endswith(f"summary exit {code}"))
+                self.assertIn("start", evidence[0]["output"])
+                self.assertLessEqual(
+                    len(evidence[0]["output"]), coder.CHECK_OUTPUT_LIMIT
+                )
+
     def test_edits_invalidate_prior_checks_until_a_fresh_check(self):
         check = {
             "type": "tool_call",

@@ -16,7 +16,8 @@ Event shapes (one JSON object per line, `ts` epoch seconds always):
   tool_call  {name, args_preview, duration_s, ok, result_preview|error}
   run_end    {duration_s, ok}
 
-Previews are capped at 2000 chars. The recorder never raises:
+Previews are capped at 2000 chars; run_check also retains 4000 chars
+of bounded head/tail evidence. The recorder never raises:
 observability must not break runs.
 """
 
@@ -123,6 +124,14 @@ class TraceRecorder:
         }
         if ok:
             payload["result_preview"] = _preview(result or "")
+            if name == "run_check" and isinstance(result, str):
+                marker = "\n[check output truncated]\n"
+                keep = (2 * PREVIEW_LIMIT - len(marker)) // 2
+                truncated = len(result) > 2 * PREVIEW_LIMIT
+                payload["check_output"] = (
+                    result[:keep] + marker + result[-keep:] if truncated else result
+                )
+                payload["check_output_truncated"] = truncated
         else:
             payload["error"] = str(error or "")[:500]
         self.event("tool_call", **payload)

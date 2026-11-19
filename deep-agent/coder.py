@@ -728,7 +728,7 @@ def trace_verification_evidence(trace_path):
                     parse_check_command(command)
                 except (ValueError, TypeError, KeyError):
                     continue
-                output = event.get("result_preview", "")
+                output = event.get("check_output", event.get("result_preview", ""))
                 if not isinstance(output, str):
                     continue
                 evidence.append(
@@ -737,6 +737,11 @@ def trace_verification_evidence(trace_path):
                         "passed": event.get("ok") is True
                         and (output == "exit=0" or output.startswith("exit=0\n")),
                         "output": output[:CHECK_OUTPUT_LIMIT],
+                        **(
+                            {"output_truncated": True}
+                            if event.get("check_output_truncated") is True
+                            else {}
+                        ),
                     }
                 )
     except (OSError, TypeError):
