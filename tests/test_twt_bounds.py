@@ -1,6 +1,10 @@
 import asyncio
+import contextlib
+import importlib
+import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +20,47 @@ from langchain_openai import ChatOpenAI
 
 
 class BoundsTests(unittest.TestCase):
+    def test_fanout_and_resolver_merge_explicit_output_budget(self):
+        for name, budget in (("triage_fanout", 2000), ("resolve_conflicts", 4000)):
+            module = importlib.import_module(name)
+            for ceiling in (8192, 1500):
+                with (
+                    self.subTest(entrypoint=name, ceiling=ceiling),
+                    tempfile.TemporaryDirectory() as root,
+                ):
+                    Path(root, ".git").mkdir()
+                    args = [
+                        name + ".py",
+                        "arii/remote-server" if name == "triage_fanout" else root,
+                    ]
+                    spec = {
+                        "provider": "twt",
+                        "model": "default",
+                        "base_url": "http://localhost/v1",
+                    }
+                    agent = mock.Mock()
+                    agent.invoke.return_value = {"messages": [AIMessage("done")]}
+                    with (
+                        mock.patch.object(sys, "argv", args),
+                        mock.patch.dict(
+                            os.environ, {"DEEP_AGENT_STATE_DIR": root}, clear=True
+                        ),
+                        mock.patch.object(module, "load_dotenv"),
+                        mock.patch.object(
+                            model_router, "resolve_llm", return_value=spec
+                        ),
+                        mock.patch.object(model_router, "PIPELINE_MAX_TOKENS", ceiling),
+                        mock.patch.object(module, "ChatOpenAI") as constructor,
+                        mock.patch.object(module, "build_agent", return_value=agent),
+                        mock.patch.object(ledger, "record"),
+                        contextlib.redirect_stdout(io.StringIO()),
+                        contextlib.redirect_stderr(io.StringIO()),
+                    ):
+                        self.assertEqual(module.main(), 0)
+                    self.assertEqual(
+                        constructor.call_args.kwargs["max_tokens"], min(budget, ceiling)
+                    )
+
     def test_history_empty_normal_and_oversized(self):
         self.assertEqual(model_router.bounded_history([]), [])
         normal = [SystemMessage("rules"), HumanMessage("task")]

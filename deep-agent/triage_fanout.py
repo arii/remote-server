@@ -297,9 +297,9 @@ def main() -> int:
                 spec, model=model_id, base_url="https://api.studio.nebius.com/v1"
             )
         kwargs = model_router.chat_kwargs(spec)
+        kwargs["max_tokens"] = min(2000, model_router.PIPELINE_MAX_TOKENS)
         model = ChatOpenAI(
             api_key=model_router.api_key(spec),
-            max_tokens=2000,
             **kwargs,
         )
     repo_list = ", ".join(repos)
