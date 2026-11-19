@@ -40,9 +40,11 @@ def tag(result):
     trace_id = latest.get()
     if trace_id:
         for generation in result.generations:
-            generation.message.response_metadata.setdefault("headers", {})[
-                "x-trace-id"
-            ] = trace_id
+            generation.message.response_metadata["headers"] = {
+                **(generation.generation_info or {}).get("headers", {}),
+                **generation.message.response_metadata.get("headers", {}),
+                "x-trace-id": trace_id,
+            }
     return result
 
 

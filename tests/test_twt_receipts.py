@@ -134,7 +134,10 @@ class ReceiptTests(unittest.TestCase):
             receipts.capture(request)
             result = SimpleNamespace(
                 generations=[
-                    SimpleNamespace(message=SimpleNamespace(response_metadata={}))
+                    SimpleNamespace(
+                        message=SimpleNamespace(response_metadata={}),
+                        generation_info=None,
+                    )
                 ]
             )
             receipts.tag(result)
@@ -203,7 +206,9 @@ class ReceiptTests(unittest.TestCase):
                                 ],
                                 "usage": {"prompt_tokens": 10, "completion_tokens": 2},
                             }
-                        return httpx.Response(200, json=body)
+                        return httpx.Response(
+                            200, json=body, headers={"x-cost-usd": "0.012"}
+                        )
 
                     base = "http://127.0.0.1:1234/" + (
                         "v1" if provider == "twt" else "local"
@@ -232,6 +237,8 @@ class ReceiptTests(unittest.TestCase):
                         else model.invoke("OK")
                     )
                     self.assertEqual(message.content, "OK")
+                    if provider == "twt":
+                        self.assertEqual(ledger._reported_cost([message]), 0.012)
                     self.assertEqual(
                         len(ledger._usage_total([message])["twt_trace_ids"]), 1
                     )
