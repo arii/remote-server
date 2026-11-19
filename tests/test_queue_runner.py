@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import ledger
+import model_router
 import runs
 import twt_receipts
 from scripts import queue_runner as runner
@@ -402,6 +403,7 @@ class RunnerTests(unittest.TestCase):
             modules.mkdir(parents=True)
             (modules / "model_router.py").write_text(
                 "class _BoundedHistory:\n    def _bounded_kwargs(self, kwargs):\n        return kwargs\n"
+                "def _remote_spec(*args): return {}\n"
             )
             (modules / "ledger.py").write_text(
                 "import os\nLEDGER = os.environ['EVAL_LEDGER']\n"
@@ -534,6 +536,44 @@ class AccountingTests(unittest.TestCase):
             with self.assertRaises(runner.BudgetStop):
                 runner.check_budget(self.scope, 0.5)
         self.assertEqual(len(self.rows()), 1)
+
+    def test_model_construction_refreshes_bounds_before_its_cap_check(self):
+        trace = self.scope.request()
+        self.record([trace])
+        token = twt_receipts.current.set(self.scope)
+        self.addCleanup(twt_receipts.current.reset, token)
+        for amount, error in (
+            (None, runner.SafetyStop),
+            (0.4, None),
+            (0.5, runner.BudgetStop),
+        ):
+            with (
+                self.subTest(amount=amount),
+                mock.patch.dict(os.environ, {"NEBIUS_SPEND_CAP_USD": "0.5"}),
+                mock.patch.object(model_router, "api_key", return_value="twt"),
+                mock.patch.object(
+                    model_router, "_remote_spec", model_router._remote_spec
+                ),
+                mock.patch.object(
+                    model_router._BoundedHistory,
+                    "_bounded_kwargs",
+                    model_router._BoundedHistory._bounded_kwargs,
+                ),
+                mock.patch.object(
+                    twt_receipts, "fetch", return_value=[self.bound(trace, amount)]
+                ),
+            ):
+                runner.install_budget_guard(0.5, self.root / "issue", [])
+                if error:
+                    with self.assertRaises(error):
+                        model_router._remote_spec("twt", "default", self.scope.base_url)
+                else:
+                    self.assertEqual(
+                        model_router._remote_spec(
+                            "twt", "default", self.scope.base_url
+                        )["provider"],
+                        "twt",
+                    )
 
     def test_live_unowned_receipts_do_not_create_or_double_count_owners(self):
         first, second = self.scope.request(), self.scope.request()

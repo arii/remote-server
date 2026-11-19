@@ -61,7 +61,8 @@ holds; update the manifest deliberately rather than guessing whether an issue is
 - Every issue has isolated `job.json`, `run.log`, `stages.json`, `ledger.jsonl`,
   receipt journals, automatic settlement, pipeline result and `summary.json`.
 - The guard refreshes existing ledger owners from fresh receipts **before**
-  checking unknown spend. Live receipts not yet owned by a completed turn count
+  checking unknown spend, at model construction as well as dispatch. Live receipts
+  not yet owned by a completed turn count
   toward the budget without creating premature or duplicate owner rows.
 - An incomplete, valid `upper_bound` receipt reserves that amount. It counts
   against the cap and passes reconciliation without being called an actual bill.

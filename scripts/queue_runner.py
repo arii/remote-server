@@ -130,6 +130,37 @@ def check_budget(scope, cap):
     return paid
 
 
+def install_budget_guard(cap, directory, fatal):
+    import model_router
+    import twt_receipts
+
+    def guard():
+        if (directory.parent / "STOP").exists():
+            raise BudgetStop("queue stop requested before dispatch")
+        if fatal:
+            raise SafetyStop(fatal[0])
+        try:
+            check_budget(twt_receipts.current.get(), cap)
+        except BudgetStop:
+            raise
+        except Exception as error:
+            fatal.append(str(error))
+            raise SafetyStop(str(error)) from error
+
+    def guarded(original):
+        @functools.wraps(original)
+        def call(*args, **kwargs):
+            guard()
+            return original(*args, **kwargs)
+
+        return call
+
+    model_router._remote_spec = guarded(model_router._remote_spec)
+    model_router._BoundedHistory._bounded_kwargs = guarded(
+        model_router._BoundedHistory._bounded_kwargs
+    )
+
+
 def ordered_issues(issues):
     for issue in issues:
         if (
@@ -285,31 +316,10 @@ def worker(job_dir):
 
     try:
         import cli
-        import model_router
         import pipeline
         import runs
-        import twt_receipts
 
-        original_kwargs = model_router._BoundedHistory._bounded_kwargs
-
-        @functools.wraps(original_kwargs)
-        def budgeted_kwargs(model, kwargs):
-            if (directory.parent / "STOP").exists():
-                raise BudgetStop("queue stop requested before dispatch")
-            if fatal:
-                raise SafetyStop(fatal[0])
-            scope = twt_receipts.current.get()
-            try:
-                check_budget(scope, cap)
-            except BudgetStop:
-                raise
-            except Exception as error:
-                fatal.append(str(error))
-                raise SafetyStop(str(error)) from error
-            return original_kwargs(model, kwargs)
-
-        model_router._BoundedHistory._bounded_kwargs = budgeted_kwargs
-
+        install_budget_guard(cap, directory, fatal)
         for stage in ("init", "spec", "code", "audit", "submit", "cleanup"):
             original = getattr(pipeline.Pipeline, "stage_" + stage)
 
