@@ -173,7 +173,7 @@ class TestVerificationContract(unittest.TestCase):
                 )
                 self.assertEqual(bool(errors), code != 0)
 
-    def test_untracked_dependencies_omitted_but_tracked_changes_still_reviewed(self):
+    def test_dependencies_omitted_from_staging_and_review(self):
         with tempfile.TemporaryDirectory() as root:
 
             def git(*args):
@@ -199,21 +199,29 @@ class TestVerificationContract(unittest.TestCase):
                 "baseline",
             )
             git("update-ref", "refs/remotes/origin/main", "HEAD")
-            for name in ("node_modules", "frontend/node_modules"):
+            for name in ("node_modules", "frontend/node_modules", ".venv"):
                 Path(root, name).symlink_to(
                     Path(root, "cache-a"), target_is_directory=True
                 )
+            cache = Path(root, "frontend/.venv")
+            cache.mkdir()
+            (cache / "pyvenv.cfg").write_text("environment state")
             graph = auditor.AuditorGraph(root, spec_file="spec.md")
             with self.assertRaisesRegex(ValueError, "no diff"):
                 graph.semantic_payload({})
+            self.assertEqual(
+                set(git("ls-files").splitlines()),
+                {"spec.md", ".gitignore", "vendor/node_modules"},
+            )
             tracked.unlink()
             tracked.symlink_to(Path(root, "cache-b"), target_is_directory=True)
             Path(root, "helper.py").write_text("def helper():\n    return 1\n")
             Path(root, "link.py").symlink_to("helper.py")
+            git("add", "--intent-to-add", ".venv")
             diff = graph.semantic_payload({})["diff"]
-            self.assertNotIn("diff --git a/node_modules ", diff)
-            self.assertNotIn("diff --git a/frontend/node_modules ", diff)
-            for name in ("helper.py", "link.py", "vendor/node_modules"):
+            self.assertNotIn("node_modules", diff)
+            self.assertNotIn(".venv", diff)
+            for name in ("helper.py", "link.py"):
                 self.assertIn(f"diff --git a/{name} ", diff)
 
     def test_actual_check_evidence_reaches_semantic_review(self):
@@ -433,6 +441,11 @@ class TestVerificationContract(unittest.TestCase):
                     "--no-color",
                     "origin/main",
                     "--",
+                    ".",
+                    ":(exclude,glob)**/.venv",
+                    ":(exclude,glob)**/.venv/**",
+                    ":(exclude,glob)**/node_modules",
+                    ":(exclude,glob)**/node_modules/**",
                 ],
             )
             self.assertTrue(run.call_args.kwargs["check"])

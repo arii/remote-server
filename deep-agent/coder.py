@@ -68,6 +68,9 @@ RECURSION_LIMIT = 100
 DEFAULT_TIMEOUT = 1800
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 DEFAULT_VERIFY_ROUNDS = 2
+REPAIR_TOOL_LIMIT = 20
+REPAIR_REPEAT_LIMIT = 3
+REPAIR_MODEL_LIMIT = 12
 
 # Dithering guard (#1160 gap 3, #1176): this many consecutive
 # identical unproductive run_check calls means the agent is spinning,
@@ -270,6 +273,7 @@ def _default_plan_fn(brief, worktree_root, context):
         f"\n\n{verification_guidance()}"
         f"{skills_block}"
         f"\n\nBrief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
+        f"\n\nRepair notes:\n{context.get('repair_notes', '')}"
     )
     reply = None
     error = ""
@@ -524,6 +528,50 @@ def implementation_tool_middleware():
     return GroundImplementation()
 
 
+class RepairBudgetExceeded(RuntimeError):
+    pass
+
+
+def repair_tool_middleware():
+    from langchain.agents.middleware import wrap_tool_call
+    from langchain_core.messages import ToolMessage
+
+    seen = {}
+    calls = 0
+    lock = threading.Lock()
+
+    @wrap_tool_call
+    def bound_repair(request, handler):
+        nonlocal calls
+        call = request.tool_call
+        key = (call["name"], json.dumps(call["args"], sort_keys=True))
+        with lock:
+            calls += 1
+            if calls > REPAIR_TOOL_LIMIT:
+                raise RepairBudgetExceeded(
+                    f"Repair tool budget exhausted ({REPAIR_TOOL_LIMIT} calls)"
+                )
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] >= REPAIR_REPEAT_LIMIT:
+                raise RepairBudgetExceeded(
+                    f"Repair repeated unchanged tool call: {key[0]} {key[1]}"
+                )
+            if seen[key] > 1:
+                return ToolMessage(
+                    content="Already called with these args without a successful edit. "
+                    "Use the earlier result, fix the code, or finish with the blocker.",
+                    tool_call_id=call["id"],
+                    status="error",
+                )
+        result = handler(request)
+        if call["name"] in MUTATING_TOOLS and result.status == "success":
+            with lock:
+                seen.clear()
+        return result
+
+    return bound_repair
+
+
 def build_agent(
     worktree,
     system,
@@ -535,6 +583,7 @@ def build_agent(
     permissions=None,
     spec=None,
     written_files=None,
+    repair=False,
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
@@ -575,6 +624,16 @@ def build_agent(
     ]
     if written_files is not None:
         middleware.append(implementation_tool_middleware())
+    if repair:
+        from langchain.agents.middleware import ModelCallLimitMiddleware
+
+        middleware.insert(0, repair_tool_middleware())
+        middleware.insert(
+            0,
+            ModelCallLimitMiddleware(
+                thread_limit=REPAIR_MODEL_LIMIT, exit_behavior="error"
+            ),
+        )
     if recorder is not None:
         import observe  # noqa: E402
 
@@ -916,7 +975,9 @@ def mark_unverified(summary):
     return "[unverified]"
 
 
-def run_coder(worktree, brief, system, thread, timeout, *, repair_files=()):
+def run_coder(
+    worktree, brief, system, thread, timeout, *, repair_files=(), repair=False
+):
     """Invoke the coder with a verify gate.
 
     Returns (summary, usage, calls, started, label, trace, verified,
@@ -982,6 +1043,7 @@ def run_coder(worktree, brief, system, thread, timeout, *, repair_files=()):
             checkpointer=saver,
             spec=spec,
             written_files=written_files,
+            repair=repair,
         )
         config = {"configurable": {"thread_id": thread}}
 

@@ -245,6 +245,7 @@ class Pipeline:
             )
             kwargs = {}
             if errors or repair_notes:
+                kwargs["repair"] = True
                 kwargs["repair_files"] = [
                     path
                     for path in dict.fromkeys(
@@ -292,6 +293,9 @@ class Pipeline:
             return summary
 
         def plan(task, root, context):
+            context = {**self.answers, **context}
+            if repair_notes:
+                context["repair_notes"] = repair_notes
             result = (self.plan_fn or coder._default_plan_fn)(task, root, context)
             result = dict(result)
             result["allowed_files"] = list(
@@ -315,6 +319,7 @@ class Pipeline:
             implement_fn=self.implement_fn or implement,
             td_runner=lambda args, cwd: self.td_run(list(args), cwd or self.repo),
             thread_id=f"{self.thread_id}-coder-{int(time.time())}",
+            **({"max_fix_loops": 0, "max_replans": 0} if repair_notes else {}),
         )
         if worktree_root:
             # Same-worktree repair: skip provisioning, reuse the root
@@ -390,6 +395,12 @@ class Pipeline:
         verdict = state.get("verdict", {}) or gen.build_verdict(dict(state))
         status = verdict.get("status", CHANGES_REQUESTED)
         detail = verdict.get("findings", "") or "; ".join(verdict.get("errors", []))
+        try:
+            semantic = json.loads(detail)
+        except (ValueError, TypeError):
+            semantic = {}
+        if isinstance(semantic, dict) and semantic.get("truncated") is True:
+            return BLOCKED, state, detail
         return status, state, detail
 
     def stage_submit(self, worktree_root, title, body=""):
