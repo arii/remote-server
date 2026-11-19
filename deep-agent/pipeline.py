@@ -78,6 +78,12 @@ def run_td(argv, cwd=None, timeout=300):
         return 1, f"td {' '.join(argv)} failed: {exc}"
     stdout = (proc.stdout or "").strip()
     if proc.returncode:
+        try:
+            payload = json.loads(stdout)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            return proc.returncode, stdout
         stderr = (proc.stderr or "").strip()
         return proc.returncode, (
             f"td exited with code {proc.returncode}\nstdout: {stdout}\nstderr: {stderr}"

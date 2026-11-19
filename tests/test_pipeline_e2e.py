@@ -293,6 +293,33 @@ class TestCliCommands(unittest.TestCase):
 
 
 class TestSubmitArgv(unittest.TestCase):
+    def test_failed_gate_json_reaches_coder_repair_findings(self):
+        import json
+
+        import coder
+
+        scope = {"passed": False, "violations": ["outside.py"]}
+        audit = {
+            "passed": False,
+            "ast_violations": [
+                {"file": "a.py", "line": 9, "rule": "unsafe", "message": "fix this"}
+            ],
+        }
+        results = [
+            mock.Mock(returncode=1, stdout=json.dumps(payload), stderr="gate failed")
+            for payload in (scope, audit)
+        ]
+        graph = coder.InitCoderGraph(
+            repo="/tmp", issue_id=7, brief="Fix a.py", td_runner=pipeline_mod.run_td
+        )
+        with mock.patch.object(pipeline_mod.subprocess, "run", side_effect=results):
+            gate = graph.run_gate("/tmp", ["a.py"], [])
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["scope"], scope)
+        self.assertEqual(gate["audit"], audit)
+        self.assertIn("scope violation: outside.py", gate["errors"])
+        self.assertIn("audit: a.py:9: unsafe: fix this", gate["errors"])
+
     def test_submit_uses_agent_submit_pr(self):
         import json as _json
 
@@ -339,12 +366,12 @@ class TestSubmitArgv(unittest.TestCase):
             )
 
     def test_submit_preserves_both_failed_output_streams(self):
-        result = mock.Mock(returncode=1, stdout='{"status":"error"}', stderr="denied")
+        result = mock.Mock(returncode=1, stdout="command failed", stderr="denied")
         pipe = pipeline_mod.Pipeline("/tmp", "intent")
         with mock.patch.object(pipeline_mod.subprocess, "run", return_value=result):
             ok, error = pipe.stage_submit("/tmp/wt", "title")
         self.assertFalse(ok)
-        self.assertIn('stdout: {"status":"error"}', error)
+        self.assertIn("stdout: command failed", error)
         self.assertIn("stderr: denied", error)
 
     def test_submit_empty_success_is_not_a_pr(self):
