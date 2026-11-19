@@ -108,7 +108,14 @@ def error_usage(error):
     headers = dict(headers)
     if getattr(error, "twt_trace_id", None):
         headers["x-trace-id"] = error.twt_trace_id
-    return _usage_total([{"response_metadata": {"headers": headers}}])
+    usage = _usage_total([{"response_metadata": {"headers": headers}}])
+    if (
+        getattr(error, "llm_not_dispatched", False) is True
+        and response is None
+        and not getattr(error, "twt_trace_id", None)
+    ):
+        usage.update(reported_cost_usd=0.0, not_dispatched=True)
+    return usage
 
 
 def _model_provider(model):

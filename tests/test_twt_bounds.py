@@ -12,6 +12,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 import ledger
+import coder
+import deep_chat
 import llm_usage
 import model_router
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -20,6 +22,68 @@ from langchain_openai import ChatOpenAI
 
 
 class BoundsTests(unittest.TestCase):
+    def test_client_side_history_rejection_records_no_dispatch_zero_cost(self):
+        for asynchronous in (False, True):
+            with (
+                self.subTest(asynchronous=asynchronous),
+                tempfile.TemporaryDirectory() as root,
+                mock.patch.object(ledger, "LEDGER", str(Path(root, "ledger.jsonl"))),
+                mock.patch.dict(os.environ, {"DEEP_AGENT_STATE_DIR": root}),
+            ):
+                model, _ = model_router.build_chat_model(
+                    {
+                        "provider": "twt",
+                        "model": "default",
+                        "base_url": "http://localhost/v1",
+                    }
+                )
+                callback = llm_usage.usage_callback(
+                    {"provider": "twt", "model": "default"},
+                    "rejected",
+                    script="proof.py",
+                    stage="spec",
+                    phase="draft",
+                )
+                with self.assertRaisesRegex(ValueError, "history exceeds"):
+                    if asynchronous:
+                        asyncio.run(
+                            model.ainvoke(
+                                [HumanMessage("x" * 100000)],
+                                config={"callbacks": [callback]},
+                            )
+                        )
+                    else:
+                        model.invoke(
+                            [HumanMessage("x" * 100000)],
+                            config={"callbacks": [callback]},
+                        )
+                row = json.loads(Path(ledger.LEDGER).read_text().splitlines()[-1])
+                self.assertEqual(row["cost_usd"], 0)
+                self.assertFalse(row["metered"])
+                self.assertFalse(row["extra"]["llm_call"])
+                self.assertTrue(row["usage"]["not_dispatched"])
+
+    def test_coder_setup_failure_records_no_dispatch_zero_cost(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.object(ledger, "LEDGER", str(Path(root, "ledger.jsonl"))),
+            mock.patch.dict(os.environ, {"DEEP_AGENT_STATE_DIR": root}),
+            mock.patch.object(
+                coder,
+                "build_model",
+                return_value=(object(), {"provider": "twt", "model": "default"}),
+            ),
+            mock.patch.object(
+                deep_chat, "open_checkpointer", side_effect=RuntimeError("setup failed")
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "setup failed"):
+                coder.run_coder(root, "brief", "system", "setup", 1)
+            row = json.loads(Path(ledger.LEDGER).read_text().splitlines()[-1])
+            self.assertEqual(row["cost_usd"], 0)
+            self.assertFalse(row["metered"])
+            self.assertFalse(row["extra"]["llm_call"])
+
     def test_fanout_and_resolver_merge_explicit_output_budget(self):
         for name, budget in (("triage_fanout", 2000), ("resolve_conflicts", 4000)):
             module = importlib.import_module(name)

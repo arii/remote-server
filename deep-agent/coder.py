@@ -314,7 +314,7 @@ def _default_plan_fn(brief, worktree_root, context):
                 extra={
                     "stage": "code",
                     "phase": "plan",
-                    "llm_call": True,
+                    "llm_call": usage.get("not_dispatched") is not True,
                     "usage_missing": not known,
                     "trace": recorder.path,
                     **({"error": type(error).__name__} if error else {}),
@@ -924,8 +924,11 @@ def run_coder(worktree, brief, system, thread, timeout, *, repair_files=()):
     label = f"{spec['provider']}:{spec['model']}"
     print(f"coder via {label}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label)
+    invocation_started = False
 
     def fail(error, reply=""):
+        if not invocation_started:
+            error.llm_not_dispatched = True
         error_usage = ledger.error_usage(error)
         if "reported_cost_usd" in error_usage:
             recorder.model_response(error_usage)
@@ -949,6 +952,8 @@ def run_coder(worktree, brief, system, thread, timeout, *, repair_files=()):
                 "worktree": worktree,
                 "trace": recorder.path,
                 "verified": False,
+                "llm_call": invocation_started
+                or error_usage.get("not_dispatched") is not True,
             },
         )
 
@@ -967,6 +972,8 @@ def run_coder(worktree, brief, system, thread, timeout, *, repair_files=()):
         config = {"configurable": {"thread_id": thread}}
 
         def _invoke(msgs):
+            nonlocal invocation_started
+            invocation_started = True
             return agent.invoke(
                 {"messages": msgs},
                 config={**config, "recursion_limit": RECURSION_LIMIT},

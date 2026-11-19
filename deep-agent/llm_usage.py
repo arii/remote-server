@@ -70,7 +70,7 @@ def usage_callback(spec, thread_id, *, script, stage, phase):
                 extra={
                     "stage": stage,
                     "phase": phase,
-                    "llm_call": True,
+                    "llm_call": usage.get("not_dispatched") is not True,
                     "usage_missing": not known,
                     "trace_path": recorder.path,
                     **({"error": type(error).__name__} if error is not None else {}),

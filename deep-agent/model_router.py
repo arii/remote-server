@@ -123,13 +123,16 @@ class _BoundedHistory:
         import twt_receipts
 
         token = twt_receipts.latest.set(None)
+        dispatched = False
         try:
-            result = super()._generate(
-                bounded_history(messages), *args, **self._bounded_kwargs(kwargs)
-            )
+            messages = bounded_history(messages)
+            kwargs = self._bounded_kwargs(kwargs)
+            dispatched = True
+            result = super()._generate(messages, *args, **kwargs)
             return twt_receipts.tag(result)
         except BaseException as error:
             error.twt_trace_id = twt_receipts.latest.get()
+            error.llm_not_dispatched = not dispatched
             raise
         finally:
             twt_receipts.latest.reset(token)
@@ -138,13 +141,16 @@ class _BoundedHistory:
         import twt_receipts
 
         token = twt_receipts.latest.set(None)
+        dispatched = False
         try:
-            result = await super()._agenerate(
-                bounded_history(messages), *args, **self._bounded_kwargs(kwargs)
-            )
+            messages = bounded_history(messages)
+            kwargs = self._bounded_kwargs(kwargs)
+            dispatched = True
+            result = await super()._agenerate(messages, *args, **kwargs)
             return twt_receipts.tag(result)
         except BaseException as error:
             error.twt_trace_id = twt_receipts.latest.get()
+            error.llm_not_dispatched = not dispatched
             raise
         finally:
             twt_receipts.latest.reset(token)
