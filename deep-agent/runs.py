@@ -349,6 +349,14 @@ def clear_finished_runs(ledger_path=None):
 
 
 def _tombstone_lines(indexes, path):
+    try:
+        with ledger.locked(path):
+            return _tombstone_locked(indexes, path)
+    except OSError:
+        return 0
+
+
+def _tombstone_locked(indexes, path):
     """Replace indexed lines with tombstones under an exclusive lock.
 
     The lock matches ledger.record's, so a concurrent turn append
@@ -454,6 +462,15 @@ def _needs_1121_backfill(row):
 
 
 def backfill_test_providers(ledger_path=None, dry_run=False):
+    try:
+        with ledger.locked(ledger_path or LEDGER):
+            return _backfill_test_providers_locked(ledger_path, dry_run)
+    except OSError as exc:
+        print(f"backfill: cannot lock ledger ({exc})", file=sys.stderr)
+        return {"matched": [], "rewritten": 0}
+
+
+def _backfill_test_providers_locked(ledger_path=None, dry_run=False):
     """Principled backfill for the #1121 poisoned rows.
 
     Rewrites only _needs_1121_backfill rows plus _needs_1121_note_fix

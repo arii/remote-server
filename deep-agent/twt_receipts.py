@@ -6,6 +6,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -67,6 +68,11 @@ def merge_receipts(ids, receipts, run_id, started):
     """Refresh only identified rows; add missing receipts, never a cost delta."""
     path = Path(ledger.LEDGER)
     path.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.locked(path):
+        return _merge_receipts_locked(path, ids, receipts, run_id, started)
+
+
+def _merge_receipts_locked(path, ids, receipts, run_id, started):
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "r+", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
@@ -135,12 +141,29 @@ def merge_receipts(ids, receipts, run_id, started):
                 reported_cost_usd=cost,
             )
             row["cost_usd"] = cost
-        handle.seek(0)
-        for row in rows:
-            handle.write(json.dumps(row) + "\n")
-        handle.truncate()
-        handle.flush()
-        os.fsync(handle.fileno())
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix="." + path.name + ".",
+                delete=False,
+            ) as out:
+                temporary = out.name
+                for row in rows:
+                    out.write(json.dumps(row) + "\n")
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            if temporary is not None:
+                Path(temporary).unlink(missing_ok=True)
     return sorted(missing)
 
 

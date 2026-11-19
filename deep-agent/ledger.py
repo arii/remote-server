@@ -11,6 +11,7 @@ import math
 import os
 import sys
 import time
+from contextlib import contextmanager
 
 import cli
 import pricing
@@ -31,6 +32,22 @@ def state_dir():
 
 
 LEDGER = os.environ.get("EVAL_LEDGER") or os.path.join(state_dir(), "ledger.jsonl")
+
+
+@contextmanager
+def locked(path=None):
+    """Serialize ledger mutations across atomic file replacements."""
+    path = os.fspath(path or LEDGER)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    fd = os.open(path + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _as_dict(obj):
@@ -303,7 +320,7 @@ def record(
         parent = os.path.dirname(LEDGER)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        with open(LEDGER, "a", encoding="utf-8") as f:
+        with locked(), open(LEDGER, "a", encoding="utf-8") as f:
             # Matches runs._tombstone_lines: appends never interleave
             # with a delete/clear rewrite from another process.
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)

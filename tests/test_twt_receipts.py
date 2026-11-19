@@ -1,5 +1,6 @@
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,6 +46,76 @@ class ReceiptTests(unittest.TestCase):
         receipts.ReceiptRun("empty").reconcile(fetch)
         fetch.assert_not_called()
         self.assertFalse(Path(ledger.LEDGER).exists())
+
+    def test_failed_receipt_write_leaves_original_ledger_intact(self):
+        scope = receipts.ReceiptRun("atomic")
+        trace_id = scope.request()
+        ledger.record(
+            "coder.py",
+            "default",
+            "atomic",
+            [],
+            0,
+            provider="twt",
+            usage={"twt_trace_ids": [trace_id]},
+        )
+        before = Path(ledger.LEDGER).read_bytes()
+        with mock.patch.object(receipts.os, "fsync", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                receipts.merge_receipts(
+                    {trace_id}, {trace_id: self.reply(trace_id)}, "atomic", 0
+                )
+        self.assertEqual(Path(ledger.LEDGER).read_bytes(), before)
+
+    def test_concurrent_append_targets_replaced_ledger(self):
+        scope = receipts.ReceiptRun("atomic")
+        trace_id = scope.request()
+        ledger.record(
+            "coder.py",
+            "default",
+            "atomic",
+            [],
+            0,
+            provider="twt",
+            usage={"twt_trace_ids": [trace_id]},
+        )
+        waiting = threading.Event()
+        writer = threading.Thread(
+            target=lambda: ledger.record(
+                "chat.py", "local", "append", [], 0, provider="ollama"
+            )
+        )
+        original_replace = receipts.os.replace
+        original_flock = receipts.fcntl.flock
+
+        def flock(fd, operation):
+            if (
+                threading.current_thread() is writer
+                and operation == receipts.fcntl.LOCK_EX
+            ):
+                waiting.set()
+            return original_flock(fd, operation)
+
+        def replace(source, destination):
+            writer.start()
+            self.assertTrue(waiting.wait(2))
+            return original_replace(source, destination)
+
+        with (
+            mock.patch.object(receipts.fcntl, "flock", side_effect=flock),
+            mock.patch.object(receipts.os, "replace", side_effect=replace),
+        ):
+            try:
+                receipts.merge_receipts(
+                    {trace_id}, {trace_id: self.reply(trace_id)}, "atomic", 0
+                )
+            finally:
+                writer.join(2)
+        self.assertFalse(writer.is_alive())
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["cost_usd"], 0.012)
+        self.assertEqual(rows[1]["thread_id"], "append")
 
     def test_late_receipt_is_polled_recorded_and_idempotent(self):
         scope = receipts.ReceiptRun("pipeline-late")
