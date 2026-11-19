@@ -17,6 +17,7 @@ Reader CLI: `python3 runs.py [n|ref]`
 
 import fcntl
 import json
+import math
 import os
 import re
 import sys
@@ -64,6 +65,18 @@ def _row_cost(row):
     current card (display estimate, the row is untouched)."""
     cost_usd = row.get("cost_usd")
     metered = row.get("metered")
+    if row.get("cost_basis") == "upper_bound":
+        bound = row.get("cost_upper_bound_usd")
+        if type(bound) not in (int, float) or not math.isfinite(bound) or bound < 0:
+            return None, True
+        previous = (
+            cost_usd
+            if type(cost_usd) in (int, float)
+            and math.isfinite(cost_usd)
+            and cost_usd >= 0
+            else 0
+        )
+        return max(bound, previous), True
     if isinstance(cost_usd, (int, float)) and isinstance(metered, bool):
         return cost_usd, metered
     model, provider = row.get("model"), row.get("provider")
@@ -383,7 +396,15 @@ def _tombstone_locked(indexes, path):
                 # Spend is spend: the tombstone keeps cost evidence
                 # so deletes hide runs without erasing the meter.
                 tomb = {"deleted": True, "ts": time.time()}
-                for key in ("model", "provider", "usage", "cost_usd", "metered"):
+                for key in (
+                    "model",
+                    "provider",
+                    "usage",
+                    "cost_usd",
+                    "metered",
+                    "cost_basis",
+                    "cost_upper_bound_usd",
+                ):
                     if key in row:
                         tomb[key] = row[key]
                 extra = row.get("extra") if isinstance(row, dict) else None

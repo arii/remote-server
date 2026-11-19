@@ -100,6 +100,23 @@ def _known_cost(row):
     return type(cost) in (int, float) and math.isfinite(cost) and cost >= 0
 
 
+def receipt_cost(receipt):
+    """Budget charge: authoritative cost or an explicitly bounded reservation."""
+    if not isinstance(receipt, dict):
+        return None
+    if receipt.get("cost_complete") is True:
+        return receipt["cost_usd"] if _known_cost(receipt) else None
+    bound = receipt.get("cost_upper_bound_usd")
+    if (
+        receipt.get("cost_basis") == "upper_bound"
+        and type(bound) in (int, float)
+        and math.isfinite(bound)
+        and bound >= 0
+    ):
+        return bound
+    return None
+
+
 def _settled_trace_ids():
     path = Path(ledger.LEDGER)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -116,6 +133,7 @@ def _settled_trace_ids():
                         _owns_receipts(row)
                         and row.get("extra", {}).get("twt_receipt_reconciled") is True
                         and _known_cost(row)
+                        and row.get("cost_basis") != "upper_bound"
                     ):
                         settled.update(row["usage"].get("twt_trace_ids", []))
         except FileNotFoundError:
@@ -173,9 +191,11 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
             trace_ids = set(row.get("usage", {}).get("twt_trace_ids", []))
             if not trace_ids or not trace_ids.issubset(ids):
                 continue
-            if row.get("extra", {}).get(
-                "twt_receipt_reconciled"
-            ) is True and _known_cost(row):
+            if (
+                row.get("extra", {}).get("twt_receipt_reconciled") is True
+                and _known_cost(row)
+                and row.get("cost_basis") != "upper_bound"
+            ):
                 continue
             missing_local = (trace_ids & local_ids) - receipts.keys()
             found = [
@@ -190,14 +210,14 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
                 )
             else:
                 row.setdefault("extra", {}).pop("twt_local_receipt_missing", None)
-            complete = all(
-                receipt is not None
-                and receipt.get("cost_complete") is True
-                and type(receipt.get("cost_usd")) in (int, float)
-                and math.isfinite(receipt["cost_usd"])
-                and receipt["cost_usd"] >= 0
-                for receipt in found
-            )
+            charges = [receipt_cost(receipt) for receipt in found]
+            complete = all(charge is not None for charge in charges)
+            if (
+                not complete
+                and row.get("cost_basis") == "upper_bound"
+                and _known_cost(row)
+            ):
+                continue
             row.setdefault("extra", {})["twt_receipt_reconciled"] = complete
             if not complete:
                 if not _known_cost(row):
@@ -205,20 +225,30 @@ def _merge_receipts_locked(path, ids, receipts, run_id, started, local_ids):
                     row["cost_usd"] = None
                 missing.update(trace_ids)
                 continue
-            cost = sum(receipt["cost_usd"] for receipt in found)
+            cost = sum(charges)
+            reserved = any(
+                receipt.get("cost_complete") is not True for receipt in found
+            )
             if trace_ids.issubset(local_ids):
                 if cost != 0:
                     raise ValueError("Local TwT receipt reported paid cost")
                 row.update(provider="ollama", metered=False)
             prompt = sum(receipt.get("prompt_tokens") or 0 for receipt in found)
             completion = sum(receipt.get("completion_tokens") or 0 for receipt in found)
-            if not missing_local:
+            if not missing_local and not reserved:
                 row["usage"].update(
                     input_tokens=prompt,
                     output_tokens=completion,
                     total_tokens=prompt + completion,
                 )
-            row["usage"]["reported_cost_usd"] = cost
+            if reserved:
+                row["cost_basis"] = "upper_bound"
+                row["cost_upper_bound_usd"] = cost
+                row["usage"].pop("reported_cost_usd", None)
+            else:
+                row.pop("cost_basis", None)
+                row.pop("cost_upper_bound_usd", None)
+                row["usage"]["reported_cost_usd"] = cost
             row["cost_usd"] = cost
         temporary = None
         try:
@@ -338,7 +368,7 @@ class ReceiptRun:
             pending -= {
                 trace_id
                 for trace_id, receipt in receipts.items()
-                if receipt.get("cost_complete") is True and _known_cost(receipt)
+                if receipt_cost(receipt) is not None
             }
             sleep(min(1, max(0, deadline - clock())))
         missing = merge_receipts(
