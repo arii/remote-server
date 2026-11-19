@@ -319,6 +319,11 @@ class Pipeline:
     def _audit_policy(self, interrupts, state):
         import auditor
 
+        if not auditor.review_verified(state.get("findings")):
+            return {
+                "decision": "reject",
+                "notes": "semantic review did not verify the changes",
+            }
         if auditor.blocking_findings(state.get("findings", "")):
             return {"decision": "reject", "notes": "blocking semantic findings"}
         if self.review_fn is not None:
@@ -340,6 +345,7 @@ class Pipeline:
             # internal loop) owns the repair cycle.
             max_loops=1,
             preview_url=self.preview_url,
+            spec_file=f"docs/specs/issue-{self.issue_id or 0}.md",
             thread_id=f"{self.thread_id}-audit-{int(time.time())}",
         )
         state = drive_to_settled(

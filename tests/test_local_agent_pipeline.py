@@ -676,7 +676,14 @@ class TestPipelineContracts(unittest.TestCase):
                     "valid": True,
                     "approved": True,
                     "errors": [],
-                    "findings": json.dumps({"findings": [{"severity": severity}]}),
+                    "findings": json.dumps(
+                        {
+                            "verified": True,
+                            "findings": [
+                                {"severity": severity, "description": "unsafe change"}
+                            ],
+                        }
+                    ),
                 }
                 self.assertEqual(
                     pipeline.Pipeline("/tmp", "fix")._audit_policy([], state)[
@@ -691,8 +698,12 @@ class TestPipelineContracts(unittest.TestCase):
 
     def test_empty_and_low_findings_allow_approval(self):
         """Empty and nonblocking findings do not fail otherwise passing gates."""
-        for findings in ([], [{"severity": "low"}]):
-            state = {"valid": True, "errors": [], "findings": json.dumps(findings)}
+        for findings in ([], [{"severity": "low", "description": "naming"}]):
+            state = {
+                "valid": True,
+                "errors": [],
+                "findings": json.dumps({"verified": True, "findings": findings}),
+            }
             self.assertEqual(
                 pipeline.Pipeline("/tmp", "fix")._audit_policy([], state)["decision"],
                 "approve",

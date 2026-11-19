@@ -20,6 +20,34 @@ from s5tools import verification_env
 MAX_AUDIT_LOOPS_DEFAULT = 3
 
 
+def parse_review(value):
+    if isinstance(value, str):
+        text = value.strip()
+        fence = re.fullmatch(r"```(?:json)?\s*\n(.*)\n```", text, re.DOTALL)
+        try:
+            value = json.loads(fence[1] if fence else text)
+        except ValueError:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def review_verified(value):
+    review = parse_review(value)
+    findings = review.get("findings")
+    return (
+        review.get("verified") is True
+        and isinstance(findings, list)
+        and all(
+            isinstance(item, dict)
+            and isinstance(item.get("severity"), str)
+            and item.get("severity")
+            in {"low", "medium", "high", "critical", "blocking"}
+            and isinstance(item.get("description"), str)
+            for item in findings
+        )
+    )
+
+
 def blocking_findings(findings):
     if isinstance(findings, str):
         text = findings.strip()
@@ -300,8 +328,11 @@ class AuditorGraph:
 
     def build_verdict(self, state):
         """Structured audit verdict (status + evidence)."""
-        approved = bool(state.get("approved")) and not blocking_findings(
-            state.get("findings", "")
+        verified = review_verified(state.get("findings", ""))
+        approved = (
+            bool(state.get("approved"))
+            and verified
+            and not blocking_findings(state.get("findings", ""))
         )
         gate = state.get("gate", {}) or {}
         impacted = []
@@ -310,11 +341,35 @@ class AuditorGraph:
                 impacted.extend(payload.get("impacted_files") or [])
         return {
             "status": "APPROVED" if approved else "CHANGES_REQUESTED",
+            "verified": verified,
             "valid": state.get("valid"),
             "impacted_files": sorted(set(impacted)),
             "findings": state.get("findings", ""),
             "errors": state.get("errors", []),
         }
+
+    def semantic_payload(self, gate_payload):
+        if not self.spec_file:
+            raise ValueError("Semantic audit requires an issue spec file")
+        spec_path = os.path.join(self.worktree_root, self.spec_file)
+        with open(spec_path, encoding="utf-8") as handle:
+            spec = handle.read()
+        diff = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "origin/main",
+                "--",
+            ],
+            cwd=self.worktree_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        return {"diff": diff, "spec": spec, "gate": gate_payload}
 
     def audit_once(self, gate_payload):
         """LLM audit pass (injected in tests)."""
@@ -331,6 +386,7 @@ class AuditorGraph:
         limit = int(os.environ.get("S5_AUDIT_RECURSION_LIMIT", "25"))
         if limit <= 0:
             raise ValueError("S5_AUDIT_RECURSION_LIMIT must be a positive integer")
+        payload = self.semantic_payload(gate_payload)
 
         override = os.environ.get("S5_AUDIT_MODEL", "").strip()
         spec = model_router.resolve_llm()
@@ -358,9 +414,14 @@ class AuditorGraph:
         )
         user_content = (
             "Audit these changes for rule violations and risky blast "
-            'radius. Return JSON {"findings": [{"severity": "low|medium|high|critical", '
+            "radius against the supplied issue spec (Goal, Definition of Done and "
+            "acceptance criteria) and actual diff. Return only JSON "
+            '{"verified": true|false, "findings": [{"severity": "low|medium|high|critical", '
             '"description": "..."}]}; use an empty findings list when clear.\n\n'
-            f"Gate payload:\n{json.dumps(gate_payload)[:4000]}"
+            "Set verified=true only after verifying the diff against the spec. "
+            "Missing evidence, incomplete checks or uncertainty require verified=false. "
+            "Deterministic gates alone are not semantic verification.\n\n"
+            f"Audit payload:\n{json.dumps(payload)}"
         )
         user_content = skills_registry.SkillsRegistry().inject_skills_for_node(
             "deep_semantic_auditor_node", user_content
@@ -386,6 +447,7 @@ class AuditorGraph:
             return json.dumps(
                 {
                     "status": "CHANGES_REQUESTED",
+                    "verified": False,
                     "truncated": True,
                     "findings": [
                         {
@@ -415,14 +477,18 @@ class AuditorGraph:
             and not getattr(final, "tool_calls", [])
             else ""
         )
-        return text or json.dumps(
+        review = parse_review(text)
+        return json.dumps(
             {
-                "findings": [
+                "verified": review_verified(review),
+                "findings": review.get("findings")
+                if isinstance(review.get("findings"), list)
+                else [
                     {
                         "severity": "high",
-                        "description": "Semantic audit returned no final AI verdict; verification incomplete, human review required.",
+                        "description": "Semantic audit returned no final AI verdict in the required JSON schema; human review required.",
                     }
-                ]
+                ],
             }
         )
 
@@ -570,7 +636,7 @@ class AuditorGraph:
                 }
             )
             decision = (reply or {}).get("decision", "approve")
-            if decision == "approve":
+            if decision == "approve" and review_verified(state.get("findings")):
                 return {"approved": True}
             notes = (reply or {}).get("notes", "")
             errors = list(state.get("errors", []))

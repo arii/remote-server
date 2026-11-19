@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,13 +10,129 @@ from unittest import mock
 import auditor
 import ledger
 import model_router
+import pipeline
+
+
+class TestVerificationContract(unittest.TestCase):
+    def test_pipeline_passes_written_spec_to_auditor(self):
+        agent = pipeline.Pipeline("/tmp", "fix", issue_id=1357)
+        with (
+            mock.patch.object(auditor, "AuditorGraph") as graph,
+            mock.patch.object(
+                pipeline,
+                "drive_to_settled",
+                return_value={"valid": True, "verdict": {"status": "APPROVED"}},
+            ),
+        ):
+            agent.stage_audit("/tmp")
+        self.assertEqual(
+            graph.call_args.kwargs["spec_file"], "docs/specs/issue-1357.md"
+        )
+
+    def test_explicit_verified_required_even_when_human_approves(self):
+        for fields in (
+            {},
+            {"verified": False},
+            {"verified": "true"},
+            {"verified": 1},
+            {"verified": True},
+        ):
+            review = {
+                **fields,
+                "findings": [{"severity": "low", "description": "naming"}],
+            }
+            state = {
+                "approved": True,
+                "valid": True,
+                "errors": [],
+                "findings": json.dumps(review),
+            }
+            expected = fields.get("verified") is True
+            with self.subTest(fields=fields):
+                verdict = auditor.AuditorGraph("/tmp").build_verdict(state)
+                self.assertEqual(verdict["verified"], expected)
+                self.assertEqual(
+                    verdict["status"], "APPROVED" if expected else "CHANGES_REQUESTED"
+                )
+                self.assertEqual(
+                    pipeline.Pipeline("/tmp", "fix")._audit_policy([], state)[
+                        "decision"
+                    ],
+                    "approve" if expected else "reject",
+                )
+
+    def test_malformed_or_prose_review_never_verifies(self):
+        for value in (
+            "verified: true; no problems",
+            '```json\n{"verified":true,"findings":[]}\n```\nNotes: cannot verify',
+            "{",
+            [],
+            {"verified": True},
+            {"verified": True, "findings": ["low"]},
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(auditor.review_verified(value))
+        self.assertTrue(
+            auditor.review_verified('```json\n{"verified":true,"findings":[]}\n```')
+        )
+
+    def test_payload_contains_complete_diff_spec_and_gates(self):
+        with tempfile.TemporaryDirectory() as root:
+            spec = (
+                "## Goal\nUse helper\n## Definition of Done\nTests pass\n## Acceptance Criteria\nHelper called\n"
+                + "x" * 5000
+            )
+            Path(root, "spec.md").write_text(spec)
+            diff = "-inline\n+helper()\n" + "y" * 5000
+            graph = auditor.AuditorGraph(root, spec_file="spec.md")
+            with mock.patch.object(
+                auditor.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, stdout=diff),
+            ) as run:
+                payload = graph.semantic_payload({"audit-code": {"passed": True}})
+            self.assertEqual(payload["diff"], diff)
+            self.assertEqual(payload["spec"], spec)
+            self.assertEqual(payload["gate"], {"audit-code": {"passed": True}})
+            self.assertEqual(
+                run.call_args.args[0],
+                [
+                    "git",
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--no-color",
+                    "origin/main",
+                    "--",
+                ],
+            )
+            self.assertTrue(run.call_args.kwargs["check"])
+
+    def test_missing_spec_and_failed_diff_fail_closed(self):
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaises(ValueError):
+                auditor.AuditorGraph(root).semantic_payload({})
+            with self.assertRaises(FileNotFoundError):
+                auditor.AuditorGraph(root, spec_file="missing.md").semantic_payload({})
+            Path(root, "spec.md").write_text("## Goal\nfix")
+            with (
+                mock.patch.object(
+                    auditor.subprocess,
+                    "run",
+                    side_effect=subprocess.CalledProcessError(128, "git"),
+                ),
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                auditor.AuditorGraph(root, spec_file="spec.md").semantic_payload({})
 
 
 @unittest.skipUnless(
     importlib.util.find_spec("langgraph"), "agent dependencies not installed"
 )
 class TestSemanticLimits(unittest.TestCase):
-    def exercise(self, responses, limit="25", tool=None, error=None, full=False):
+    def exercise(
+        self, responses, limit="25", tool=None, error=None, full=False, approved=True
+    ):
         from langchain_core.language_models.fake_chat_models import (
             FakeMessagesListChatModel,
         )
@@ -43,6 +160,15 @@ class TestSemanticLimits(unittest.TestCase):
                     model_router, "build_chat_model", return_value=(model, spec)
                 ),
                 mock.patch.object(ledger, "LEDGER", str(path)),
+                mock.patch.object(
+                    graph,
+                    "semantic_payload",
+                    return_value={
+                        "diff": "-old\n+new",
+                        "spec": "Goal: fix",
+                        "gate": {},
+                    },
+                ),
                 mock.patch.dict(
                     os.environ,
                     {"DEEP_AGENT_STATE_DIR": root, "S5_AUDIT_RECURSION_LIMIT": limit},
@@ -58,13 +184,18 @@ class TestSemanticLimits(unittest.TestCase):
                         graph.audit_once({"passed": True})
                     findings = None
                 elif full:
+                    graph.max_loops = 1
                     with mock.patch.object(
                         graph, "hard_gate", return_value=(True, {}, [])
                     ):
                         graph.run()
                         state = graph.run(resume={"decision": "approve"})
                     findings = state["findings"]
-                    self.assertEqual(state["verdict"]["status"], "APPROVED")
+                    verdict = state.get("verdict") or graph.build_verdict(state)
+                    self.assertEqual(
+                        verdict["status"],
+                        "APPROVED" if approved else "CHANGES_REQUESTED",
+                    )
                 else:
                     findings = graph.audit_once({"passed": True})
             self.assertEqual(ask_investigator._checkout, previous)
@@ -85,10 +216,56 @@ class TestSemanticLimits(unittest.TestCase):
             },
         )
 
+    def test_unverified_reply_cannot_be_approved_by_human(self):
+        for review in ({"verified": False, "findings": []}, {"findings": []}):
+            with self.subTest(review=review):
+                self.exercise(
+                    [self.message(json.dumps(review))], full=True, approved=False
+                )
+
+    def test_agent_receives_untruncated_diff_and_spec(self):
+        import langchain.agents
+
+        with tempfile.TemporaryDirectory() as root:
+            spec = (
+                "## Goal\nFix\n## Definition of Done\nPass\n## Acceptance Criteria\nHelper\n"
+                + "x" * 5000
+            )
+            diff = "-inline\n+helper()\n" + "y" * 5000
+            Path(root, "spec.md").write_text(spec)
+            graph = auditor.AuditorGraph(root, spec_file="spec.md")
+            agent = mock.Mock()
+            agent.invoke.return_value = {
+                "messages": [self.message('{"verified": true, "findings": []}')]
+            }
+            model_spec = {"provider": "nebius", "model": "zai-org/GLM-5.3-Flash"}
+            with (
+                mock.patch.object(langchain.agents, "create_agent", return_value=agent),
+                mock.patch.object(model_router, "resolve_llm", return_value=model_spec),
+                mock.patch.object(
+                    model_router,
+                    "build_chat_model",
+                    return_value=(object(), model_spec),
+                ),
+                mock.patch.object(
+                    auditor.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout=diff),
+                ),
+            ):
+                graph.audit_once({"passed": True})
+            prompt = agent.invoke.call_args.args[0]["messages"][0]["content"]
+            self.assertIn(
+                json.dumps({"diff": diff, "spec": spec, "gate": {"passed": True}}),
+                prompt,
+            )
+
     def test_normal_final_verdict_and_per_call_usage(self):
-        graph, findings, rows = self.exercise([self.message('{"findings": []}')])
+        graph, findings, rows = self.exercise(
+            [self.message('{"verified": true, "findings": []}')]
+        )
         self.assertFalse(graph.audit_truncated)
-        self.assertEqual(json.loads(findings), {"findings": []})
+        self.assertEqual(json.loads(findings), {"verified": True, "findings": []})
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["cost_usd"], 0.0002)
         self.assertNotIn("error", rows[0]["extra"])
@@ -134,7 +311,7 @@ class TestSemanticLimits(unittest.TestCase):
 
     def test_persist_summary_does_not_double_count_calls(self):
         _graph, _findings, rows = self.exercise(
-            [self.message('{"findings": []}')], full=True
+            [self.message('{"verified": true, "findings": []}')], full=True
         )
         self.assertEqual(len(rows), 2)
         self.assertEqual(sum(row["cost_usd"] for row in rows), 0.0002)
