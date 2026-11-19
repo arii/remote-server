@@ -266,6 +266,7 @@ def _default_plan_fn(brief, worktree_root, context):
         f"\n\nBrief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
     )
     reply = None
+    error = ""
     started = time.time()
     recorder = None
     if spec.get("model"):
@@ -280,6 +281,9 @@ def _default_plan_fn(brief, worktree_root, context):
         recorder.model_request(1)
     try:
         reply = model.invoke(prompt)
+    except Exception as exc:
+        error = type(exc).__name__
+        raise
     finally:
         if recorder is not None:
             messages = [reply] if reply is not None else []
@@ -305,6 +309,7 @@ def _default_plan_fn(brief, worktree_root, context):
                     "phase": "plan",
                     "llm_call": True,
                     "usage_missing": not known,
+                    "error": error,
                     "trace": recorder.path,
                 },
             )

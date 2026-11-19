@@ -171,6 +171,9 @@ class TestCoderAccounting(unittest.TestCase):
                 self.assertEqual(row["model"], spec["model"])
                 self.assertEqual(row["provider"], "nebius")
                 self.assertEqual(row["extra"]["phase"], "plan")
+                self.assertEqual(
+                    row["extra"]["error"], "RuntimeError" if failure else ""
+                )
                 self.assertEqual(row["cost_usd"], None if failure else 0.0002)
                 self.assertTrue(Path(row["extra"]["trace"]).exists())
 
