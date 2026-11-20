@@ -1927,17 +1927,18 @@ class ChatOpsTest(unittest.TestCase):
         argv = seen["argv"]
         self.assertEqual(argv[:2], ["docker", "compose"])
         self.assertIn("-f", argv)
-        self.assertEqual(
-            argv[-6:],
-            [
-                "exec",
-                "-T",
-                "terminal",
-                "bash",
-                "-c",
-                "pkill -HUP -f '^zellij attach'; echo hup_exit=$?",
-            ],
+        shell = argv[-1]
+        self.assertEqual(argv[-6:-1], ["exec", "-T", "terminal", "bash", "-c"])
+        # #1387: takeover drops the marker for zellij-attach-loop before
+        # signaling, removes it again on a no-match, and echoes the
+        # hup_exit truth marker.
+        self.assertLess(
+            shell.index("touch /tmp/ttyd-takeover"),
+            shell.index("pkill -HUP -f '^zellij attach'"),
         )
+        self.assertIn("pkill -HUP -f 'zellij-attach-lo[o]p'", shell)
+        self.assertIn("rm -f /tmp/ttyd-takeover", shell)
+        self.assertIn("echo hup_exit=", shell)
 
     def test_workflow_health(self):
         ops.fetch_workflow_health = lambda repo, gh: {
