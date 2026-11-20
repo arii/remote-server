@@ -454,7 +454,7 @@ services:
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     network_mode: service:terminal
     volumes:
-      - ./config/browser-relay:/etc/caddy:ro
+      - ${HOST_HOME:-/home/ari}/remote-server/config/browser-relay:/etc/caddy:ro
     depends_on:
       - terminal
     deploy:

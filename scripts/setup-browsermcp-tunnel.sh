@@ -24,9 +24,14 @@ cat > "${WRAPPER}" <<'WRAPPER_EOF'
 # Resolves the S5 terminal container IP over SSH, then opens the BrowserMCP
 # tunnel. Restarted by systemd on drops, so terminal recreates (new IP) heal.
 set -euo pipefail
-S5="${S5_SSH_TARGET:-ari@100.85.113.67}"
-TIP=$(ssh -o BatchMode=yes "$S5" "docker inspect remote-terminal-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'")
-exec ssh -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o BatchMode=yes -L 9010:"$TIP":19010 "$S5"
+if [ "$(hostname)" = "s5" ]; then
+    TIP=$(docker inspect remote-terminal-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+    exec ssh -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o BatchMode=yes -o StrictHostKeyChecking=no -L 9010:"$TIP":19010 localhost
+else
+    S5="${S5_SSH_TARGET:-ari@100.85.113.67}"
+    TIP=$(ssh -o BatchMode=yes "$S5" "docker inspect remote-terminal-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'")
+    exec ssh -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o BatchMode=yes -L 9010:"$TIP":19010 "$S5"
+fi
 WRAPPER_EOF
 chmod +x "${WRAPPER}"
 echo "Wrote ${WRAPPER}"
