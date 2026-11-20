@@ -16,8 +16,10 @@ What this proves over a stateless one-shot on create_agent:
   run_repo_command for verify-after-reason, and the single gated
   write tool propose_action — flat schemas only, because schema
   weight is what locks the 8b model up (Gemini round 2026-11-09).
-  build_tools still builds the full surface (13 custom tools + 4
-  opt-in visual impact tools, #849) for the eval path;
+  build_tools builds the tool surface (14 base custom tools + 4
+  opt-in visual impact tools, #849), and can be scoped by mode
+  (e.g. mode="repo" / include_browser=False for the 10 repo/web tools,
+  mode="browser" for the 4 browser tools, #1470);
   build_chat_tools selects the chat profile from it, and
   build_agent mounts only that.
 - interrupt_on={"propose_action": approve/reject} mirrors the buttons
@@ -466,16 +468,51 @@ def resume_payload(decisions):
     return {"decisions": decisions}
 
 
-def build_tools(checkout, *, impact_tools=False):
+def format_tool_error(error: str, **kwargs) -> str:
+    """Format an actionable structured error diagnostic for agent tools (#1470).
+
+    Returns a JSON string `{"ok": false, "error": ..., ...}` so models receive
+    structured failure metadata instead of unformatted error tokens.
+    """
+    payload = {"ok": False, "error": str(error)}
+    payload.update(kwargs)
+    return json.dumps(payload)
+
+
+def build_tools(
+    checkout,
+    *,
+    impact_tools=False,
+    mode="all",
+    include_browser=None,
+):
     """The custom tools. Venv-only (imports langchain + retrieval).
 
-    Default is the 13 phone-chat tools (10 repo/web tools plus
-    browser_snapshot, browser_act, browser_notes for the shared
-    cdp-stream session); impact_tools=True adds the 4 visual-impact
-    tools (run_ux_capture, diff_versions, ask_diff, lighthouse_read)
-    for UI impact passes (#849). The default surface is pinned by
-    tests/test_deep_chat.py::test_tool_surface.
+    Modes and scopes (#1470):
+    - Default mode="all" (or include_browser=True): registers 14 base tools
+      (10 repo/web inspection tools plus 4 browser tools: browser_snapshot,
+      browser_act, browser_notes, request_human_cobrowse_handoff).
+    - mode="repo" / mode="code" or include_browser=False: registers the lean
+      10 repo/web inspection tools (excluding browser-driving tools).
+    - mode="browser" / mode="cobrowse": registers the 4 browser-driving tools.
+    - impact_tools=True: adds the 4 visual-impact tools (run_ux_capture,
+      diff_versions, ask_diff, lighthouse_read) for UI impact passes (#849).
+
+    Tool failures return standardized structured JSON diagnostics
+    ({"ok": false, "error": ...}) so models receive actionable error
+    contracts rather than unstructured error strings.
     """
+    valid_modes = {"all", "repo", "code", "browser", "cobrowse"}
+    if mode not in valid_modes:
+        raise ValueError(f"unknown mode: {mode!r}; choose from {sorted(valid_modes)}")
+
+    with_browser = (
+        include_browser
+        if include_browser is not None
+        else (mode in ("all", "browser", "cobrowse"))
+    )
+    with_repo = mode in ("all", "repo", "code")
+
     from langchain_core.tools import tool  # noqa: E402
 
     import retrieval  # noqa: E402
@@ -490,7 +527,10 @@ def build_tools(checkout, *, impact_tools=False):
             path: Repo-relative path, e.g. buttons/server.py.
             offset: Char offset for windows past the head (#1249).
         """
-        return s5tools.read_repo_file(checkout, path, offset=offset)
+        res = s5tools.read_repo_file(checkout, path, offset=offset)
+        if res.startswith("REJECTED:"):
+            return format_tool_error(res, path=path, offset=offset)
+        return res
 
     @tool
     def grep_repo(pattern: str) -> str:
@@ -528,8 +568,15 @@ def build_tools(checkout, *, impact_tools=False):
             else:
                 target = checkout
         except ValueError as exc:
-            return f"doc search unavailable: {exc}"
-        return retrieval.search_td(query, target, top_k=3)
+            return format_tool_error(
+                f"doc search unavailable: {exc}", query=query, repo=repo
+            )
+        try:
+            return retrieval.search_td(query, target, top_k=3)
+        except Exception as exc:
+            return format_tool_error(
+                f"doc search unavailable: {exc}", query=query, repo=repo
+            )
 
     @tool
     def propose_action(
@@ -587,6 +634,8 @@ def build_tools(checkout, *, impact_tools=False):
                 "review_event": review_event,
             }
         )
+        if not ok:
+            return format_tool_error(text, kind=kind)
         return text
 
     @tool
@@ -603,7 +652,21 @@ def build_tools(checkout, *, impact_tools=False):
             command: Full command line; must start with one of:
                 {allowed}.
         """
-        return s5tools.run_repo_command(checkout, command)
+        res = s5tools.run_repo_command(checkout, command)
+        if res.startswith("REJECTED:"):
+            return format_tool_error(
+                res,
+                command=command,
+                allowed=s5tools.allowed_commands_text(),
+                hint="Use an allowlisted command prefix or test path; do not retry with arbitrary shell operators.",
+            )
+        if res.startswith("TIMEOUT"):
+            return format_tool_error(
+                res, command=command, timeout_s=s5tools.CHECK_TIMEOUT
+            )
+        if res.startswith("exec failed:"):
+            return format_tool_error(res, command=command)
+        return res
 
     run_repo_command.description = run_repo_command.description.format(allowed=allowed)
 
@@ -620,7 +683,10 @@ def build_tools(checkout, *, impact_tools=False):
         Args:
             url: Full http(s) URL to GET.
         """
-        return s5tools.fetch_url(url)
+        res = s5tools.fetch_url(url)
+        if res.startswith("FETCH_ERROR:"):
+            return format_tool_error(res, url=url)
+        return res
 
     @tool
     def search_web(query: str, limit: int = 5) -> str:
@@ -636,7 +702,10 @@ def build_tools(checkout, *, impact_tools=False):
             query: Search keywords, e.g. "ollama changelog".
             limit: Max hits, 1-10 (default 5).
         """
-        return s5tools.search_web(query, limit=limit)
+        res = s5tools.search_web(query, limit=limit)
+        if res.startswith("SEARCH_ERROR:"):
+            return format_tool_error(res, query=query)
+        return res
 
     @tool
     def search_turns(query: str, kind: str = "", limit: int = 5) -> str:
@@ -654,6 +723,11 @@ def build_tools(checkout, *, impact_tools=False):
             kind: Optional row-kind filter, e.g. "deep-agent-run".
             limit: Max hits, 1-5 (default 5).
         """
+        if not isinstance(query, str) or not query.strip():
+            return format_tool_error(
+                "usage: search_turns(query='...') requires non-empty query",
+                query=query,
+            )
         return runs.search_turns(query, kind=kind, limit=limit)
 
     @tool
@@ -672,9 +746,12 @@ def build_tools(checkout, *, impact_tools=False):
                 reads the turn's repo.
             diff: Also return the capped unified diff.
         """
-        return s5tools.read_pr(
+        res = s5tools.read_pr(
             number, repo or s5tools.repo_for_checkout(checkout), diff=diff
         )
+        if res.startswith("PR_ERROR:"):
+            return format_tool_error(res, number=number, repo=repo)
+        return res
 
     @tool
     def browser_snapshot(target: str = "grid") -> str:
@@ -689,7 +766,14 @@ def build_tools(checkout, *, impact_tools=False):
         Args:
             target: 'grid' for the shared viewer or 'paired' for My Chrome.
         """
-        return cobrowse_handoff.browser_snapshot_impl(target=target)
+        res = cobrowse_handoff.browser_snapshot_impl(target=target)
+        if (
+            res.startswith("SNAPSHOT_ERROR:")
+            or res.startswith("BROWSER_ERROR:")
+            or res.startswith("REJECTED:")
+        ):
+            return format_tool_error(res, target=target)
+        return res
 
     @tool
     def browser_act(
@@ -727,7 +811,7 @@ def build_tools(checkout, *, impact_tools=False):
             dy: Vertical scroll amount for wheel.
             target: 'grid' for the shared viewer or 'paired' for My Chrome.
         """
-        return cobrowse_handoff.browser_drive_impl(
+        res = cobrowse_handoff.browser_drive_impl(
             op,
             url=url,
             x=x,
@@ -739,6 +823,14 @@ def build_tools(checkout, *, impact_tools=False):
             code=code,
             target=target,
         )
+        if (
+            res.startswith("REJECTED:")
+            or res.startswith("PAUSED:")
+            or res.startswith("DRIVE_ERROR:")
+            or res.startswith("BROWSER_ERROR:")
+        ):
+            return format_tool_error(res, op=op, target=target)
+        return res
 
     @tool
     def browser_notes(site: str = "", note: str = "") -> str:
@@ -754,7 +846,10 @@ def build_tools(checkout, *, impact_tools=False):
                 list all notes.
             note: Lesson text to save; blank to read.
         """
-        return cobrowse_handoff.browser_notes_impl(site, note)
+        res = cobrowse_handoff.browser_notes_impl(site, note)
+        if res.startswith("REJECTED:") or res.startswith("BROWSER_ERROR:"):
+            return format_tool_error(res, site=site)
+        return res
 
     @tool
     def request_human_cobrowse_handoff(
@@ -773,11 +868,14 @@ def build_tools(checkout, *, impact_tools=False):
             reason: Why a human is needed (shown in the banner).
             current_url: Page the agent is stuck on (may be blank).
         """
-        return cobrowse_handoff.request_human_cobrowse_handoff_impl(
+        res = cobrowse_handoff.request_human_cobrowse_handoff_impl(
             thread_id, reason, current_url=current_url
         )
+        if res.startswith("HANDOFF_ERROR:") or res.startswith("REJECTED:"):
+            return format_tool_error(res, thread_id=thread_id)
+        return res
 
-    base = [
+    repo_tools = [
         read_repo_file,
         grep_repo,
         list_dir,
@@ -788,13 +886,22 @@ def build_tools(checkout, *, impact_tools=False):
         search_web,
         search_turns,
         pr_read,
+    ]
+    browser_tools = [
         browser_snapshot,
         browser_act,
         browser_notes,
         request_human_cobrowse_handoff,
     ]
+
+    tools = []
+    if with_repo:
+        tools.extend(repo_tools)
+    if with_browser:
+        tools.extend(browser_tools)
+
     if not impact_tools:
-        return base
+        return tools
 
     @tool
     def run_ux_capture(
@@ -909,7 +1016,7 @@ def build_tools(checkout, *, impact_tools=False):
             return "REJECTED: capture dir must exist inside the checkout or tmp"
         return impact.lighthouse_read(target)["text"]
 
-    return base + [run_ux_capture, diff_versions, ask_diff, lighthouse_read]
+    return tools + [run_ux_capture, diff_versions, ask_diff, lighthouse_read]
 
 
 def flat_schema_violations(args: dict, *, max_params: int) -> list[str]:

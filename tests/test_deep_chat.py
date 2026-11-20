@@ -760,6 +760,81 @@ class TestToolSurface(unittest.TestCase):
             },
         )
 
+    def test_tool_surface_repo_mode(self):
+        tools = deep_chat.build_tools("/tmp", mode="repo")
+        self.assertEqual(len(tools), 10)
+        self.assertEqual(
+            {t.name for t in tools},
+            {
+                "read_repo_file",
+                "grep_repo",
+                "list_dir",
+                "search_docs",
+                "propose_action",
+                "run_repo_command",
+                "fetch_url",
+                "search_web",
+                "search_turns",
+                "pr_read",
+            },
+        )
+        tools_flag = deep_chat.build_tools("/tmp", include_browser=False)
+        self.assertEqual(len(tools_flag), 10)
+        self.assertEqual({t.name for t in tools_flag}, {t.name for t in tools})
+
+    def test_tool_surface_browser_mode(self):
+        tools = deep_chat.build_tools("/tmp", mode="browser")
+        self.assertEqual(len(tools), 4)
+        self.assertEqual(
+            {t.name for t in tools},
+            {
+                "browser_snapshot",
+                "browser_act",
+                "browser_notes",
+                "request_human_cobrowse_handoff",
+            },
+        )
+
+    def test_tool_surface_impact_tools(self):
+        tools_all_impact = deep_chat.build_tools("/tmp", impact_tools=True)
+        self.assertEqual(len(tools_all_impact), 18)
+        tools_repo_impact = deep_chat.build_tools(
+            "/tmp", mode="repo", impact_tools=True
+        )
+        self.assertEqual(len(tools_repo_impact), 14)
+
+    def test_tool_surface_invalid_mode(self):
+        with self.assertRaises(ValueError):
+            deep_chat.build_tools("/tmp", mode="invalid_mode")
+
+    def test_structured_tool_errors(self):
+        tools = {t.name: t for t in deep_chat.build_tools("/tmp")}
+        # run_repo_command reject
+        out = tools["run_repo_command"].invoke({"command": "npx tsc --noEmit"})
+        parsed = json.loads(out)
+        self.assertFalse(parsed["ok"])
+        self.assertIn("REJECTED", parsed["error"])
+        self.assertIn("allowed", parsed)
+        self.assertIn("hint", parsed)
+
+        # read_repo_file reject
+        out = tools["read_repo_file"].invoke({"path": "../escape"})
+        parsed = json.loads(out)
+        self.assertFalse(parsed["ok"])
+        self.assertIn("REJECTED", parsed["error"])
+
+        # search_docs reject
+        out = tools["search_docs"].invoke({"query": "q", "repo": "??"})
+        parsed = json.loads(out)
+        self.assertFalse(parsed["ok"])
+        self.assertIn("doc search unavailable", parsed["error"])
+
+        # search_turns empty query
+        out = tools["search_turns"].invoke({"query": "  "})
+        parsed = json.loads(out)
+        self.assertFalse(parsed["ok"])
+        self.assertIn("usage:", parsed["error"])
+
     def test_read_grep_list_delegate(self):
         import tempfile
 
@@ -858,9 +933,15 @@ class TestToolSurface(unittest.TestCase):
         self.assertIn("256KB", tool.description)
         # Guarded shapes fail without touching the network.
         out = tool.invoke({"url": "http://169.254.169.254/"})
-        self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
+        self.assertIn("FETCH_ERROR:", out)
+        parsed = json.loads(out)
+        self.assertFalse(parsed["ok"])
+        self.assertIn("FETCH_ERROR:", parsed["error"])
         out = tool.invoke({"url": "file:///etc/passwd"})
-        self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
+        self.assertIn("FETCH_ERROR:", out)
+        parsed = json.loads(out)
+        self.assertFalse(parsed["ok"])
+        self.assertIn("FETCH_ERROR:", parsed["error"])
 
     def test_search_web_tool(self):
         from unittest import mock
@@ -872,7 +953,9 @@ class TestToolSurface(unittest.TestCase):
         self.assertIn("fetch_url", tool.description)
         # Guarded shapes fail without touching the network.
         out = tool.invoke({"query": ""})
-        self.assertTrue(out.startswith("SEARCH_ERROR:"), out[:120])
+        self.assertIn("SEARCH_ERROR:", out)
+        parsed = json.loads(out)
+        self.assertFalse(parsed["ok"])
         with mock.patch.object(
             s5tools, "search_web", return_value="1. T\n   https://x/\n   s"
         ) as m:
