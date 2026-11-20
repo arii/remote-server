@@ -6,7 +6,7 @@ import { isAuthExpired, subscribeAuthExpired } from '../apiClient';
 // alive. A reload re-enters through oauth2-proxy, which re-runs the
 // login dance and lands back on the current view.
 export function sessionBannerText(): string {
-  return 'Session expired — API calls are failing. Sign in again to resume live data.';
+  return 'Session expired. API calls are failing. Sign in again to resume live data.';
 }
 
 export default function SessionBanner() {

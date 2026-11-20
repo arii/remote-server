@@ -370,12 +370,12 @@ export function MergeBlockDetail({
         </p>
       )}
       {details.conflicted && (
-        <p className="row-meta">Has merge conflicts — resolve them before merging.</p>
+        <p className="row-meta">Has merge conflicts. Resolve them before merging.</p>
       )}
       {details.draft && <p className="row-meta">Still a draft.</p>}
       {behind && (
         <p className="row-meta">
-          Branch is behind {details.base || 'the base'} — update the branch, then merge.
+          Branch is behind {details.base || 'the base'}. Update the branch, then merge.
         </p>
       )}
       {blockedGreen && (

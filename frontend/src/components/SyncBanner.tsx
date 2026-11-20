@@ -8,14 +8,14 @@ function queuedNoun(pending: number): string {
 
 function bannerText(status: OutboxStatus): string {
   if (!status.online && status.pending === 0) {
-    return "You're offline — actions will queue until reconnect.";
+    return "You're offline. Actions will queue until reconnect.";
   }
   if (!status.online) {
-    return `Offline — ${queuedNoun(status.pending)} queued. Syncs on reconnect.`;
+    return `Offline: ${queuedNoun(status.pending)} queued. Syncs on reconnect.`;
   }
   if (status.syncing) return 'Syncing queued actions…';
   if (status.lastError) {
-    return `${queuedNoun(status.pending)} queued — last sync failed: ${status.lastError}`;
+    return `${queuedNoun(status.pending)} queued. Last sync failed: ${status.lastError}`;
   }
   return `${queuedNoun(status.pending)} queued.`;
 }

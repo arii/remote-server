@@ -560,7 +560,7 @@ describe('Now status hero (issue #811)', () => {
     );
     expect(html).toContain('dot-ok');
     expect(html).toContain('Stack clear');
-    expect(html).toContain('Nothing urgent.');
+    expect(html).not.toContain('Nothing urgent.');
   });
 
   it('NowHero escalates a sick stack and a missing snapshot', () => {
