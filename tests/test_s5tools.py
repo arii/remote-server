@@ -431,17 +431,90 @@ class TestRunRepoCommand(unittest.TestCase):
             self.assertTrue(out.startswith("REJECTED"), bad)
 
     def test_metachars_after_verb_are_inert(self):
-        # Allowed prefix + metachar args: argv runs WITHOUT a shell,
-        # so no second program can execute (git just chokes on junk).
+        # Allowed prefix + metachar args: rejected by the argument grammar
+        # and, even if run, argv has no shell so nothing else executes.
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
             out = s5tools.run_repo_command(d, "git status && touch SMUGGLED")
-            self.assertTrue(out.startswith("exit="), out[:200])
+            self.assertTrue(out.startswith("REJECTED"), out[:200])
             self.assertFalse(os.path.exists(os.path.join(d, "SMUGGLED")))
             out = s5tools.run_repo_command(d, "git status ; touch SMUGGLED2")
-            self.assertTrue(out.startswith("exit="), out[:200])
+            self.assertTrue(out.startswith("REJECTED"), out[:200])
             self.assertFalse(os.path.exists(os.path.join(d, "SMUGGLED2")))
+
+    def test_check_grammar_allows_legit_verification(self):
+        for cmd in (
+            "git status",
+            "git status --short .agents/plans/",
+            "git diff --stat",
+            "git diff --name-only origin/main -- .",
+            "git diff origin/main...HEAD",
+            "git diff -U5 -- deep-agent/s5tools.py",
+            "git log",
+            "git log -5 --oneline",
+            "git log -n 3 --stat",
+            "git log --format=%h:%s -3",
+            "pytest tests/test_x.py -q",
+            "pytest tests/test_x.py::TestA::test_b -k foo -x --tb=short",
+            "python3 -m pytest backend/tests/test_y.py -q",
+            "go test ./...",
+            "go test -run TestFoo ./pkg",
+            "pnpm test",
+            "pnpm run lint",
+            "pnpm exec vitest run src/a.test.ts",
+        ):
+            argv = s5tools.parse_check_command(cmd)
+            self.assertTrue(s5tools.check_allowed(argv), cmd)
+
+    def test_check_grammar_rejects_read_write_bypasses(self):
+        for cmd in (
+            "git diff --no-index -- /dev/null /etc/hostname",
+            "git diff --no-i /dev/null /etc/hostname",
+            "git diff --no-index a b",
+            "git diff --output=/tmp/x",
+            "git diff --outp=/tmp/x",
+            "git diff -O/tmp/orderfile",
+            "git diff --ext-diff",
+            "git diff --textconv",
+            "git diff -- /etc/hostname",
+            "git diff -- ../outside",
+            "git diff ../outside",
+            "git diff -- sub/../../outside",
+            "git diff -- :/",
+            "git diff ~/secret",
+            "git diff --open-files-in-pager=sh",
+            "git log --output=/tmp/x",
+            "git log -1 --output /tmp/x",
+            "git log -o/tmp/x",
+            "git log --out=/tmp/x",
+            "git log -p --ext-diff",
+            "git log --exec=sh",
+            "git log --format=%h --output=/tmp/x",
+            "git status --ignored=/etc",
+            "git status --porcel",
+            "git -c core.pager=sh diff",
+            "git diff --stat; touch x",
+            "pytest --basetemp=/tmp/x",
+            "pytest --rootdir=/",
+            "pytest -c /etc/passwd",
+            "pytest -p evilplugin",
+            "pytest /etc/passwd",
+            "pytest ../x.py",
+            "pytest --junitxml=/tmp/o.xml",
+            "go test -exec sh ./...",
+            "go test -o /tmp/bin ./...",
+            "go test -coverprofile=/tmp/c ./...",
+            "go test /abs/pkg",
+            "pnpm test --dir /",
+            "pnpm exec vitest --config /tmp/evil.ts",
+            "npm test -- --foo",
+        ):
+            try:
+                argv = s5tools.parse_check_command(cmd)
+            except ValueError:
+                continue
+            self.assertFalse(s5tools.check_allowed(argv), cmd)
 
     def test_tail_cap(self):
         import tempfile

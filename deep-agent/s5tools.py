@@ -84,7 +84,191 @@ def check_allowed(argv):
                 return False
             del rest[i : i + 2]
         return rest == ["--frozen-lockfile"]
-    return any(tupled[: len(p)] == p for p in CHECK_PREFIXES)
+    for prefix in CHECK_PREFIXES:
+        if tupled[: len(prefix)] == prefix:
+            return _check_args_safe(prefix, tupled[len(prefix) :])
+    return False
+
+
+# Argument grammar for the prefix allowlist. A prefix alone let a model
+# (or injected text it read) append options such as `git diff --no-index
+# -- /dev/null /etc/passwd` (read any file), `git log --output=PATH` or
+# `pytest --basetemp=PATH` (write or wipe any path), or `go test -exec
+# CMD` (run any program). Options are matched EXACTLY (git and pytest
+# accept abbreviated long options, so prefix matching cannot be trusted)
+# and every positional argument must stay inside the checkout.
+_SAFE_VALUE_RE = re.compile(r"[A-Za-z0-9_ ()\-.,]+")
+_SAFE_FORMAT_RE = re.compile(r"[A-Za-z0-9 %:_.,\-\[\]()/]+")
+_SAFE_PATH_RE = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_./:@+=,\-\[\]*]*")
+_DIGITS_RE = re.compile(r"[0-9]{1,6}")
+
+_GIT_DIFF_FLAGS = frozenset(
+    (
+        "--stat", "--name-only", "--name-status", "--shortstat", "--numstat",
+        "--summary", "--cached", "--staged", "--no-color", "--color=never",
+        "--check", "--exit-code", "--quiet", "-p", "--patch", "--no-patch",
+        "-w", "-b", "--ignore-all-space", "--ignore-space-change",
+        "--no-renames", "--raw", "--compact-summary", "--minimal",
+        "--histogram", "--patience",
+    )
+)  # fmt: skip
+_GIT_LOG_FLAGS = frozenset(
+    (
+        "--oneline", "--graph", "--decorate", "--no-decorate", "--stat",
+        "--name-only", "--name-status", "--shortstat", "--numstat", "-p",
+        "--patch", "--no-color", "--color=never", "--merges", "--no-merges",
+        "--first-parent", "--reverse", "--abbrev-commit", "--summary",
+        "--follow",
+    )
+)  # fmt: skip
+_GIT_STATUS_FLAGS = frozenset(
+    (
+        "-s", "--short", "-b", "--branch", "--porcelain", "--porcelain=v1",
+        "--porcelain=v2", "--long", "-uno", "--untracked-files=no",
+        "--untracked-files=normal", "--untracked-files=all",
+    )
+)  # fmt: skip
+_PYTEST_FLAGS = frozenset(
+    (
+        "-q", "-qq", "-v", "-vv", "-vvv", "-x", "-s", "-l", "--lf", "--ff",
+        "--nf", "--co", "--collect-only", "--no-header", "--no-summary",
+        "-ra", "-rA", "-rf", "-rE", "-rs", "-rx", "-rX", "-rfE",
+        "--strict-markers", "--disable-warnings",
+    )
+)  # fmt: skip
+_PYTEST_ENUMS = ("--tb=",)
+_PYTEST_TB = frozenset(("auto", "long", "short", "line", "native", "no"))
+_VITEST_FLAGS = frozenset(
+    (
+        "run", "--run", "--reporter=default", "--reporter=dot",
+        "--reporter=verbose", "--passWithNoTests",
+    )
+)  # fmt: skip
+_GO_FLAGS = frozenset(("-v", "-short", "-race", "-failfast"))
+
+
+def _safe_positional(token):
+    """A relative path, revision or test id that cannot leave the checkout.
+
+    Rejects absolute paths, a leading '-' or ':', '~', and any '..' path
+    component. Revision ranges (a..b, a...b) keep their dots because the
+    dots sit inside a component, not as a component.
+    """
+    if not isinstance(token, str) or not token or "\x00" in token:
+        return False
+    if token[0] in "/-:~" or "\\" in token:
+        return False
+    if any(part == ".." for part in token.split("/")):
+        return False
+    return bool(_SAFE_PATH_RE.fullmatch(token))
+
+
+def _positionals_safe(args):
+    return all(_safe_positional(a) for a in args)
+
+
+def _args_with_flags(args, flags, value_flags=None, prefix_values=None):
+    """Walk args: exact flags, `flag value` pairs, `--opt=value` forms and
+    positionals. Everything unknown is rejected."""
+    value_flags = value_flags or {}
+    prefix_values = prefix_values or {}
+    i = 0
+    seen_dashdash = False
+    while i < len(args):
+        a = args[i]
+        if seen_dashdash:
+            if not _safe_positional(a):
+                return False
+        elif a == "--":
+            seen_dashdash = True
+        elif a in flags:
+            pass
+        elif a in value_flags:
+            i += 1
+            if i >= len(args) or not value_flags[a](args[i]):
+                return False
+        elif a.startswith("-"):
+            for lead, check in prefix_values.items():
+                if a.startswith(lead) and check(a[len(lead) :]):
+                    break
+            else:
+                return False
+        elif not _safe_positional(a):
+            return False
+        i += 1
+    return True
+
+
+def _digits(value):
+    return bool(_DIGITS_RE.fullmatch(value))
+
+
+def _git_args_safe(sub, args):
+    if sub == "diff":
+        return _args_with_flags(
+            args,
+            _GIT_DIFF_FLAGS,
+            prefix_values={"-U": _digits, "--unified=": _digits},
+        )
+    if sub == "log":
+        return _args_with_flags(
+            args,
+            _GIT_LOG_FLAGS,
+            value_flags={"-n": _digits},
+            prefix_values={
+                "-n": _digits,
+                "--max-count=": _digits,
+                "-": _digits,
+                "--since=": lambda v: bool(_SAFE_VALUE_RE.fullmatch(v)),
+                "--until=": lambda v: bool(_SAFE_VALUE_RE.fullmatch(v)),
+                "--author=": lambda v: bool(_SAFE_VALUE_RE.fullmatch(v)),
+                "--grep=": lambda v: bool(_SAFE_VALUE_RE.fullmatch(v)),
+                "--pretty=": lambda v: bool(_SAFE_FORMAT_RE.fullmatch(v)),
+                "--format=": lambda v: bool(_SAFE_FORMAT_RE.fullmatch(v)),
+            },
+        )
+    if sub == "status":
+        return _args_with_flags(args, _GIT_STATUS_FLAGS)
+    return False
+
+
+def _pytest_args_safe(args):
+    def value(v):
+        return bool(_SAFE_VALUE_RE.fullmatch(v)) and not v.startswith("-")
+
+    return _args_with_flags(
+        args,
+        _PYTEST_FLAGS,
+        value_flags={"-k": value, "-m": value, "-p": lambda v: v == "no:cacheprovider"},
+        prefix_values={
+            "--tb=": lambda v: v in _PYTEST_TB,
+            "--maxfail=": _digits,
+            "--durations=": _digits,
+        },
+    )
+
+
+def _check_args_safe(prefix, args):
+    if prefix[0] == "git":
+        return _git_args_safe(prefix[1], list(args))
+    if prefix in (("pytest",), ("python3", "-m", "pytest")):
+        return _pytest_args_safe(list(args))
+    if prefix == ("pnpm", "exec", "vitest"):
+        return _args_with_flags(
+            list(args),
+            _VITEST_FLAGS,
+            value_flags={"-t": lambda v: bool(_SAFE_VALUE_RE.fullmatch(v))},
+        )
+    if prefix == ("go", "test"):
+        return _args_with_flags(
+            list(args),
+            _GO_FLAGS,
+            value_flags={"-run": lambda v: bool(_SAFE_VALUE_RE.fullmatch(v))},
+            prefix_values={"-count=": _digits},
+        )
+    # pnpm test, pnpm run lint|type-check, npm test: run checkout-defined
+    # scripts; no extra options, only checkout-relative positionals.
+    return _args_with_flags(list(args), frozenset())
 
 
 def allowed_commands_text():
