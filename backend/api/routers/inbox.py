@@ -204,7 +204,8 @@ def _build_rollup() -> dict:
     design (rollup is Now attention only)."""
     seen: set = set()
     items = []
-    for name in list_repo_names():
+    known = list_repo_names()
+    for name in list(known) + attention.orphan_repo_names(known):
         for item in _cached_or_live_attention(name):
             if not isinstance(item, dict):
                 continue
