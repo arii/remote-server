@@ -16,6 +16,7 @@ import {
   fetchUxAuditGroups,
   requestTakeover,
   rerunJob,
+  startAuthedInterval,
   startJobRun,
   startTdRun,
   startUxAuditRun,
@@ -1017,12 +1018,12 @@ export default function JobsView({
     if (useMock()) return;
     if (pushLive) return;
     if (!jobs || (!jobsListActive(jobs) && !running)) return;
-    const timer = window.setInterval(() => {
+    const stopPoll = startAuthedInterval(() => {
       if (isTabVisible()) void guarded(load);
     }, 5000);
     const stopResume = onTabVisible(() => void guarded(load));
     return () => {
-      window.clearInterval(timer);
+      stopPoll();
       stopResume();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -29,6 +29,7 @@ import {
   repoAction,
   restartContainer,
   startJobRun,
+  startAuthedInterval,
   subscribeApiFailures,
   warmRepoMetrics,
 } from './apiClient';
@@ -213,11 +214,19 @@ const FALLBACK_REPOS: RepoInfo[] = [
   { name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: true },
 ];
 
-// Rollup guard (issue #610, #1386): Chat/History/Review/Jobs are per-repo
+// Rollup guard (issue #610): Chat/History are per-repo
 // views with no `repo=all` API; prompt for a repo instead of
-// firing per-repo fetches at a pseudo-repo.
-import { RollupGate } from './components/RollupGate';
-export { RollupGate };
+// firing per-repo fetches at a pseudo-repo. (Briefing moved into
+// the triage drawer in D5, which hides its section on rollup.)
+export function RollupGate({ view }: { view: string }) {
+  return (
+    <section data-testid="rollup-gate" role="status">
+      <p className="row-meta">
+        {view} needs one repo — pick one above to leave the All repos rollup.
+      </p>
+    </section>
+  );
+}
 
 export default function App() {
   const topbarRef = useRef<HTMLElement>(null);
@@ -455,11 +464,11 @@ export default function App() {
         // Keep the last good snapshot; the next tick retries.
       }
     });
-    const timer = window.setInterval(refresh, HEALTH_POLL_MS);
+    const stopPoll = startAuthedInterval(refresh, HEALTH_POLL_MS);
     const unsubscribe = subscribeApiFailures(refresh);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      stopPoll();
       unsubscribe();
     };
   }, []);
@@ -604,12 +613,12 @@ export default function App() {
       };
     }
     void fetchAgentBrowserState().then(applyState, failState);
-    const timer = window.setInterval(() => {
+    const stopPoll = startAuthedInterval(() => {
       void fetchAgentBrowserState().then(applyState, failState);
     }, BROWSER_POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      stopPoll();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -752,7 +761,7 @@ export default function App() {
     });
     void prefetchTabPayloads(repo);
     refresh();
-    const timer = window.setInterval(refresh, HEALTH_POLL_MS);
+    const stopPoll = startAuthedInterval(refresh, HEALTH_POLL_MS);
     const onVisible = () => {
       if (document.visibilityState === 'visible') refresh();
     };
@@ -760,7 +769,7 @@ export default function App() {
     const unsubscribe = subscribeApiFailures(refresh);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      stopPoll();
       document.removeEventListener('visibilitychange', onVisible);
       unsubscribe();
     };

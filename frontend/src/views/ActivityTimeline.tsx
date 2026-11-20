@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { fetchAgentRuns, fetchJobs, fetchLedger } from '../apiClient';
+import { fetchAgentRuns, fetchJobs, fetchLedger, startAuthedInterval } from '../apiClient';
 import type { AgentRun } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
@@ -80,12 +80,12 @@ export default function ActivityTimeline({ active = true }: { active?: boolean }
 
   useEffect(() => {
     if (useMock() || !active) return;
-    const timer = window.setInterval(() => {
+    const stopPoll = startAuthedInterval(() => {
       if (isTabVisible()) void load();
     }, TIMELINE_POLL_MS);
     const stopResume = onTabVisible(() => void load());
     return () => {
-      window.clearInterval(timer);
+      stopPoll();
       stopResume();
     };
   }, [load, active]);
