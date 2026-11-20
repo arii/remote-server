@@ -1498,7 +1498,7 @@ describe('request timeouts (issue #460)', () => {
       const err = caught as RequestTimeoutError;
       expect(err.message).toMatch(/timeout/i);
       expect(plainLanguage(err.message, 'Job')).toBe(
-        'Network request failed — the service could not be reached',
+        'Network request failed: the service could not be reached',
       );
       expect(err.path).toBe('api/jobs');
       expect(err.budgetMs).toBe(API_TIMEOUT_MS);

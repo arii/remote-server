@@ -920,7 +920,7 @@ describe('merge-block decision context (issue #839 addendum)', () => {
         head="Not mergeable: CI passing, merge behind."
       />,
     );
-    expect(html).toContain('Branch is behind main — update the branch, then merge.');
+    expect(html).toContain('Branch is behind main. Update the branch, then merge.');
     expect(html).not.toContain('review-merge-missing');
   });
 });

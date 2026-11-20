@@ -295,7 +295,7 @@ export function RunProgressPanel({
       <span className="row-title">
         {running ? (
           <>
-            <span className="dot dot-warn" aria-hidden="true" /> Running {running} — streaming live output…
+            <span className="dot dot-warn" aria-hidden="true" /> Running {running}: streaming live output…
           </>
         ) : (
           `Output${runId ? ` · ${runId}` : ''}`

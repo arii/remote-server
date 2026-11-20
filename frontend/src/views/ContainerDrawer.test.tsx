@@ -174,9 +174,9 @@ describe('container drawer logs + restart per row (issue #928)', () => {
   });
 
   it('shows a degraded note with rows when the live overlay fails', () => {
-    const html = renderDrawer({ degraded: 'Live CPU/RAM unavailable — boom' });
+    const html = renderDrawer({ degraded: 'Live CPU/RAM unavailable: boom' });
     expect(html).toContain('data-testid="container-degraded"');
-    expect(html).toContain('Live CPU/RAM unavailable — boom');
+    expect(html).toContain('Live CPU/RAM unavailable: boom');
     expect(html).toContain('remote-terminal-1');
     expect(html).not.toContain('container-error');
   });

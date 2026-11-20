@@ -411,7 +411,7 @@ export default function AgentDrawer({
       } catch {
         if (alive()) {
           setReattachNote(
-            "Couldn't reach the server — showing the saved transcript.",
+            "Couldn't reach the server: showing the saved transcript.",
           );
         }
         return;

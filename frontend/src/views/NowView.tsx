@@ -821,7 +821,7 @@ export function NowHero({
                 {top.action.label}
               </button>
               {heroBlockNudge && (
-                <span role="alert"> Still blocked — {retryBlockWarning(topBlock)}</span>
+                <span role="alert"> Still blocked: {retryBlockWarning(topBlock)}</span>
               )}
             </>
           ) : (
@@ -834,11 +834,7 @@ export function NowHero({
             />
           )}
         </span>
-      ) : (
-        <span className="row-meta" data-testid="now-hero-urgent">
-          Nothing urgent.
-        </span>
-      )}
+      ) : null}
     </section>
   );
 }

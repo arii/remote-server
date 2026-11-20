@@ -141,24 +141,24 @@ function LearnPanels() {
         {events === null ? (
           <p className="row-meta">Loading recent activity…</p>
         ) : events.length === 0 ? (
-          <p className="row-meta">Nothing yet — interact with the page.</p>
+          <p className="row-meta">Nothing yet. Interact with the page.</p>
         ) : (
           <ol>
             {events.slice(-10).map((e, i) => (
               <li key={`${e.t}-${i}`} className="row-meta">
                 {e.via} · {e.kind}
-                {e.detail ? ` — ${e.detail}` : ''} ({ago(e.t)})
+                {e.detail ? `: ${e.detail}` : ''} ({ago(e.t)})
               </li>
             ))}
           </ol>
         )}
       </section>
       <section aria-label="Browser notebook" data-testid="cobrowse-notes">
-        <p className="row-meta">Notebook — what the system has learned</p>
+        <p className="row-meta">Notebook: what the system has learned</p>
         {notes === null ? (
           <p className="row-meta">Loading notebook…</p>
         ) : notes === '' ? (
-          <p className="row-meta">Empty — the first pass will write here.</p>
+          <p className="row-meta">Empty. The first pass will write here.</p>
         ) : (
           <pre className="row-meta cobrowse-notebook">{notes.slice(-2000)}</pre>
         )}

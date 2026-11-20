@@ -84,7 +84,7 @@ describe('history utils', () => {
       [],
       [
         { kind: 'chat', event: 'chat finished', ts: 1793652000 },
-        { kind: 'webhook', event: 'Push was rejected — the remote has new commits', ts: 1793652100, ok: false },
+        { kind: 'webhook', event: 'Push was rejected: the remote has new commits', ts: 1793652100, ok: false },
       ],
     );
     expect(rows[0].summary).toContain('rejected');

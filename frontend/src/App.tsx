@@ -222,7 +222,7 @@ export function RollupGate({ view }: { view: string }) {
   return (
     <section data-testid="rollup-gate" role="status">
       <p className="row-meta">
-        {view} needs one repo — pick one above to leave the All repos rollup.
+        {view} needs one repo. Pick one above to leave the All repos rollup.
       </p>
     </section>
   );
@@ -568,7 +568,7 @@ export default function App() {
         if (base.length > 0) {
           setStatsRows(base);
           setStatsDegraded(
-            `Live CPU/RAM unavailable — ${err instanceof Error ? err.message : String(err)}`,
+            `Live CPU/RAM unavailable: ${err instanceof Error ? err.message : String(err)}`,
           );
         } else {
           setStatsError(err instanceof Error ? err.message : String(err));
@@ -799,9 +799,9 @@ export default function App() {
   const logRestartNote = !logService
     ? null
     : logEngineAction && restartRequested === logEngineAction
-      ? 'restart requested — watch Jobs for the run.'
+      ? 'restart requested: watch Jobs for the run.'
       : serviceRestarted === logService
-        ? 'restart requested — the container is restarting.'
+        ? 'restart requested: the container is restarting.'
         : null;
 
   return (

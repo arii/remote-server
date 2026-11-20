@@ -4,15 +4,15 @@ import type { JobRecord, LedgerEntry } from '../apiTypes';
 // noisy patterns map to short human sentences; anything else falls back
 // to a generic, non-technical label plus the kind.
 const RULES: Array<[RegExp, string]> = [
-  [/fast-?forward/i, 'Pull could not fast-forward — the remote has new commits'],
-  [/fetch.?first|non-fast/i, 'Push was rejected — the remote has new commits'],
-  [/connection refused|econnrefused|network unreachable|timeout/i, 'Network request failed — the service could not be reached'],
-  [/playwright|chromium executable missing|browser.*crash/i, 'Automated browser test could not start — browser is missing or crashed'],
+  [/fast-?forward/i, 'Pull could not fast-forward: the remote has new commits'],
+  [/fetch.?first|non-fast/i, 'Push was rejected: the remote has new commits'],
+  [/connection refused|econnrefused|network unreachable|timeout/i, 'Network request failed: the service could not be reached'],
+  [/playwright|chromium executable missing|browser.*crash/i, 'Automated browser test could not start: browser is missing or crashed'],
   [/annotation|check-run/i, 'Automated check reported a failure'],
-  [/conflict/i, 'Changes conflict — manual review is needed'],
-  [/permission|forbidden|unauthorized|401|403/i, 'Action was not permitted — check access'],
+  [/conflict/i, 'Changes conflict: manual review is needed'],
+  [/permission|forbidden|unauthorized|401|403/i, 'Action was not permitted: check access'],
   [/fatal:\s*(?:cannot change to|no such file)/i, 'Repository path was not found'],
-  [/fatal:/i, 'Git command failed — see detail trace'],
+  [/fatal:/i, 'Git command failed: see detail trace'],
 ];
 
 export function plainLanguage(raw: string, fallbackKind: string): string {
@@ -20,7 +20,7 @@ export function plainLanguage(raw: string, fallbackKind: string): string {
   for (const [re, label] of RULES) {
     if (re.test(text)) return label;
   }
-  if (!text) return `${fallbackKind || 'Event'} — no details recorded`;
+  if (!text) return `${fallbackKind || 'Event'}: no details recorded`;
   const first = text.split('\n')[0].slice(0, 120);
   if (/fatal:|error|fail|exception|stderr|at\s+\S+\(|traceback|\/tmp\//i.test(first)) {
     return `${fallbackKind || 'Event'} failed — see detail trace`;
