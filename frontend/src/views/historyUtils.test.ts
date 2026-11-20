@@ -209,6 +209,34 @@ describe('collapsed outcome clauses (issue #423)', () => {
     expect(rows[0].summary).toBe('Muse turn failed (exit 3): oops');
   });
 
+  it('sanitizes raw git fatal stderr and /tmp paths from summaries (issue #1431)', () => {
+    const rows = toHistoryRows([], [
+      {
+        kind: 'webhook',
+        detail: "fatal: cannot change to '/tmp/retry855-90o1nbpb': No such file or directory",
+        ts: 1700000000,
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).not.toContain('/tmp/');
+    expect(rows[0].summary).not.toContain('fatal:');
+    expect(rows[0].summary).toContain('Repository path was not found');
+  });
+
+  it('sanitizes raw stderr in e.error without leaking machine paths (issue #1431)', () => {
+    const rows = toHistoryRows([], [
+      {
+        kind: 'webhook',
+        error: "fatal: cannot change to '/tmp/retry855-90o1nbpb': No such file or directory",
+        ts: 1700000000,
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).not.toContain('/tmp/');
+    expect(rows[0].summary).not.toContain('fatal:');
+    expect(rows[0].summary).toBe('Repository path was not found');
+  });
+
   it('splits rows whose outcomes differ', () => {
     const rows = toHistoryRows([], [
       { kind: 'webhook', detail: 'skipped: tree dirty', ts: 2 },

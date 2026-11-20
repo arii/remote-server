@@ -59,6 +59,15 @@ describe('history utils', () => {
   it('uses plain language, never raw stderr', () => {
     expect(plainLanguage('FAILED stderr: Traceback blah', 'webhook')).not.toContain('stderr');
     expect(plainLanguage('non-fast-forward rejected', 'webhook')).toContain('remote has new commits');
+    expect(
+      plainLanguage("fatal: cannot change to '/tmp/retry855-90o1nbpb': No such file or directory", 'webhook'),
+    ).not.toContain('/tmp/');
+    expect(
+      plainLanguage("fatal: cannot change to '/tmp/retry855-90o1nbpb': No such file or directory", 'webhook'),
+    ).not.toContain('fatal:');
+    expect(
+      plainLanguage("fatal: cannot change to '/tmp/retry855-90o1nbpb': No such file or directory", 'webhook'),
+    ).toBe('Repository path was not found');
   });
 
   it('collapses repeat failures into one incident row with recovery', () => {
