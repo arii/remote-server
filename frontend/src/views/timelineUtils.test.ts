@@ -106,4 +106,35 @@ describe('timeline merge (issue #812)', () => {
     expect(items[0].summary).toContain('remote has new commits');
     expect(items[0].tone).toBe('bad');
   });
+
+  it('filters out routine passing check-notifications jobs from timeline (issue #1467)', () => {
+    const items = toTimelineItems(
+      [
+        { id: 'pass-1', title: 'check-notifications', status: 'done', done: true, exit_code: 0, at: 100 },
+        { id: 'pass-2', title: 'check-notifications: remote-server', status: 'done', done: true, at: 110 },
+        { id: 'fail-1', title: 'check-notifications', status: 'done', done: true, exit_code: 1, at: 120 },
+        { id: 'other-1', title: 'briefing', status: 'done', done: true, exit_code: 0, at: 130 },
+      ],
+      [],
+      [],
+      [],
+    );
+    expect(items.map((i) => i.key)).toEqual(['run-other-1', 'run-fail-1']);
+    expect(items[1].tone).toBe('bad');
+    expect(items[1].summary).toContain('Check-notifications: failed (exit 1)');
+  });
+
+  it('keeps routine passing runs when includeRoutine is true (issue #1467)', () => {
+    const items = toTimelineItems(
+      [
+        { id: 'pass-1', title: 'check-notifications', status: 'done', done: true, exit_code: 0, at: 100 },
+      ],
+      [],
+      [],
+      [],
+      { includeRoutine: true },
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].key).toBe('run-pass-1');
+  });
 });

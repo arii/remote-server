@@ -58,4 +58,20 @@ describe('activity timeline (issue #812)', () => {
     expect(html).toContain('exit: 1');
     expect(html).toContain('Check-notifications: failed (exit 1)');
   });
+
+  it('omits routine passing check-notifications while retaining failures (issue #1467)', () => {
+    const items = toTimelineItems(
+      [
+        { id: 'r-pass', title: 'check-notifications', status: 'done', done: true, exit_code: 0, at: 100 },
+        { id: 'r-fail', title: 'check-notifications', status: 'done', done: true, exit_code: 1, at: 101 },
+      ],
+      [],
+      [],
+      [],
+    );
+    const html = renderToStaticMarkup(<TimelineList items={items} />);
+    expect(html).not.toContain('r-pass');
+    expect(html).toContain('r-fail');
+    expect(html).toContain('Check-notifications: failed (exit 1)');
+  });
 });
