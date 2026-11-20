@@ -1249,9 +1249,14 @@ class FailingScheduleAttentionTest(unittest.TestCase):
         orig = {
             k: getattr(attention, k)
             for k in (
-                "get_workflow_health", "list_failed_jobs", "list_failed_webhooks",
-                "list_skipped_webhooks", "list_pending_approvals", "ollama_up",
-                "list_failing_schedules", "list_terminal_dispatches",
+                "get_workflow_health",
+                "list_failed_jobs",
+                "list_failed_webhooks",
+                "list_skipped_webhooks",
+                "list_pending_approvals",
+                "ollama_up",
+                "list_failing_schedules",
+                "list_terminal_dispatches",
             )
         }
         attention.get_workflow_health = lambda repo: {"workflows": []}
@@ -1272,13 +1277,24 @@ class FailingScheduleAttentionTest(unittest.TestCase):
             setattr(attention, k, v)
 
     def test_permanent_vs_transient_and_not_paused(self):
-        a = self._run([
-            {"id": "s1", "repo": "cobrowser", "action": "notify-check",
-             "enabled": True, "last_result": {"ok": False, "at": 5.0,
-                                              "error": "unknown repo"}},
-            {"id": "s2", "repo": "cobrowser", "action": "other", "enabled": True,
-             "last_result": {"ok": False, "at": 6.0, "error": "gh timed out"}},
-        ])
+        a = self._run(
+            [
+                {
+                    "id": "s1",
+                    "repo": "cobrowser",
+                    "action": "notify-check",
+                    "enabled": True,
+                    "last_result": {"ok": False, "at": 5.0, "error": "unknown repo"},
+                },
+                {
+                    "id": "s2",
+                    "repo": "cobrowser",
+                    "action": "other",
+                    "enabled": True,
+                    "last_result": {"ok": False, "at": 6.0, "error": "gh timed out"},
+                },
+            ]
+        )
         items = a.attention("cobrowser")["items"]
         by = {i["id"]: i for i in items}
         d1 = by["schedule-s1"]["detail"]
@@ -1297,17 +1313,30 @@ class FailingScheduleAttentionTest(unittest.TestCase):
     def test_orphan_repo_names(self):
         a = self._run(
             [{"id": "s1", "repo": "cobrowser", "last_result": {"ok": False}}],
-            jobs=[{"id": "j", "repo": "arii/gone"}, {"id": "k", "repo": "remote-server"}],
+            jobs=[
+                {"id": "j", "repo": "arii/gone"},
+                {"id": "k", "repo": "remote-server"},
+            ],
         )
         self.assertEqual(a.orphan_repo_names(["remote-server"]), ["cobrowser", "gone"])
 
     def test_unknown_repo_copy_same_for_missing_and_corrupt(self):
-        a = self._run([
-            {"id": "m", "repo": "r", "action": "x", "last_result": {
-                "ok": False, "at": 1.0, "error": "unknown repo"}},
-            {"id": "c", "repo": "r", "action": "x", "last_result": {
-                "ok": False, "at": 1.0, "error": "unknown repo"}},
-        ])
+        a = self._run(
+            [
+                {
+                    "id": "m",
+                    "repo": "r",
+                    "action": "x",
+                    "last_result": {"ok": False, "at": 1.0, "error": "unknown repo"},
+                },
+                {
+                    "id": "c",
+                    "repo": "r",
+                    "action": "x",
+                    "last_result": {"ok": False, "at": 1.0, "error": "unknown repo"},
+                },
+            ]
+        )
         by = {i["id"]: i["detail"] for i in a.attention("r")["items"]}
         self.assertEqual(by["schedule-m"], by["schedule-c"])
         self.assertIn("retried on the next interval", by["schedule-m"])
