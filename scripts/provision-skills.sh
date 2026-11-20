@@ -89,3 +89,7 @@ echo "provision-skills: $installed installed, $skipped already satisfied"
 if ! bash "$ROOT/scripts/verify-skills.sh"; then
   fail "post-install verification failed"
 fi
+
+if [[ -f "$ROOT/scripts/setup-agent-skills.sh" ]]; then
+  bash "$ROOT/scripts/setup-agent-skills.sh" || true
+fi
