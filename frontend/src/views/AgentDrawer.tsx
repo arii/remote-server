@@ -4,6 +4,7 @@ import {
   abortAgentSession,
   fetchAgentProviders,
   fetchAgentSession,
+  isAuthExpired,
   postAgentTurn,
 } from '../apiClient';
 import type { AgentSessionFinished } from '../apiClient';
@@ -375,6 +376,12 @@ export default function AgentDrawer({
     };
     const poll = async (): Promise<void> => {
       if (!alive()) return;
+      // Quiet while the auth-expired banner is up (#1410); the chain
+      // stays armed so polling resumes when the flag retires.
+      if (isAuthExpired()) {
+        schedule();
+        return;
+      }
       let next;
       try {
         next = await fetchAgentSession(sid);
