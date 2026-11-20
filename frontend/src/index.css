@@ -134,6 +134,7 @@ h1, h2, h3 { text-wrap: balance; }
   align-items: center;
 }
 .topbar .repo-chip { max-width: 8rem; padding-inline: 0.5rem; white-space: normal; }
+.topbar .stack-status-chip { max-width: none; white-space: nowrap; }
 
 
 /* Dirty repos strip (issue #1069): row buttons meet the 44px touch

@@ -834,7 +834,7 @@ export default function App() {
           )}
           <button
             type="button"
-            className="repo-chip"
+            className="repo-chip stack-status-chip"
             data-testid="stack-status"
             aria-expanded={statsOpen}
             onClick={() => (statsOpen ? closeStats() : openStats())}
