@@ -1,6 +1,6 @@
 name: CI
 
-# Builds the terminal image on every push/PR, validates the compose file,
+# Builds the terminal image on main and PRs with relevant changes, validates the compose file,
 # lints the shell scripts, verifies the skills lock against upstream,
 # rejects shadow skill copies, scans for leaked secrets, and runs the
 # backend + root + frontend test suites with the backend compile + ruff gates.
@@ -30,6 +30,28 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  terminal-scope:
+    name: Classify terminal build inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      terminal_unaffected: ${{ steps.diff.outputs.terminal_unaffected }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Test terminal scope
+        run: python3 -m unittest discover -s tests -p test_ci_terminal_scope.py
+      - name: Classify changed paths
+        id: diff
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-terminal-scope.py
+
   shell:
     name: lint shell scripts
     runs-on: ubuntu-latest
@@ -56,6 +78,8 @@ jobs:
         if: always()
 
   terminal-image:
+    needs: [terminal-scope]
+    if: ${{ always() && !cancelled() && (needs.terminal-scope.result != 'success' || needs.terminal-scope.outputs.terminal_unaffected != 'true') }}
     name: build (+push) terminal image
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -266,7 +290,7 @@ jobs:
     name: comment CI failures on the PR
     # A failing PR yields a PR comment, never a new issue per failure
     # (issue #1081). One marker comment per PR, updated per run.
-    needs: [shell, compose, terminal-image, skills-lock, skill-shadows, secret-scan, audit, frontend, extension, backend, eval-fixtures, format]
+    needs: [terminal-scope, shell, compose, terminal-image, skills-lock, skill-shadows, secret-scan, audit, frontend, extension, backend, eval-fixtures, format]
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
