@@ -568,7 +568,7 @@ describe('routine scheduled-check collapsing (issue #1433)', () => {
     expect(rows).toHaveLength(3);
     expect(rows[0].tone).toBe('muted');
     expect(rows[1].tone).toBe('bad');
-    expect(rows[1].summary).toBe('Check-notifications: done');
+    expect(rows[1].summary).toBe('Check-notifications: failed (exit 1)');
     expect(rows[2].tone).toBe('muted');
   });
 

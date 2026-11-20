@@ -43,4 +43,19 @@ describe('activity timeline (issue #812)', () => {
     expect(TIMELINE_POLL_MS).toBeGreaterThan(0);
     expect(TIMELINE_POLL_MS).toBeLessThanOrEqual(60_000);
   });
+
+  it('renders expandable details and trace bodies for items with detail (issue #1453)', () => {
+    const items = toTimelineItems(
+      [{ id: 'r-fail', title: 'check-notifications', status: 'done', done: true, exit_code: 1, at: 100 }],
+      [],
+      [],
+      [],
+    );
+    const html = renderToStaticMarkup(<TimelineList items={items} />);
+    expect(html).toContain('data-testid="timeline-detail"');
+    expect(html).toContain('data-testid="timeline-detail-body"');
+    expect(html).toContain('run: r-fail');
+    expect(html).toContain('exit: 1');
+    expect(html).toContain('Check-notifications: failed (exit 1)');
+  });
 });
