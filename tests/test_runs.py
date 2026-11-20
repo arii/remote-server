@@ -317,6 +317,34 @@ class TestRuns(unittest.TestCase):
             # unknown (fail-closed); only the poison is cured.
             self.assertEqual(total["unknown"], 2)
 
+    def test_backfill_pipeline_zero_usage_rows(self):
+        zero = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(
+                d,
+                [
+                    _row(
+                        model="qwen3:8b",
+                        thread_id="pipeline-1795156802-audit-1795156832",
+                        usage=zero,
+                        cost_usd=None,
+                        metered=True,
+                    ),
+                    _row(
+                        model="qwen3:8b",
+                        thread_id="real-production-run",
+                        usage=zero,
+                        cost_usd=None,
+                        metered=True,
+                    ),
+                ],
+            )
+            result = runs.backfill_test_providers(ledger_path=path)
+            self.assertEqual(result["matched"], [0])
+            self.assertEqual(result["rewritten"], 1)
+            total = runs.total_metered_spend(ledger_path=path)
+            self.assertEqual(total["unknown"], 1)
+
     def test_backfill_ignores_missing_and_partial_usage(self):
         # Finding 2: a missing or partial usage dict is no evidence
         # of zero spend — those rows stay fail-closed.
