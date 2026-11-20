@@ -47,8 +47,7 @@ ALL_REPOS = "all"
 # invalidate_inbox_cache. Tests reset _INBOX_CACHE directly.
 INBOX_CACHE_TTL = 45.0
 INBOX_CACHE_MAX_STALE = 300.0
-_INBOX_CACHE = SWRCache(ttl=INBOX_CACHE_TTL,
-                        max_stale=INBOX_CACHE_MAX_STALE)
+_INBOX_CACHE = SWRCache(ttl=INBOX_CACHE_TTL, max_stale=INBOX_CACHE_MAX_STALE)
 
 
 def invalidate_inbox_cache(repo: str | None = None) -> None:
@@ -65,8 +64,9 @@ def invalidate_inbox_cache(repo: str | None = None) -> None:
 
 def list_repo_names() -> list:
     """Injectable seam: known checkout names in picker order."""
-    return [r.get("name", "") for r in list_repos()
-            if isinstance(r, dict) and r.get("name")]
+    return [
+        r.get("name", "") for r in list_repos() if isinstance(r, dict) and r.get("name")
+    ]
 
 
 def list_attention_items(repo: str) -> list:
@@ -82,8 +82,9 @@ def list_open_prs(repo: str) -> list:
 def list_runs() -> list:
     """Injectable seam: run records, newest first (jobs registry)."""
     with registry._lock:
-        return sorted(registry.runs.values(),
-                      key=lambda r: r.get("seq", 0), reverse=True)
+        return sorted(
+            registry.runs.values(), key=lambda r: r.get("seq", 0), reverse=True
+        )
 
 
 def merge_block_reason(row: dict) -> str | None:
@@ -132,8 +133,7 @@ class InboxFeed(BaseModel):
     repo: str = ""
     updated_at: float = 0.0
     attention: list[AttentionItem] = Field(default_factory=list)
-    merge_ready: MergeReadySummary = Field(
-        default_factory=MergeReadySummary)
+    merge_ready: MergeReadySummary = Field(default_factory=MergeReadySummary)
     runs: RunsSummary = Field(default_factory=RunsSummary)
     # Freshness markers (#888, same shape as briefing): True on
     # cache hits so the view can show a refresh indicator. Additive
@@ -150,30 +150,42 @@ def _runs_summary() -> dict:
     active = None
     for r in runs:
         if not r.get("done"):
-            active = {"id": r.get("id", ""),
-                      "action": r.get("action", ""),
-                      "started": r.get("started_at")}
+            active = {
+                "id": r.get("id", ""),
+                "action": r.get("action", ""),
+                "started": r.get("started_at"),
+            }
             break
-    recent = [{"id": r.get("id", ""), "action": r.get("action", ""),
-               "exit": r.get("exit_code")}
-              for r in runs if r.get("done")][:RECENT_RUNS_LIMIT]
+    recent = [
+        {
+            "id": r.get("id", ""),
+            "action": r.get("action", ""),
+            "exit": r.get("exit_code"),
+        }
+        for r in runs
+        if r.get("done")
+    ][:RECENT_RUNS_LIMIT]
     return {"active": active, "recent": recent}
 
 
 def _build_inbox(name: str) -> dict:
     """Uncached per-repo feed assembly."""
     items = list_attention_items(name)
-    ready = [r for r in list_open_prs(name)
-             if isinstance(r, dict) and merge_block_reason(r) is None]
+    ready = [
+        r
+        for r in list_open_prs(name)
+        if isinstance(r, dict) and merge_block_reason(r) is None
+    ]
     return {
         "repo": name,
         "updated_at": time.time(),
         "attention": items,
         "merge_ready": {
             "count": len(ready),
-            "top": [{"number": r.get("number"),
-                     "title": r.get("title", "")}
-                    for r in ready[:MERGE_READY_TOP]],
+            "top": [
+                {"number": r.get("number"), "title": r.get("title", "")}
+                for r in ready[:MERGE_READY_TOP]
+            ],
         },
         "runs": _runs_summary(),
     }
