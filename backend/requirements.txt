@@ -2,11 +2,11 @@
 # Bump procedure: edit the pin, reinstall, run the backend gates
 # (npm run test:backend), commit the diff. Dependabot (pip ecosystem)
 # proposes bumps as reviewed PRs.
-fastapi==0.162.0
+fastapi==0.163.1
 uvicorn==0.54.0
-pydantic==2.14.2
+pydantic==2.14.3
 aiofiles==25.1.0
 httpx==0.28.1
 PyYAML==6.0.3
-websockets==17.0.0
+websockets==17.4
 jsonschema==4.26.0
