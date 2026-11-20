@@ -32,6 +32,7 @@ plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 
 import argparse
 import contextvars
+import hashlib
 import json
 import os
 import re
@@ -71,6 +72,60 @@ DEFAULT_VERIFY_ROUNDS = 2
 REPAIR_TOOL_LIMIT = 20
 REPAIR_REPEAT_LIMIT = 3
 REPAIR_MODEL_LIMIT = 12
+
+DEFAULT_TOOL_OUTPUT_LIMIT = 4000
+READ_FILE_OUTPUT_LIMIT = 8000
+
+
+def _truncate_tool_output(text: str, limit: int = DEFAULT_TOOL_OUTPUT_LIMIT) -> str:
+    """Deterministically bound tool output length with head/tail preservation.
+
+    Preserves the first limit // 2 and last limit // 2 characters with an
+    explicit omitted-character marker so command headers and trailing
+    tracebacks/assertions remain visible.
+    """
+    if not isinstance(text, str) or len(text) <= limit:
+        return text
+    half = limit // 2
+    head = text[:half]
+    tail = text[-half:] if half > 0 else ""
+    omitted = len(text) - len(head) - len(tail)
+    return f"{head}\n... [{omitted} chars omitted] ...\n{tail}"
+
+
+class ReadCache:
+    """Run-scoped cache of file contents by SHA-256 digest.
+
+    Avoids re-injecting duplicate, unchanged file contents across turns
+    within a single coder run.
+    """
+
+    def __init__(self):
+        self._cache: dict[str, str] = {}
+
+    def get(self, path: str) -> str | None:
+        return self._cache.get(path)
+
+    def check_and_update(self, path: str, content: str | bytes) -> tuple[bool, str]:
+        """Check if content matches cached digest for path.
+
+        Returns (is_duplicate, sha256_digest). If duplicate, cache is unchanged.
+        If new or changed, the cache is updated with the new digest.
+        """
+        data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
+        digest = hashlib.sha256(data).hexdigest()
+        if self._cache.get(path) == digest:
+            return True, digest
+        self._cache[path] = digest
+        return False, digest
+
+    def invalidate(self, path: str) -> None:
+        """Invalidate cached digest for path when modified or deleted."""
+        self._cache.pop(path, None)
+
+    def clear(self) -> None:
+        self._cache.clear()
+
 
 # Dithering guard (#1160 gap 3, #1176): this many consecutive
 # identical unproductive run_check calls means the agent is spinning,
@@ -409,7 +464,9 @@ def build_check_tool(worktree):
             return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
         except OSError as exc:
             return f"exec failed: {exc}"
-        out = ((proc.stdout or "") + (proc.stderr or ""))[-CHECK_OUTPUT_LIMIT:]
+        out = _truncate_tool_output(
+            (proc.stdout or "") + (proc.stderr or ""), limit=CHECK_OUTPUT_LIMIT
+        )
         result = f"exit={proc.returncode}\n{out}"
         empty_success = proc.returncode == 0 and not out.strip()
         if command == spin["last"] and (proc.returncode != 0 or empty_success):
@@ -454,9 +511,12 @@ def build_filesystem_backend(worktree):
     return CoderFilesystemBackend(root_dir=worktree, virtual_mode=True)
 
 
-def worktree_file_middleware(worktree, written_files):
+def worktree_file_middleware(worktree, written_files, read_cache=None):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
+
+    if read_cache is None:
+        read_cache = ReadCache()
 
     @wrap_tool_call
     def guard_file_call(request, handler):
@@ -497,12 +557,54 @@ def worktree_file_middleware(worktree, written_files):
             call = {**call, "args": args}
             request = request.override(tool_call=call)
         result = handler(request)
+
+        # Invalidate read cache on file mutations
         if (
             call["name"] in {"write_file", "edit_file", "delete"}
-            and result.status == "success"
-            and written_files is not None
+            and getattr(result, "status", None) == "success"
         ):
-            written_files.add(call["args"]["file_path"])
+            target_file = call["args"].get("file_path") or call["args"].get("path")
+            if target_file:
+                rel = worktree_file_key(worktree, target_file)
+                read_cache.invalidate(rel)
+            if written_files is not None and target_file:
+                written_files.add(call["args"].get("file_path", target_file))
+
+        # Check ReadCache on read_file
+        if (
+            call["name"] == "read_file"
+            and getattr(result, "status", None) == "success"
+            and isinstance(getattr(result, "content", None), str)
+        ):
+            target_file = call["args"].get("file_path") or call["args"].get("path")
+            if target_file:
+                rel = worktree_file_key(worktree, target_file)
+                is_dup, digest = read_cache.check_and_update(rel, result.content)
+                if is_dup:
+                    sentinel = f"[UNCHANGED: {rel} (sha256:{digest}) already in context. Do not re-read.]"
+                    return ToolMessage(
+                        content=sentinel,
+                        tool_call_id=call["id"],
+                        name=call["name"],
+                        status="success",
+                    )
+
+        # Enforce deterministic head/tail output truncation across tools
+        if isinstance(getattr(result, "content", None), str):
+            limit = (
+                READ_FILE_OUTPUT_LIMIT
+                if call["name"] == "read_file"
+                else DEFAULT_TOOL_OUTPUT_LIMIT
+            )
+            truncated = _truncate_tool_output(result.content, limit=limit)
+            if truncated != result.content:
+                return ToolMessage(
+                    content=truncated,
+                    tool_call_id=call["id"],
+                    name=call["name"],
+                    status=getattr(result, "status", "success"),
+                )
+
         return result
 
     return guard_file_call
