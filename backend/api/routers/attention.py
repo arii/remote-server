@@ -427,12 +427,16 @@ def list_failing_schedules() -> list:
 def _schedule_failure_detail(sched: dict) -> str:
     err = str((sched.get("last_result") or {}).get("error") or "unknown error")
     if "unknown repo" in err.lower():
+        # _repo_target maps a missing checkout, a corrupt checkout and
+        # a failed git probe to this one message, so it cannot prove
+        # the repo is permanently gone. Say what is known, no more.
         kind = (
-            "Repo not found on this host. Stays failing until the checkout "
-            "is restored or the schedule is removed."
+            "The repo did not resolve to a readable checkout on this host "
+            "(missing, unreadable or mid-update; the error cannot tell which). "
+            "It is retried on the next interval."
         )
     else:
-        kind = "Error may be transient; it retries on the next interval."
+        kind = "The schedule's launch failed for another reason; it retries on the next interval."
     state = "enabled" if sched.get("enabled", True) else "paused"
     return f"{kind} Last error: {err}. Schedule is {state}; nothing was auto-paused."
 
