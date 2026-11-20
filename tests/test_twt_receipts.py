@@ -572,7 +572,9 @@ class ReceiptTests(unittest.TestCase):
             {"metered": True, "usage": {"twt_trace_ids": [trace_id]}},
             {"metered": True, "usage": {"twt_trace_ids": [trace_id]}},
         ]
-        Path(ledger.LEDGER).write_text(json.dumps(rows[0]) + "\n" + json.dumps(rows[1]) + "\n")
+        Path(ledger.LEDGER).write_text(
+            json.dumps(rows[0]) + "\n" + json.dumps(rows[1]) + "\n"
+        )
         # reconcile should not raise, but capture the error
         scope.reconcile(lambda *_: [self.reply(trace_id, cost=0.012)])
         self.assertIsNotNone(scope.error)
