@@ -338,4 +338,15 @@ describe('queue empty-state copy deduplication (issue #1436)', () => {
     );
     expect(header).toContain('Nothing queued to dispatch.');
   });
+
+  it('does not say nothing is queued when items exist but none are dispatchable (#1487)', () => {
+    const header = renderToStaticMarkup(
+      <QueueHeader count={1} live={false} dispatchable={[]} onRefresh={noop} onDispatchAll={noop} />,
+    );
+    expect(header).toContain('1 item');
+    expect(header).toContain('0 ready to dispatch');
+    expect(header).toContain('1 item is not ready to dispatch');
+    expect(header).toContain('Nothing ready to dispatch');
+    expect(header).not.toContain('Nothing queued');
+  });
 });
