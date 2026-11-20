@@ -29,7 +29,7 @@ Modes:
   --json      print the findings envelope instead of markdown.
   --post      post the markdown body to the PR. Explicit human flag
               only — the default prints and never posts.
-  --prefer P  ollama (default) or nebius. No provider retry.
+  --prefer P  ollama (default), twt, openrouter, or nebius. No provider retry.
 
 Stdlib-only at import: deep-agent modules (deep_chat, s5tools) import
 lazily inside the run path, so --dry-run and the hermetic tests work
@@ -551,8 +551,8 @@ def build_parser():
     parser.add_argument(
         "--prefer",
         default="ollama",
-        choices=["ollama", "nebius"],
-        help="ollama (default) or nebius; S5_LOCAL_ONLY forces Ollama.",
+        choices=["ollama", "twt", "openrouter", "nebius"],
+        help="ollama (default), twt, openrouter, or nebius; S5_LOCAL_ONLY forces Ollama.",
     )
     return parser
 

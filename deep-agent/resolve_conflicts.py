@@ -16,7 +16,6 @@ import time
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
@@ -25,6 +24,8 @@ import cli
 import ledger
 import model_router
 import observe
+
+ChatOpenAI = None
 
 MODEL_ID = os.environ.get("NEBIUS_MODEL", "nvidia/Nemotron-3_5-Lightning")
 DEFAULT_BASE = "origin/main"
@@ -142,12 +143,17 @@ def main() -> int:
     started = time.time()
     load_dotenv(os.path.join(cli.repo_root(), ".env"))
     try:
-        prefer = extract_prefer(sys.argv)
+        prefer_opt = extract_prefer(sys.argv)
     except ValueError as exc:
         return cli.usage_error(str(exc))
-    if prefer == "auto":
-        # Ladder: Nebius when keyed (today's behavior), else local.
-        prefer = "nebius" if os.environ.get("NEBIUS_API_KEY") else None
+    if model_router.local_only():
+        prefer = "ollama"
+    elif prefer_opt == "auto":
+        # Do not default to paid Nebius; use None so resolve_llm routes
+        # through local Ollama first, then TwT free-tier waterfall (#1481).
+        prefer = None
+    else:
+        prefer = prefer_opt
     keyless_auto = prefer is None
     if prefer == "nebius" and not os.environ.get("NEBIUS_API_KEY"):
         print("NEBIUS_API_KEY is not set", file=sys.stderr)
@@ -175,37 +181,15 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 1
     provider = spec.get("provider")
-    if provider == "ollama":
-        # Local path (#647): resolved spec as-is, no Nebius pin/endpoint.
-        if keyless_auto:
-            print(
-                "resolve: no Nebius key — resolve on local model (weaker)",
-                file=sys.stderr,
-            )
-        kwargs = model_router.chat_kwargs(spec)
-        # No-think default mirrors fanout/chat/coder: a qwen3 thinking
-        # trace takes 15+ min per prompt on this CPU-only box.
-        if os.environ.get("RESOLVER_THINK", "") != "1":
-            kwargs["model_kwargs"] = {"think": False}
-        from langchain_ollama import ChatOllama  # noqa: E402
-
-        model = ChatOllama(**kwargs)
-        model_id = spec["model"]
-    else:
-        # Cap checked above; keep this entrypoint's pinned model/endpoint.
-        if provider == "nebius":
-            spec = dict(
-                spec, model=MODEL_ID, base_url="https://api.studio.nebius.com/v1"
-            )
-        kwargs = model_router.chat_kwargs(spec)
-        # Reasoning model: needs headroom for hidden reasoning tokens
-        # plus the visible reply + tool call.
-        kwargs["max_tokens"] = min(4000, model_router.PIPELINE_MAX_TOKENS)
-        model = ChatOpenAI(
-            api_key=model_router.api_key(spec),
-            **kwargs,
+    if provider == "ollama" and keyless_auto:
+        print(
+            "resolve: no Nebius key — resolve on local model (weaker)",
+            file=sys.stderr,
         )
-        model_id = spec["model"]
+    model, spec = model_router.build_chat_model(
+        spec=spec, think=os.environ.get("RESOLVER_THINK", "") == "1"
+    )
+    model_id = spec.get("model", "default")
     thread = "resolve-" + os.path.basename(os.path.normpath(WORKTREE))
     label = f"{provider}:{model_id}"
     recorder = observe.TraceRecorder(
