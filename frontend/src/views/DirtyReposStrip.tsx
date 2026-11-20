@@ -16,6 +16,20 @@ export function dirtyRepos(repos: RepoInfo[]): RepoInfo[] {
   );
 }
 
+// #1386: uncommitted changes and ahead/behind lag are different
+// signals. A clean checkout that is only ahead/behind is not "dirty",
+// so the strip lists the two groups separately instead of reading as
+// "every repo is dirty".
+export function dirtyOnly(repos: RepoInfo[]): RepoInfo[] {
+  return repos.filter((r) => !r.clean);
+}
+
+export function outOfSyncRepos(repos: RepoInfo[]): RepoInfo[] {
+  return repos.filter(
+    (r) => r.clean && ((r.behind ?? 0) > 0 || (r.ahead ?? 0) > 0),
+  );
+}
+
 export function repoLagLabel(r: RepoInfo): string {
   const parts: string[] = [];
   if (!r.clean) {
@@ -60,11 +74,9 @@ export default function DirtyReposStrip({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, { ok: boolean; detail: string }>>({});
-  const dirty = dirtyRepos(repos);
-  if (dirty.length === 0) return null;
-
-  const dirtyCount = dirty.filter((r) => !r.clean).length;
-  const behindCount = dirty.filter((r) => (r.behind ?? 0) > 0).length;
+  const dirty = dirtyOnly(repos);
+  const outOfSync = outOfSyncRepos(repos);
+  if (dirty.length === 0 && outOfSync.length === 0) return null;
 
   function recordFailure(repo: string, err: unknown) {
     setResults((prev) => ({
@@ -87,80 +99,102 @@ export default function DirtyReposStrip({
     }
   }
 
+  function renderRows(rows: RepoInfo[], rowPrefix: string) {
+    return rows.map((r) => {
+      const result = results[r.name];
+      const rowBusy = busy !== null && busy.startsWith(`${r.name}:`);
+      return (
+        <tr key={r.name} data-testid={`${rowPrefix}-${r.name}`}>
+          <td>
+            <span className="row-title">{r.name}</span>{' '}
+            <span className="row-meta">
+              {r.branch ? `@ ${r.branch}` : ''}
+            </span>
+          </td>
+          <td className="row-meta" data-testid={`dirty-status-${r.name}`}>
+            {repoLagLabel(r)}
+          </td>
+          <td>
+            <div className="actions">
+              {primaryRepoAction(r) === 'sync' && (
+                <button
+                  type="button"
+                  data-testid={`dirty-pull-${r.name}`}
+                  disabled={rowBusy}
+                  onClick={() => void run(r.name, 'sync')}
+                >
+                  {busy === `${r.name}:sync` ? 'Pulling…' : 'Pull --rebase'}
+                </button>
+              )}
+              {primaryRepoAction(r) === 'agent' && (
+                <button
+                  type="button"
+                  data-testid={`dirty-agent-${r.name}`}
+                  onClick={() => onAskAgent(commitViaAgentSeed(r.name))}
+                >
+                  Commit via Agent
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid={`dirty-view-diff-${r.name}`}
+                onClick={() => onViewDiff(r.name)}
+              >
+                View Diff
+              </button>
+            </div>
+            {result && (
+              <p
+                role={result.ok ? 'status' : 'alert'}
+                data-testid={`dirty-result-${r.name}`}
+              >
+                {result.detail}
+              </p>
+            )}
+          </td>
+        </tr>
+      );
+    });
+  }
+
   return (
-    <section data-testid="dirty-repos-strip" aria-label="Dirty repos">
+    <section data-testid="dirty-repos-strip" aria-label="Repo status">
       <h2>
-        Dirty Repos ({dirty.length}){' '}
+        Repo Status ({dirty.length + outOfSync.length}){' '}
         <span className="row-meta">
-          {dirtyCount} dirty · {behindCount} behind
+          {dirty.length} dirty · {outOfSync.length} out of sync
         </span>
       </h2>
-      <table data-testid="dirty-repos-table">
-        <thead>
-          <tr>
-            <th scope="col">Repo</th>
-            <th scope="col">Status</th>
-            <th scope="col">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {dirty.map((r) => {
-            const result = results[r.name];
-            const rowBusy = busy !== null && busy.startsWith(`${r.name}:`);
-            return (
-              <tr key={r.name} data-testid={`dirty-row-${r.name}`}>
-                <td>
-                  <span className="row-title">{r.name}</span>{' '}
-                  <span className="row-meta">
-                    {r.branch ? `@ ${r.branch}` : ''}
-                  </span>
-                </td>
-                <td className="row-meta" data-testid={`dirty-status-${r.name}`}>
-                  {repoLagLabel(r)}
-                </td>
-                <td>
-                  <div className="actions">
-                    {primaryRepoAction(r) === 'sync' && (
-                      <button
-                        type="button"
-                        data-testid={`dirty-pull-${r.name}`}
-                        disabled={rowBusy}
-                        onClick={() => void run(r.name, 'sync')}
-                      >
-                        {busy === `${r.name}:sync` ? 'Pulling…' : 'Pull --rebase'}
-                      </button>
-                    )}
-                    {primaryRepoAction(r) === 'agent' && (
-                      <button
-                        type="button"
-                        data-testid={`dirty-agent-${r.name}`}
-                        onClick={() => onAskAgent(commitViaAgentSeed(r.name))}
-                      >
-                        Commit via Agent
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      data-testid={`dirty-view-diff-${r.name}`}
-                      onClick={() => onViewDiff(r.name)}
-                    >
-                      View Diff
-                    </button>
-                  </div>
-                  {result && (
-                    <p
-                      role={result.ok ? 'status' : 'alert'}
-                      data-testid={`dirty-result-${r.name}`}
-                    >
-                      {result.detail}
-                    </p>
-                  )}
-                </td>
+      {dirty.length > 0 && (
+        <>
+          <h3>Dirty ({dirty.length})</h3>
+          <table data-testid="dirty-repos-table">
+            <thead>
+              <tr>
+                <th scope="col">Repo</th>
+                <th scope="col">Status</th>
+                <th scope="col">Actions</th>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            </thead>
+            <tbody>{renderRows(dirty, 'dirty-row')}</tbody>
+          </table>
+        </>
+      )}
+      {outOfSync.length > 0 && (
+        <>
+          <h3>Out of Sync ({outOfSync.length})</h3>
+          <table data-testid="sync-repos-table">
+            <thead>
+              <tr>
+                <th scope="col">Repo</th>
+                <th scope="col">Status</th>
+                <th scope="col">Actions</th>
+              </tr>
+            </thead>
+            <tbody>{renderRows(outOfSync, 'sync-row')}</tbody>
+          </table>
+        </>
+      )}
     </section>
   );
 }
