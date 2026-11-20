@@ -82,19 +82,44 @@ function turnItem(t: AgentRun): TimelineItem {
 }
 
 /**
+ * Detect routine passing background notification jobs (issue #1467).
+ * Failures (nonzero exit, error messages, fail status) are never routine:
+ * they remain visible with their failure tone.
+ */
+function isRoutinePassingJob(j: JobRecord): boolean {
+  const title = (j.title ?? j.name ?? '').toLowerCase();
+  if (!title.startsWith('check-notifications')) return false;
+  if (typeof j.exit_code === 'number' && j.exit_code !== 0) return false;
+  if (j.error && j.error.trim()) return false;
+  const status = (j.status ?? j.state ?? '').toLowerCase();
+  if (/fail|error/i.test(status)) return false;
+  return true;
+}
+
+export interface TimelineOptions {
+  includeRoutine?: boolean;
+}
+
+/**
  * Merge runs + turns + pulls + merges into flat display rows,
  * newest first. Flat on purpose: unlike History's incident
  * collapse, every event keeps its own row so the interleave is
  * exact. Ageless rows sort last with an 'unknown time' label.
+ *
+ * Routine passing notification-check runs are filtered out by
+ * default to prevent timeline flooding (#1467); failures remain
+ * prominently visible.
  */
 export function toTimelineItems(
   jobs: JobRecord[],
   turns: AgentRun[],
   pulls: LedgerEntry[],
   merges: LedgerEntry[],
+  options?: TimelineOptions,
 ): TimelineItem[] {
+  const visibleJobs = options?.includeRoutine ? jobs : jobs.filter((j) => !isRoutinePassingJob(j));
   const items: TimelineItem[] = [
-    ...jobs.map(runItem),
+    ...visibleJobs.map(runItem),
     ...turns.map(turnItem),
     ...pulls.map((e, i) => ledgerItem('pull', e, i)),
     ...merges.map((e, i) => ledgerItem('merge', e, i)),
