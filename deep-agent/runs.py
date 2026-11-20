@@ -77,18 +77,9 @@ def _row_cost(row):
             else 0
         )
         return max(bound, previous), True
-    model, provider = row.get("model"), row.get("provider")
-    if (
-        isinstance(model, str)
-        and (
-            model.startswith("ollama:")
-            or model.startswith("qwen3")
-            or model in ("none", "unknown", "unknown:model")
-        )
-    ):
-        return 0.0, False
     if isinstance(cost_usd, (int, float)) and isinstance(metered, bool):
         return cost_usd, metered
+    model, provider = row.get("model"), row.get("provider")
     usage = row.get("usage") or {}
     quote = pricing.quote(model, usage, provider=provider)
     label = f"{provider}:{model}" if provider else model

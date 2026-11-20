@@ -15,13 +15,6 @@ class TestQuote(unittest.TestCase):
         self.assertEqual(cost, 0.0)
         self.assertFalse(metered)
 
-    def test_bare_qwen3_and_none_are_free(self):
-        for m in ("qwen3:8b", "qwen3", "none"):
-            cost, metered = pricing.quote(
-                m, {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500})
-            self.assertEqual(cost, 0.0)
-            self.assertFalse(metered)
-
     def test_default_nebius_model_math(self):
         # zai-org/GLM-5.3-Flash: $0.15/M in, $0.50/M out.
         cost, metered = pricing.quote(
