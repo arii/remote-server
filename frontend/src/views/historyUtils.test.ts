@@ -538,3 +538,49 @@ describe('webhook skip recovery (issue #855)', () => {
     expect(rows[1].recovery).toBe('');
   });
 });
+
+describe('routine scheduled-check collapsing (issue #1433)', () => {
+  it('collapses repeated routine check jobs and ledger runs into one activity row', () => {
+    const jobs = [
+      { id: 'j1', kind: 'check-notifications', name: 'check-notifications', done: true, exit_code: 0, at: 3000 },
+      { id: 'j2', kind: 'check-notifications', name: 'check-notifications', done: true, exit_code: 0, at: 2000 },
+    ];
+    const entries = [
+      { kind: 'run', action: 'check-notifications', exit: 0, ts: 3001 },
+      { kind: 'run', action: 'check-notifications', exit: 0, ts: 2001 },
+    ];
+    const rows = toHistoryRows(jobs, entries);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toBe('Check-notifications activity ×4');
+    expect(rows[0].tone).toBe('muted');
+    expect(rows[0].repeat).toBe(4);
+    expect(rows[0].kind).toBe('check-notifications');
+    expect(rows[0].members).toHaveLength(4);
+  });
+
+  it('keeps failed check runs distinct from routine muted activity', () => {
+    const jobs = [
+      { id: 'j-ok1', kind: 'check-notifications', name: 'check-notifications', done: true, exit_code: 0, at: 3000 },
+      { id: 'j-fail', kind: 'check-notifications', name: 'check-notifications', done: true, exit_code: 1, at: 2000 },
+      { id: 'j-ok2', kind: 'check-notifications', name: 'check-notifications', done: true, exit_code: 0, at: 1000 },
+    ];
+    const rows = toHistoryRows(jobs, []);
+    expect(rows).toHaveLength(3);
+    expect(rows[0].tone).toBe('muted');
+    expect(rows[1].tone).toBe('bad');
+    expect(rows[1].summary).toBe('Check-notifications: done');
+    expect(rows[2].tone).toBe('muted');
+  });
+
+  it('routes routine checks to the cron facet', () => {
+    const jobs = [
+      { id: 'j1', kind: 'check-notifications', name: 'check-notifications', done: true, exit_code: 0, at: 1000 },
+      { id: 'j2', kind: 'check-notifications', name: 'check-notifications', done: true, exit_code: 0, at: 900 },
+    ];
+    const rows = toHistoryRows(jobs, []);
+    expect(rows).toHaveLength(1);
+    expect(rowInFacet(rows[0], 'cron')).toBe(true);
+    const counts = facetCounts(rows);
+    expect(counts.cron).toBe(1);
+  });
+});
