@@ -14,7 +14,6 @@ import time
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from deepagents import create_deep_agent
 
@@ -23,6 +22,8 @@ import ledger
 import model_router
 import observe
 import triage_common
+
+ChatOpenAI = None
 
 FANOUT_MODEL_PIN = "nvidia/Nemotron-3_5-Lightning"
 # Blank-tolerant: a set-but-empty NEBIUS_MODEL falls back to the pin
@@ -233,14 +234,17 @@ def main() -> int:
     started = time.time()
     load_dotenv(os.path.join(cli.repo_root(), ".env"))
     try:
-        prefer = extract_prefer(sys.argv)
+        prefer_opt = extract_prefer(sys.argv)
     except ValueError as exc:
         return cli.usage_error(str(exc))
     if model_router.local_only():
         prefer = "ollama"
-    elif prefer == "auto":
-        # Ladder: Nebius when keyed (today's behavior), else local.
-        prefer = "nebius" if os.environ.get("NEBIUS_API_KEY") else None
+    elif prefer_opt == "auto":
+        # Do not default to paid Nebius; use None so resolve_llm routes
+        # through local Ollama first, then TwT free-tier waterfall (#1481).
+        prefer = None
+    else:
+        prefer = prefer_opt
     keyless_auto = prefer is None
     if prefer == "nebius" and not os.environ.get("NEBIUS_API_KEY"):
         print("NEBIUS_API_KEY is not set", file=sys.stderr)
@@ -260,43 +264,24 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 1
     provider = spec.get("provider")
-    if provider == "ollama":
-        # Local path (#622): resolved spec as-is, no Nebius pin/endpoint.
-        if keyless_auto:
-            print(
-                "fanout: no Nebius key — triage on local model (weaker)",
-                file=sys.stderr,
-            )
-        model, _ = model_router.build_chat_model(
-            spec=spec, think=os.environ.get("FANOUT_THINK", "") == "1"
+    if not provider:
+        print(
+            "fanout: no model resolved (NEBIUS_MODEL is blank and no default)",
+            file=sys.stderr,
         )
-        model_id = spec["model"]
-    else:
-        # Re-resolve after load_dotenv: the import-time MODEL_ID predates
-        # the dotenv load, and a blank NEBIUS_MODEL must fall back to the
-        # pin.
-        model_id = (
-            spec["model"]
-            if provider == "openrouter"
-            else model_router._env("NEBIUS_MODEL", MODEL_ID)
+        return 1
+    if provider == "nebius":
+        model_id = model_router._env("NEBIUS_MODEL", FANOUT_MODEL_PIN)
+        spec = dict(spec, model=model_id)
+    if provider == "ollama" and keyless_auto:
+        print(
+            "fanout: no Nebius key — triage on local model (weaker)",
+            file=sys.stderr,
         )
-        if not model_id:
-            print(
-                "fanout: no model resolved (NEBIUS_MODEL is blank and no default)",
-                file=sys.stderr,
-            )
-            return 1
-        # Cap checked above; keep this entrypoint's pinned model/endpoint.
-        if provider == "nebius":
-            spec = dict(
-                spec, model=model_id, base_url="https://api.studio.nebius.com/v1"
-            )
-        kwargs = model_router.chat_kwargs(spec)
-        kwargs["max_tokens"] = min(2000, model_router.PIPELINE_MAX_TOKENS)
-        model = ChatOpenAI(
-            api_key=model_router.api_key(spec),
-            **kwargs,
-        )
+    model, spec = model_router.build_chat_model(
+        spec=spec, think=os.environ.get("FANOUT_THINK", "") == "1"
+    )
+    model_id = spec.get("model", "default")
     repo_list = ", ".join(repos)
     # Unique per run: the constant "fanout-run" collided across runs
     # and repos in the ledger; each process is one checkpoint sequence.

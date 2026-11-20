@@ -58,19 +58,24 @@ cli.bootstrap()
 try:
     from impact import rank_findings
 except ImportError:  # pragma: no cover - hermetic fallback
+
     def rank_findings(findings):
-        order = {"critical": 0, "high": 1, "medium": 2, "low": 3,
-                 "info": 4}
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
         def _key(f):
-            return (order.get(f.get("severity"), 99),
-                    f.get("route", ""), f.get("title", ""))
+            return (
+                order.get(f.get("severity"), 99),
+                f.get("route", ""),
+                f.get("title", ""),
+            )
 
         return sorted(findings, key=_key)
+
 
 try:
     from s5tools import fetch_url
 except ImportError:  # pragma: no cover - hermetic fallback
+
     def fetch_url(url, timeout=20, max_bytes=262144):
         return "FETCH_ERROR: s5tools unavailable"
 
@@ -110,12 +115,12 @@ def state_dir(explicit=None):
 def site_config(site):
     """Registry entry for a site name. Raises ValueError when unknown."""
     if not isinstance(site, str) or site not in SITES:
-        raise ValueError(
-            f"unknown site: {site!r} (want one of {sorted(SITES)})")
+        raise ValueError(f"unknown site: {site!r} (want one of {sorted(SITES)})")
     return SITES[site]
 
 
 # --- Crawl ----------------------------------------------------------
+
 
 class _LinkExtractor(html.parser.HTMLParser):
     """Anchor-href collector. Never raises on hostile markup.
@@ -137,16 +142,33 @@ class _LinkExtractor(html.parser.HTMLParser):
 
 # Asset extensions never crawled as pages (nor probed by the
 # dead-link sweep, which would fetch binaries for no verdict).
-ASSET_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp",
-                    ".svg", ".ico", ".css", ".js", ".map", ".pdf",
-                    ".zip", ".woff", ".woff2", ".ttf", ".otf",
-                    ".mp4", ".webm", ".mp3", ".wav")
+ASSET_EXTENSIONS = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".svg",
+    ".ico",
+    ".css",
+    ".js",
+    ".map",
+    ".pdf",
+    ".zip",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".mp4",
+    ".webm",
+    ".mp3",
+    ".wav",
+)
 
 # Machine-readable non-pages: sitemaps, feeds, manifests. Linked
 # from homepages but not UX surfaces; auditing them as HTML would
 # file false positives (no title/viewport/lang on purpose).
-NON_PAGE_EXTENSIONS = (".xml", ".rss", ".atom", ".txt", ".json",
-                       ".webmanifest")
+NON_PAGE_EXTENSIONS = (".xml", ".rss", ".atom", ".txt", ".json", ".webmanifest")
 
 
 def extract_links(html, base_url):
@@ -168,9 +190,11 @@ def extract_links(html, base_url):
         lowered = parts.path.lower()
         if lowered.endswith(ASSET_EXTENSIONS + NON_PAGE_EXTENSIONS):
             continue
-        out.append(urllib.parse.urlunsplit(
-            (parts.scheme, parts.netloc, parts.path or "/",
-             parts.query, "")))
+        out.append(
+            urllib.parse.urlunsplit(
+                (parts.scheme, parts.netloc, parts.path or "/", parts.query, "")
+            )
+        )
     return out
 
 
@@ -225,9 +249,11 @@ def sitemap_urls(xml_body, base_url):
         lowered = (parts.path or "").lower()
         if lowered.endswith(ASSET_EXTENSIONS + NON_PAGE_EXTENSIONS):
             continue
-        out.append(urllib.parse.urlunsplit(
-            (parts.scheme, parts.netloc, parts.path or "/",
-             parts.query, "")))
+        out.append(
+            urllib.parse.urlunsplit(
+                (parts.scheme, parts.netloc, parts.path or "/", parts.query, "")
+            )
+        )
     return out
 
 
@@ -245,8 +271,11 @@ def crawl(site, max_pages=DEFAULT_MAX_PAGES, fetch=None):
     an unknown site or bad max_pages.
     """
     cfg = site_config(site)
-    if (isinstance(max_pages, bool) or not isinstance(max_pages, int)
-            or not 1 <= max_pages <= MAX_PAGES_CAP):
+    if (
+        isinstance(max_pages, bool)
+        or not isinstance(max_pages, int)
+        or not 1 <= max_pages <= MAX_PAGES_CAP
+    ):
         raise ValueError(f"bad max_pages: {max_pages!r}")
     do_fetch = fetch or fetch_url
     seen = set()
@@ -259,12 +288,10 @@ def crawl(site, max_pages=DEFAULT_MAX_PAGES, fetch=None):
         origin = urllib.parse.urlsplit(cfg["start_url"])
         sm_url = f"{origin.scheme}://{origin.netloc}/sitemap.xml"
         try:
-            sm_body = do_fetch(sm_url, timeout=20,
-                               max_bytes=FETCH_MAX_BYTES)
+            sm_body = do_fetch(sm_url, timeout=20, max_bytes=FETCH_MAX_BYTES)
         except TypeError:
             sm_body = do_fetch(sm_url)
-        if isinstance(sm_body, str) and not sm_body.startswith(
-                "FETCH_ERROR"):
+        if isinstance(sm_body, str) and not sm_body.startswith("FETCH_ERROR"):
             for seed in sitemap_urls(sm_body, sm_url):
                 if seed not in queue and in_scope(seed, cfg):
                     queue.append(seed)
@@ -285,18 +312,24 @@ def crawl(site, max_pages=DEFAULT_MAX_PAGES, fetch=None):
             body = f"FETCH_ERROR: {exc}"
         route = _route_of(url)
         if not isinstance(body, str) or body.startswith("FETCH_ERROR"):
-            reason = (body if isinstance(body, str) else "empty body")
-            pages.append({"url": url, "route": route, "html": "",
-                          "error": reason[:200]})
-            dead.append({"url": url, "from_route": "(crawl)",
-                         "reason": reason[:200]})
+            reason = body if isinstance(body, str) else "empty body"
+            pages.append(
+                {"url": url, "route": route, "html": "", "error": reason[:200]}
+            )
+            dead.append({"url": url, "from_route": "(crawl)", "reason": reason[:200]})
             continue
         if body.lstrip()[:5].lower() == "<?xml":
-            pages.append({"url": url, "route": route, "html": "",
-                          "error": "", "skipped": "non-HTML (XML)"})
+            pages.append(
+                {
+                    "url": url,
+                    "route": route,
+                    "html": "",
+                    "error": "",
+                    "skipped": "non-HTML (XML)",
+                }
+            )
             continue
-        pages.append({"url": url, "route": route, "html": body,
-                      "error": ""})
+        pages.append({"url": url, "route": route, "html": body, "error": ""})
         try:
             for link in extract_links(body, url):
                 if link in seen or link in queue:
@@ -316,9 +349,12 @@ def crawl(site, max_pages=DEFAULT_MAX_PAGES, fetch=None):
             continue
         try:
             for link in extract_links(page["html"], page["url"]):
-                if in_scope(link, cfg) and link not in fetched \
-                        and link not in already_dead \
-                        and link not in link_sources:
+                if (
+                    in_scope(link, cfg)
+                    and link not in fetched
+                    and link not in already_dead
+                    and link not in link_sources
+                ):
                     link_sources[link] = page["route"]
         except Exception:
             continue
@@ -337,22 +373,30 @@ def crawl(site, max_pages=DEFAULT_MAX_PAGES, fetch=None):
         except Exception as exc:
             probe = f"FETCH_ERROR: {exc}"
         if not isinstance(probe, str) or probe.startswith("FETCH_ERROR"):
-            dead.append({"url": link, "from_route": source,
-                         "reason": probe[:200]
-                         if isinstance(probe, str) else "empty"})
-    return {"site": site, "repo": cfg["repo"], "pages": pages,
-            "dead": dead}
+            dead.append(
+                {
+                    "url": link,
+                    "from_route": source,
+                    "reason": probe[:200] if isinstance(probe, str) else "empty",
+                }
+            )
+    return {"site": site, "repo": cfg["repo"], "pages": pages, "dead": dead}
 
 
 # --- Deterministic per-page impeccable pass -------------------------
 
+
 # Severity ladder shared with impact.py findings; the P-label in
 # each title keeps the impeccable severity visible.
-def _finding(severity, title, route, evidence, category,
-             heuristic=""):
-    item = {"severity": severity, "title": title, "route": route,
-            "viewport": "static", "evidence": evidence,
-            "category": category}
+def _finding(severity, title, route, evidence, category, heuristic=""):
+    item = {
+        "severity": severity,
+        "title": title,
+        "route": route,
+        "viewport": "static",
+        "evidence": evidence,
+        "category": category,
+    }
     if heuristic:
         item["heuristic"] = heuristic
     return item
@@ -398,8 +442,7 @@ class _PageFacts(html.parser.HTMLParser):
         self.required_inputs = 0
 
     def handle_starttag(self, tag, attrs):
-        attrs = {k: (v if isinstance(v, str) else "")
-                 for k, v in attrs}
+        attrs = {k: (v if isinstance(v, str) else "") for k, v in attrs}
         if attrs.get("style", "").strip():
             self.inline_styles += 1
         if tag == "html" and attrs.get("lang", "").strip():
@@ -407,8 +450,7 @@ class _PageFacts(html.parser.HTMLParser):
         elif tag == "title":
             self._in_title = True
         elif tag == "meta":
-            name = (attrs.get("name", "") + " "
-                    + attrs.get("property", "")).lower()
+            name = (attrs.get("name", "") + " " + attrs.get("property", "")).lower()
             if attrs.get("name", "").lower() == "viewport":
                 self.has_viewport = True
             if "description" in name:
@@ -426,23 +468,30 @@ class _PageFacts(html.parser.HTMLParser):
             self.images += 1
             alt = attrs.get("alt")
             if alt is None or not alt.strip():
-                self.imgs_missing_alt.append(
-                    attrs.get("src", "")[:120])
+                self.imgs_missing_alt.append(attrs.get("src", "")[:120])
         elif tag in ("input", "textarea", "select"):
             if attrs.get("type", "").lower() == "hidden":
                 return
-            if attrs.get("required") is not None or \
-                    attrs.get("aria-required") == "true":
+            if (
+                attrs.get("required") is not None
+                or attrs.get("aria-required") == "true"
+            ):
                 self.required_inputs += 1
             if self._in_label:
                 self.wrapped_inputs += 1
             elif tag == "input" and attrs.get("type", "").lower() in (
-                    "submit", "button", "reset", "image"):
+                "submit",
+                "button",
+                "reset",
+                "image",
+            ):
                 self.wrapped_inputs += 1
             else:
                 self.inputs.append(attrs.get("id", ""))
-            if attrs.get("type", "").lower() == "search" or \
-                    attrs.get("role", "") == "searchbox":
+            if (
+                attrs.get("type", "").lower() == "search"
+                or attrs.get("role", "") == "searchbox"
+            ):
                 self.has_search = True
         elif tag == "label":
             self._in_label += 1
@@ -452,10 +501,11 @@ class _PageFacts(html.parser.HTMLParser):
             href = attrs.get("href", "")
             if href.strip() in ("#", ""):
                 self.placeholder_links += 1
-            if "skip" in (attrs.get("class", "") + " "
-                          + attrs.get("id", "")).lower() \
-                    or href.startswith("#main") \
-                    or href.startswith("#content"):
+            if (
+                "skip" in (attrs.get("class", "") + " " + attrs.get("id", "")).lower()
+                or href.startswith("#main")
+                or href.startswith("#content")
+            ):
                 self.has_skip_link = True
             self._link_depth += 1
             if self._link_depth == 1:
@@ -488,13 +538,11 @@ class _PageFacts(html.parser.HTMLParser):
         elif tag == "label":
             self._in_label = max(0, self._in_label - 1)
         elif tag == "a":
-            if self._link_depth == 1 and not "".join(
-                    self._link_text).strip():
+            if self._link_depth == 1 and not "".join(self._link_text).strip():
                 self.empty_links += 1
             self._link_depth = max(0, self._link_depth - 1)
         elif tag == "button":
-            if self._button_depth == 1 and not "".join(
-                    self._button_text).strip():
+            if self._button_depth == 1 and not "".join(self._button_text).strip():
                 self.empty_buttons += 1
             self._button_depth = max(0, self._button_depth - 1)
         elif tag == "nav":
@@ -531,118 +579,228 @@ def audit_page(route, html):
     try:
         facts = page_facts(html)
     except Exception:
-        return ([_finding("info", "[P3] page unparseable", route,
-                           "HTMLParser failed on this page",
-                           "Implementation Integrity")],
-                None)
+        return (
+            [
+                _finding(
+                    "info",
+                    "[P3] page unparseable",
+                    route,
+                    "HTMLParser failed on this page",
+                    "Implementation Integrity",
+                )
+            ],
+            None,
+        )
     out = []
     if facts.title is None or not facts.title:
-        out.append(_finding(
-            "high", "[P1] missing page title", route,
-            "no <title> element (tab/bookmark/SEO identity)", "Implementation Integrity",
-            heuristic="H6"))
+        out.append(
+            _finding(
+                "high",
+                "[P1] missing page title",
+                route,
+                "no <title> element (tab/bookmark/SEO identity)",
+                "Implementation Integrity",
+                heuristic="H6",
+            )
+        )
     if not facts.has_lang:
-        out.append(_finding(
-            "medium", "[P2] <html> has no lang attribute", route,
-            "screen readers guess pronunciation; WCAG 3.1.1",
-            "Accessibility", heuristic="H2"))
+        out.append(
+            _finding(
+                "medium",
+                "[P2] <html> has no lang attribute",
+                route,
+                "screen readers guess pronunciation; WCAG 3.1.1",
+                "Accessibility",
+                heuristic="H2",
+            )
+        )
     if not facts.has_viewport:
-        out.append(_finding(
-            "high", "[P1] missing viewport meta tag", route,
-            "mobile browsers render at desktop width; responsive "
-            "breaks without it", "Responsive Design",
-            heuristic="H4"))
+        out.append(
+            _finding(
+                "high",
+                "[P1] missing viewport meta tag",
+                route,
+                "mobile browsers render at desktop width; responsive breaks without it",
+                "Responsive Design",
+                heuristic="H4",
+            )
+        )
     for src in facts.imgs_missing_alt[:5]:
-        out.append(_finding(
-            "high", "[P1] image without alt text", route,
-            f"src={src or '(empty)'}; WCAG 1.1.1", "Accessibility",
-            heuristic="H2"))
+        out.append(
+            _finding(
+                "high",
+                "[P1] image without alt text",
+                route,
+                f"src={src or '(empty)'}; WCAG 1.1.1",
+                "Accessibility",
+                heuristic="H2",
+            )
+        )
     if len(facts.imgs_missing_alt) > 5:
-        out.append(_finding(
-            "high", "[P1] more images without alt text", route,
-            f"{len(facts.imgs_missing_alt) - 5} further "
-            "instances on this page", "Accessibility",
-            heuristic="H2"))
+        out.append(
+            _finding(
+                "high",
+                "[P1] more images without alt text",
+                route,
+                f"{len(facts.imgs_missing_alt) - 5} further instances on this page",
+                "Accessibility",
+                heuristic="H2",
+            )
+        )
     unlabeled = [i for i in facts.inputs if i not in facts.labels_for]
     if unlabeled:
-        out.append(_finding(
-            "high", "[P1] form inputs without labels", route,
-            f"{len(unlabeled)} input(s): "
-            + ", ".join(f"id={i!r}" if i else "(no id)"
-                        for i in unlabeled[:3]),
-            "Accessibility", heuristic="H5"))
+        out.append(
+            _finding(
+                "high",
+                "[P1] form inputs without labels",
+                route,
+                f"{len(unlabeled)} input(s): "
+                + ", ".join(f"id={i!r}" if i else "(no id)" for i in unlabeled[:3]),
+                "Accessibility",
+                heuristic="H5",
+            )
+        )
     if not facts.headings:
-        out.append(_finding(
-            "medium", "[P2] no headings on page", route,
-            "no h1-h6 structure for screen-reader / SEO outline",
-            "Accessibility", heuristic="H8"))
+        out.append(
+            _finding(
+                "medium",
+                "[P2] no headings on page",
+                route,
+                "no h1-h6 structure for screen-reader / SEO outline",
+                "Accessibility",
+                heuristic="H8",
+            )
+        )
     else:
         if 1 not in facts.headings:
-            out.append(_finding(
-                "medium", "[P2] no h1 on page", route,
-                f"heading levels present: {sorted(set(facts.headings))}",
-                "Accessibility", heuristic="H8"))
+            out.append(
+                _finding(
+                    "medium",
+                    "[P2] no h1 on page",
+                    route,
+                    f"heading levels present: {sorted(set(facts.headings))}",
+                    "Accessibility",
+                    heuristic="H8",
+                )
+            )
         prev = 0
         for level in facts.headings:
             if prev and level > prev + 1:
-                out.append(_finding(
-                    "low", "[P3] skipped heading level", route,
-                    f"h{prev} followed by h{level}",
-                    "Accessibility", heuristic="H4"))
+                out.append(
+                    _finding(
+                        "low",
+                        "[P3] skipped heading level",
+                        route,
+                        f"h{prev} followed by h{level}",
+                        "Accessibility",
+                        heuristic="H4",
+                    )
+                )
                 break
             prev = level
     if not facts.has_main:
-        out.append(_finding(
-            "medium", "[P2] no <main> landmark", route,
-            "assistive tech cannot jump to page content",
-            "Accessibility", heuristic="H7"))
+        out.append(
+            _finding(
+                "medium",
+                "[P2] no <main> landmark",
+                route,
+                "assistive tech cannot jump to page content",
+                "Accessibility",
+                heuristic="H7",
+            )
+        )
     if facts.empty_links:
-        out.append(_finding(
-            "medium", "[P2] links with no accessible name", route,
-            f"{facts.empty_links} <a> element(s) with no text; "
-            "screen readers announce nothing", "Accessibility",
-            heuristic="H2"))
+        out.append(
+            _finding(
+                "medium",
+                "[P2] links with no accessible name",
+                route,
+                f"{facts.empty_links} <a> element(s) with no text; "
+                "screen readers announce nothing",
+                "Accessibility",
+                heuristic="H2",
+            )
+        )
     if facts.empty_buttons:
-        out.append(_finding(
-            "medium", "[P2] buttons with no accessible name", route,
-            f"{facts.empty_buttons} <button> element(s) with no text",
-            "Accessibility", heuristic="H2"))
+        out.append(
+            _finding(
+                "medium",
+                "[P2] buttons with no accessible name",
+                route,
+                f"{facts.empty_buttons} <button> element(s) with no text",
+                "Accessibility",
+                heuristic="H2",
+            )
+        )
     if facts.placeholder_links:
-        out.append(_finding(
-            "medium", "[P2] placeholder links (href='#')", route,
-            f"{facts.placeholder_links} link(s) going nowhere; "
-            "dead UI or unfinished wiring", "Implementation Integrity",
-            heuristic="H5"))
+        out.append(
+            _finding(
+                "medium",
+                "[P2] placeholder links (href='#')",
+                route,
+                f"{facts.placeholder_links} link(s) going nowhere; "
+                "dead UI or unfinished wiring",
+                "Implementation Integrity",
+                heuristic="H5",
+            )
+        )
     dupes = sorted(k for k, n in facts.ids.items() if n > 1)
     if dupes:
-        out.append(_finding(
-            "medium", "[P2] duplicate element ids", route,
-            "ids: " + ", ".join(dupes[:5])
-            + ("…" if len(dupes) > 5 else ""),
-            "Implementation Integrity", heuristic="H5"))
+        out.append(
+            _finding(
+                "medium",
+                "[P2] duplicate element ids",
+                route,
+                "ids: " + ", ".join(dupes[:5]) + ("…" if len(dupes) > 5 else ""),
+                "Implementation Integrity",
+                heuristic="H5",
+            )
+        )
     if not facts.has_description:
-        out.append(_finding(
-            "low", "[P3] missing meta description", route,
-            "search/social previews fall back to body text",
-            "Implementation Integrity"))
+        out.append(
+            _finding(
+                "low",
+                "[P3] missing meta description",
+                route,
+                "search/social previews fall back to body text",
+                "Implementation Integrity",
+            )
+        )
     if facts.inline_styles >= 10:
-        out.append(_finding(
-            "low", "[P3] heavy inline styles", route,
-            f"{facts.inline_styles} style attributes; drift from "
-            "the token/stylesheet system", "Theming",
-            heuristic="H4"))
+        out.append(
+            _finding(
+                "low",
+                "[P3] heavy inline styles",
+                route,
+                f"{facts.inline_styles} style attributes; drift from "
+                "the token/stylesheet system",
+                "Theming",
+                heuristic="H4",
+            )
+        )
     blocking = facts.scripts - facts.scripts_defer
     if blocking >= 5:
-        out.append(_finding(
-            "low", "[P3] render-blocking scripts", route,
-            f"{blocking} external scripts without async/defer",
-            "Performance", heuristic="H1"))
+        out.append(
+            _finding(
+                "low",
+                "[P3] render-blocking scripts",
+                route,
+                f"{blocking} external scripts without async/defer",
+                "Performance",
+                heuristic="H1",
+            )
+        )
     if facts.stylesheets >= 6:
-        out.append(_finding(
-            "low", "[P3] many stylesheets", route,
-            f"{facts.stylesheets} <link rel=stylesheet>; "
-            "each blocks first paint", "Performance",
-            heuristic="H1"))
+        out.append(
+            _finding(
+                "low",
+                "[P3] many stylesheets",
+                route,
+                f"{facts.stylesheets} <link rel=stylesheet>; each blocks first paint",
+                "Performance",
+                heuristic="H1",
+            )
+        )
     return out, facts
 
 
@@ -669,10 +827,20 @@ AUDIT_DIMS = (
     "Implementation Integrity",
 )
 
-HEURISTIC_BANDS = ((32, "Excellent"), (24, "Good"), (16, "Acceptable"),
-                   (8, "Poor"), (0, "Critical"))
-AUDIT_BANDS = ((18, "Excellent"), (14, "Good"), (10, "Acceptable"),
-               (6, "Poor"), (0, "Critical"))
+HEURISTIC_BANDS = (
+    (32, "Excellent"),
+    (24, "Good"),
+    (16, "Acceptable"),
+    (8, "Poor"),
+    (0, "Critical"),
+)
+AUDIT_BANDS = (
+    (18, "Excellent"),
+    (14, "Good"),
+    (10, "Acceptable"),
+    (6, "Poor"),
+    (0, "Critical"),
+)
 
 
 def _band(score, bands):
@@ -696,79 +864,103 @@ def score_heuristics(page_entries, cross):
     routes = len(page_entries) or 1
     unlabeled = sum(
         len([i for i in f.inputs if i not in f.labels_for])
-        for _, f in page_entries if f is not None)
+        for _, f in page_entries
+        if f is not None
+    )
     empty_names = sum(
-        (f.empty_links + f.empty_buttons)
-        for _, f in page_entries if f is not None)
-    no_main = sum(1 for _, f in page_entries
-                  if f is not None and not f.has_main)
-    no_h1 = sum(1 for _, f in page_entries
-                if f is not None and 1 not in f.headings)
-    has_search = any(f is not None and f.has_search
-                     for _, f in page_entries)
-    has_skip = any(f is not None and f.has_skip_link
-                   for _, f in page_entries)
-    has_nav = sum(1 for _, f in page_entries
-                  if f is not None and f.has_nav)
+        (f.empty_links + f.empty_buttons) for _, f in page_entries if f is not None
+    )
+    no_main = sum(1 for _, f in page_entries if f is not None and not f.has_main)
+    no_h1 = sum(1 for _, f in page_entries if f is not None and 1 not in f.headings)
+    has_search = any(f is not None and f.has_search for _, f in page_entries)
+    has_skip = any(f is not None and f.has_skip_link for _, f in page_entries)
+    has_nav = sum(1 for _, f in page_entries if f is not None and f.has_nav)
     nav_variants = cross.get("nav_variants", 0)
     dead = cross.get("dead", 0)
     placeholders = cross.get("placeholder_routes", 0)
     scores = {}
 
     def _put(n, score, basis):
-        scores[n] = {"name": HEURISTICS[n - 1], "score": score,
-                     "basis": basis}
+        scores[n] = {"name": HEURISTICS[n - 1], "score": score, "basis": basis}
 
-    _put(1, None, "n/a statically: loading/progress/validation "
-                  "feedback needs a running page (browser pass)")
+    _put(
+        1,
+        None,
+        "n/a statically: loading/progress/validation "
+        "feedback needs a running page (browser pass)",
+    )
     h2 = 4
     if unlabeled:
         h2 = min(h2, 2)
     if empty_names:
         h2 = min(h2, 2)
-    _put(2, h2, f"{unlabeled} unlabeled input(s), {empty_names} "
-                f"nameless link/button(s) across {routes} page(s)")
+    _put(
+        2,
+        h2,
+        f"{unlabeled} unlabeled input(s), {empty_names} "
+        f"nameless link/button(s) across {routes} page(s)",
+    )
     h3 = 3
     if not has_skip:
         h3 = 2
-    _put(3, h3, "skip link "
-                f"{'present' if has_skip else 'absent'}; undo/cancel "
-                "flows need a browser pass")
+    _put(
+        3,
+        h3,
+        "skip link "
+        f"{'present' if has_skip else 'absent'}; undo/cancel "
+        "flows need a browser pass",
+    )
     h4 = 4
     if nav_variants > 1:
         h4 = min(h4, 2)
     if placeholders:
         h4 = min(h4, 2)
-    _put(4, h4, f"{nav_variants} distinct nav structure(s); "
-                f"{placeholders} page(s) with placeholder links")
+    _put(
+        4,
+        h4,
+        f"{nav_variants} distinct nav structure(s); "
+        f"{placeholders} page(s) with placeholder links",
+    )
     h5 = 4
     if unlabeled:
         h5 = min(h5, 1)
     if dead:
         h5 = min(h5, 2)
-    _put(5, h5, f"{unlabeled} unlabeled input(s); {dead} dead "
-                "in-scope link(s)")
+    _put(5, h5, f"{unlabeled} unlabeled input(s); {dead} dead in-scope link(s)")
     h6 = 4
     if no_main:
         h6 = min(h6, 2)
     if no_h1:
         h6 = min(h6, 3)
-    _put(6, h6, f"{no_main}/{routes} page(s) without <main>; "
-                f"{no_h1}/{routes} without h1")
+    _put(
+        6, h6, f"{no_main}/{routes} page(s) without <main>; {no_h1}/{routes} without h1"
+    )
     h7 = 3 if has_search else 2
-    _put(7, h7, f"site search {'found' if has_search else 'not found'}; "
-                f"nav present on {has_nav}/{routes} page(s); shortcuts "
-                "need a browser pass")
-    _put(8, None, "n/a statically: visual density/typography "
-                  "needs rendered inspection (browser pass)")
-    _put(9, None, "n/a statically: error copy and recovery "
-                  "flows need interaction (browser pass)")
+    _put(
+        7,
+        h7,
+        f"site search {'found' if has_search else 'not found'}; "
+        f"nav present on {has_nav}/{routes} page(s); shortcuts "
+        "need a browser pass",
+    )
+    _put(
+        8,
+        None,
+        "n/a statically: visual density/typography "
+        "needs rendered inspection (browser pass)",
+    )
+    _put(
+        9,
+        None,
+        "n/a statically: error copy and recovery flows need interaction (browser pass)",
+    )
     help_routes = sum(
-        1 for r, _ in page_entries
-        if re.search(r"help|faq|docs|support|contact", r, re.I))
+        1
+        for r, _ in page_entries
+        if re.search(r"help|faq|docs|support|contact", r, re.I)
+    )
     h10 = 4 if help_routes else 2
-    _put(10, h10, f"{help_routes} help/faq/docs/support/contact "
-                 "route(s) in the crawl")
+    _put(10, h10, f"{help_routes} help/faq/docs/support/contact route(s) in the crawl")
     return scores
 
 
@@ -801,10 +993,12 @@ def score_audit_dims(page_entries, cross):
     blocking = sum(f.scripts - f.scripts_defer for f in facts_list)
     sheets = sum(f.stylesheets for f in facts_list)
     images = sum(f.images for f in facts_list)
-    perf_deductions = (1 if blocking >= 5 else 0) \
-        + (1 if sheets >= 6 * routes else 0) \
-        + (1 if scripts >= 10 * routes else 0) \
+    perf_deductions = (
+        (1 if blocking >= 5 else 0)
+        + (1 if sheets >= 6 * routes else 0)
+        + (1 if scripts >= 10 * routes else 0)
         + (1 if images >= 30 * routes else 0)
+    )
     perf = max(0, 4 - perf_deductions)
     inline = sum(f.inline_styles for f in facts_list)
     theming = 2 if inline < 10 * routes else 1
@@ -824,37 +1018,46 @@ def score_audit_dims(page_entries, cross):
         "Accessibility": {
             "score": a11y,
             "basis": f"{len(a11y_types)} violation type(s): "
-                     + (", ".join(sorted(a11y_types)) or "none")},
+            + (", ".join(sorted(a11y_types)) or "none"),
+        },
         "Performance": {
             "score": perf,
             "basis": f"resource proxy: {scripts} scripts "
-                     f"({blocking} blocking), {sheets} stylesheets, "
-                     f"{images} images across {routes} page(s)"},
+            f"({blocking} blocking), {sheets} stylesheets, "
+            f"{images} images across {routes} page(s)",
+        },
         "Theming": {
             "score": theming,
             "basis": f"capped at 2 statically (token usage needs "
-                     f"a browser); {inline} inline style attribute(s)"},
+            f"a browser); {inline} inline style attribute(s)",
+        },
         "Responsive Design": {
             "score": responsive,
-            "basis": ("no viewport meta on "
-                      f"{noview}/{routes} page(s)" if noview else
-                      "viewport meta present; capped at 3 statically "
-                      "(touch targets need layout)")},
+            "basis": (
+                f"no viewport meta on {noview}/{routes} page(s)"
+                if noview
+                else "viewport meta present; capped at 3 statically "
+                "(touch targets need layout)"
+            ),
+        },
         "Implementation Integrity": {
             "score": integ,
             "basis": f"title/meta/ids/placeholder/dead-link "
-                     f"deductions: {integ_deductions}"},
+            f"deductions: {integ_deductions}",
+        },
     }
 
 
 def heuristic_total(heuristics):
     """(total, maximum, band) over scored heuristics only."""
-    scored = [h["score"] for h in heuristics.values()
-              if h["score"] is not None]
+    scored = [h["score"] for h in heuristics.values() if h["score"] is not None]
     total = sum(scored)
     maximum = 4 * len(scored)
-    band = _band(round(total / maximum * 40) if maximum else 0,
-                 HEURISTIC_BANDS) if maximum else "n/a"
+    band = (
+        _band(round(total / maximum * 40) if maximum else 0, HEURISTIC_BANDS)
+        if maximum
+        else "n/a"
+    )
     return total, maximum, band
 
 
@@ -865,6 +1068,7 @@ def audit_total(dims):
 
 
 # --- Cross-page synthesis -------------------------------------------
+
 
 def synthesize_cross_page(page_entries, dead):
     """Cross-page findings: nav consistency, dead links, repeats.
@@ -882,44 +1086,67 @@ def synthesize_cross_page(page_entries, dead):
     variants = len(nav_sets)
     if variants > 1:
         biggest = max(len(v) for v in nav_sets.values())
-        odd = sorted(r for v in nav_sets.values() if len(v) < biggest
-                     for r in v)
-        out.append(_finding(
-            "medium", "[P2] inconsistent navigation across pages",
-            odd[0] if odd else "(site)",
-            f"{variants} distinct nav structures; minority routes: "
-            + (", ".join(odd[:5]) or "none"),
-            "Implementation Integrity", heuristic="H4"))
+        odd = sorted(r for v in nav_sets.values() if len(v) < biggest for r in v)
+        out.append(
+            _finding(
+                "medium",
+                "[P2] inconsistent navigation across pages",
+                odd[0] if odd else "(site)",
+                f"{variants} distinct nav structures; minority routes: "
+                + (", ".join(odd[:5]) or "none"),
+                "Implementation Integrity",
+                heuristic="H4",
+            )
+        )
     for row in dead[:20]:
-        out.append(_finding(
-            "high", "[P1] dead in-scope link", row.get("from_route",
-                                                      "(crawl)"),
-            f"{row.get('url', '')[:200]} — "
-            f"{row.get('reason', 'fetch failed')[:120]}",
-            "Implementation Integrity", heuristic="H5"))
+        out.append(
+            _finding(
+                "high",
+                "[P1] dead in-scope link",
+                row.get("from_route", "(crawl)"),
+                f"{row.get('url', '')[:200]} — "
+                f"{row.get('reason', 'fetch failed')[:120]}",
+                "Implementation Integrity",
+                heuristic="H5",
+            )
+        )
     if len(dead) > 20:
-        out.append(_finding(
-            "high", "[P1] further dead in-scope links", "(site)",
-            f"{len(dead) - 20} more dead link(s)",
-            "Implementation Integrity", heuristic="H5"))
+        out.append(
+            _finding(
+                "high",
+                "[P1] further dead in-scope links",
+                "(site)",
+                f"{len(dead) - 20} more dead link(s)",
+                "Implementation Integrity",
+                heuristic="H5",
+            )
+        )
     placeholder_routes = sum(
-        1 for _, f in page_entries
-        if f is not None and f.placeholder_links)
+        1 for _, f in page_entries if f is not None and f.placeholder_links
+    )
     missing_viewport = sum(
-        1 for _, f in page_entries
-        if f is not None and not f.has_viewport)
-    stats = {"nav_variants": variants, "dead": len(dead),
-             "placeholder_routes": placeholder_routes,
-             "missing_viewport": missing_viewport,
-             "pages": len(page_entries)}
+        1 for _, f in page_entries if f is not None and not f.has_viewport
+    )
+    stats = {
+        "nav_variants": variants,
+        "dead": len(dead),
+        "placeholder_routes": placeholder_routes,
+        "missing_viewport": missing_viewport,
+        "pages": len(page_entries),
+    }
     return out, stats
 
 
 # --- Grouping + task-spec rendering ---------------------------------
 
 # Fixed group order: severity-ranked categories, stable across runs.
-GROUP_ORDER = ("Accessibility", "Responsive Design",
-               "Implementation Integrity", "Performance", "Theming")
+GROUP_ORDER = (
+    "Accessibility",
+    "Responsive Design",
+    "Implementation Integrity",
+    "Performance",
+    "Theming",
+)
 
 # Verify command carried by filed issues and group specs. Static
 # site repos ship no pytest/vitest suite, so the verify is a
@@ -928,8 +1155,7 @@ GROUP_ORDER = ("Accessibility", "Responsive Design",
 # normal repair-dispatch gate. Runbook documents the tradeoff.
 VERIFY_COMMAND = "python3 -m unittest"
 
-TARGET_GUESS_NOTE = ("URL-derived guesses — confirm paths in the "
-                     "checkout before editing")
+TARGET_GUESS_NOTE = "URL-derived guesses — confirm paths in the checkout before editing"
 
 
 def guess_target_file(route):
@@ -964,23 +1190,33 @@ def group_findings(findings):
     """
     buckets = {}
     for item in findings:
-        buckets.setdefault(item.get("category",
-                                    "Implementation Integrity"),
-                           []).append(item)
+        buckets.setdefault(item.get("category", "Implementation Integrity"), []).append(
+            item
+        )
     groups = []
     for category in list(GROUP_ORDER) + sorted(
-            c for c in buckets if c not in GROUP_ORDER):
+        c for c in buckets if c not in GROUP_ORDER
+    ):
         items = buckets.get(category)
         if not items:
             continue
         ranked = rank_findings(items)
         top = ranked[0].get("severity", "info")
-        groups.append({"category": category, "findings": ranked,
-                       "title": f"{category} ({len(ranked)} "
-                                f"finding(s), worst: {top})"})
+        groups.append(
+            {
+                "category": category,
+                "findings": ranked,
+                "title": f"{category} ({len(ranked)} finding(s), worst: {top})",
+            }
+        )
     if not groups:
-        groups.append({"category": "No findings", "findings": [],
-                       "title": "No findings — site reads clean"})
+        groups.append(
+            {
+                "category": "No findings",
+                "findings": [],
+                "title": "No findings — site reads clean",
+            }
+        )
     return groups
 
 
@@ -996,34 +1232,46 @@ def group_spec_body(site, repo, issue_ref, index, group):
         route = item.get("route", "")
         if route and route not in routes:
             routes.append(route)
-    targets = [guess_target_file(r) for r in routes[:10]] or \
-        ["index.html"]
-    lines = [f"# UX audit follow-up: {group['category']} ({site})",
-             "",
-             f"Source: {issue_ref} group {index} "
-             f"({group['title']}). Fix this group only.",
-             "",
-             "## Target Files",
-             f"<!-- {TARGET_GUESS_NOTE} -->"]
+    targets = [guess_target_file(r) for r in routes[:10]] or ["index.html"]
+    lines = [
+        f"# UX audit follow-up: {group['category']} ({site})",
+        "",
+        f"Source: {issue_ref} group {index} ({group['title']}). Fix this group only.",
+        "",
+        "## Target Files",
+        f"<!-- {TARGET_GUESS_NOTE} -->",
+    ]
     lines += [f"- `{t}`" for t in targets]
-    lines += ["", "## Verification Command", "",
-              f"```\n{VERIFY_COMMAND}\n```", "",
-              "## Required Changes"]
+    lines += [
+        "",
+        "## Verification Command",
+        "",
+        f"```\n{VERIFY_COMMAND}\n```",
+        "",
+        "## Required Changes",
+    ]
     for item in group["findings"][:30]:
         where = item.get("route", "")
-        lines.append(f"- [{item.get('severity', 'info')}] "
-                     f"{item.get('title', '')} ({where}): "
-                     f"{item.get('evidence', '')[:200]}")
+        lines.append(
+            f"- [{item.get('severity', 'info')}] "
+            f"{item.get('title', '')} ({where}): "
+            f"{item.get('evidence', '')[:200]}"
+        )
     if len(group["findings"]) > 30:
-        lines.append(f"- …and {len(group['findings']) - 30} more "
-                     "finding(s) in this group (see the source issue)")
-    lines += ["", "## Expected Output",
-              "Group findings resolved; verification passes; no "
-              "unrelated pages changed."]
+        lines.append(
+            f"- …and {len(group['findings']) - 30} more "
+            "finding(s) in this group (see the source issue)"
+        )
+    lines += [
+        "",
+        "## Expected Output",
+        "Group findings resolved; verification passes; no unrelated pages changed.",
+    ]
     return "\n".join(lines) + "\n"
 
 
 # --- Issue rendering + filing ---------------------------------------
+
 
 def render_issue(site, report):
     """ONE comprehensive findings-issue body for a site report.
@@ -1038,8 +1286,7 @@ def render_issue(site, report):
     repo = cfg["repo"]
     heuristics = report["heuristics"]
     dims = report["dims"]
-    h_total, h_max, h_band = heuristic_total(
-        {int(k): v for k, v in heuristics.items()})
+    h_total, h_max, h_band = heuristic_total({int(k): v for k, v in heuristics.items()})
     a_total, a_band = audit_total(dims)
     groups = report["groups"]
     findings = report["findings"]
@@ -1047,53 +1294,59 @@ def render_issue(site, report):
     routes = report.get("routes", [])
     counts = {}
     for item in findings:
-        counts[item.get("severity", "info")] = \
+        counts[item.get("severity", "info")] = (
             counts.get(item.get("severity", "info"), 0) + 1
-    title = (f"[ux-audit] {site}: {len(findings)} findings "
-             f"across {pages} pages ({a_total}/20 {a_band})")
-    lines = [f"# UX audit: {site}", "",
-             f"Automated multi-page audit (impeccable method, static "
-             f"pass). Audited {pages} page(s); crawl rooted at "
-             f"{cfg['start_url']}.",
-             "",
-             "## Scores",
-             f"Heuristics: **{h_total}/{h_max}** ({h_band}); "
-             f"audit dimensions: **{a_total}/20** ({a_band}).",
-             "",
-             "| # | Heuristic | Score | Basis |",
-             "|---|-----------|-------|-------|"]
+        )
+    title = (
+        f"[ux-audit] {site}: {len(findings)} findings "
+        f"across {pages} pages ({a_total}/20 {a_band})"
+    )
+    lines = [
+        f"# UX audit: {site}",
+        "",
+        f"Automated multi-page audit (impeccable method, static "
+        f"pass). Audited {pages} page(s); crawl rooted at "
+        f"{cfg['start_url']}.",
+        "",
+        "## Scores",
+        f"Heuristics: **{h_total}/{h_max}** ({h_band}); "
+        f"audit dimensions: **{a_total}/20** ({a_band}).",
+        "",
+        "| # | Heuristic | Score | Basis |",
+        "|---|-----------|-------|-------|",
+    ]
     for num in sorted(heuristics, key=int):
         h = heuristics[num]
         score = h["score"] if h["score"] is not None else "n/a"
-        lines.append(f"| {num} | {h['name']} | {score} | "
-                     f"{h['basis'][:120]} |")
-    lines += ["", "| Dimension | Score | Basis |",
-              "|-----------|-------|-------|"]
+        lines.append(f"| {num} | {h['name']} | {score} | {h['basis'][:120]} |")
+    lines += ["", "| Dimension | Score | Basis |", "|-----------|-------|-------|"]
     for dim in AUDIT_DIMS:
         d = dims.get(dim, {"score": 0, "basis": ""})
         lines.append(f"| {dim} | {d['score']} | {d['basis'][:120]} |")
-    lines += ["",
-              "## Severity counts",
-              " ".join(f"{sev}: {counts.get(sev, 0)}"
-                       for sev in ("critical", "high", "medium",
-                                   "low", "info")),
-              "",
-              "## Findings by group",
-              "Assign one group per agent session from the console "
-              "(UX audit section); each group is a task spec."]
+    lines += [
+        "",
+        "## Severity counts",
+        " ".join(
+            f"{sev}: {counts.get(sev, 0)}"
+            for sev in ("critical", "high", "medium", "low", "info")
+        ),
+        "",
+        "## Findings by group",
+        "Assign one group per agent session from the console "
+        "(UX audit section); each group is a task spec.",
+    ]
     for idx, group in enumerate(groups, 1):
         lines += ["", f"### Group {idx}: {group['title']}"]
         for item in group["findings"][:15]:
-            heur = f" {item['heuristic']}" if item.get("heuristic") \
-                else ""
+            heur = f" {item['heuristic']}" if item.get("heuristic") else ""
             lines.append(
                 f"- **{item.get('severity', 'info')}**{heur} "
-                f"`{item.get('route', '')}` — {item.get('title', '')}")
+                f"`{item.get('route', '')}` — {item.get('title', '')}"
+            )
             if item.get("evidence"):
                 lines.append(f"  - Evidence: {item['evidence'][:200]}")
         if len(group["findings"]) > 15:
-            lines.append(f"- …and {len(group['findings']) - 15} "
-                         "more in this group")
+            lines.append(f"- …and {len(group['findings']) - 15} more in this group")
         if not group["findings"]:
             lines.append("- No findings in this group.")
     lines += ["", "## Pages crawled"]
@@ -1106,21 +1359,25 @@ def render_issue(site, report):
         if guess not in targets:
             targets.append(guess)
     targets = targets[:15] or ["index.html"]
-    lines += ["", "## Target Files",
-              f"<!-- {TARGET_GUESS_NOTE} -->"]
+    lines += ["", "## Target Files", f"<!-- {TARGET_GUESS_NOTE} -->"]
     lines += [f"- `{t}`" for t in targets]
-    lines += ["", "## Verification Command", "",
-              f"```\n{VERIFY_COMMAND}\n```", "",
-              "## Required Changes",
-              "Resolve the findings group by group (see above); "
-              "keep each fix to its group's pages.",
-              "",
-              "## Expected Output",
-              "Follow-up PRs reference this issue; a re-audit "
-              "shows the scores above improving.",
-              "",
-              f"_Filed by the dispatched UX audit agent for {site} "
-              f"(repo {repo}); audit-only, no site content changed._"]
+    lines += [
+        "",
+        "## Verification Command",
+        "",
+        f"```\n{VERIFY_COMMAND}\n```",
+        "",
+        "## Required Changes",
+        "Resolve the findings group by group (see above); "
+        "keep each fix to its group's pages.",
+        "",
+        "## Expected Output",
+        "Follow-up PRs reference this issue; a re-audit "
+        "shows the scores above improving.",
+        "",
+        f"_Filed by the dispatched UX audit agent for {site} "
+        f"(repo {repo}); audit-only, no site content changed._",
+    ]
     return title, "\n".join(lines) + "\n"
 
 
@@ -1136,16 +1393,28 @@ def file_issue(site, title, body):
     """
     cfg = site_config(site)
     tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".md", prefix="ux-audit-",
-        delete=False, encoding="utf-8")
+        mode="w", suffix=".md", prefix="ux-audit-", delete=False, encoding="utf-8"
+    )
     try:
         tmp.write(body)
         tmp.close()
         proc = subprocess.run(
-            ["gh", "issue", "create", "--repo", cfg["repo"],
-             "--title", title, "--body-file", tmp.name],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=120, text=True)
+            [
+                "gh",
+                "issue",
+                "create",
+                "--repo",
+                cfg["repo"],
+                "--title",
+                title,
+                "--body-file",
+                tmp.name,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            text=True,
+        )
     finally:
         try:
             os.unlink(tmp.name)
@@ -1164,12 +1433,13 @@ def file_issue(site, title, body):
     if not match:
         raise RuntimeError(
             "gh issue create returned no issue URL: "
-            f"{(proc.stdout or '').strip()[:200]}")
-    return {"number": int(match.group(1)), "url": url,
-            "repo": cfg["repo"]}
+            f"{(proc.stdout or '').strip()[:200]}"
+        )
+    return {"number": int(match.group(1)), "url": url, "repo": cfg["repo"]}
 
 
 # --- Report build + state -------------------------------------------
+
 
 def build_report(site, crawled):
     """Full deterministic report (no model, no filing).
@@ -1185,35 +1455,42 @@ def build_report(site, crawled):
         if page.get("skipped"):
             continue
         if page.get("error"):
-            findings.append(_finding(
-                "high", "[P1] page failed to fetch",
-                page.get("route", ""),
-                page.get("error", "")[:200],
-                "Implementation Integrity", heuristic="H5"))
+            findings.append(
+                _finding(
+                    "high",
+                    "[P1] page failed to fetch",
+                    page.get("route", ""),
+                    page.get("error", "")[:200],
+                    "Implementation Integrity",
+                    heuristic="H5",
+                )
+            )
             entries.append((page.get("route", ""), None))
             continue
-        page_findings, facts = audit_page(page.get("route", ""),
-                                          page.get("html", ""))
+        page_findings, facts = audit_page(page.get("route", ""), page.get("html", ""))
         findings.extend(page_findings)
         entries.append((page.get("route", ""), facts))
     entries = [(r, f) for r, f in entries if f is not None]
-    cross_findings, cross = synthesize_cross_page(
-        entries, crawled.get("dead", []))
+    cross_findings, cross = synthesize_cross_page(entries, crawled.get("dead", []))
     findings.extend(cross_findings)
     ranked = rank_findings(findings)
-    heuristics = {str(n): v for n, v in
-                  score_heuristics(entries, cross).items()}
+    heuristics = {str(n): v for n, v in score_heuristics(entries, cross).items()}
     dims = score_audit_dims(entries, cross)
     groups = group_findings(ranked)
-    audited = [p for p in crawled.get("pages", [])
-               if not p.get("skipped")]
-    return {"site": site, "repo": crawled.get("repo", ""),
-            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                                time.gmtime()),
-            "page_count": len(audited),
-            "routes": routes, "findings": ranked, "groups": groups,
-            "heuristics": heuristics, "dims": dims, "cross": cross,
-            "model": None}
+    audited = [p for p in crawled.get("pages", []) if not p.get("skipped")]
+    return {
+        "site": site,
+        "repo": crawled.get("repo", ""),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "page_count": len(audited),
+        "routes": routes,
+        "findings": ranked,
+        "groups": groups,
+        "heuristics": heuristics,
+        "dims": dims,
+        "cross": cross,
+        "model": None,
+    }
 
 
 def save_report(report, state=None):
@@ -1260,12 +1537,18 @@ def report_groups(site, state=None):
     for idx, group in enumerate(report.get("groups", []), 1):
         ranked = group.get("findings", [])
         worst = ranked[0].get("severity", "info") if ranked else "info"
-        out.append({
-            "index": idx, "category": group.get("category", ""),
-            "title": group.get("title", ""),
-            "count": len(ranked), "worst": worst,
-            "body": group_spec_body(report["site"], report["repo"],
-                                    ref, idx, group)})
+        out.append(
+            {
+                "index": idx,
+                "category": group.get("category", ""),
+                "title": group.get("title", ""),
+                "count": len(ranked),
+                "worst": worst,
+                "body": group_spec_body(
+                    report["site"], report["repo"], ref, idx, group
+                ),
+            }
+        )
     return out
 
 
@@ -1309,8 +1592,7 @@ def load_skill_rubric():
             roots.append(extra)
         ref = None
         for root in roots:
-            cand = os.path.join(root, ".agents", "skills",
-                                "impeccable", "reference")
+            cand = os.path.join(root, ".agents", "skills", "impeccable", "reference")
             if os.path.isdir(cand):
                 ref = cand
                 break
@@ -1344,8 +1626,9 @@ def _extract_json(text):
         return json.loads(text)
     except Exception:
         pass
-    fence = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```",
-                      text, re.DOTALL | re.IGNORECASE)
+    fence = re.search(
+        r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", text, re.DOTALL | re.IGNORECASE
+    )
     if fence:
         try:
             return json.loads(fence.group(1))
@@ -1356,21 +1639,20 @@ def _extract_json(text):
         end = text.rfind(close_ch)
         if 0 <= start < end:
             try:
-                return json.loads(text[start:end + 1])
+                return json.loads(text[start : end + 1])
             except Exception:
                 continue
     return None
 
 
-_MODEL_SEV = {"P0": "critical", "P1": "high", "P2": "medium",
-              "P3": "low"}
+_MODEL_SEV = {"P0": "critical", "P1": "high", "P2": "medium", "P3": "low"}
 
 
 def synthesize_with_model(report, pages_digest, model_factory=None):
     """Refine a deterministic report with the local model.
 
-    Ollama first, Nebius fallback (same ladder as the #845
-    reviewer). The model may add findings and re-score the n/a
+    Ollama first, TwT fallback (local Ollama → free cloud tiers →
+    Nebius paid last; #1481). The model may add findings and re-score the n/a
     heuristics; deterministic findings and scores are never
     removed, only supplemented. Returns the updated report
     (report["model"] records the label). model_factory(prefer)
@@ -1379,7 +1661,7 @@ def synthesize_with_model(report, pages_digest, model_factory=None):
     """
     factory = model_factory or _default_model_factory
     model, spec, last_exc, fell_back = None, None, None, False
-    for name in ("ollama", "nebius"):
+    for name in ("ollama", "twt"):
         try:
             model, spec = factory(name)
             break
@@ -1387,14 +1669,15 @@ def synthesize_with_model(report, pages_digest, model_factory=None):
             last_exc = exc
             fell_back = True
     if model is None:
-        raise RuntimeError(f"no model available (ollama/nebius): "
-                           f"{last_exc}")
+        raise RuntimeError(f"no model available (ollama/twt): {last_exc}")
     label = f"{spec.get('provider', '?')}:{spec.get('model', '?')}"
     if fell_back:
         label += " (fallback)"
     rubric = load_skill_rubric()
-    det = [{"severity": f["severity"], "title": f["title"],
-            "route": f["route"]} for f in report["findings"][:60]]
+    det = [
+        {"severity": f["severity"], "title": f["title"], "route": f["route"]}
+        for f in report["findings"][:60]
+    ]
     prompt = (
         f"You are refining a static-HTML UX audit of "
         f"{report['site']} ({report['page_count']} pages crawled). "
@@ -1403,18 +1686,18 @@ def synthesize_with_model(report, pages_digest, model_factory=None):
         f"these):\n{json.dumps(det)}\n\n"
         f"Per-page digests (route + structural facts):\n"
         f"{json.dumps(pages_digest)[:8000]}\n\n"
-        f"Reply with JSON ONLY: {{\"findings\": [{{\"severity\": "
-        f"\"P0|P1|P2|P3\", \"title\": ..., \"route\": ..., "
-        f"\"evidence\": ..., \"category\": ...}}], "
-        f"\"heuristic_scores\": {{\"1\": 0-4|\"n/a\", ...}}, "
-        f"\"summary\": \"2-3 sentences\"}}. Rules: findings only "
+        f'Reply with JSON ONLY: {{"findings": [{{"severity": '
+        f'"P0|P1|P2|P3", "title": ..., "route": ..., '
+        f'"evidence": ..., "category": ...}}], '
+        f'"heuristic_scores": {{"1": 0-4|"n/a", ...}}, '
+        f'"summary": "2-3 sentences"}}. Rules: findings only '
         f"for issues the deterministic pass provably missed "
         f"(cross-page UX, copy tone, IA); heuristic_scores only "
         f"for heuristics worth overriding (else omit); empty "
-        f"findings [] when there is nothing concrete.")
+        f"findings [] when there is nothing concrete."
+    )
     content = getattr(model.invoke(prompt), "content", "")
-    raw = _extract_json(content if isinstance(content, str)
-                        else str(content))
+    raw = _extract_json(content if isinstance(content, str) else str(content))
     if not isinstance(raw, dict):
         raise RuntimeError(f"model reply unparseable ({label})")
     added = []
@@ -1431,16 +1714,22 @@ def synthesize_with_model(report, pages_digest, model_factory=None):
                 plabel = "P3"
             sev = _MODEL_SEV[plabel]
             route = entry.get("route")
-            route = route if isinstance(route, str) and route \
-                else "(site)"
+            route = route if isinstance(route, str) and route else "(site)"
             category = entry.get("category")
-            category = category \
-                if isinstance(category, str) and category else \
-                "Implementation Integrity"
-            added.append(_finding(
-                sev, f"[{plabel}] {title.strip()[:200]} (model)",
-                route, str(entry.get("evidence", ""))[:300],
-                category))
+            category = (
+                category
+                if isinstance(category, str) and category
+                else "Implementation Integrity"
+            )
+            added.append(
+                _finding(
+                    sev,
+                    f"[{plabel}] {title.strip()[:200]} (model)",
+                    route,
+                    str(entry.get("evidence", ""))[:300],
+                    category,
+                )
+            )
     overrides = raw.get("heuristic_scores")
     if isinstance(overrides, dict):
         for key, value in overrides.items():
@@ -1451,13 +1740,18 @@ def synthesize_with_model(report, pages_digest, model_factory=None):
                 report["heuristics"][num] = {
                     "name": report["heuristics"][num]["name"],
                     "score": None,
-                    "basis": f"model override ({label}): n/a"}
-            elif isinstance(value, int) and not isinstance(
-                    value, bool) and 0 <= value <= 4:
+                    "basis": f"model override ({label}): n/a",
+                }
+            elif (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and 0 <= value <= 4
+            ):
                 report["heuristics"][num] = {
                     "name": report["heuristics"][num]["name"],
                     "score": value,
-                    "basis": f"model override ({label})"}
+                    "basis": f"model override ({label})",
+                }
     if added:
         merged = rank_findings(report["findings"] + added)
         report["findings"] = merged
@@ -1467,7 +1761,9 @@ def synthesize_with_model(report, pages_digest, model_factory=None):
         "label": label,
         "added_findings": len(added),
         "summary": summary.strip()[:500]
-        if isinstance(summary, str) and summary.strip() else ""}
+        if isinstance(summary, str) and summary.strip()
+        else "",
+    }
     return report
 
 
@@ -1476,72 +1772,85 @@ def pages_digest(crawled):
     out = []
     for page in crawled.get("pages", [])[:40]:
         if page.get("error"):
-            out.append({"route": page.get("route", ""),
-                        "error": page.get("error", "")[:120]})
+            out.append(
+                {"route": page.get("route", ""), "error": page.get("error", "")[:120]}
+            )
             continue
         facts = page_facts(page.get("html", ""))
-        out.append({
-            "route": page.get("route", ""),
-            "title": facts.title,
-            "headings": facts.headings[:12],
-            "images": facts.images,
-            "missing_alt": len(facts.imgs_missing_alt),
-            "inputs": len(facts.inputs),
-            "unlabeled": len([i for i in facts.inputs
-                              if i not in facts.labels_for]),
-            "has_nav": facts.has_nav,
-            "has_main": facts.has_main,
-            "has_search": facts.has_search,
-            "viewport": facts.has_viewport,
-            "lang": facts.has_lang,
-            "inline_styles": facts.inline_styles,
-            "scripts": facts.scripts,
-            "placeholders": facts.placeholder_links})
+        out.append(
+            {
+                "route": page.get("route", ""),
+                "title": facts.title,
+                "headings": facts.headings[:12],
+                "images": facts.images,
+                "missing_alt": len(facts.imgs_missing_alt),
+                "inputs": len(facts.inputs),
+                "unlabeled": len(
+                    [i for i in facts.inputs if i not in facts.labels_for]
+                ),
+                "has_nav": facts.has_nav,
+                "has_main": facts.has_main,
+                "has_search": facts.has_search,
+                "viewport": facts.has_viewport,
+                "lang": facts.has_lang,
+                "inline_styles": facts.inline_styles,
+                "scripts": facts.scripts,
+                "placeholders": facts.placeholder_links,
+            }
+        )
     return out
 
 
 # --- CLI ------------------------------------------------------------
 
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="ux_audit.py",
         description="Dispatchable multi-page UX audit agent "
-                    "(impeccable method). Audit-only: crawls and "
-                    "files one findings issue; never changes sites.")
+        "(impeccable method). Audit-only: crawls and "
+        "files one findings issue; never changes sites.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     p_sites = sub.add_parser("sites", help="Print the site registry.")
-    p_sites.add_argument("--json", action="store_true",
-                         help="Print the registry as JSON.")
+    p_sites.add_argument(
+        "--json", action="store_true", help="Print the registry as JSON."
+    )
     p_audit = sub.add_parser("audit", help="Crawl + audit a site.")
     p_audit.add_argument("site", help="Site name from the registry.")
-    p_audit.add_argument("--max-pages", type=int,
-                         default=DEFAULT_MAX_PAGES,
-                         help=f"Page cap 1-{MAX_PAGES_CAP} "
-                              f"(default {DEFAULT_MAX_PAGES}).")
-    p_audit.add_argument("--model", action="store_true",
-                         help="Refine with the local model "
-                              "(Ollama, Nebius fallback; venv-only).")
-    p_audit.add_argument("--file", action="store_true",
-                         help="File ONE findings issue to the "
-                              "site's repo and print AUDIT_DONE.")
-    p_audit.add_argument("--state-dir", default="",
-                         help="Report state dir (default: env "
-                              "BUTTONS_UX_AUDIT_DIR or the volume).")
-    p_audit.add_argument("--out", default="",
-                         help="Also write the report JSON here.")
-    p_groups = sub.add_parser("groups", help="Assign payloads from "
-                             "the latest report.")
+    p_audit.add_argument(
+        "--max-pages",
+        type=int,
+        default=DEFAULT_MAX_PAGES,
+        help=f"Page cap 1-{MAX_PAGES_CAP} (default {DEFAULT_MAX_PAGES}).",
+    )
+    p_audit.add_argument(
+        "--model",
+        action="store_true",
+        help="Refine with the local model (Ollama, Nebius fallback; venv-only).",
+    )
+    p_audit.add_argument(
+        "--file",
+        action="store_true",
+        help="File ONE findings issue to the site's repo and print AUDIT_DONE.",
+    )
+    p_audit.add_argument(
+        "--state-dir",
+        default="",
+        help="Report state dir (default: env BUTTONS_UX_AUDIT_DIR or the volume).",
+    )
+    p_audit.add_argument("--out", default="", help="Also write the report JSON here.")
+    p_groups = sub.add_parser("groups", help="Assign payloads from the latest report.")
     p_groups.add_argument("site", help="Site name from the registry.")
-    p_groups.add_argument("--state-dir", default="",
-                          help="Report state dir override.")
-    p_groups.add_argument("--json", action="store_true",
-                          help="Print groups as JSON (default).")
+    p_groups.add_argument("--state-dir", default="", help="Report state dir override.")
+    p_groups.add_argument(
+        "--json", action="store_true", help="Print groups as JSON (default)."
+    )
     return parser
 
 
 def main(argv=None):
-    args = build_parser().parse_args(
-        sys.argv[1:] if argv is None else argv)
+    args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
     if args.command == "sites":
         if args.json:
             print(json.dumps(SITES, indent=1, sort_keys=True))
@@ -1552,14 +1861,15 @@ def main(argv=None):
         return 0
     if args.command == "groups":
         try:
-            groups = report_groups(
-                args.site, args.state_dir or None)
+            groups = report_groups(args.site, args.state_dir or None)
         except ValueError as exc:
             print(f"ux_audit: {exc}", file=sys.stderr)
             return 2
         if groups is None:
-            print(f"ux_audit: no report yet for {args.site} "
-                  "(run audit first)", file=sys.stderr)
+            print(
+                f"ux_audit: no report yet for {args.site} (run audit first)",
+                file=sys.stderr,
+            )
             return 1
         print(json.dumps(groups, indent=1))
         return 0
@@ -1570,42 +1880,46 @@ def main(argv=None):
         print(f"ux_audit: {exc}", file=sys.stderr)
         return 2
     if not 1 <= args.max_pages <= MAX_PAGES_CAP:
-        print(f"ux_audit: bad --max-pages {args.max_pages}: want "
-              f"1-{MAX_PAGES_CAP}", file=sys.stderr)
+        print(
+            f"ux_audit: bad --max-pages {args.max_pages}: want 1-{MAX_PAGES_CAP}",
+            file=sys.stderr,
+        )
         return 2
     state = args.state_dir or None
-    print(f"ux_audit: crawling {args.site} "
-          f"(max {args.max_pages} pages)…", flush=True)
+    print(f"ux_audit: crawling {args.site} (max {args.max_pages} pages)…", flush=True)
     crawled = crawl(args.site, max_pages=args.max_pages)
     ok = sum(1 for p in crawled["pages"] if not p["error"])
-    print(f"ux_audit: fetched {ok}/{len(crawled['pages'])} pages, "
-          f"{len(crawled['dead'])} dead link(s)", flush=True)
+    print(
+        f"ux_audit: fetched {ok}/{len(crawled['pages'])} pages, "
+        f"{len(crawled['dead'])} dead link(s)",
+        flush=True,
+    )
     if not crawled["pages"]:
-        print("ux_audit: nothing crawled; not filing",
-              file=sys.stderr)
+        print("ux_audit: nothing crawled; not filing", file=sys.stderr)
         return 1
     report = build_report(args.site, crawled)
     if args.model:
         try:
-            report = synthesize_with_model(
-                report, pages_digest(crawled))
+            report = synthesize_with_model(report, pages_digest(crawled))
             added = report["model"]["added_findings"]
-            print(f"ux_audit: model {report['model']['label']} "
-                  f"added {added} finding(s)", flush=True)
+            print(
+                f"ux_audit: model {report['model']['label']} added {added} finding(s)",
+                flush=True,
+            )
         except RuntimeError as exc:
-            print(f"ux_audit: model pass skipped ({exc})",
-                  file=sys.stderr)
+            print(f"ux_audit: model pass skipped ({exc})", file=sys.stderr)
     path = save_report(report, state)
     if args.out:
         try:
             with open(args.out, "w", encoding="utf-8") as f:
                 json.dump(report, f, indent=1)
         except OSError as exc:
-            print(f"ux_audit: --out write failed ({exc})",
-                  file=sys.stderr)
+            print(f"ux_audit: --out write failed ({exc})", file=sys.stderr)
             return 1
-    print(f"ux_audit: {len(report['findings'])} findings, "
-          f"{len(report['groups'])} group(s); report {path}")
+    print(
+        f"ux_audit: {len(report['findings'])} findings, "
+        f"{len(report['groups'])} group(s); report {path}"
+    )
     for idx, group in enumerate(report["groups"], 1):
         print(f"AUDIT_GROUP {idx}: {group['title']}")
     if args.file:
@@ -1617,8 +1931,7 @@ def main(argv=None):
             return 1
         report["filing"] = filing
         save_report(report, state)
-        print(f"AUDIT_DONE {filing['repo']}#{filing['number']} "
-              f"{filing['url']}")
+        print(f"AUDIT_DONE {filing['repo']}#{filing['number']} {filing['url']}")
     return 0
 
 

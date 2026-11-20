@@ -1,6 +1,7 @@
 """Dispatched UX audit agent tests (#850). Hermetic: stub fetches,
 no network, no gh, no live model (stub model_factory instead).
 Run: python3 tests/test_ux_audit.py"""
+
 import json
 import os
 import shlex
@@ -30,6 +31,7 @@ ABOUT = """<html><head><title>About</title></head>
 def stub_fetch_factory(pages):
     def fetch(url, timeout=20, max_bytes=1000):
         return pages.get(url, "FETCH_ERROR: 404")
+
     return fetch
 
 
@@ -39,11 +41,11 @@ class SiteRegistryTest(unittest.TestCase):
         # build output deployed from portfolio, boomtick.blog is
         # served from tech-dancer.
         self.assertEqual(
-            ux_audit.site_config("arii.github.io")["repo"],
-            "arii/portfolio")
+            ux_audit.site_config("arii.github.io")["repo"], "arii/portfolio"
+        )
         self.assertEqual(
-            ux_audit.site_config("boomtick.blog")["repo"],
-            "arii/tech-dancer")
+            ux_audit.site_config("boomtick.blog")["repo"], "arii/tech-dancer"
+        )
 
     def test_unknown_site_fails_closed(self):
         with self.assertRaises(ValueError):
@@ -59,7 +61,8 @@ class ExtractLinksTest(unittest.TestCase):
             '<a href="https://x.example/">x</a>'
             '<img src="/i.png"><a href="/f.css">c</a>'
             '<a href="mailto:a@b.c">m</a>',
-            "https://arii.github.io/")
+            "https://arii.github.io/",
+        )
         self.assertIn("https://arii.github.io/about/", links)
         self.assertIn("https://x.example/", links)
         self.assertNotIn("https://arii.github.io/i.png", links)
@@ -74,17 +77,15 @@ class ExtractLinksTest(unittest.TestCase):
         links = ux_audit.extract_links(
             '<a href="/sitemap.xml">s</a><a href="/feed.atom">f</a>'
             '<a href="/robots.txt">r</a><a href="/about/">a</a>',
-            "https://boomtick.blog/")
+            "https://boomtick.blog/",
+        )
         self.assertEqual(links, ["https://boomtick.blog/about/"])
 
     def test_scope_is_host_and_prefix(self):
         cfg = ux_audit.site_config("boomtick.blog")
-        self.assertTrue(ux_audit.in_scope(
-            "https://boomtick.blog/a?b=c", cfg))
-        self.assertFalse(ux_audit.in_scope(
-            "https://evil.com/", cfg))
-        self.assertFalse(ux_audit.in_scope(
-            "http://boomtick.blog.evil.com/", cfg))
+        self.assertTrue(ux_audit.in_scope("https://boomtick.blog/a?b=c", cfg))
+        self.assertFalse(ux_audit.in_scope("https://evil.com/", cfg))
+        self.assertFalse(ux_audit.in_scope("http://boomtick.blog.evil.com/", cfg))
         self.assertFalse(ux_audit.in_scope("not a url", cfg))
 
 
@@ -95,102 +96,94 @@ class CrawlTest(unittest.TestCase):
             "https://arii.github.io/about/": ABOUT,
         }
         crawled = ux_audit.crawl(
-            "arii.github.io", max_pages=10,
-            fetch=stub_fetch_factory(pages))
+            "arii.github.io", max_pages=10, fetch=stub_fetch_factory(pages)
+        )
         routes = sorted(p["route"] for p in crawled["pages"])
-        self.assertEqual(routes, ["/", "/about/", "/extra/",
-                                 "/missing"])
+        self.assertEqual(routes, ["/", "/about/", "/extra/", "/missing"])
         dead_urls = [d["url"] for d in crawled["dead"]]
         # Each dead URL appears exactly once (no crawl+sweep dupes).
         self.assertEqual(sorted(dead_urls), sorted(set(dead_urls)))
         self.assertIn("https://arii.github.io/missing", dead_urls)
         # Assets are never crawled as pages.
-        self.assertFalse(any(p["route"].endswith(".png")
-                             for p in crawled["pages"]))
+        self.assertFalse(any(p["route"].endswith(".png") for p in crawled["pages"]))
 
     def test_max_pages_bounds_crawl_and_probes(self):
-        pages = {"https://arii.github.io/":
-                 "<a href=\"/a\">a</a><a href=\"/b\">b</a>"}
+        pages = {"https://arii.github.io/": '<a href="/a">a</a><a href="/b">b</a>'}
         crawled = ux_audit.crawl(
-            "arii.github.io", max_pages=1,
-            fetch=stub_fetch_factory(pages))
+            "arii.github.io", max_pages=1, fetch=stub_fetch_factory(pages)
+        )
         self.assertEqual(len(crawled["pages"]), 1)
         self.assertLessEqual(len(crawled["dead"]), 1)
 
     def test_start_failure_yields_honest_page(self):
         crawled = ux_audit.crawl(
-            "arii.github.io", max_pages=5,
-            fetch=stub_fetch_factory({}))
+            "arii.github.io", max_pages=5, fetch=stub_fetch_factory({})
+        )
         self.assertEqual(len(crawled["pages"]), 1)
         self.assertTrue(crawled["pages"][0]["error"])
 
     def test_sitemap_urls_parsed_and_filtered(self):
-        xml = ('<?xml version="1.0"?><urlset>'
-               '<url><loc>https://s/a/</loc></url>'
-               '<url><loc>/b</loc></url>'
-               '<url><loc>https://s/i.png</loc></url>'
-               '<url><loc>https://s/nested.xml</loc></url>'
-               '</urlset>')
+        xml = (
+            '<?xml version="1.0"?><urlset>'
+            "<url><loc>https://s/a/</loc></url>"
+            "<url><loc>/b</loc></url>"
+            "<url><loc>https://s/i.png</loc></url>"
+            "<url><loc>https://s/nested.xml</loc></url>"
+            "</urlset>"
+        )
         self.assertEqual(
             ux_audit.sitemap_urls(xml, "https://s/sitemap.xml"),
-            ["https://s/a/", "https://s/b"])
-        self.assertEqual(ux_audit.sitemap_urls("nope", "https://s/"),
-                         [])
-        self.assertEqual(ux_audit.sitemap_urls(None, "https://s/"),
-                         [])
+            ["https://s/a/", "https://s/b"],
+        )
+        self.assertEqual(ux_audit.sitemap_urls("nope", "https://s/"), [])
+        self.assertEqual(ux_audit.sitemap_urls(None, "https://s/"), [])
 
     def test_crawl_seeds_from_sitemap(self):
         pages = {
-            "https://arii.github.io/":
-                "<html><head><title>t</title></head><body></body"
-                "></html>",
-            "https://arii.github.io/sitemap.xml":
-                "<urlset><url><loc>https://arii.github.io/seeded/"
-                "</loc></url></urlset>",
-            "https://arii.github.io/seeded/":
-                "<html><head><title>s</title></head><body></body"
-                "></html>",
+            "https://arii.github.io/": "<html><head><title>t</title></head><body></body"
+            "></html>",
+            "https://arii.github.io/sitemap.xml": "<urlset><url><loc>https://arii.github.io/seeded/"
+            "</loc></url></urlset>",
+            "https://arii.github.io/seeded/": "<html><head><title>s</title></head><body></body"
+            "></html>",
         }
         crawled = ux_audit.crawl(
-            "arii.github.io", max_pages=5,
-            fetch=stub_fetch_factory(pages))
+            "arii.github.io", max_pages=5, fetch=stub_fetch_factory(pages)
+        )
         routes = sorted(p["route"] for p in crawled["pages"])
         self.assertEqual(routes, ["/", "/seeded/"])
 
     def test_missing_sitemap_degrades_to_anchors(self):
         pages = {"https://arii.github.io/": HOME}
         crawled = ux_audit.crawl(
-            "arii.github.io", max_pages=5,
-            fetch=stub_fetch_factory(pages))
+            "arii.github.io", max_pages=5, fetch=stub_fetch_factory(pages)
+        )
         routes = sorted(p["route"] for p in crawled["pages"])
         self.assertIn("/", routes)
 
     def test_xml_body_skipped_not_audited(self):
         pages = {
-            "https://arii.github.io/":
-                '<html><head><title>t</title></head><body>'
-                '<a href="/feed">f</a></body></html>',
-            "https://arii.github.io/feed":
-                '<?xml version="1.0"?><rss></rss>',
+            "https://arii.github.io/": "<html><head><title>t</title></head><body>"
+            '<a href="/feed">f</a></body></html>',
+            "https://arii.github.io/feed": '<?xml version="1.0"?><rss></rss>',
         }
         crawled = ux_audit.crawl(
-            "arii.github.io", max_pages=5,
-            fetch=stub_fetch_factory(pages))
+            "arii.github.io", max_pages=5, fetch=stub_fetch_factory(pages)
+        )
         report = ux_audit.build_report("arii.github.io", crawled)
         self.assertEqual(report["page_count"], 1)
         self.assertIn("/feed", report["routes"])
-        self.assertFalse(any(f["route"] == "/feed"
-                             for f in report["findings"]))
+        self.assertFalse(any(f["route"] == "/feed" for f in report["findings"]))
 
     def test_bad_args_rejected(self):
         with self.assertRaises(ValueError):
             ux_audit.crawl("nope", fetch=stub_fetch_factory({}))
         with self.assertRaises(ValueError):
-            ux_audit.crawl("arii.github.io", max_pages=0,
-                           fetch=stub_fetch_factory({}))
+            ux_audit.crawl("arii.github.io", max_pages=0, fetch=stub_fetch_factory({}))
         with self.assertRaises(ValueError):
-            ux_audit.crawl("arii.github.io", max_pages=999,
-                           fetch=stub_fetch_factory({}))
+            ux_audit.crawl(
+                "arii.github.io", max_pages=999, fetch=stub_fetch_factory({})
+            )
 
 
 class AuditPageTest(unittest.TestCase):
@@ -211,60 +204,57 @@ class AuditPageTest(unittest.TestCase):
         self.assertIn("[P2] no h1 on page", titles)
         self.assertIn("[P2] no <main> landmark", titles)
         for item in findings:
-            self.assertIn(item["severity"],
-                          ("critical", "high", "medium", "low",
-                           "info"))
+            self.assertIn(
+                item["severity"], ("critical", "high", "medium", "low", "info")
+            )
             self.assertIn("category", item)
 
     def test_unlabeled_inputs_and_dupes(self):
-        html = ('<html lang="en"><head><title>t</title>'
-                '<meta name="viewport" content="w"></head><body>'
-                '<main><h1>t</h1>'
-                '<form><input id="a"><input id="a"></form>'
-                '</main></body></html>')
+        html = (
+            '<html lang="en"><head><title>t</title>'
+            '<meta name="viewport" content="w"></head><body>'
+            "<main><h1>t</h1>"
+            '<form><input id="a"><input id="a"></form>'
+            "</main></body></html>"
+        )
         findings, _ = ux_audit.audit_page("/", html)
         titles = [f["title"] for f in findings]
         self.assertIn("[P1] form inputs without labels", titles)
         self.assertIn("[P2] duplicate element ids", titles)
 
     def test_missing_title_is_p1(self):
-        findings, _ = ux_audit.audit_page(
-            "/", "<html><body><h1>x</h1></body></html>")
-        self.assertIn("[P1] missing page title",
-                      [f["title"] for f in findings])
+        findings, _ = ux_audit.audit_page("/", "<html><body><h1>x</h1></body></html>")
+        self.assertIn("[P1] missing page title", [f["title"] for f in findings])
 
 
 class CrossPageTest(unittest.TestCase):
     def test_nav_variants_and_dead_links(self):
-        entries = [("/", ux_audit.page_facts(HOME)),
-                   ("/about/", ux_audit.page_facts(ABOUT))]
-        dead = [{"url": "https://s/m", "from_route": "/",
-                 "reason": "FETCH_ERROR: 404"}]
-        findings, stats = ux_audit.synthesize_cross_page(entries,
-                                                         dead)
+        entries = [
+            ("/", ux_audit.page_facts(HOME)),
+            ("/about/", ux_audit.page_facts(ABOUT)),
+        ]
+        dead = [{"url": "https://s/m", "from_route": "/", "reason": "FETCH_ERROR: 404"}]
+        findings, stats = ux_audit.synthesize_cross_page(entries, dead)
         titles = [f["title"] for f in findings]
-        self.assertIn("[P2] inconsistent navigation across pages",
-                      titles)
+        self.assertIn("[P2] inconsistent navigation across pages", titles)
         self.assertIn("[P1] dead in-scope link", titles)
         self.assertEqual(stats["nav_variants"], 2)
         self.assertEqual(stats["dead"], 1)
 
     def test_consistent_nav_is_quiet(self):
-        entries = [("/", ux_audit.page_facts(HOME)),
-                   ("/2", ux_audit.page_facts(HOME))]
-        findings, stats = ux_audit.synthesize_cross_page(entries,
-                                                         [])
+        entries = [("/", ux_audit.page_facts(HOME)), ("/2", ux_audit.page_facts(HOME))]
+        findings, stats = ux_audit.synthesize_cross_page(entries, [])
         self.assertEqual(stats["nav_variants"], 1)
-        self.assertFalse(any("navigation" in f["title"]
-                             for f in findings))
+        self.assertFalse(any("navigation" in f["title"] for f in findings))
 
 
 class ScoringTest(unittest.TestCase):
     def setUp(self):
-        self.entries = [("/", ux_audit.page_facts(HOME)),
-                        ("/about/", ux_audit.page_facts(ABOUT))]
-        self.cross = {"nav_variants": 2, "dead": 1,
-                      "placeholder_routes": 1}
+        self.entries = [
+            ("/", ux_audit.page_facts(HOME)),
+            ("/about/", ux_audit.page_facts(ABOUT)),
+        ]
+        self.cross = {"nav_variants": 2, "dead": 1, "placeholder_routes": 1}
 
     def test_heuristics_scored_with_basis_na_where_dynamic(self):
         scores = ux_audit.score_heuristics(self.entries, self.cross)
@@ -282,13 +272,13 @@ class ScoringTest(unittest.TestCase):
         scores = ux_audit.score_heuristics(self.entries, self.cross)
         total, maximum, band = ux_audit.heuristic_total(scores)
         self.assertEqual(maximum, 28)  # 7 scored x 4
-        self.assertIn(band, ("Excellent", "Good", "Acceptable",
-                             "Poor", "Critical", "n/a"))
+        self.assertIn(
+            band, ("Excellent", "Good", "Acceptable", "Poor", "Critical", "n/a")
+        )
 
     def test_audit_dims_capped_and_based(self):
         dims = ux_audit.score_audit_dims(self.entries, self.cross)
-        self.assertEqual(
-            sorted(dims), sorted(ux_audit.AUDIT_DIMS))
+        self.assertEqual(sorted(dims), sorted(ux_audit.AUDIT_DIMS))
         self.assertLessEqual(dims["Theming"]["score"], 2)
         self.assertLessEqual(dims["Responsive Design"]["score"], 3)
         # ABOUT lacks a viewport meta: responsive floors at 1.
@@ -301,16 +291,25 @@ class ScoringTest(unittest.TestCase):
 class GroupingTest(unittest.TestCase):
     def test_groups_follow_fixed_order(self):
         findings = [
-            {"severity": "low", "title": "t1", "route": "/",
-             "viewport": "static", "evidence": "e",
-             "category": "Theming"},
-            {"severity": "high", "title": "a1", "route": "/",
-             "viewport": "static", "evidence": "e",
-             "category": "Accessibility"},
+            {
+                "severity": "low",
+                "title": "t1",
+                "route": "/",
+                "viewport": "static",
+                "evidence": "e",
+                "category": "Theming",
+            },
+            {
+                "severity": "high",
+                "title": "a1",
+                "route": "/",
+                "viewport": "static",
+                "evidence": "e",
+                "category": "Accessibility",
+            },
         ]
         groups = ux_audit.group_findings(findings)
-        self.assertEqual([g["category"] for g in groups],
-                         ["Accessibility", "Theming"])
+        self.assertEqual([g["category"] for g in groups], ["Accessibility", "Theming"])
         self.assertIn("worst: high", groups[0]["title"])
 
     def test_empty_yields_no_findings_group(self):
@@ -319,39 +318,44 @@ class GroupingTest(unittest.TestCase):
         self.assertEqual(groups[0]["category"], "No findings")
 
     def test_guess_target_file(self):
-        self.assertEqual(ux_audit.guess_target_file("/"),
-                         "index.html")
-        self.assertEqual(ux_audit.guess_target_file("/about/"),
-                         "about/index.html")
-        self.assertEqual(ux_audit.guess_target_file("/x"),
-                         "x.html")
-        self.assertEqual(ux_audit.guess_target_file("/a/b.html"),
-                         "a/b.html")
+        self.assertEqual(ux_audit.guess_target_file("/"), "index.html")
+        self.assertEqual(ux_audit.guess_target_file("/about/"), "about/index.html")
+        self.assertEqual(ux_audit.guess_target_file("/x"), "x.html")
+        self.assertEqual(ux_audit.guess_target_file("/a/b.html"), "a/b.html")
 
     def test_group_spec_body_parses_as_task_spec(self):
         from backend.parse_task_spec import parse_task_spec
         from backend.verify_allowlist import validate_verify_command
 
-        groups = ux_audit.group_findings([
-            {"severity": "high", "title": "[P1] x", "route": "/a/",
-             "viewport": "static", "evidence": "e",
-             "category": "Accessibility"}])
+        groups = ux_audit.group_findings(
+            [
+                {
+                    "severity": "high",
+                    "title": "[P1] x",
+                    "route": "/a/",
+                    "viewport": "static",
+                    "evidence": "e",
+                    "category": "Accessibility",
+                }
+            ]
+        )
         body = ux_audit.group_spec_body(
-            "boomtick.blog", "arii/tech-dancer",
-            "arii/tech-dancer#1", 1, groups[0])
+            "boomtick.blog", "arii/tech-dancer", "arii/tech-dancer#1", 1, groups[0]
+        )
         spec = parse_task_spec(body)
         self.assertTrue(spec["target_files"])
-        self.assertTrue(validate_verify_command(
-            spec["verification_command"]))
+        self.assertTrue(validate_verify_command(spec["verification_command"]))
 
 
 class IssueRenderTest(unittest.TestCase):
     def _report(self):
-        pages = {"https://arii.github.io/": HOME,
-                 "https://arii.github.io/about/": ABOUT}
+        pages = {
+            "https://arii.github.io/": HOME,
+            "https://arii.github.io/about/": ABOUT,
+        }
         crawled = ux_audit.crawl(
-            "arii.github.io", max_pages=10,
-            fetch=stub_fetch_factory(pages))
+            "arii.github.io", max_pages=10, fetch=stub_fetch_factory(pages)
+        )
         return ux_audit.build_report("arii.github.io", crawled)
 
     def test_render_carries_scores_groups_and_spec(self):
@@ -359,21 +363,18 @@ class IssueRenderTest(unittest.TestCase):
         from backend.verify_allowlist import validate_verify_command
 
         report = self._report()
-        title, body = ux_audit.render_issue("arii.github.io",
-                                            report)
+        title, body = ux_audit.render_issue("arii.github.io", report)
         self.assertIn("[ux-audit] arii.github.io", title)
         self.assertIn("Heuristics:", body)
         self.assertIn("## Findings by group", body)
         self.assertIn("### Group 1:", body)
         spec = parse_task_spec(body)
         self.assertTrue(spec["target_files"])
-        self.assertTrue(validate_verify_command(
-            spec["verification_command"]))
+        self.assertTrue(validate_verify_command(spec["verification_command"]))
 
     def test_findings_severity_ranked(self):
         report = self._report()
-        order = {"critical": 0, "high": 1, "medium": 2, "low": 3,
-                 "info": 4}
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         ranks = [order[f["severity"]] for f in report["findings"]]
         self.assertEqual(ranks, sorted(ranks))
 
@@ -388,10 +389,8 @@ class IssueRenderTest(unittest.TestCase):
             self.assertTrue(groups)
             self.assertIn("body", groups[0])
             self.assertIn("Target Files", groups[0]["body"])
-            self.assertIsNone(ux_audit.load_report(
-                "boomtick.blog", tmp))
-            self.assertIsNone(ux_audit.report_groups(
-                "boomtick.blog", tmp))
+            self.assertIsNone(ux_audit.load_report("boomtick.blog", tmp))
+            self.assertIsNone(ux_audit.report_groups("boomtick.blog", tmp))
 
 
 class FileIssueTest(unittest.TestCase):
@@ -406,7 +405,7 @@ class FileIssueTest(unittest.TestCase):
             fh.write(
                 "#!/bin/sh\n"
                 f'echo "$@" > {shlex.quote(argv_file)}\n'
-                "prev=\"\"\n"
+                'prev=""\n'
                 'for a in "$@"; do\n'
                 '  if [ "$prev" = "--body-file" ]; then '
                 f'cp "$a" {shlex.quote(body_file)}; fi\n'
@@ -414,14 +413,15 @@ class FileIssueTest(unittest.TestCase):
                 "done\n"
                 f"printf %s {shlex.quote(stdout)}\n"
                 f"printf %s {shlex.quote(stderr)} >&2\n"
-                f"exit {exit}\n")
+                f"exit {exit}\n"
+            )
         os.chmod(script, 0o755)
         return argv_file, body_file
 
     def _path_with(self, tmp):
         return mock.patch.dict(
-            os.environ,
-            {"PATH": tmp + os.pathsep + os.environ.get("PATH", "")})
+            os.environ, {"PATH": tmp + os.pathsep + os.environ.get("PATH", "")}
+        )
 
     def test_success_parses_url_and_number(self):
         url = "https://github.com/arii/tech-dancer/issues/12"
@@ -429,24 +429,30 @@ class FileIssueTest(unittest.TestCase):
             self._stub_gh(tmp, stdout=url + "\n")
             with self._path_with(tmp):
                 out = ux_audit.file_issue("boomtick.blog", "t", "b")
-        self.assertEqual(out, {"number": 12, "url": url,
-                               "repo": "arii/tech-dancer"})
+        self.assertEqual(out, {"number": 12, "url": url, "repo": "arii/tech-dancer"})
 
     def test_argv_has_no_unsupported_flags(self):
         # Regression guard for #876: gh issue create has no --json,
         # and a fake run seam hid the bad flag from the suite.
         url = "https://github.com/arii/tech-dancer/issues/3"
         with tempfile.TemporaryDirectory() as tmp:
-            argv_file, body_file = self._stub_gh(
-                tmp, stdout=url + "\n")
+            argv_file, body_file = self._stub_gh(tmp, stdout=url + "\n")
             with self._path_with(tmp):
                 ux_audit.file_issue("boomtick.blog", "t", "b")
             with open(argv_file, encoding="utf-8") as fh:
                 argv = fh.read().strip().split(" ")
             self.assertEqual(
                 argv[:7],
-                ["issue", "create", "--repo", "arii/tech-dancer",
-                 "--title", "t", "--body-file"])
+                [
+                    "issue",
+                    "create",
+                    "--repo",
+                    "arii/tech-dancer",
+                    "--title",
+                    "t",
+                    "--body-file",
+                ],
+            )
             self.assertNotIn("--json", argv)
             with open(body_file, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "b")
@@ -456,9 +462,11 @@ class FileIssueTest(unittest.TestCase):
             ux_audit.file_issue("nope", "t", "b")
 
     def test_failure_surfaces_full_output(self):
-        stderr = ("unknown flag: --json\n"
-                  "Usage:  gh issue create [flags]\n"
-                  "  -w, --web  Open the browser to create an issue")
+        stderr = (
+            "unknown flag: --json\n"
+            "Usage:  gh issue create [flags]\n"
+            "  -w, --web  Open the browser to create an issue"
+        )
         with tempfile.TemporaryDirectory() as tmp:
             self._stub_gh(tmp, stderr=stderr, exit=1)
             with self._path_with(tmp):
@@ -483,8 +491,7 @@ class FileIssueTest(unittest.TestCase):
             with self._path_with(tmp):
                 out = ux_audit.file_issue("arii.github.io", "t", "b")
             with open(argv_file, encoding="utf-8") as fh:
-                self.assertIn("arii/portfolio",
-                              fh.read().split(" "))
+                self.assertIn("arii/portfolio", fh.read().split(" "))
         self.assertEqual(out["repo"], "arii/portfolio")
 
 
@@ -492,34 +499,39 @@ class ModelSynthesisTest(unittest.TestCase):
     def _report(self):
         pages = {"https://arii.github.io/": HOME}
         crawled = ux_audit.crawl(
-            "arii.github.io", max_pages=5,
-            fetch=stub_fetch_factory(pages))
+            "arii.github.io", max_pages=5, fetch=stub_fetch_factory(pages)
+        )
         return ux_audit.build_report("arii.github.io", crawled)
 
     def test_stub_model_adds_without_removing(self):
         report = self._report()
         before = len(report["findings"])
         h1_before = report["heuristics"]["1"]["score"]
-        reply = json.dumps({
-            "findings": [
-                {"severity": "P2", "title": "copy tone flat",
-                 "route": "/", "evidence": "hero",
-                 "category": "Implementation Integrity"},
-                {"severity": "bogus", "title": "", "route": "/"},
-            ],
-            "heuristic_scores": {"1": 3, "99": 4, "2": "n/a"},
-            "summary": "Mostly fine."})
+        reply = json.dumps(
+            {
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "title": "copy tone flat",
+                        "route": "/",
+                        "evidence": "hero",
+                        "category": "Implementation Integrity",
+                    },
+                    {"severity": "bogus", "title": "", "route": "/"},
+                ],
+                "heuristic_scores": {"1": 3, "99": 4, "2": "n/a"},
+                "summary": "Mostly fine.",
+            }
+        )
         model = mock.Mock()
         model.invoke.return_value = mock.Mock(content=reply)
 
         def factory(prefer):
             return model, {"provider": "ollama", "model": "q"}
 
-        ux_audit.synthesize_with_model(
-            report, [{"route": "/"}], model_factory=factory)
+        ux_audit.synthesize_with_model(report, [{"route": "/"}], model_factory=factory)
         self.assertEqual(len(report["findings"]), before + 1)
-        added = [f for f in report["findings"]
-                 if "(model)" in f["title"]]
+        added = [f for f in report["findings"] if "(model)" in f["title"]]
         self.assertEqual(len(added), 1)
         self.assertEqual(added[0]["severity"], "medium")
         self.assertEqual(report["heuristics"]["1"]["score"], 3)
@@ -527,22 +539,22 @@ class ModelSynthesisTest(unittest.TestCase):
         self.assertEqual(h1_before, None)
         self.assertIn("ollama", report["model"]["label"])
 
-    def test_ollama_failure_falls_back_to_nebius(self):
+    def test_ollama_failure_falls_back_to_twt(self):
         report = self._report()
         model = mock.Mock()
         model.invoke.return_value = mock.Mock(
-            content='{"findings": [], "summary": "clean"}')
+            content='{"findings": [], "summary": "clean"}'
+        )
         calls = []
 
         def factory(prefer):
             calls.append(prefer)
             if prefer == "ollama":
                 raise RuntimeError("down")
-            return model, {"provider": "nebius", "model": "n"}
+            return model, {"provider": "twt", "model": "default"}
 
-        ux_audit.synthesize_with_model(
-            report, [], model_factory=factory)
-        self.assertEqual(calls, ["ollama", "nebius"])
+        ux_audit.synthesize_with_model(report, [], model_factory=factory)
+        self.assertEqual(calls, ["ollama", "twt"])
         self.assertIn("fallback", report["model"]["label"])
 
     def test_no_model_raises(self):
@@ -552,21 +564,18 @@ class ModelSynthesisTest(unittest.TestCase):
             raise RuntimeError("down")
 
         with self.assertRaises(RuntimeError):
-            ux_audit.synthesize_with_model(
-                report, [], model_factory=factory)
+            ux_audit.synthesize_with_model(report, [], model_factory=factory)
 
     def test_unparseable_reply_raises(self):
         report = self._report()
         model = mock.Mock()
-        model.invoke.return_value = mock.Mock(
-            content="no json here at all***")
+        model.invoke.return_value = mock.Mock(content="no json here at all***")
 
         def factory(prefer):
             return model, {"provider": "ollama", "model": "q"}
 
         with self.assertRaises(RuntimeError):
-            ux_audit.synthesize_with_model(
-                report, [], model_factory=factory)
+            ux_audit.synthesize_with_model(report, [], model_factory=factory)
 
 
 class RubricTest(unittest.TestCase):
@@ -578,8 +587,7 @@ class RubricTest(unittest.TestCase):
         text = ux_audit.load_skill_rubric()
         self.assertTrue(text)
         # Either the local skill (long) or the embedded fallback.
-        self.assertTrue(len(text) > 500
-                        or text == ux_audit.EMBEDDED_RUBRIC)
+        self.assertTrue(len(text) > 500 or text == ux_audit.EMBEDDED_RUBRIC)
 
 
 class CliTest(unittest.TestCase):
@@ -592,14 +600,14 @@ class CliTest(unittest.TestCase):
 
     def test_audit_rejects_bad_cap(self):
         self.assertEqual(
-            ux_audit.main(["audit", "arii.github.io",
-                           "--max-pages", "999"]), 2)
+            ux_audit.main(["audit", "arii.github.io", "--max-pages", "999"]), 2
+        )
 
     def test_groups_without_report_exits_1(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
-                ux_audit.main(["groups", "arii.github.io",
-                               "--state-dir", tmp]), 1)
+                ux_audit.main(["groups", "arii.github.io", "--state-dir", tmp]), 1
+            )
 
     def test_groups_rejects_unknown_site(self):
         self.assertEqual(ux_audit.main(["groups", "nope"]), 2)

@@ -1,10 +1,12 @@
-"""Guard the Nebius spend-cap choke point (#526).
+"""Guard the spend-cap and model routing choke point (#526, #1481).
 
-Every metered Nebius construction must flow through
-model_router.resolve_llm (cap checked) + chat_kwargs. A ChatOpenAI
-call with a literal model= keyword is a direct construction that
-bypasses the cap. AST-only: no agent deps needed.
+All model constructions must flow through model_router.build_chat_model
+or build_structured_chat_model (which enforce spend cap, TwT routing,
+bounded history, and transport). Direct ChatOpenAI or ChatOllama
+instantiations outside model_router.py are strictly forbidden.
+AST-only: no agent deps needed.
 """
+
 import ast
 import glob
 import os
@@ -23,12 +25,13 @@ def _chat_constructions(path):
             continue
         func = node.func
         name = getattr(func, "attr", None) or getattr(func, "id", None)
-        if name == "ChatOpenAI" and any(
-                k.arg == "model" for k in node.keywords):
+        if name in ("ChatOpenAI", "ChatOllama") and any(
+            k.arg == "model" for k in node.keywords
+        ):
             model_kw.append(node.lineno)
         if name == "resolve_llm":
             resolve.append(node.lineno)
-        if name == "ChatOpenAI":
+        if name in ("ChatOpenAI", "ChatOllama"):
             chat.append(node.lineno)
     return model_kw, resolve, chat
 
@@ -42,16 +45,27 @@ class TestNebiusChoke(unittest.TestCase):
                 violators[os.path.basename(path)] = model_kw
         self.assertEqual(violators, {})
 
-    def test_resolve_conflicts_checks_cap_first(self):
-        _, resolve, chat = _chat_constructions(
-            os.path.join(DEEP_AGENT, "resolve_conflicts.py"))
-        self.assertTrue(resolve)
-        self.assertTrue(chat)
-        self.assertLess(min(resolve), min(chat))
+    def test_no_direct_chat_construction_outside_model_router(self):
+        violators = {}
+        for path in sorted(glob.glob(os.path.join(DEEP_AGENT, "*.py"))):
+            base = os.path.basename(path)
+            if base == "model_router.py":
+                continue
+            _, _, chat = _chat_constructions(path)
+            if chat:
+                violators[base] = chat
+        self.assertEqual(violators, {})
 
-    def test_triage_fanout_checks_cap_first(self):
+    def test_resolve_conflicts_uses_model_router(self):
         _, resolve, chat = _chat_constructions(
-            os.path.join(DEEP_AGENT, "triage_fanout.py"))
+            os.path.join(DEEP_AGENT, "resolve_conflicts.py")
+        )
         self.assertTrue(resolve)
-        self.assertTrue(chat)
-        self.assertLess(min(resolve), min(chat))
+        self.assertEqual(chat, [])
+
+    def test_triage_fanout_uses_model_router(self):
+        _, resolve, chat = _chat_constructions(
+            os.path.join(DEEP_AGENT, "triage_fanout.py")
+        )
+        self.assertTrue(resolve)
+        self.assertEqual(chat, [])

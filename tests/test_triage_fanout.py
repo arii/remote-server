@@ -93,17 +93,21 @@ class TestMainFailures(unittest.TestCase):
                 "chat_kwargs",
                 side_effect=lambda s: {"model": s["model"], "base_url": s["base_url"]},
             ),
-            mock.patch.object(triage_fanout, "ChatOpenAI") as chat_cls,
+            mock.patch.object(
+                triage_fanout.model_router,
+                "build_chat_model",
+                side_effect=lambda spec, think=False: (agent, spec),
+            ) as build_mock,
             mock.patch.object(triage_fanout, "create_deep_agent", return_value=agent),
             mock.patch.object(triage_fanout.ledger, "record") as record_mock,
             redirect_stdout(out),
             redirect_stderr(err),
         ):
             code = triage_fanout.main()
-        return code, out.getvalue(), err.getvalue(), chat_cls, record_mock
+        return code, out.getvalue(), err.getvalue(), build_mock, record_mock
 
     def test_provider_404_exits_one_with_single_line(self):
-        code, stdout, stderr, chat_cls, record_mock = self._run_main(
+        code, stdout, stderr, build_mock, record_mock = self._run_main(
             {"NEBIUS_MODEL": ""}, Fake404()
         )
         self.assertEqual(code, 1)
@@ -118,14 +122,14 @@ class TestMainFailures(unittest.TestCase):
         record_mock.assert_not_called()
 
     def test_blank_model_never_reaches_provider(self):
-        _, _, _, chat_cls, _ = self._run_main({"NEBIUS_MODEL": ""}, Fake404())
-        kwargs = chat_cls.call_args
+        _, _, _, build_mock, _ = self._run_main({"NEBIUS_MODEL": ""}, Fake404())
+        kwargs = build_mock.call_args
         self.assertIsNotNone(kwargs)
-        self.assertEqual(kwargs.kwargs["model"], PIN)
+        self.assertEqual(kwargs.kwargs["spec"]["model"], PIN)
 
     def test_unset_model_never_reaches_provider(self):
-        _, _, _, chat_cls, _ = self._run_main({}, Fake404())
-        self.assertEqual(chat_cls.call_args.kwargs["model"], PIN)
+        _, _, _, build_mock, _ = self._run_main({}, Fake404())
+        self.assertEqual(build_mock.call_args.kwargs["spec"]["model"], PIN)
 
     def test_plain_error_without_status_code(self):
         code, stdout, stderr, _, _ = self._run_main(
@@ -281,7 +285,7 @@ class TestPreferSelection(unittest.TestCase):
             mock.patch.object(
                 triage_fanout.model_router,
                 "build_chat_model",
-                return_value=(mock.Mock(), spec),
+                side_effect=lambda spec=None, think=False: (mock.Mock(), spec),
             ) as ollama_cls,
             mock.patch.object(triage_fanout, "create_deep_agent", return_value=agent),
             mock.patch.object(triage_fanout.ledger, "record") as record_mock,
@@ -324,21 +328,15 @@ class TestPreferSelection(unittest.TestCase):
             triage_fanout.extract_prefer(["triage_fanout.py", "--prefer=bogus"])
         self.assertIn("bad --prefer='bogus'", str(ctx.exception))
 
-    def test_keyed_auto_uses_nebius_pin(self):
-        (code, _, stderr, resolve_mock, chat_cls, ollama_cls, record_mock) = (
-            self._run_main(
-                ["triage_fanout.py", "arii/remote-server"],
-                {"NEBIUS_API_KEY": "dummy"},
-                self.CLOUD_SPEC,
-            )
+    def test_explicit_prefer_nebius_uses_nebius_pin(self):
+        (code, _, stderr, resolve_mock, _, ollama_cls, record_mock) = self._run_main(
+            ["triage_fanout.py", "--prefer=nebius", "arii/remote-server"],
+            {"NEBIUS_API_KEY": "dummy"},
+            self.CLOUD_SPEC,
         )
         self.assertEqual(code, 0)
         resolve_mock.assert_called_once_with(prefer="nebius")
-        self.assertEqual(chat_cls.call_args.kwargs["model"], PIN)
-        self.assertEqual(
-            chat_cls.call_args.kwargs["base_url"], "https://api.studio.nebius.com/v1"
-        )
-        ollama_cls.assert_not_called()
+        self.assertEqual(ollama_cls.call_args.kwargs["spec"]["model"], PIN)
         self.assertNotIn("no Nebius key", stderr)
         self.assertEqual(record_mock.call_args.args[1], f"nebius:{PIN}")
 
