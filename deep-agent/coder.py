@@ -1111,7 +1111,15 @@ def mark_unverified(summary):
 
 
 def run_coder(
-    worktree, brief, system, thread, timeout, *, repair_files=(), repair=False
+    worktree,
+    brief,
+    system,
+    thread,
+    timeout,
+    *,
+    repair_files=(),
+    repair=False,
+    model_tier=None,
 ):
     """Invoke the coder with a verify gate.
 
