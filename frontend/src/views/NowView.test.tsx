@@ -653,6 +653,29 @@ describe('triage banner dynamics (issue #930)', () => {
       repoContextText('boomtick', { name: 'boomtick', full: 'arii/boomtick', branch: 'feat', clean: false }),
     ).toBe('repo: boomtick (feat) · dirty worktree');
   });
+
+  it('repoContextText respects item.branch and isolates remote runs from checkout branch (issue #1461)', () => {
+    const localInfo = { name: 'remote-server', full: 'arii/remote-server', branch: 'fix/coder-verification-runtime-1368', clean: true };
+    // failing-run on main should show main, not the checkout branch:
+    expect(
+      repoContextText('remote-server', localInfo, { kind: 'failing-run', branch: 'main' }),
+    ).toBe('repo: remote-server (main)');
+
+    // failing-run without branch should not inherit checkout branch:
+    expect(
+      repoContextText('remote-server', localInfo, { kind: 'failing-run' }),
+    ).toBe('repo: remote-server');
+
+    // pending-approval uses PR branch:
+    expect(
+      repoContextText('remote-server', localInfo, { kind: 'pending-approval', branch: 'feature-ui' }),
+    ).toBe('repo: remote-server (feature-ui)');
+
+    // local webhook items continue to show local checkout branch and dirty flag:
+    expect(
+      repoContextText('remote-server', { name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: false }, { kind: 'skipped-webhook' }),
+    ).toBe('repo: remote-server (main) · dirty worktree');
+  });
 });
 
 describe('guided empty state (issue #809)', () => {

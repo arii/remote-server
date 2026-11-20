@@ -482,9 +482,14 @@ def _assemble_items(name: str, now: float) -> list[dict]:
         rid = wf.get("id", "?")
         title = f"Failing workflow: {wf.get('name', 'Workflow')}"
         detail = wf.get("diagnosed_cause", "Workflow failed.")
+        branch = wf.get("branch")
+        if branch == "?":
+            branch = None
         key = (title, detail)
         if key in seen_runs:
             seen_runs[key]["runs"] += 1
+            if branch and branch not in seen_runs[key]["branches"]:
+                seen_runs[key]["branches"].append(branch)
             continue
         item = {
             "id": f"run-{rid}",
@@ -502,11 +507,19 @@ def _assemble_items(name: str, now: float) -> list[dict]:
             },
             "created_at": _run_created_ts(wf, now),
         }
-        seen_runs[key] = {"item": item, "runs": 1}
+        if branch:
+            item["branch"] = branch
+        seen_runs[key] = {
+            "item": item,
+            "runs": 1,
+            "branches": [branch] if branch else [],
+        }
         items.append(item)
     for entry in seen_runs.values():
         if entry["runs"] > 1:
             entry["item"]["title"] += f" ×{entry['runs']}"
+            if entry["branches"]:
+                entry["item"]["branch"] = ", ".join(entry["branches"])
     for job in list_failed_jobs():
         repo = _event_repo(job.get("repo"), name)
         if repo != name:
@@ -647,24 +660,26 @@ def _assemble_items(name: str, now: float) -> list[dict]:
         if repo != name:
             continue
         eid = e.get("id", e.get("ts", "?"))
-        items.append(
-            {
-                "id": f"approval-{eid}",
-                "kind": "pending-approval",
-                "title": str(e.get("title", "Approval pending")),
-                "detail": str(e.get("detail", e.get("event", "awaiting approval"))),
-                "repo": repo,
-                "severity": "info",
-                "action": {
-                    "label": "Review",
-                    "method": "GET",
-                    "href": "api/prs?repo=" + name,
-                    "destructive": False,
-                    "intent": "",
-                },
-                "created_at": float(e.get("ts", e.get("created_at", now)) or now),
-            }
-        )
+        pr_item = {
+            "id": f"approval-{eid}",
+            "kind": "pending-approval",
+            "title": str(e.get("title", "Approval pending")),
+            "detail": str(e.get("detail", e.get("event", "awaiting approval"))),
+            "repo": repo,
+            "severity": "info",
+            "action": {
+                "label": "Review",
+                "method": "GET",
+                "href": "api/prs?repo=" + name,
+                "destructive": False,
+                "intent": "",
+            },
+            "created_at": float(e.get("ts", e.get("created_at", now)) or now),
+        }
+        pr_branch = e.get("branch") or e.get("head_branch")
+        if pr_branch:
+            pr_item["branch"] = pr_branch
+        items.append(pr_item)
     # Tampered skill pins: boot-time verifier
     # outcome, surfaced here because nobody watches the server log.
     # One collapsed item (stable snooze id); clean boot = no item.
