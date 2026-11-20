@@ -40,8 +40,7 @@ def repo_gh(name: str) -> str:
     return validate_gh(f"arii/{repo}")
 
 
-def run_gh(gh: str, argv: list, timeout: int = GH_TIMEOUT,
-           runner=None) -> str:
+def run_gh(gh: str, argv: list, timeout: int = GH_TIMEOUT, runner=None) -> str:
     """Run gh with an argv list; return stdout. Raises RuntimeError
     with the last stderr line on failure (same contract as _td_run).
     Raises ValueError when the argv does not scope a repo: every
@@ -49,10 +48,8 @@ def run_gh(gh: str, argv: list, timeout: int = GH_TIMEOUT,
     api URL, since the backend cwd is not a git repo (#544)."""
     validate_gh(gh)
     args = list(argv)
-    if "--repo" not in args and not any(
-            str(a).startswith("repos/") for a in args):
-        raise ValueError(
-            "gh argv must scope the repo (--repo or repos/... api URL)")
+    if "--repo" not in args and not any(str(a).startswith("repos/") for a in args):
+        raise ValueError("gh argv must scope the repo (--repo or repos/... api URL)")
     run = runner or subprocess
     proc = run.run(
         ["gh"] + args,
@@ -70,8 +67,7 @@ def run_gh(gh: str, argv: list, timeout: int = GH_TIMEOUT,
     return proc.stdout
 
 
-def run_gh_json(gh: str, argv: list, timeout: int = GH_TIMEOUT,
-                runner=None):
+def run_gh_json(gh: str, argv: list, timeout: int = GH_TIMEOUT, runner=None):
     """run_gh + json.loads ({} / [] on empty stdout would be a gh
     контракт violation, so empty output decodes as an error)."""
     out = run_gh(gh, argv, timeout=timeout, runner=runner)
