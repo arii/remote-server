@@ -101,9 +101,11 @@ services:
       - --ping-interval=30 # keep the websocket alive on flaky mobile networks
       - -t
       - fontSize=15
-      - zellij
-      - attach
-      - --create
+      # zellij-attach-loop (#1387): keeps `zellij attach --create main`
+      # alive across client detaches with honest messages, reconnects on
+      # Enter, and exits on a takeover marker so the requesting browser
+      # gets the single client slot.
+      - zellij-attach-loop
       - main
     volumes:
       - ${HOST_HOME:-/home/ari}/twt/run:/run/twt:ro
