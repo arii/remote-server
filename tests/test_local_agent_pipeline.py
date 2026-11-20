@@ -269,7 +269,8 @@ class TestInvestigationEvidence(unittest.TestCase):
         if error is not None:
 
             def invoke(*args, **kwargs):
-                capture = agents.create_agent.call_args.kwargs["middleware"][1]
+                # middleware: [tool guard, forced-final-turn, capture]
+                capture = agents.create_agent.call_args.kwargs["middleware"][2]
                 capture(None, lambda request: types.SimpleNamespace(result=messages))
                 raise error
 
@@ -297,7 +298,8 @@ class TestInvestigationEvidence(unittest.TestCase):
         agent.invoke.assert_called_once()
         self.assertEqual(
             agent.invoke.call_args.kwargs["config"]["recursion_limit"],
-            int(limit) if limit is not None else 25,
+            # issue #1404: default derives from the spec turn budget
+            int(limit) if limit is not None else 2 * graph.max_spec_turns + 1,
         )
         self.guard = agents.create_agent.call_args.kwargs["middleware"][0]
         return result
