@@ -204,14 +204,3 @@ def validate_skill(data: dict) -> list[str]:
         ):
             errors.append(f"step {step.n}: check needs an expected value")
     return errors
-
-
-def validate_skill_file(path: str | Path) -> list[str]:
-    """Validate a skill file on disk. JSON errors count as errors."""
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except OSError as exc:
-        return [f"unreadable: {exc}"]
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        return [f"invalid JSON: {exc}"]
-    return validate_skill(data)
