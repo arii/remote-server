@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_ORIGIN, serverOrigin, socketUrl } from "../config.js";
+import { DEFAULT_ORIGIN, pairProtocols, serverOrigin, socketUrl } from "../config.js";
 
 async function settle() { for (let i = 0; i < 30; i++) await Promise.resolve(); }
 const html = (name) => readFileSync(join(import.meta.dirname, `../${name}.html`), "utf8");
@@ -28,6 +28,16 @@ it("accepts HTTPS origins and derives only the fixed backend WebSocket path", ()
   expect(socketUrl("https://other.example:9443")).toBe("wss://other.example:9443/buttons/api/browser/ext");
   for (const invalid of ["", "http://other.example", "https://user:pass@other.example", "https://other.example/path", "https://other.example/?q=1"]) {
     expect(() => serverOrigin(invalid)).toThrow();
+  }
+});
+
+it("builds the pairing subprotocol only from a token-shaped secret (#1409)", () => {
+  expect(pairProtocols("")).toEqual([]);
+  expect(pairProtocols(undefined)).toEqual([]);
+  expect(pairProtocols("0123456789abcdef0123456789abcdef")).toEqual(["pair.0123456789abcdef0123456789abcdef"]);
+  // Too short, or characters a WebSocket subprotocol cannot carry.
+  for (const invalid of ["short", "has space in the middle", "slash/equals="]) {
+    expect(() => pairProtocols(invalid)).toThrow();
   }
 });
 
@@ -86,8 +96,22 @@ describe("options", () => {
     submit(); await settle();
     expect(api.permissions.request).toHaveBeenCalledWith({origins: ["https://other.example:9443/*"]});
     expect(api.runtime.sendMessage).toHaveBeenCalledWith({type: "disconnect"});
-    expect(api.storage.local.set).toHaveBeenCalledWith({serverOrigin: "https://other.example:9443"});
+    expect(api.storage.local.set).toHaveBeenCalledWith({serverOrigin: "https://other.example:9443", pairingToken: ""});
     expect(document.querySelector("#message").textContent).toContain("Saved");
+  });
+
+  it("saves a valid pairing token and refuses a malformed one", async () => {
+    await import("../options.js"); await settle();
+    document.querySelector("#token").value = " 0123456789abcdef0123456789abcdef ";
+    submit(); await settle();
+    expect(api.storage.local.set).toHaveBeenCalledWith({serverOrigin: DEFAULT_ORIGIN, pairingToken: "0123456789abcdef0123456789abcdef"});
+    expect(document.querySelector("#message").textContent).toContain("Saved");
+    api.storage.local.set.mockClear();
+    api.runtime.sendMessage.mockClear();
+    document.querySelector("#token").value = "too short";
+    submit(); await settle();
+    expect(api.storage.local.set).not.toHaveBeenCalled();
+    expect(api.runtime.sendMessage).not.toHaveBeenCalledWith({type: "disconnect"});
   });
 
   it("does not save or disconnect on invalid origin or denied permission", async () => {
