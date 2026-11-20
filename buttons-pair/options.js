@@ -1,9 +1,10 @@
-import { DEFAULT_ORIGIN, serverOrigin } from "./config.js";
+import { DEFAULT_ORIGIN, pairProtocols, serverOrigin } from "./config.js";
 
 const sites = ["http://*/*", "https://*/*"];
 async function load() {
-  const config = await chrome.storage.local.get({serverOrigin: DEFAULT_ORIGIN});
+  const config = await chrome.storage.local.get({serverOrigin: DEFAULT_ORIGIN, pairingToken: ""});
   document.querySelector("#origin").value = config.serverOrigin;
+  document.querySelector("#token").value = config.pairingToken;
   document.querySelector("#sites").checked = await chrome.permissions.contains({origins: sites});
 }
 
@@ -12,11 +13,13 @@ document.querySelector("form").addEventListener("submit", async (event) => {
   const message = document.querySelector("#message");
   try {
     const origin = serverOrigin(document.querySelector("#origin").value);
+    const token = document.querySelector("#token").value.trim();
+    pairProtocols(token); // throws on an invalid token format
     const allSites = document.querySelector("#sites").checked;
     const origins = allSites ? sites : [`${origin}/*`];
     if (!await chrome.permissions.request({origins})) throw new Error("Site access was not granted. Settings were not changed.");
     await chrome.runtime.sendMessage({type: "disconnect"});
-    await chrome.storage.local.set({serverOrigin: origin});
+    await chrome.storage.local.set({serverOrigin: origin, pairingToken: token});
     message.textContent = "Saved. Click Connect in the popup when ready.";
   } catch (cause) {
     message.textContent = cause.message;
