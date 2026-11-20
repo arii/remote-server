@@ -312,3 +312,30 @@ describe('queue completion loop (issue #883)', () => {
     expect(legacy).toContain('remote-server#853');
   });
 });
+
+describe('queue empty-state copy deduplication (issue #1436)', () => {
+  it('differentiates lane empty state from global dispatch-all empty state', () => {
+    const group = {
+      repo: 'remote-server',
+      items: [mkItem({ state: 'running' })],
+    };
+    const html = renderToStaticMarkup(
+      <QueueRepoGroup
+        group={group}
+        gatesByKey={{}}
+        readyByKey={{}}
+        onDispatch={noop}
+        onDispatchNext={noop}
+        onCancel={noop}
+        onGates={noop}
+      />,
+    );
+    expect(html).toContain('No lane items ready.');
+    expect(html).not.toContain('Nothing queued to dispatch.');
+
+    const header = renderToStaticMarkup(
+      <QueueHeader count={0} live dispatchable={[]} onRefresh={noop} onDispatchAll={noop} />,
+    );
+    expect(header).toContain('Nothing queued to dispatch.');
+  });
+});

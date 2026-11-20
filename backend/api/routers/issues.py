@@ -607,20 +607,29 @@ def list_open_issues(repo: str) -> list:
 
 
 def rollup_issues() -> dict:
-    """All-repos open-issue discovery: fan out per repo, tagging
-    each row with its repo. A repo whose gh read fails is skipped
+    """All-repos open-issue discovery: fan out per repo in parallel,
+    tagging each row with its repo. A repo whose gh read fails is skipped
     (discovery degrades; the per-repo path still 500s loudly)."""
-    tagged = []
-    for name in list_issue_repo_names():
+    import concurrent.futures
+
+    repo_names = list_issue_repo_names()
+
+    def _fetch_repo(name: str) -> list[dict]:
         try:
             rows = list_open_issues(name)
         except Exception:
-            continue
+            return []
         if not isinstance(rows, list):
-            continue
-        for row in rows:
-            if isinstance(row, dict):
-                tagged.append({**row, "repo": name})
+            return []
+        return [{**row, "repo": name} for row in rows if isinstance(row, dict)]
+
+    tagged = []
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(len(repo_names) or 1, 8)
+    ) as ex:
+        for repo_rows in ex.map(_fetch_repo, repo_names):
+            tagged.extend(repo_rows)
+
     return {"repo": ALL_ISSUES, "issues": tagged}
 
 
