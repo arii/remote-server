@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import DirtyReposStrip, {
   commitViaAgentSeed,
+  dirtyOnly,
   dirtyRepos,
+  outOfSyncRepos,
   primaryRepoAction,
   repoLagLabel,
 } from './DirtyReposStrip';
@@ -65,6 +67,24 @@ describe('dirtyRepos (issue #937)', () => {
   });
 });
 
+describe('dirtyOnly / outOfSyncRepos (issue #1386)', () => {
+  it('splits uncommitted changes from pure ahead/behind lag', () => {
+    expect(dirtyOnly([clean, dirtyBehind, behindOnly]).map((r) => r.name)).toEqual([
+      'boomtick',
+    ]);
+    expect(outOfSyncRepos([clean, dirtyBehind, behindOnly]).map((r) => r.name)).toEqual([
+      'hrm',
+    ]);
+  });
+
+  it('keeps the union helper covering both groups', () => {
+    expect(dirtyRepos([clean, dirtyBehind, behindOnly]).map((r) => r.name)).toEqual([
+      'boomtick',
+      'hrm',
+    ]);
+  });
+});
+
 describe('repoLagLabel (issue #937)', () => {
   it('summarizes changed, behind, and ahead counts', () => {
     expect(repoLagLabel(dirtyBehind)).toBe('2 changed · behind 3');
@@ -103,21 +123,39 @@ describe('DirtyReposStrip (issue #937)', () => {
     expect(primaryRepoAction(clean)).toBe('diff');
   });
 
-  it('lists every dirty/behind repo with one primary action plus drill-down', () => {
+  it('lists dirty and out-of-sync repos in separate groups (#1386)', () => {
     const html = renderToStaticMarkup(
       <DirtyReposStrip repos={[clean, dirtyBehind, behindOnly]} {...handlers} />,
     );
     expect(html).toContain('data-testid="dirty-repos-strip"');
-    expect(html).toContain('Dirty Repos (2)');
+    expect(html).toContain('Repo Status (2)');
+    expect(html).toContain('1 dirty · 1 out of sync');
+    expect(html).toContain('Dirty (1)');
+    expect(html).toContain('Out of Sync (1)');
+    // Dirty group rows keep the dirty-row testids; the clean
+    // behind/ahead row moves out of the dirty table.
     expect(html).toContain('data-testid="dirty-row-boomtick"');
-    expect(html).toContain('data-testid="dirty-row-hrm"');
+    expect(html).not.toContain('data-testid="dirty-row-hrm"');
+    expect(html).toContain('data-testid="sync-row-hrm"');
     expect(html).not.toContain('data-testid="dirty-row-remote-server"');
+    expect(html).not.toContain('data-testid="sync-row-remote-server"');
     expect(html).toContain('2 changed · behind 3');
     // Dirty row: agent primary, no pull button at all.
     expect(html).toContain('data-testid="dirty-agent-boomtick"');
     expect(html).not.toContain('data-testid="dirty-pull-boomtick"');
     // Behind + clean row: pull primary, no agent button.
     expect(html).toContain('data-testid="dirty-pull-hrm"');
+  });
+
+  it('renders a sync-only strip without a dirty group (#1386)', () => {
+    const html = renderToStaticMarkup(
+      <DirtyReposStrip repos={[clean, behindOnly]} {...handlers} />,
+    );
+    expect(html).toContain('Repo Status (1)');
+    expect(html).toContain('0 dirty · 1 out of sync');
+    expect(html).not.toContain('data-testid="dirty-repos-table"');
+    expect(html).toContain('data-testid="sync-repos-table"');
+    expect(html).toContain('data-testid="sync-row-hrm"');
   });
 
   it('wraps row buttons in the styled actions hook (issue #1069)', () => {
