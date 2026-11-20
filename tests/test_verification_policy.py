@@ -35,6 +35,7 @@ class TestVerificationPolicy(unittest.TestCase):
     def test_verification_env_prepends_cur_bin_to_path(self):
         import os
         import sys
+
         cur_bin = os.path.dirname(sys.executable)
         with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
             with s5tools.verification_env("/checkout") as env:
