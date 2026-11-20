@@ -61,11 +61,12 @@ interface FlatEntry {
   runId?: string;
 }
 
-// Routine lifecycle chatter (chat start/finish/abort, job step progress):
-// true but noisy. Consecutive same-kind runs collapse into one
-// "activity" row (see toHistoryRows).
+// Routine lifecycle chatter (chat start/finish/abort, job step progress)
+// and scheduled background checks (check-notifications, supervise, etc.):
+// true but noisy. Consecutive routine rows collapse into one
+// "<Kind> activity ×N" row (see toHistoryRows, issue #1433).
 const ROUTINE_RE =
-  /^(chat (started|finished|aborted)|step (auto-?done|done|started)|created|job$)/i;
+  /^(chat (started|finished|aborted)|step (auto-?done|done|started)|created|job$|(?:check-notifications|supervise|autofile-scan|impact-pass)(?::\s*(?:done|ok))?$)/i;
 
 function isFailure(kind: string, raw: string, summary: string): boolean {
   if (/fail|error|refus|reject|conflict|not permitted|aborted/i.test(raw)) return true;
@@ -140,18 +141,21 @@ function jobFailed(j: JobRecord, status: string): boolean {
 
 function jobToEntry(j: JobRecord): FlatEntry {
   const status = jobStatus(j);
-  const summary = plainLanguage(`${jobTitle(j)}: ${status}`, 'Job');
+  const title = jobTitle(j);
+  const summary = plainLanguage(`${title}: ${status}`, 'Job');
   const lines = [`run: ${j.id}`, `kind: ${j.kind || 'job'}`, `status: ${status}`];
   if (j.repo) lines.push(`repo: ${j.repo}`);
   if (typeof j.exit_code === 'number') lines.push(`exit: ${j.exit_code}`);
   if (j.error) lines.push(`error: ${j.error}`.slice(0, 1500));
+  const failed = jobFailed(j, status);
+  const routine = !failed && ROUTINE_RE.test(summary);
   return {
     kind: j.kind || 'job',
     summary,
     at: rowTime(j.at ?? j.created_at),
     rawAt: jobTime(j),
-    failed: jobFailed(j, status),
-    routine: false,
+    failed,
+    routine,
     detail: lines.join('\n'),
     runId: j.id,
   };
@@ -255,7 +259,8 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
   const base = errText && !isRawStderr(errText)
     ? errText.slice(0, 200)
     : plainLanguage(errText || raw || '', e.kind);
-  const routine = ROUTINE_RE.test(base);
+  const failed = entryFailed(e, raw ?? '', base);
+  const routine = (!failed || /chat aborted/i.test(base)) && ROUTINE_RE.test(base);
   let summary = base;
   if (!errText && !routine) {
     const clause = outcomeClause(e);
@@ -295,19 +300,28 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
     summary,
     at: rowTime(e.ts ?? e.at),
     rawAt: epochOf(e.ts ?? e.at),
-    failed: entryFailed(e, raw ?? '', base),
+    failed,
     routine,
     detail: lines.join('\n').slice(0, 2000),
   };
 }
 
 function sameFailure(a: FlatEntry, b: FlatEntry): boolean {
-  return a.kind === b.kind && a.summary === b.summary;
+  return a.failed === b.failed && a.kind === b.kind && a.summary === b.summary;
+}
+
+function routineGroup(entry: FlatEntry): string {
+  const text = `${entry.kind} ${entry.summary}`.toLowerCase();
+  for (const name of ['check-notifications', 'supervise', 'autofile-scan', 'impact-pass', 'chat']) {
+    if (text.includes(name)) return name;
+  }
+  return entry.kind;
 }
 
 function activityLabel(kind: string, count: number): string {
-  const what = kind === 'chat' ? 'Chat session' : kind === 'job' ? 'Job' : 'Routine';
-  return `${what} activity ×${count}`;
+  if (kind === 'chat') return `Chat session activity ×${count}`;
+  if (kind === 'job') return `Job activity ×${count}`;
+  return `${sentenceCase(kind)} activity ×${count}`;
 }
 
 // One casing convention for collapsed summaries (issue #572):
@@ -361,6 +375,14 @@ export const HISTORY_FACETS: HistoryFacetDef[] = [
 
 const AGENT_FACET_KINDS = new Set(['agent-turn', 'cli-turn']);
 const CI_FACET_KINDS = new Set(['run', 'job', 'pr-action', 'webhook', 'repair']);
+const CRON_FACET_KINDS = new Set([
+  'cron',
+  'schedule',
+  'check-notifications',
+  'supervise',
+  'autofile-scan',
+  'impact-pass',
+]);
 
 export function rowInFacet(row: HistoryRow, facet: HistoryFacet): boolean {
   switch (facet) {
@@ -373,7 +395,7 @@ export function rowInFacet(row: HistoryRow, facet: HistoryFacet): boolean {
     case 'ci':
       return CI_FACET_KINDS.has(row.kind);
     case 'cron':
-      return row.kind === 'cron' || row.kind === 'schedule';
+      return CRON_FACET_KINDS.has(row.kind);
   }
 }
 
@@ -389,7 +411,7 @@ export function facetCounts(rows: readonly HistoryRow[]): Record<HistoryFacet, n
     if (row.tone === 'bad') counts.errors += 1;
     if (AGENT_FACET_KINDS.has(row.kind)) counts.agents += 1;
     if (CI_FACET_KINDS.has(row.kind)) counts.ci += 1;
-    if (row.kind === 'cron' || row.kind === 'schedule') counts.cron += 1;
+    if (CRON_FACET_KINDS.has(row.kind)) counts.cron += 1;
   }
   return counts;
 }
@@ -417,6 +439,7 @@ function toRow(entry: FlatEntry, members: FlatEntry[], index: number): HistoryRo
   const count = members.length;
   const routineRun = entry.routine && count > 1;
   const failed = entry.failed && !entry.routine;
+  const group = routineGroup(entry);
   // Skipped pulls (#855) stay tone-ok (they are nudges, not
   // failures) but still render their recovery hint inline, so a
   // lagging checkout never shows a bare skip with no next step.
@@ -429,8 +452,8 @@ function toRow(entry: FlatEntry, members: FlatEntry[], index: number): HistoryRo
     : null;
   return {
     key: `${entry.kind}-${entry.summary}-${index}`,
-    kind: entry.kind,
-    summary: sentenceCase(routineRun ? activityLabel(entry.kind, count) : (repeated ?? entry.summary)),
+    kind: routineRun ? group : entry.kind,
+    summary: sentenceCase(routineRun ? activityLabel(group, count) : (repeated ?? entry.summary)),
     at: entry.at,
     repeat: count,
     recovery: failed || skipped ? recoveryFor(entry.kind, entry.summary) : '',
@@ -472,7 +495,7 @@ export function toHistoryRows(
       (sameFailure(flat[i + count], flat[i]) ||
         (flat[i].routine &&
           flat[i + count].routine &&
-          flat[i + count].kind === flat[i].kind))
+          routineGroup(flat[i + count]) === routineGroup(flat[i])))
     ) {
       count++;
     }
