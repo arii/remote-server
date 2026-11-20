@@ -32,6 +32,7 @@ plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 
 import argparse
 import contextvars
+import hashlib
 import json
 import os
 import re
@@ -64,10 +65,67 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CODER_DB = os.path.join(HERE, ".coder_threads", "coder.db")
 
 # Coding needs more graph steps than chat turns (read/plan/edit/verify).
-RECURSION_LIMIT = 100
+RECURSION_LIMIT = int(os.environ.get("CODER_RECURSION_LIMIT", "20"))
 DEFAULT_TIMEOUT = 1800
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 DEFAULT_VERIFY_ROUNDS = 2
+REPAIR_TOOL_LIMIT = 20
+REPAIR_REPEAT_LIMIT = 3
+REPAIR_MODEL_LIMIT = 12
+
+DEFAULT_TOOL_OUTPUT_LIMIT = 4000
+READ_FILE_OUTPUT_LIMIT = 8000
+
+
+def _truncate_tool_output(text: str, limit: int = DEFAULT_TOOL_OUTPUT_LIMIT) -> str:
+    """Deterministically bound tool output length with head/tail preservation.
+
+    Preserves the first limit // 2 and last limit // 2 characters with an
+    explicit omitted-character marker so command headers and trailing
+    tracebacks/assertions remain visible.
+    """
+    if not isinstance(text, str) or len(text) <= limit:
+        return text
+    half = limit // 2
+    head = text[:half]
+    tail = text[-half:] if half > 0 else ""
+    omitted = len(text) - len(head) - len(tail)
+    return f"{head}\n... [{omitted} chars omitted] ...\n{tail}"
+
+
+class ReadCache:
+    """Run-scoped cache of file contents by SHA-256 digest.
+
+    Avoids re-injecting duplicate, unchanged file contents across turns
+    within a single coder run.
+    """
+
+    def __init__(self):
+        self._cache: dict[str, str] = {}
+
+    def get(self, path: str) -> str | None:
+        return self._cache.get(path)
+
+    def check_and_update(self, path: str, content: str | bytes) -> tuple[bool, str]:
+        """Check if content matches cached digest for path.
+
+        Returns (is_duplicate, sha256_digest). If duplicate, cache is unchanged.
+        If new or changed, the cache is updated with the new digest.
+        """
+        data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
+        digest = hashlib.sha256(data).hexdigest()
+        if self._cache.get(path) == digest:
+            return True, digest
+        self._cache[path] = digest
+        return False, digest
+
+    def invalidate(self, path: str) -> None:
+        """Invalidate cached digest for path when modified or deleted."""
+        self._cache.pop(path, None)
+
+    def clear(self) -> None:
+        self._cache.clear()
+
 
 # Dithering guard (#1160 gap 3, #1176): this many consecutive
 # identical unproductive run_check calls means the agent is spinning,
@@ -103,6 +161,7 @@ CODER_RULES = (
     """You are implementing the task below in the checkout at {worktree}. Rules:
 - File paths are repo-relative like frontend/src/views/NowView.tsx; never use absolute paths or a leading /.
 - Start filesystem discovery with ls(path="."). The worktree above is your sole filesystem root; never list the parent checkout even if task context names it.
+- Use search_code to quickly find relevant code snippets, symbol definitions, and documentation.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
 - Invoke tools through the function-calling interface. Never print JSON commands or pretend a prose command executed.
@@ -270,6 +329,7 @@ def _default_plan_fn(brief, worktree_root, context):
         f"\n\n{verification_guidance()}"
         f"{skills_block}"
         f"\n\nBrief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
+        f"\n\nRepair notes:\n{context.get('repair_notes', '')}"
     )
     reply = None
     error = ""
@@ -404,7 +464,9 @@ def build_check_tool(worktree):
             return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
         except OSError as exc:
             return f"exec failed: {exc}"
-        out = ((proc.stdout or "") + (proc.stderr or ""))[-CHECK_OUTPUT_LIMIT:]
+        out = _truncate_tool_output(
+            (proc.stdout or "") + (proc.stderr or ""), limit=CHECK_OUTPUT_LIMIT
+        )
         result = f"exit={proc.returncode}\n{out}"
         empty_success = proc.returncode == 0 and not out.strip()
         if command == spin["last"] and (proc.returncode != 0 or empty_success):
@@ -449,9 +511,12 @@ def build_filesystem_backend(worktree):
     return CoderFilesystemBackend(root_dir=worktree, virtual_mode=True)
 
 
-def worktree_file_middleware(worktree, written_files):
+def worktree_file_middleware(worktree, written_files, read_cache=None):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
+
+    if read_cache is None:
+        read_cache = ReadCache()
 
     @wrap_tool_call
     def guard_file_call(request, handler):
@@ -492,12 +557,54 @@ def worktree_file_middleware(worktree, written_files):
             call = {**call, "args": args}
             request = request.override(tool_call=call)
         result = handler(request)
+
+        # Invalidate read cache on file mutations
         if (
             call["name"] in {"write_file", "edit_file", "delete"}
-            and result.status == "success"
-            and written_files is not None
+            and getattr(result, "status", None) == "success"
         ):
-            written_files.add(call["args"]["file_path"])
+            target_file = call["args"].get("file_path") or call["args"].get("path")
+            if target_file:
+                rel = worktree_file_key(worktree, target_file)
+                read_cache.invalidate(rel)
+            if written_files is not None and target_file:
+                written_files.add(call["args"].get("file_path", target_file))
+
+        # Check ReadCache on read_file
+        if (
+            call["name"] == "read_file"
+            and getattr(result, "status", None) == "success"
+            and isinstance(getattr(result, "content", None), str)
+        ):
+            target_file = call["args"].get("file_path") or call["args"].get("path")
+            if target_file:
+                rel = worktree_file_key(worktree, target_file)
+                is_dup, digest = read_cache.check_and_update(rel, result.content)
+                if is_dup:
+                    sentinel = f"[UNCHANGED: {rel} (sha256:{digest}) already in context. Do not re-read.]"
+                    return ToolMessage(
+                        content=sentinel,
+                        tool_call_id=call["id"],
+                        name=call["name"],
+                        status="success",
+                    )
+
+        # Enforce deterministic head/tail output truncation across tools
+        if isinstance(getattr(result, "content", None), str):
+            limit = (
+                READ_FILE_OUTPUT_LIMIT
+                if call["name"] == "read_file"
+                else DEFAULT_TOOL_OUTPUT_LIMIT
+            )
+            truncated = _truncate_tool_output(result.content, limit=limit)
+            if truncated != result.content:
+                return ToolMessage(
+                    content=truncated,
+                    tool_call_id=call["id"],
+                    name=call["name"],
+                    status=getattr(result, "status", "success"),
+                )
+
         return result
 
     return guard_file_call
@@ -524,6 +631,69 @@ def implementation_tool_middleware():
     return GroundImplementation()
 
 
+class RepairBudgetExceeded(RuntimeError):
+    pass
+
+
+def repair_tool_middleware():
+    from langchain.agents.middleware import wrap_tool_call
+    from langchain_core.messages import ToolMessage
+
+    seen = {}
+    calls = 0
+    lock = threading.Lock()
+
+    @wrap_tool_call
+    def bound_repair(request, handler):
+        nonlocal calls
+        call = request.tool_call
+        key = (call["name"], json.dumps(call["args"], sort_keys=True))
+        with lock:
+            calls += 1
+            if calls > REPAIR_TOOL_LIMIT:
+                raise RepairBudgetExceeded(
+                    f"Repair tool budget exhausted ({REPAIR_TOOL_LIMIT} calls)"
+                )
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] >= REPAIR_REPEAT_LIMIT:
+                raise RepairBudgetExceeded(
+                    f"Repair repeated unchanged tool call: {key[0]} {key[1]}"
+                )
+            if seen[key] > 1:
+                return ToolMessage(
+                    content="Already called with these args without a successful edit. "
+                    "Use the earlier result, fix the code, or finish with the blocker.",
+                    tool_call_id=call["id"],
+                    status="error",
+                )
+        result = handler(request)
+        if call["name"] in MUTATING_TOOLS and result.status == "success":
+            with lock:
+                seen.clear()
+        return result
+
+    return bound_repair
+
+
+def build_search_tool(worktree):
+    """search_code tool for hybrid RAG search across the repo. Venv-only."""
+    from langchain_core.tools import tool  # noqa: E402
+    import retrieval  # noqa: E402
+
+    @tool
+    def search_code(query: str) -> str:
+        """Search the codebase and documentation using hybrid vector/keyword search.
+
+        Args:
+            query: Natural language or symbol query, e.g. 'AuditorGraph build_verdict' or 'route handler'.
+        """
+        if not query or not query.strip():
+            return "REJECTED: empty query"
+        return retrieval.search_td(query, worktree, top_k=5)
+
+    return search_code
+
+
 def build_agent(
     worktree,
     system,
@@ -535,6 +705,7 @@ def build_agent(
     permissions=None,
     spec=None,
     written_files=None,
+    repair=False,
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
@@ -575,13 +746,27 @@ def build_agent(
     ]
     if written_files is not None:
         middleware.append(implementation_tool_middleware())
+    if repair:
+        from langchain.agents.middleware import ModelCallLimitMiddleware
+
+        middleware.insert(0, repair_tool_middleware())
+        middleware.insert(
+            0,
+            ModelCallLimitMiddleware(
+                thread_limit=REPAIR_MODEL_LIMIT, exit_behavior="error"
+            ),
+        )
     if recorder is not None:
         import observe  # noqa: E402
 
         middleware = observe.trace_middleware(recorder) + middleware
+    if tools is None:
+        default_tools = [build_check_tool(worktree)]
+    else:
+        default_tools = list(tools)
     return create_deep_agent(
         model=model,
-        tools=(list(tools) if tools is not None else [build_check_tool(worktree)]),
+        tools=default_tools,
         system_prompt=system,
         backend=backend,
         interrupt_on=interrupt_on,
@@ -872,7 +1057,12 @@ def run_bounded(fn, timeout):
 
 
 def run_with_verify(
-    initial_invoke, reinvoke, has_passing_check, max_rounds, dithered=None
+    initial_invoke,
+    reinvoke,
+    has_passing_check,
+    max_rounds,
+    dithered=None,
+    check_stagnant=None,
 ):
     """One invoke plus bounded verify re-invokes.
 
@@ -882,12 +1072,16 @@ def run_with_verify(
     repeated-identical-unproductive streak (failing or empty-success
     repeats), re-invokes stop early (#1160 gap 3: fail fast instead
     of burning verify rounds on a spinning agent).
+    When check_stagnant() reports no progress between rounds,
+    re-invokes stop early (Issue #1393 circuit breaker).
     """
     result = initial_invoke()
     rounds = 0
     verified = has_passing_check()
     while not verified and rounds < max_rounds:
         if dithered is not None and dithered():
+            break
+        if check_stagnant is not None and check_stagnant():
             break
         rounds += 1
         result = reinvoke()
@@ -916,7 +1110,17 @@ def mark_unverified(summary):
     return "[unverified]"
 
 
-def run_coder(worktree, brief, system, thread, timeout, *, repair_files=()):
+def run_coder(
+    worktree,
+    brief,
+    system,
+    thread,
+    timeout,
+    *,
+    repair_files=(),
+    repair=False,
+    model_tier=None,
+):
     """Invoke the coder with a verify gate.
 
     Returns (summary, usage, calls, started, label, trace, verified,
@@ -982,16 +1186,37 @@ def run_coder(worktree, brief, system, thread, timeout, *, repair_files=()):
             checkpointer=saver,
             spec=spec,
             written_files=written_files,
+            repair=repair,
         )
         config = {"configurable": {"thread_id": thread}}
+
+        limit = min(RECURSION_LIMIT, 15) if repair else RECURSION_LIMIT
 
         def _invoke(msgs):
             nonlocal invocation_started
             invocation_started = True
             return agent.invoke(
                 {"messages": msgs},
-                config={**config, "recursion_limit": RECURSION_LIMIT},
+                config={**config, "recursion_limit": limit},
             )
+
+        last_diff = None
+
+        def is_stagnant():
+            nonlocal last_diff
+            try:
+                cur_diff = subprocess.run(
+                    ["git", "-C", worktree, "diff", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout
+            except Exception:
+                return False
+            if last_diff is not None and cur_diff == last_diff:
+                return True
+            last_diff = cur_diff
+            return False
 
         max_rounds = verify_rounds()
         result, rounds, verified = run_with_verify(
@@ -1004,6 +1229,7 @@ def run_coder(worktree, brief, system, thread, timeout, *, repair_files=()):
             lambda: trace_has_passing_check(recorder.path),
             max_rounds,
             dithered=lambda: trace_has_dither(recorder.path),
+            check_stagnant=is_stagnant,
         )
         # Keep the checkpointer connection alive until the run returns.
         _ = holder

@@ -251,7 +251,7 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
 
 
 class TestDraftPrompt(unittest.TestCase):
-    def test_draft_demands_read_first(self):
+    def test_draft_grounds_in_preseeded_context(self):
         seen = []
 
         def model_fn():
@@ -267,7 +267,9 @@ class TestDraftPrompt(unittest.TestCase):
         )
         gen.draft_text("Fix it", "ctx", [], {})
         self.assertTrue(seen)
-        self.assertIn("read one repo file", seen[0].lower())
+        # issue #1404: the spec grounds in the deterministic pre-seeded
+        # context pack instead of a model-driven first read
+        self.assertIn("pre-seeded repository context", seen[0].lower())
         self.assertIn("quote", seen[0].lower())
 
 

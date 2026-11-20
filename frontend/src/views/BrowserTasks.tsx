@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from 'react';
-import { browserTaskShotUrl, cancelBrowserTask, createBrowserTask, fetchBrowserTasks } from '../apiClient';
+import { browserTaskShotUrl, cancelBrowserTask, createBrowserTask, fetchBrowserTasks, isAuthExpired } from '../apiClient';
 import type { BrowserTarget, BrowserTask } from '../apiClient';
 
 const pending = (task: BrowserTask) => ['queued', 'running', 'cancelling'].includes(task.status);
@@ -23,6 +23,12 @@ export default function BrowserTasks({ target, paired, tasks, onChange }: {
     let timer: ReturnType<typeof setTimeout>;
     let polling = continuePolling.current;
     async function load() {
+      // Quiet while the auth-expired banner is up (#1410); the chain
+      // stays armed so polling resumes when the flag retires.
+      if (isAuthExpired()) {
+        if (active && polling) timer = setTimeout(() => void load(), 2000);
+        return;
+      }
       try {
         const rows = await fetchBrowserTasks();
         if (!active) return;

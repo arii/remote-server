@@ -503,7 +503,7 @@ function normalizeUrl(raw) {
   const v = (raw || '').trim();
   if (!v || /\s/.test(v)) return v;
   if (/^https?:\/\//i.test(v)) return v;
-  if (/^(about|data|blob):/i.test(v)) return v;
+  if (/^(about|data|blob|chrome|chrome-extension):/i.test(v)) return v;
   if (/^[^/:?\s]+:\d+(\/|$|\?)/.test(v)) return 'http://' + v;
   return 'https://' + v;
 }

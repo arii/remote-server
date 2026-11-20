@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# ttyd shell wrapper (#1387): keep `zellij attach --create` alive across
+# client detaches and say what actually happened.
+#
+# - A client detach prints zellij's "Bye from Zellij!", which reads as
+#   if the whole session ended. It did not: the session keeps running
+#   server-side. Say so, name the session, and reconnect on Enter.
+#   (ttyd's own "Press Enter to Reconnect" overlay only appears after
+#   its child exits, so without this wrapper Enter did nothing and a
+#   reload could land on the same dead overlay.)
+# - A real session exit starts a fresh session instead of leaving a
+#   misleading message on screen.
+# - A takeover request (Buttons POST /api/terminal/takeover) drops a
+#   marker file and SIGHUPs the attach client. When the marker is
+#   present this wrapper exits instead of re-attaching, so ttyd frees
+#   its single client slot (--max-clients=1) for the requesting
+#   browser.
+set -u
+
+SESSION="${1:-main}"
+TAKEOVER_FLAG="${TAKEOVER_FLAG:-/tmp/ttyd-takeover}"
+
+# Fresh ttyd child, fresh start: any marker left behind was meant for
+# the previous child (or orphaned by a race), never for this client.
+rm -f "$TAKEOVER_FLAG"
+
+session_state() {
+  # alive | exited | gone for $SESSION, from zellij's own listing.
+  local line
+  line="$(zellij list-sessions 2>/dev/null | grep -F -- "$SESSION" | head -n 1)"
+  if [ -z "$line" ]; then
+    echo gone
+  elif printf '%s\n' "$line" | grep -q 'EXITED'; then
+    echo exited
+  else
+    echo alive
+  fi
+}
+
+while true; do
+  if [ -e "$TAKEOVER_FLAG" ]; then
+    rm -f "$TAKEOVER_FLAG"
+    echo "Terminal takeover requested - this client is disconnecting."
+    exit 0
+  fi
+
+  zellij attach --create "$SESSION"
+  rc=$?
+
+  if [ -e "$TAKEOVER_FLAG" ]; then
+    rm -f "$TAKEOVER_FLAG"
+    echo "Terminal takeover requested - this client is disconnecting."
+    exit 0
+  fi
+
+  state="$(session_state)"
+  if [ "$state" = "alive" ]; then
+    echo
+    echo "Disconnected from terminal session '$SESSION'."
+    echo "The session and every tab and pane in it are still running on this server."
+    echo "Press Enter to reconnect."
+    read -r _
+  else
+    echo
+    echo "Session '$SESSION' has ended (state: $state, exit code $rc)."
+    echo "Starting a fresh session in 2 seconds - press Ctrl-C to stop."
+    sleep 2
+  fi
+done

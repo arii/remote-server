@@ -12,6 +12,7 @@ import {
   triggerBrowserLearn,
   fetchPairedBrowserState,
   browserTaskShotUrl,
+  startAuthedInterval,
 } from '../apiClient';
 import AgentDrawer from './AgentDrawer';
 import BrowserTasks from './BrowserTasks';
@@ -91,10 +92,10 @@ function LearnPanels() {
       }
     }
     void refresh();
-    const timer = window.setInterval(() => void refresh(), LEARN_POLL_MS);
+    const stopPoll = startAuthedInterval(() => void refresh(), LEARN_POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      stopPoll();
     };
   }, []);
 

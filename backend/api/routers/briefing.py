@@ -613,6 +613,11 @@ def _run_briefing(repo: str, gh: str) -> dict:
 
 @router.get("/briefing", response_model=Briefing)
 def briefing(repo: str = "remote-server") -> dict:
+    if repo == "all":
+        raise HTTPException(
+            status_code=400,
+            detail="briefing requires a concrete repository, not 'all'",
+        )
     try:
         name = validate_repo_name(repo)
     except ValueError as exc:

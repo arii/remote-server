@@ -75,6 +75,11 @@ export function subscribeApiFailures(listener: ApiFailureListener): () => void {
 }
 
 function notifyApiFailure(): void {
+  // #1410: once the expiry trip has latched, further failure
+  // broadcasts only feed the poll/failure cycle that floods the
+  // console (a failed poll notifies, listeners refresh, each refresh
+  // fails and notifies again). The banner owns the signal from here.
+  if (authExpiredFlag) return;
   for (const listener of [...apiFailureListeners]) listener();
 }
 
@@ -172,6 +177,19 @@ function notifyAuthExpired(): void {
   if (authExpiredFlag) return;
   authExpiredFlag = true;
   for (const listener of [...authExpiredListeners]) listener();
+}
+
+/** Interval that goes quiet while the auth-expired banner is up
+    (#1410): after the #1143 trip every tick is another 302 +
+    CORS-opaque failure. The flag auto-clears on the next good
+    response after re-login, so polling resumes by itself. Returns
+    a cleanup function. */
+export function startAuthedInterval(cb: () => void, ms: number): () => void {
+  const timer = setInterval(() => {
+    if (isAuthExpired()) return;
+    cb();
+  }, ms);
+  return () => clearInterval(timer);
 }
 
 // Offline mutation outbox (issue #404): operator commands issued

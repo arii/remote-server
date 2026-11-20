@@ -20,8 +20,9 @@ const store = () => {
 class Socket {
   static OPEN = 1;
   static instances = [];
-  constructor(url) {
+  constructor(url, protocols) {
     this.url = url;
+    this.protocols = protocols;
     this.readyState = 0;
     this.send = vi.fn();
     this.close = vi.fn(() => { this.readyState = 3; void this.onclose?.({code: 1000, reason: ""}); });
@@ -66,6 +67,17 @@ describe("Buttons pair service worker", () => {
   async function open(socket) { await socket.message({id: 1, op: "open", url: DEFAULT_ORIGIN}); }
   const human = (kind = "key", extra = {}) => ({type: "human_input", kind, ...extra});
   const fromTab = () => ({id: "buttons", tab: {id: 7}});
+
+  it("offers the stored pairing token as a subprotocol (#1409)", async () => {
+    api.storage.local.values.pairingToken = "0123456789abcdef0123456789abcdef";
+    const socket = await connect();
+    expect(socket.protocols).toEqual(["pair.0123456789abcdef0123456789abcdef"]);
+  });
+
+  it("connects without subprotocols while no token is stored", async () => {
+    const socket = await connect();
+    expect(socket.protocols).toBeUndefined();
+  });
 
   it("contract A05: trusted human input 400ms after agent completion reaches the backend", async () => {
     const socket = await connect(); await open(socket);

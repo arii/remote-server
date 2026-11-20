@@ -64,13 +64,16 @@ CLAIMS = [
         "files": {
             "deep-agent/deep_chat.py": [
                 "MAX_HISTORY_MESSAGES = 40",
-                "def plan_history_trim",
+                "def trim_history_by_count",
                 "def trim_thread_history",
             ]
         },
         "status": "mislocated, already met",
         "why": "runs.py holds ledger/trace reads only (no live message "
-        "state); trimming already happens at deep_chat turn start",
+        "state); trimming already happens at deep_chat turn start. "
+        "The plan_history_trim wrapper was removed as dead code under "
+        "#1359; trim_history_by_count is the surviving count-trim "
+        "entry point",
     },
     {
         "claim": "two-tier model routing",
@@ -145,7 +148,7 @@ class TestTrimLocationPinned(unittest.TestCase):
     def test_trim_lives_in_deep_chat(self):
         deep_chat = __import__("deep_chat")
         self.assertEqual(deep_chat.MAX_HISTORY_MESSAGES, 40)
-        for name in ("plan_history_trim", "trim_thread_history"):
+        for name in ("trim_history_by_count", "trim_thread_history"):
             self.assertTrue(callable(getattr(deep_chat, name)), name)
 
     def test_runs_holds_no_message_state_trim(self):

@@ -602,7 +602,9 @@ def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
     return PipelineOpenAI(api_key=api_key(spec), **kwargs), spec
 
 
-def build_structured_chat_model(spec=None, schema=None, think=False, include_raw=False):
+def build_structured_chat_model(
+    spec=None, schema=None, think=False, include_raw=False, stage=None
+):
     """Native structured-output chat model (no prompt-hinting).
 
     Binds the Pydantic schema at the protocol layer: Ollama gets
@@ -611,7 +613,7 @@ def build_structured_chat_model(spec=None, schema=None, think=False, include_raw
     prompt/format-repair tokens per verdict turn (Gemini round
     docs/gemini-round-2026-11-09.md). Returns (model, spec).
     """
-    model, resolved = build_chat_model(spec, think=think)
+    model, resolved = build_chat_model(spec, think=think, stage=stage)
     if schema is None:
         return model, resolved
     kwargs = {"method": "json_schema"}
@@ -620,6 +622,9 @@ def build_structured_chat_model(spec=None, schema=None, think=False, include_raw
     if resolved.get("provider") in ("nebius", "openrouter", "twt"):
         kwargs["strict"] = True
     return model.with_structured_output(schema, **kwargs), resolved
+
+
+build_structured_model = build_structured_chat_model
 
 
 def disable_general_purpose(spec):

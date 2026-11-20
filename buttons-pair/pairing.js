@@ -1,4 +1,4 @@
-import { DEFAULT_ORIGIN, serverOrigin, socketUrl } from "./config.js";
+import { DEFAULT_ORIGIN, pairProtocols, serverOrigin, socketUrl } from "./config.js";
 
 export const RECONNECT_ALARM = "buttons-pair-reconnect";
 export const INPUT_GRACE_MS = 300;
@@ -19,7 +19,7 @@ export function createPairing(api, Socket) {
   let opening = false;
   let connecting = null;
 
-  const settings = () => api.storage.local.get({optedIn: false, serverOrigin: DEFAULT_ORIGIN, retryAttempt: 0, retryAt: 0});
+  const settings = () => api.storage.local.get({optedIn: false, serverOrigin: DEFAULT_ORIGIN, pairingToken: "", retryAttempt: 0, retryAt: 0});
   const send = (message, channel = socket) => {
     if (channel && channel === socket && channel.readyState === Socket.OPEN) channel.send(JSON.stringify(message));
   };
@@ -131,7 +131,10 @@ export function createPairing(api, Socket) {
       return;
     }
     const origin = serverOrigin(config.serverOrigin);
-    const channel = new Socket(socketUrl(origin));
+    const protocols = pairProtocols(config.pairingToken);
+    // No token stored: connect bare so pre-#1409 servers still pair;
+    // token-configured servers reject with a 1008 the UI surfaces.
+    const channel = protocols.length ? new Socket(socketUrl(origin), protocols) : new Socket(socketUrl(origin));
     socket = channel;
     let opened = false;
     channel.onopen = async () => {
