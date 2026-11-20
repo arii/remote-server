@@ -372,14 +372,23 @@ class Pipeline:
                     )
                     if os.path.normpath(path) != os.path.normpath(spec_path)
                 ]
-            result = coder.run_coder(
-                root,
-                prompt,
-                coder.build_system(root, ""),
-                f"{self.thread_id}-edit-{time.time_ns()}",
-                coder._timeout(),
-                **kwargs,
-            )
+            try:
+                result = coder.run_coder(
+                    root,
+                    prompt,
+                    coder.build_system(root, ""),
+                    f"{self.thread_id}-edit-{time.time_ns()}",
+                    coder._timeout(),
+                    **kwargs,
+                )
+            except RuntimeError as exc:
+                if kwargs.get("repair") and errors and coder.NO_WRITES in str(exc):
+                    # Still fail closed, but keep the deterministic gate
+                    # failure that triggered the repair visible (#1372).
+                    raise RuntimeError(
+                        f"{exc}; unresolved gate errors: {'; '.join(map(str, errors))}"
+                    ) from exc
+                raise
             summary, usage, calls, started, label, trace, verified, _ = result
             self.verification_evidence = coder.trace_verification_evidence(trace)
             provider, _, model = label.partition(":")

@@ -127,6 +127,27 @@ class TestRepairBudget(unittest.TestCase):
             self.assertTrue(executor.call_args.kwargs["repair"])
             self.assertEqual(executor.call_args.kwargs["repair_files"], ["a.py"])
 
+    def test_read_only_repair_failure_keeps_gate_errors_and_fails_closed(self):
+        empty = RuntimeError(coder.NO_WRITES)
+        with tempfile.TemporaryDirectory() as root:
+            graph = pipeline.Pipeline(root, "fix").make_coder(
+                "### Allowed Files\n- `a.py`\n",
+                worktree_root=root,
+                repair_notes="gate failed",
+            )
+            gate_errors = ["scope violation: outside.py"]
+            with (
+                mock.patch.object(coder, "run_coder", side_effect=empty),
+                mock.patch("ledger.record"),
+            ):
+                with self.assertRaises(RuntimeError) as repaired:
+                    graph.implement_fn("task", "plan", root, gate_errors)
+                with self.assertRaises(RuntimeError) as first_pass:
+                    graph.implement_fn("task", "plan", root, [])
+        self.assertIn(coder.NO_WRITES, str(repaired.exception))
+        self.assertIn("scope violation: outside.py", str(repaired.exception))
+        self.assertEqual(str(first_pass.exception), coder.NO_WRITES)
+
     def test_model_budget_bounds_loops_even_when_tool_ids_are_reused(self):
         from langchain.agents.middleware.model_call_limit import (
             ModelCallLimitExceededError,
