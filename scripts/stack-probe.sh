@@ -1,12 +1,12 @@
 #!/bin/sh
-# stack-probe.sh — hourly S5 health probe (issues #1021/#1025 loop).
+# stack-probe.sh — hourly S5 health probe (issues #1021/#1025 loop, S5 agent pulse, pnpm run probe:stack).
 #
 # Checks, in order: Selenium Grid session load, buttons /health, RAG
 # query path, Ollama models + generation, Nebius fallback resolution.
 # Prints one PASS/FAIL line per check; exit 0 only when all pass.
 # No dependencies beyond curl, python3, and the repo's `td` CLI.
 #
-# Usage: sh scripts/stack-probe.sh
+# Usage: pnpm run probe:stack OR sh scripts/stack-probe.sh
 set -u
 pass=0
 fail=0
