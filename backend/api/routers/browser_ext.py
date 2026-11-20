@@ -1,9 +1,21 @@
-"""Single paired-Chrome transport. Authentication is provided by Buttons ingress."""
+"""Single paired-Chrome transport. Authentication is provided by Buttons ingress.
+
+The pairing WebSocket is a skip-auth route at the proxy (#1409): a
+chrome-extension WebSocket is a cross-site request, so the SameSite=lax
+OAuth cookie never rides along and the extension can never pass the
+gate. In place of the cookie, the extension proves pairing with the
+shared BUTTONS_EXT_PAIRING_TOKEN, offered as a Sec-WebSocket-Protocol
+subprotocol (browsers cannot set arbitrary WebSocket headers). The
+token is checked here before accept; with no token configured the
+socket stays closed to everyone.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
@@ -167,6 +179,16 @@ def paired_state() -> dict:
     }
 
 
+def _offered_pair_token(websocket: WebSocket) -> str | None:
+    """The pair.<token> subprotocol the client offered, or None."""
+    offered = websocket.headers.get("sec-websocket-protocol", "")
+    for proto in offered.split(","):
+        proto = proto.strip()
+        if proto.startswith("pair."):
+            return proto[len("pair.") :]
+    return None
+
+
 @router.websocket("/ext")
 async def extension_socket(websocket: WebSocket):
     global _paired
@@ -176,7 +198,20 @@ async def extension_socket(websocket: WebSocket):
         )
         await websocket.close(code=1008, reason="extension Origin required")
         return
-    await websocket.accept()
+    # Skip-auth route (#1409): the pairing token replaces the OAuth
+    # cookie the extension cannot send. compare_digest against the
+    # configured token; reject when unset (fail closed) or mismatched.
+    configured = os.environ.get("BUTTONS_EXT_PAIRING_TOKEN", "")
+    offered = _offered_pair_token(websocket)
+    if (
+        not configured
+        or offered is None
+        or not hmac.compare_digest(offered.encode(), configured.encode())
+    ):
+        logger.warning("Rejected paired Chrome WebSocket: bad pairing token")
+        await websocket.close(code=1008, reason="pairing token required")
+        return
+    await websocket.accept(subprotocol=f"pair.{configured}")
     bridge = PairedBridge(websocket)
     previous, _paired = _paired, bridge
     browser_view.clear_page("paired")
