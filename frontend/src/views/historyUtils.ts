@@ -469,7 +469,9 @@ function toRow(entry: FlatEntry, members: FlatEntry[], index: number): HistoryRo
     at: entry.at,
     repeat: count,
     recovery: failed || skipped ? recoveryFor(entry.kind, entry.summary) : '',
-    tone: failed ? 'bad' : entry.routine ? 'muted' : 'ok',
+    // A skipped pull did not move the checkout (#1489): a neutral
+    // dash, never the green check that reads as "pulled".
+    tone: failed ? 'bad' : entry.routine || skipped ? 'muted' : 'ok',
     detail: entry.detail,
     members: members.map((m) => ({
       at: m.at,
