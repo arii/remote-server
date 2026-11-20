@@ -67,8 +67,7 @@ def check_allowed(argv):
     unittest_argv = tupled[1:] if tupled[:1] == ("PYTHONPATH=./deep-agent",) else tupled
     if unittest_argv[:3] == ("python3", "-m", "unittest"):
         return len(unittest_argv) > 3 and all(
-            not module.endswith(".py")
-            and UNITTEST_MODULE_RE.fullmatch(module)
+            not module.endswith(".py") and UNITTEST_MODULE_RE.fullmatch(module)
             for module in unittest_argv[3:]
         )
     if unittest_argv != tupled:
