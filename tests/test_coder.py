@@ -5,8 +5,10 @@ otherwise. Run agent cases with: deep-agent/.venv/bin/python
 tests/test_coder.py
 """
 
+import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -526,6 +528,202 @@ class TestReadCacheAndTruncation(unittest.TestCase):
         )
         self.assertIn("chars omitted", res5.content)
         self.assertLess(len(res5.content), 10000)
+
+
+def _install_fake_langchain(test):
+    """Fake langchain_core.tools for stdlib-only build_check_tool tests."""
+
+    lc = types.ModuleType("langchain_core")
+    tools_mod = types.ModuleType("langchain_core.tools")
+
+    def tool(fn):
+        fn.description = fn.__doc__ or ""
+        return fn
+
+    tools_mod.tool = tool
+    lc.tools = tools_mod
+    saved = {}
+    for name, mod in (
+        ("langchain_core", lc),
+        ("langchain_core.tools", tools_mod),
+    ):
+        saved[name] = sys.modules.get(name)
+        sys.modules[name] = mod
+
+    def _restore():
+        for name, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+
+    test.addCleanup(_restore)
+
+
+def _check_entry(command, code, text):
+    """A trace_check_history 4-tuple for a run_check with this output."""
+    preview = "exit=%d\n%s" % (code, text)
+    empty = code == 0 and not text.strip()
+    digest = hashlib.sha1(preview.encode("utf-8")).hexdigest()
+    return (command, code, empty, digest)
+
+
+def _check_call_event(command, code, text):
+    return {
+        "type": "tool_call",
+        "name": "run_check",
+        "args_preview": command,
+        "result_preview": "exit=%d\n%s" % (code, text),
+        "ok": True,
+    }
+
+
+class TestUnchangedInspectionDither(unittest.TestCase):
+    """#1374: repeated unchanged successful inspections count as dither."""
+
+    CMD = "git diff --stat"
+
+    def test_entry_unproductive_unchanged_output(self):
+        first = _check_entry(self.CMD, 0, "1 file changed")
+        repeat = _check_entry(self.CMD, 0, "1 file changed")
+        changed = _check_entry(self.CMD, 0, "2 files changed")
+        other = _check_entry("git status", 0, "1 file changed")
+        self.assertFalse(coder._entry_unproductive(first))
+        self.assertFalse(coder._entry_unproductive(repeat, changed))
+        self.assertFalse(coder._entry_unproductive(repeat, other))
+        self.assertTrue(coder._entry_unproductive(repeat, first))
+        # A digest-less predecessor cannot prove sameness.
+        self.assertFalse(coder._entry_unproductive(repeat, (self.CMD, 0, False)))
+        # Legacy contracts preserved.
+        self.assertTrue(coder._entry_unproductive((self.CMD, 1)))
+        self.assertFalse(coder._entry_unproductive((self.CMD, 0)))
+        self.assertTrue(coder._entry_unproductive((self.CMD, 0, True)))
+
+    def test_repeated_unchanged_output_detected(self):
+        history = [_check_entry(self.CMD, 0, "1 file changed")] * 6
+        self.assertEqual(coder.find_dithered_command(history), self.CMD)
+
+    def test_first_observation_is_productive(self):
+        # The first unchanged-looking call is a legitimate inspection:
+        # with no predecessor in history, the streak cannot be judged.
+        history = [_check_entry(self.CMD, 0, "1 file changed")] * 5
+        self.assertIsNone(coder.find_dithered_command(history))
+        short = [_check_entry(self.CMD, 0, "1 file changed")] * 3
+        self.assertIsNone(coder.find_dithered_command(short))
+
+    def test_changed_output_breaks_streak(self):
+        texts = ("1 file", "2 files", "3 files", "4 files", "5 files", "6 files")
+        history = [_check_entry(self.CMD, 0, text) for text in texts]
+        self.assertIsNone(coder.find_dithered_command(history))
+        alternating = [
+            _check_entry(self.CMD, 0, "1 file" if i % 2 else "2 files")
+            for i in range(8)
+        ]
+        self.assertIsNone(coder.find_dithered_command(alternating))
+
+    def test_failing_command_still_detected(self):
+        history = [_check_entry(self.CMD, 1, "boom")] * 5
+        self.assertEqual(coder.find_dithered_command(history), self.CMD)
+
+    def test_trace_detects_unchanged_loop(self):
+        with tempfile.TemporaryDirectory() as d:
+            looping = os.path.join(d, "loop.jsonl")
+            with open(looping, "w", encoding="utf-8") as f:
+                for _ in range(6):
+                    f.write(json.dumps(_check_call_event(self.CMD, 0, "1 file")) + "\n")
+            self.assertTrue(coder.trace_has_dither(looping))
+            changing = os.path.join(d, "changing.jsonl")
+            with open(changing, "w", encoding="utf-8") as f:
+                for i in range(6):
+                    f.write(
+                        json.dumps(_check_call_event(self.CMD, 0, "%d files" % i))
+                        + "\n"
+                    )
+            self.assertFalse(coder.trace_has_dither(changing))
+
+    def test_edit_between_checks_resets_trace_guard(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "trace.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                for _ in range(3):
+                    f.write(json.dumps(_check_call_event(self.CMD, 0, "1 file")) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "name": "edit_file",
+                            "args_preview": "a.py",
+                            "ok": True,
+                        }
+                    )
+                    + "\n"
+                )
+                for _ in range(4):
+                    f.write(json.dumps(_check_call_event(self.CMD, 0, "1 file")) + "\n")
+            self.assertFalse(coder.trace_has_dither(path))
+
+
+class TestUnchangedInspectionNotice(unittest.TestCase):
+    """#1374: the live run_check streak flags identical repeated output."""
+
+    def test_identical_output_triggers_unchanged_notice(self):
+        _install_fake_langchain(self)
+        with tempfile.TemporaryDirectory() as worktree:
+            subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+            probe = os.path.join(worktree, "probe.txt")
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("one\n")
+            subprocess.run(["git", "add", "probe.txt"], cwd=worktree, check=True)
+            with open(probe, "a", encoding="utf-8") as f:
+                f.write("two\n")
+            run_check = coder.build_check_tool(worktree)
+            command = "git diff --stat"
+            first = run_check(command)
+            self.assertTrue(first.startswith("exit=0\n"), first)
+            self.assertNotIn("DITHERING", first)
+            # Changed output is legitimate and resets the streak.
+            with open(probe, "a", encoding="utf-8") as f:
+                f.write("three\n")
+            second = run_check(command)
+            self.assertNotIn("DITHERING", second)
+            last = second
+            for _ in range(5):
+                last = run_check(command)
+            self.assertIn("DITHERING", last)
+            self.assertIn("identical output", last)
+            # A different command resets the streak.
+            other = run_check("git status")
+            self.assertNotIn("DITHERING", other)
+
+    def test_edit_resets_live_guard(self):
+        _install_fake_langchain(self)
+        with tempfile.TemporaryDirectory() as worktree:
+            subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+            probe = os.path.join(worktree, "probe.txt")
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("one\n")
+            subprocess.run(["git", "add", "probe.txt"], cwd=worktree, check=True)
+            with open(probe, "a", encoding="utf-8") as f:
+                f.write("two\n")
+            written = coder.WriteTracker()
+            run_check = coder.build_check_tool(worktree, written)
+            command = "git diff --stat"
+            # Four unchanged repeats: streak builds but stays under the
+            # notice threshold.
+            results = [run_check(command) for _ in range(4)]
+            self.assertNotIn("DITHERING", results[-1])
+            # An actual edit resets the guard even when it does not
+            # change this check's output (here: an unrelated new file).
+            written.add("unrelated.py")
+            written.mutations += 1
+            after_edit = run_check(command)
+            self.assertNotIn("DITHERING", after_edit)
+            # The streak then rebuilds from fresh observations.
+            last = after_edit
+            for _ in range(5):
+                last = run_check(command)
+            self.assertIn("DITHERING", last)
+            self.assertIn("identical output", last)
 
 
 if __name__ == "__main__":
