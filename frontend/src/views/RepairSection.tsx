@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import BranchField, { useBranchField } from '../components/BranchField';
-import { abortRepair, dispatchRepair, fetchIssues, fetchRepairStatus, fetchVerifyCommand, setRepairSchedule } from '../apiClient';
+import { abortRepair, dispatchRepair, fetchIssues, fetchRepairStatus, fetchVerifyCommand, setRepairSchedule, startAuthedInterval } from '../apiClient';
 import type { RepairStatusResponse, RepairVerifyPreview } from '../apiClient';
 import type { IssueRow } from '../reviewTypes';
 import { useMock } from './mockViews';
@@ -96,12 +96,12 @@ export default function RepairSection({
   const [preview, setPreview] = useState<RepairVerifyPreview | null>(
     initialPreview ?? null,
   );
-  const timerRef = useRef<number | null>(null);
+  const timerRef = useRef<(() => void) | null>(null);
   const visUnsubRef = useRef<(() => void) | null>(null);
 
   function stopWatch() {
     if (timerRef.current !== null) {
-      window.clearInterval(timerRef.current);
+      timerRef.current();
       timerRef.current = null;
     }
     if (visUnsubRef.current !== null) {
@@ -230,7 +230,7 @@ export default function RepairSection({
       stopWatch();
       // Paused in a hidden tab (#401); a returning tab refreshes
       // immediately instead of waiting out the interval.
-      timerRef.current = window.setInterval(() => {
+      timerRef.current = startAuthedInterval(() => {
         if (isTabVisible()) void refresh();
       }, 3000);
       visUnsubRef.current = onTabVisible(() => void refresh());
