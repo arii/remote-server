@@ -296,6 +296,25 @@ class TestDeterministicPreAuditGate(unittest.TestCase):
             self.assertEqual(f_class, "mechanical")
             self.assertIn("SyntaxError", reason)
 
+    def test_pre_audit_fails_closed_when_changed_file_listing_fails(self):
+        with tempfile.TemporaryDirectory() as root:
+            pipe = pipeline.Pipeline(root, "fix syntax")
+            with mock.patch("subprocess.run") as mock_run:
+                mock_run.return_value = SimpleNamespace(
+                    stdout="",
+                    stderr="fatal: bad revision 'origin/main'",
+                    returncode=128,
+                )
+                passed, f_class, reason = pipe.pre_audit_check(root)
+            self.assertFalse(passed)
+            self.assertEqual(f_class, "mechanical")
+            self.assertIn("could not list changed files", reason)
+            with mock.patch("subprocess.run", side_effect=OSError("no git")):
+                passed, f_class, reason = pipe.pre_audit_check(root)
+            self.assertFalse(passed)
+            self.assertEqual(f_class, "mechanical")
+            self.assertIn("could not list changed files", reason)
+
     def test_pre_audit_catches_verification_command_failure_as_test_failure(self):
         with tempfile.TemporaryDirectory() as root:
             pipe = pipeline.Pipeline(
