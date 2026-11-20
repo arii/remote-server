@@ -174,8 +174,7 @@ function RunsList({
   if (flow.workflows.length === 0) {
     return (
       <p className="row-meta" data-testid="workflow-runs-empty">
-        No failing automated runs — everything that runs automatically is
-        healthy.
+        No failing workflow runs.
       </p>
     );
   }
