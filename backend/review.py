@@ -131,19 +131,6 @@ def fetch_pr_view(repo, pr):
         return {}
 
 
-def _split_diff(diff_text):
-    """[(path, chunk)] split on diff --git headers. Defensive: unparseable
-    input yields one ("", whole) entry rather than nothing."""
-    if not diff_text.strip():
-        return []
-    parts = re.split(r"(?m)^diff --git a/\S+ b/(\S+)\s*$", diff_text)
-    # parts: [preamble, path1, chunk1, path2, chunk2, ...]
-    out = []
-    for i in range(1, len(parts) - 1, 2):
-        out.append((parts[i], parts[i + 1]))
-    return out or [("", diff_text)]
-
-
 def _is_test_path(path):
     name = path.rsplit("/", 1)[-1].lower()
     lower = path.lower()
