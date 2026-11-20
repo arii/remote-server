@@ -189,175 +189,201 @@ class TestRepairBudget(unittest.TestCase):
         self.assertEqual((graph.max_fix_loops, graph.max_replans), (3, 1))
 
 
-class TestModelTierSelector(unittest.TestCase):
-    def test_first_attempt_defaults_to_fast_tier(self):
-        tier, used = pipeline.choose_model_tier(
-            attempt=1, failure_class=None, escalations_used=0, max_escalations=1
-        )
-        self.assertEqual(tier, "fast")
-        self.assertEqual(used, 0)
+class TestChooseModelTier(unittest.TestCase):
+    """Failure-class-aware tier gate (issue #1403)."""
 
-        # Even with prior failure class, attempt 1 stays on fast tier
-        tier, used = pipeline.choose_model_tier(
-            attempt=1,
-            failure_class="test_failure",
-            escalations_used=0,
-            max_escalations=1,
-        )
-        self.assertEqual(tier, "fast")
-        self.assertEqual(used, 0)
-
-    def test_mechanical_failure_stays_on_fast_tier(self):
-        for attempt in (1, 2, 3, 4):
-            tier, used = pipeline.choose_model_tier(
-                attempt=attempt,
-                failure_class="mechanical",
-                escalations_used=0,
-                max_escalations=1,
+    def test_first_pass_and_mechanical_stay_fast(self):
+        for cls in (pipeline.AUDIT_SEMANTIC, pipeline.TEST_FAILURE):
+            self.assertEqual(pipeline.choose_model_tier(1, cls, 0), pipeline.FAST_TIER)
+        for attempt in (1, 2, 3):
+            self.assertEqual(
+                pipeline.choose_model_tier(attempt, pipeline.MECHANICAL, 0),
+                pipeline.FAST_TIER,
             )
-            self.assertEqual(tier, "fast")
-            self.assertEqual(used, 0)
 
-    def test_test_failure_escalates_to_strong_tier_once(self):
-        # Attempt 2 escalates to strong
-        tier, used = pipeline.choose_model_tier(
-            attempt=2,
-            failure_class="test_failure",
-            escalations_used=0,
-            max_escalations=1,
-        )
-        self.assertEqual(tier, "strong")
-        self.assertEqual(used, 1)
-
-        # Subsequent retry is capped by max_escalations=1, stays on fast
-        tier, used = pipeline.choose_model_tier(
-            attempt=3,
-            failure_class="test_failure",
-            escalations_used=1,
-            max_escalations=1,
-        )
-        self.assertEqual(tier, "fast")
-        self.assertEqual(used, 1)
-
-    def test_audit_semantic_failure_escalates_to_strong_tier_once(self):
-        tier, used = pipeline.choose_model_tier(
-            attempt=2,
-            failure_class="audit_semantic",
-            escalations_used=0,
-            max_escalations=1,
-        )
-        self.assertEqual(tier, "strong")
-        self.assertEqual(used, 1)
-
-        tier, used = pipeline.choose_model_tier(
-            attempt=3,
-            failure_class="audit_semantic",
-            escalations_used=1,
-            max_escalations=1,
-        )
-        self.assertEqual(tier, "fast")
-        self.assertEqual(used, 1)
-
-
-class TestDeterministicPreAuditGate(unittest.TestCase):
-    def test_pre_audit_catches_ast_syntax_error_as_mechanical(self):
-        with tempfile.TemporaryDirectory() as root:
-            # Create a broken py file with invalid syntax
-            broken_file = Path(root, "broken.py")
-            broken_file.write_text("def broken_func(\n")
-            with mock.patch("subprocess.run") as mock_run:
-                mock_run.return_value = SimpleNamespace(
-                    stdout="broken.py\n", stderr="", returncode=0
+    def test_single_strong_escalation_for_test_and_semantic_from_attempt_two(self):
+        for cls in (pipeline.TEST_FAILURE, pipeline.AUDIT_SEMANTIC):
+            with self.subTest(failure_class=cls):
+                self.assertEqual(
+                    pipeline.choose_model_tier(2, cls, 0), pipeline.STRONG_TIER
                 )
-                pipe = pipeline.Pipeline(root, "fix syntax")
-                passed, f_class, reason = pipe.pre_audit_check(root)
-            self.assertFalse(passed)
-            self.assertEqual(f_class, "mechanical")
-            self.assertIn("SyntaxError", reason)
+                self.assertEqual(
+                    pipeline.choose_model_tier(3, cls, 0), pipeline.STRONG_TIER
+                )
+                # the per-issue cap blocks a second escalation
+                self.assertEqual(
+                    pipeline.choose_model_tier(2, cls, 1), pipeline.FAST_TIER
+                )
+        self.assertEqual(
+            pipeline.choose_model_tier(2, pipeline.TEST_FAILURE, 0, max_escalations=0),
+            pipeline.FAST_TIER,
+        )
 
-    def test_pre_audit_catches_verification_command_failure_as_test_failure(self):
+    def test_unknown_or_empty_failure_class_stays_fast(self):
+        for cls in ("", "other", "BLOCKED"):
+            self.assertEqual(pipeline.choose_model_tier(2, cls, 0), pipeline.FAST_TIER)
+
+
+class TestPreAuditGate(unittest.TestCase):
+    """Deterministic pre-audit gate (issue #1403); subprocess mocked."""
+
+    @staticmethod
+    def _proc(returncode=0, stdout="", stderr=""):
+        return mock.Mock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def _run_gate(self, handler, changed=("deep-agent/pipeline.py",), files=()):
+        """Run the gate in a temp worktree; handler services python -m calls."""
         with tempfile.TemporaryDirectory() as root:
-            pipe = pipeline.Pipeline(
-                root,
-                "fix tests",
-                verification_commands=[["python3", "-m", "pytest", "tests/"]],
-            )
-            with (
-                mock.patch("subprocess.run") as mock_run,
-                mock.patch("pathlib.Path.is_file", return_value=False),
-            ):
-                mock_run.side_effect = [
-                    # git diff proc
-                    SimpleNamespace(stdout="", stderr="", returncode=0),
-                    # verification command proc
-                    SimpleNamespace(
-                        stdout="FAILED test_something.py::test_calc\n",
-                        stderr="",
-                        returncode=1,
-                    ),
-                ]
-                passed, f_class, reason = pipe.pre_audit_check(root)
-            self.assertFalse(passed)
-            self.assertEqual(f_class, "test_failure")
-            self.assertIn("FAILED test_something.py::test_calc", reason)
+            for rel in files:
+                path = Path(root, rel)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("def test_placeholder():\n    pass\n")
 
-    def test_patch_failing_pre_audit_routes_back_to_coder_skipping_auditor(self):
+            def dispatch(argv, **kwargs):
+                if argv[0] == "git":
+                    return self._proc(0, "".join(f" M {p}\n" for p in changed))
+                return handler(argv)
+
+            with mock.patch.object(pipeline.subprocess, "run", side_effect=dispatch):
+                return pipeline.run_preaudit_gate(root)
+
+    def test_changed_python_files_filters_and_never_raises(self):
+        porcelain = (
+            " M deep-agent/pipeline.py\n"
+            "M  deep-agent/coder.py\n"
+            "?? notes.md\n"
+            "?? tests/test_pipeline_e2e.py\n"
+            'R  "old name.py" -> deep-agent/renamed.py\n'
+            "?? deep-agent/__pycache__/x.pyc\n"
+        )
+        with mock.patch.object(
+            pipeline.subprocess, "run", return_value=self._proc(0, porcelain)
+        ) as run:
+            self.assertEqual(
+                pipeline.changed_python_files("/wt"),
+                [
+                    "deep-agent/coder.py",
+                    "deep-agent/pipeline.py",
+                    "deep-agent/renamed.py",
+                    "tests/test_pipeline_e2e.py",
+                ],
+            )
+        self.assertEqual(run.call_args.args[0][:2], ["git", "-C"])
+        with mock.patch.object(
+            pipeline.subprocess, "run", return_value=self._proc(1, "", "fatal")
+        ):
+            self.assertEqual(pipeline.changed_python_files("/wt"), [])
+        with mock.patch.object(
+            pipeline.subprocess, "run", side_effect=OSError("no git")
+        ):
+            self.assertEqual(pipeline.changed_python_files("/wt"), [])
+
+    def test_scoped_test_files_maps_modules_and_tests(self):
         with tempfile.TemporaryDirectory() as root:
-            coder_calls = []
-            audit_mock = mock.Mock()
-
-            def fake_code(brief, worktree_root=None, repair_notes=""):
-                coder_calls.append((worktree_root, repair_notes))
-                return True, {}, root
-
-            pre_audit_outcomes = [
-                (False, "mechanical", "SyntaxError: unexpected EOF"),
-                (True, None, ""),
-            ]
-
-            def fake_pre_audit(worktree_root):
-                return pre_audit_outcomes.pop(0)
-
-            pipe = pipeline.Pipeline(
+            Path(root, "tests").mkdir()
+            Path(root, "tests", "test_pipeline.py").write_text("x = 1\n")
+            Path(root, "tests", "test_pipeline_e2e.py").write_text("x = 1\n")
+            Path(root, "test_calc.py").write_text("x = 1\n")
+            targets = pipeline.scoped_test_files(
                 root,
-                "fix helper",
-                pre_audit_fn=fake_pre_audit,
-                audit_fn=audit_mock,
-                max_repair_cycles=2,
+                ["deep-agent/pipeline.py", "calc.py", "tests/test_pipeline_e2e.py"],
             )
-            pipe.stage_init = lambda: (True, "ready")
-            pipe.stage_spec = lambda: (True, {}, "spec")
-            pipe.stage_code = fake_code
-            pipe.stage_audit = lambda wt: (pipeline.APPROVED, {}, "approved")
-            pipe.stage_cleanup = lambda wt: (True, "")
+        self.assertEqual(
+            targets,
+            ["tests/test_pipeline.py", "test_calc.py", "tests/test_pipeline_e2e.py"],
+        )
 
-            result = pipe.run()
-            self.assertEqual(result["status"], pipeline.APPROVED)
-            self.assertEqual(len(coder_calls), 2)
-            # The first repair attempt receives the pre-audit error notes
-            self.assertIn("SyntaxError: unexpected EOF", coder_calls[1][1])
-            # Auditor LLM was never called during the first pre-audit failure
-            audit_mock.assert_not_called()
+    def test_no_changes_passes_without_running_checks(self):
+        with mock.patch.object(
+            pipeline.subprocess, "run", return_value=self._proc(0, "")
+        ) as run:
+            self.assertEqual(pipeline.run_preaudit_gate("/wt"), (True, "", ""))
+        self.assertEqual(run.call_count, 1)  # git status only
 
-    def test_pipeline_terminates_cleanly_when_repair_cycles_exhausted(self):
-        with tempfile.TemporaryDirectory() as root:
+    def test_syntax_failure_is_mechanical(self):
+        def handler(argv):
+            self.assertEqual(argv[2], "py_compile")
+            return self._proc(1, "", "  File x.py, line 1\nSyntaxError: bad")
 
-            def fake_pre_audit(worktree_root):
-                return False, "mechanical", "SyntaxError: unfixable"
+        ok, cls, summary = self._run_gate(handler)
+        self.assertFalse(ok)
+        self.assertEqual(cls, pipeline.MECHANICAL)
+        self.assertIn("syntax: deep-agent/pipeline.py", summary)
+        self.assertIn("SyntaxError", summary)
 
-            pipe = pipeline.Pipeline(
-                root,
-                "stuck issue",
-                pre_audit_fn=fake_pre_audit,
-                max_repair_cycles=2,
-            )
-            pipe.stage_init = lambda: (True, "ready")
-            pipe.stage_spec = lambda: (True, {}, "spec")
-            pipe.stage_code = lambda brief, worktree_root=None, repair_notes="": (
-                True,
-                {},
-                root,
-            )
-            result = pipe.run()
-            self.assertEqual(result["status"], pipeline.CHANGES_REQUESTED)
-            self.assertIn("repair cycles exhausted (2/2)", result["detail"])
+    def test_lint_failure_is_mechanical(self):
+        def handler(argv):
+            if argv[2] == "py_compile":
+                return self._proc(0)
+            self.assertEqual(argv[2], "ruff")
+            self.assertIn("F,E4,E7,E9", argv)
+            return self._proc(1, "deep-agent/pipeline.py:1:1: F401 unused")
+
+        ok, cls, summary = self._run_gate(handler)
+        self.assertFalse(ok)
+        self.assertEqual(cls, pipeline.MECHANICAL)
+        self.assertIn("lint:", summary)
+        self.assertIn("F401", summary)
+
+    def test_pytest_failure_is_test_failure(self):
+        def handler(argv):
+            if argv[2] in ("py_compile", "ruff"):
+                return self._proc(0)
+            self.assertEqual(argv[2], "pytest")
+            self.assertIn("-x", argv)
+            return self._proc(1, "FAILED tests/test_pipeline.py::test_x - assert")
+
+        ok, cls, summary = self._run_gate(handler, files=("tests/test_pipeline.py",))
+        self.assertFalse(ok)
+        self.assertEqual(cls, pipeline.TEST_FAILURE)
+        self.assertIn("pytest:", summary)
+        self.assertIn("FAILED", summary)
+
+    def test_missing_tools_skip_their_check(self):
+        def handler(argv):
+            if argv[2] == "py_compile":
+                return self._proc(0)
+            return self._proc(1, "", f"No module named {argv[2]}")
+
+        ok, cls, summary = self._run_gate(handler, files=("tests/test_pipeline.py",))
+        self.assertEqual((ok, cls, summary), (True, "", ""))
+
+    def test_pytest_collecting_nothing_is_skipped(self):
+        def handler(argv):
+            if argv[2] in ("py_compile", "ruff"):
+                return self._proc(0)
+            return self._proc(5, "no tests collected")
+
+        ok, cls, summary = self._run_gate(handler, files=("tests/test_pipeline.py",))
+        self.assertEqual((ok, cls, summary), (True, "", ""))
+
+    def test_pytest_timeout_reports_test_failure(self):
+        def handler(argv):
+            if argv[2] in ("py_compile", "ruff"):
+                return self._proc(0)
+            raise pipeline.subprocess.TimeoutExpired(cmd="pytest", timeout=300)
+
+        ok, cls, summary = self._run_gate(handler, files=("tests/test_pipeline.py",))
+        self.assertFalse(ok)
+        self.assertEqual(cls, pipeline.TEST_FAILURE)
+        self.assertIn("timed out", summary)
+
+    def test_clean_run_passes(self):
+        ok, cls, summary = self._run_gate(
+            lambda argv: self._proc(0), files=("tests/test_pipeline.py",)
+        )
+        self.assertEqual((ok, cls, summary), (True, "", ""))
+
+    def test_summary_is_head_tail_truncated(self):
+        def handler(argv):
+            if argv[2] == "py_compile":
+                return self._proc(0)
+            return self._proc(1, "E" * (pipeline.PREAUDIT_SUMMARY_LIMIT * 3))
+
+        ok, cls, summary = self._run_gate(handler)
+        self.assertFalse(ok)
+        self.assertEqual(cls, pipeline.MECHANICAL)
+        self.assertIn("chars omitted", summary)
+        self.assertLessEqual(
+            len(summary), pipeline.PREAUDIT_SUMMARY_LIMIT + len("lint: \n\n[]") + 40
+        )
