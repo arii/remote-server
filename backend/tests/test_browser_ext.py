@@ -24,6 +24,7 @@ class PairedChromeTest(unittest.TestCase):
             {
                 "AGENT_CONTROL_STATE_FILE": os.path.join(self.tmp.name, "control.json"),
                 "BROWSER_ACTIVITY_FILE": os.path.join(self.tmp.name, "activity.jsonl"),
+                "BUTTONS_EXT_PAIRING_TOKEN": "test-pair-token",
             },
         )
         env.start()
@@ -45,6 +46,10 @@ class PairedChromeTest(unittest.TestCase):
         self.addCleanup(self.pool.shutdown)
         self.page = {"url": "https://example.com/", "title": "Paired", "els": []}
         self.commands = []
+
+    def connect_ext(self, **kwargs):
+        kwargs.setdefault("subprotocols", ["pair.test-pair-token"])
+        return self.client.websocket_connect("/api/browser/ext", **kwargs)
 
     def round_trip(
         self, ws, method="GET", path="/snapshot", body=None, sensitive=False
@@ -80,7 +85,7 @@ class PairedChromeTest(unittest.TestCase):
         grid_page = {"url": "https://grid.test", "title": "Grid", "elements": []}
         with mock.patch.dict(browser_view._LAST_PAGE):
             browser_view.remember_page(grid_page)
-            with self.client.websocket_connect("/api/browser/ext") as ws:
+            with self.connect_ext() as ws:
                 response = self.round_trip(ws)
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertEqual(response.json()["kind"], "paired")
@@ -101,7 +106,7 @@ class PairedChromeTest(unittest.TestCase):
 
     def test_empty_snapshot(self):
         self.page = {"url": "about:blank", "title": "", "els": []}
-        with self.client.websocket_connect("/api/browser/ext") as ws:
+        with self.connect_ext() as ws:
             response = self.round_trip(ws)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["elements"], [])
@@ -122,7 +127,7 @@ class PairedChromeTest(unittest.TestCase):
             self.assertIn("missing or non-extension Origin", logs.output[0])
 
     def test_web_origin_rejected_without_replacing_pair(self):
-        with self.client.websocket_connect("/api/browser/ext"):
+        with self.connect_ext():
             bridge = browser_ext.paired_bridge()
             self.assert_origin_rejected({"origin": "https://evil.example"})
             self.assertIs(browser_ext.paired_bridge(), bridge)
@@ -131,6 +136,23 @@ class PairedChromeTest(unittest.TestCase):
         self.client.headers.pop("origin")
         self.assert_origin_rejected({})
         self.assertFalse(browser_ext.paired_state()["connected"])
+
+    def assert_token_rejected(self, **kwargs):
+        with self.assertRaises(WebSocketDisconnect) as closed:
+            with self.client.websocket_connect("/api/browser/ext", **kwargs):
+                self.fail("unpaired handshake accepted")
+        self.assertEqual(closed.exception.code, 1008)
+        self.assertFalse(browser_ext.paired_state()["connected"])
+
+    def test_missing_pairing_token_rejected(self):
+        self.assert_token_rejected()
+
+    def test_wrong_pairing_token_rejected(self):
+        self.assert_token_rejected(subprotocols=["pair.not-the-token"])
+
+    def test_unset_pairing_token_rejects_everyone(self):
+        with mock.patch.dict(os.environ, {"BUTTONS_EXT_PAIRING_TOKEN": ""}):
+            self.assert_token_rejected(subprotocols=["pair.test-pair-token"])
 
     def test_no_pair_returns_conflict(self):
         for method, path, body in (
@@ -147,7 +169,7 @@ class PairedChromeTest(unittest.TestCase):
         for kind in ("pointer", "key", "touch"):
             with self.subTest(kind=kind):
                 agent_control.resume_agent()
-                with self.client.websocket_connect("/api/browser/ext") as ws:
+                with self.connect_ext() as ws:
                     ws.send_json({"event": "human_input", "kind": kind})
                     self.round_trip(ws)
                     state = agent_control.read_control_state()
@@ -161,12 +183,12 @@ class PairedChromeTest(unittest.TestCase):
                     self.assertIn("human is driving", response.json()["detail"])
 
     def test_replacement_closes_old_connection_and_fails_pending_request(self):
-        with self.client.websocket_connect("/api/browser/ext") as old:
+        with self.connect_ext() as old:
             future = self.pool.submit(
                 self.client.get, "/api/browser/snapshot?target=paired"
             )
             old.receive_json()
-            with self.client.websocket_connect("/api/browser/ext") as new:
+            with self.connect_ext() as new:
                 with self.assertRaises(WebSocketDisconnect) as closed:
                     old.receive_json()
                 self.assertIn("replaced", closed.exception.reason)
@@ -177,7 +199,7 @@ class PairedChromeTest(unittest.TestCase):
 
     def test_timeout_is_loud_and_cleans_pending(self):
         with mock.patch.object(browser_ext, "COMMAND_TIMEOUT", 0.05):
-            with self.client.websocket_connect("/api/browser/ext") as ws:
+            with self.connect_ext() as ws:
                 future = self.pool.submit(
                     self.client.get, "/api/browser/snapshot?target=paired"
                 )
@@ -192,7 +214,7 @@ class PairedChromeTest(unittest.TestCase):
     def test_command_error_and_tab_closed_fail_loudly(self):
         for message in ({"error": "debugger detached"}, {"event": "tab_closed"}):
             with self.subTest(message=message):
-                with self.client.websocket_connect("/api/browser/ext") as ws:
+                with self.connect_ext() as ws:
                     future = self.pool.submit(
                         self.client.get, "/api/browser/snapshot?target=paired"
                     )
@@ -210,7 +232,7 @@ class PairedChromeTest(unittest.TestCase):
         for op in ("type", "key"):
             for sensitive in (False, True):
                 with self.subTest(op=op, sensitive=sensitive):
-                    with self.client.websocket_connect("/api/browser/ext") as ws:
+                    with self.connect_ext() as ws:
                         self.round_trip(ws)
                         secret = f"secret-probe-{sensitive}" if op == "type" else "s"
                         response = self.round_trip(
@@ -242,7 +264,7 @@ class PairedChromeTest(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.page["els"] = [{"x": 0, "y": 0, "w": 20, "h": 20, **marker}]
-                with self.client.websocket_connect("/api/browser/ext") as ws:
+                with self.connect_ext() as ws:
                     self.round_trip(ws)
                     response = self.round_trip(
                         ws, "POST", "/drive", {"op": "type", "text": "must-not-log"}
@@ -266,7 +288,7 @@ class PairedChromeTest(unittest.TestCase):
             )
 
     def test_paired_click_wheel_and_navigation_use_cdp(self):
-        with self.client.websocket_connect("/api/browser/ext") as ws:
+        with self.connect_ext() as ws:
             self.round_trip(ws)
             for body, expected in (
                 ({"op": "click", "x": 12, "y": 34}, "Input.dispatchMouseEvent"),
@@ -284,7 +306,7 @@ class PairedChromeTest(unittest.TestCase):
                 )
 
     def test_cdp_error_does_not_become_empty_result(self):
-        with self.client.websocket_connect("/api/browser/ext") as ws:
+        with self.connect_ext() as ws:
             self.round_trip(ws)
             future = self.pool.submit(
                 self.client.get, "/api/browser/snapshot?target=paired"
@@ -297,7 +319,7 @@ class PairedChromeTest(unittest.TestCase):
             self.assertIn("debugger detached", response.text)
 
     def test_cdp_navigation_event_updates_only_paired_context(self):
-        with self.client.websocket_connect("/api/browser/ext") as ws:
+        with self.connect_ext() as ws:
             self.round_trip(ws)
             grid_page = browser_view.last_page()
             ws.send_json(
@@ -402,11 +424,19 @@ class BridgeLifecycleTest(unittest.IsolatedAsyncioTestCase):
             mock.Mock(close=mock.AsyncMock(side_effect=RuntimeError("close failed")))
         )
         socket = mock.Mock(
-            headers={"origin": "chrome-extension://buttons"},
+            headers={
+                "origin": "chrome-extension://buttons",
+                "sec-websocket-protocol": "pair.test-pair-token",
+            },
             accept=mock.AsyncMock(),
             receive_json=mock.AsyncMock(side_effect=WebSocketDisconnect(1000)),
         )
-        with mock.patch.object(browser_ext, "_paired", old):
+        with (
+            mock.patch.object(browser_ext, "_paired", old),
+            mock.patch.dict(
+                os.environ, {"BUTTONS_EXT_PAIRING_TOKEN": "test-pair-token"}
+            ),
+        ):
             with self.assertLogs(browser_ext.logger, level="WARNING"):
                 await browser_ext.extension_socket(socket)
         socket.receive_json.assert_awaited_once()
@@ -419,13 +449,19 @@ class BridgeLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         old = browser_ext.PairedBridge(mock.Mock(close=stalled_close))
         socket = mock.Mock(
-            headers={"origin": "chrome-extension://buttons"},
+            headers={
+                "origin": "chrome-extension://buttons",
+                "sec-websocket-protocol": "pair.test-pair-token",
+            },
             accept=mock.AsyncMock(),
             receive_json=mock.AsyncMock(side_effect=WebSocketDisconnect(1000)),
         )
         with (
             mock.patch.object(browser_ext, "_paired", old),
             mock.patch.object(browser_ext, "CLOSE_TIMEOUT", 0, create=True),
+            mock.patch.dict(
+                os.environ, {"BUTTONS_EXT_PAIRING_TOKEN": "test-pair-token"}
+            ),
         ):
             await asyncio.wait_for(browser_ext.extension_socket(socket), timeout=0.2)
         socket.receive_json.assert_awaited_once()
