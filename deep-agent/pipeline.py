@@ -513,11 +513,18 @@ class Pipeline:
                 text=True,
                 check=False,
             )
-            changed_files = [
-                f.strip() for f in (diff_proc.stdout or "").splitlines() if f.strip()
-            ]
-        except Exception:
-            changed_files = []
+        except Exception as exc:
+            return False, "mechanical", f"could not list changed files: {exc}"
+        if diff_proc.returncode != 0:
+            detail = (diff_proc.stderr or "").strip()[:200]
+            return (
+                False,
+                "mechanical",
+                f"could not list changed files (git diff exit {diff_proc.returncode}): {detail}",
+            )
+        changed_files = [
+            f.strip() for f in (diff_proc.stdout or "").splitlines() if f.strip()
+        ]
 
         for rel_path in changed_files:
             if rel_path.endswith(".py"):
