@@ -213,19 +213,11 @@ const FALLBACK_REPOS: RepoInfo[] = [
   { name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: true },
 ];
 
-// Rollup guard (issue #610): Chat/History are per-repo
+// Rollup guard (issue #610, #1386): Chat/History/Review/Jobs are per-repo
 // views with no `repo=all` API; prompt for a repo instead of
-// firing per-repo fetches at a pseudo-repo. (Briefing moved into
-// the triage drawer in D5, which hides its section on rollup.)
-export function RollupGate({ view }: { view: string }) {
-  return (
-    <section data-testid="rollup-gate" role="status">
-      <p className="row-meta">
-        {view} needs one repo — pick one above to leave the All repos rollup.
-      </p>
-    </section>
-  );
-}
+// firing per-repo fetches at a pseudo-repo.
+import { RollupGate } from './components/RollupGate';
+export { RollupGate };
 
 export default function App() {
   const topbarRef = useRef<HTMLElement>(null);

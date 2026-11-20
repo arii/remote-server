@@ -10,12 +10,16 @@ export function isRollupRepo(repo: string): boolean {
 
 // Repo-only labels (#708): the trigger names the checkout without
 // branch or state — coding actions carry their own branch field.
+// Only uncommitted working-tree changes mark dirty; sync lag
+// (ahead/behind) surfaces in row secondary text (#1386).
 export function repoOptionLabel(r: RepoInfo): string {
-  return `${r.name}${r.clean ? '' : ' (dirty)'}`;
+  const isDirty = !r.clean && (r.status_count === undefined || r.status_count > 0);
+  return `${r.name}${isDirty ? ' (dirty)' : ''}`;
 }
 
 function repoOptionTitle(r: RepoInfo): string {
-  return `${r.full}${r.clean ? '' : ' (dirty)'}`;
+  const isDirty = !r.clean && (r.status_count === undefined || r.status_count > 0);
+  return `${r.full}${isDirty ? ' (dirty)' : ''}`;
 }
 
 // Per-row secondary text (#961): branch plus lag state, muted and

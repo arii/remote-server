@@ -34,7 +34,10 @@ def repo_gh(name: str) -> str:
     briefing router: arii/<name>)."""
     from backend.core.validation import validate_repo_name
 
-    return validate_gh(f"arii/{validate_repo_name(name)}")
+    repo = validate_repo_name(name)
+    if repo == "all":
+        raise ValueError("gh operations require a concrete repo, not 'all'")
+    return validate_gh(f"arii/{repo}")
 
 
 def run_gh(gh: str, argv: list, timeout: int = GH_TIMEOUT,

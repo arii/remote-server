@@ -40,6 +40,16 @@ describe('TriageDrawer (D5)', () => {
     ).toContain('data-testid="briefing-loading"');
   });
 
+  it('renders RollupGate for review, jobs, and briefing when repo is all (#1386)', () => {
+    for (const s of ['review', 'jobs', 'briefing'] as const) {
+      const html = renderToStaticMarkup(
+        <TriageDrawer {...base} repo="all" section={s} />,
+      );
+      expect(html).toContain('data-testid="rollup-gate"');
+      expect(html).toContain('needs one repo');
+    }
+  });
+
   it('keeps the close control when showing a section', () => {
     const html = renderToStaticMarkup(<TriageDrawer {...base} section="jobs" />);
     expect(html).toContain('data-testid="triage-close"');
