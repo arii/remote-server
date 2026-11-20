@@ -61,9 +61,9 @@ export function buildCommands(ctx: CommandContext): PaletteCommand[] {
     { id: 'go-chat', label: 'Go to Chat', hint: 'Navigate', keywords: 'agent ask prompt', run: () => ctx.go('chat') },
     { id: 'go-briefing', label: 'Go to Briefing', hint: 'Navigate', keywords: 'digest summary', run: () => ctx.openSection('briefing') },
     { id: 'go-history', label: 'Go to History', hint: 'Navigate', keywords: 'trail ledger past runs', run: () => ctx.go('history') },
-    { id: 'open-review', label: 'Open Review section', hint: 'Now', keywords: 'prs issues merge pr status', run: () => ctx.openSection('review') },
-    { id: 'open-jobs', label: 'Open Jobs section', hint: 'Now', keywords: 'runs repair dispatch', run: () => ctx.openSection('jobs') },
-    { id: 'open-queue', label: 'Open Queue section', hint: 'Now', keywords: 'queued backlog waiting lane', run: () => ctx.openSection('queue') },
+    { id: 'open-review', label: 'Go to Review', hint: 'Navigate', keywords: 'prs issues merge pr status section', run: () => ctx.openSection('review') },
+    { id: 'open-jobs', label: 'Go to Jobs', hint: 'Navigate', keywords: 'runs repair dispatch section', run: () => ctx.openSection('jobs') },
+    { id: 'open-queue', label: 'Go to Queue', hint: 'Navigate', keywords: 'queued backlog waiting lane section', run: () => ctx.openSection('queue') },
     { id: 'report-bug', label: 'Report a bug', hint: 'Now', keywords: 'file issue create', run: () => ctx.reportBug() },
     {
       id: 'new-issue',

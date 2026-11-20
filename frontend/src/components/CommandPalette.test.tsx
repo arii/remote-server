@@ -112,6 +112,17 @@ describe('buildCommands', () => {
     }
   });
 
+  it('uses consistent Go to labeling and Navigate hints for top-level destinations (issue #1437)', () => {
+    const cmds = buildCommands(testCtx());
+    const navIds = ['go-now', 'go-chat', 'go-briefing', 'go-history', 'open-review', 'open-jobs', 'open-queue'];
+    for (const id of navIds) {
+      const cmd = cmds.find((c) => c.id === id);
+      expect(cmd).toBeDefined();
+      expect(cmd!.hint).toBe('Navigate');
+      expect(cmd!.label).toMatch(/^Go to /);
+    }
+  });
+
   it('dispatches doctor and preflight through runCheck', () => {
     const ctx = testCtx();
     const cmds = buildCommands(ctx);
