@@ -1239,3 +1239,58 @@ class SupersededFailureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FailingScheduleAttentionTest(unittest.TestCase):
+    """#1487: failing schedules surface without being paused, and
+    repos outside the discovered set still reach the rollup."""
+
+    def _run(self, schedules, jobs=()):
+        orig = {
+            k: getattr(attention, k)
+            for k in (
+                "get_workflow_health", "list_failed_jobs", "list_failed_webhooks",
+                "list_skipped_webhooks", "list_pending_approvals", "ollama_up",
+                "list_failing_schedules", "list_terminal_dispatches",
+            )
+        }
+        attention.get_workflow_health = lambda repo: {"workflows": []}
+        attention.list_failed_jobs = lambda: list(jobs)
+        attention.list_failed_webhooks = lambda: []
+        attention.list_skipped_webhooks = lambda: []
+        attention.list_pending_approvals = lambda: []
+        attention.list_terminal_dispatches = lambda: []
+        attention.ollama_up = lambda: True
+        attention.list_failing_schedules = lambda: list(schedules)
+        try:
+            return attention
+        finally:
+            self._orig = orig
+
+    def tearDown(self):
+        for k, v in getattr(self, "_orig", {}).items():
+            setattr(attention, k, v)
+
+    def test_permanent_vs_transient_and_not_paused(self):
+        a = self._run([
+            {"id": "s1", "repo": "cobrowser", "action": "notify-check",
+             "enabled": True, "last_result": {"ok": False, "at": 5.0,
+                                              "error": "unknown repo"}},
+            {"id": "s2", "repo": "cobrowser", "action": "other", "enabled": True,
+             "last_result": {"ok": False, "at": 6.0, "error": "gh timed out"}},
+        ])
+        items = a.attention("cobrowser")["items"]
+        by = {i["id"]: i for i in items}
+        self.assertIn("not found on this host", by["schedule-s1"]["detail"])
+        self.assertIn("transient", by["schedule-s2"]["detail"])
+        for i in items:
+            self.assertEqual(i["kind"], "failed-schedule")
+            self.assertIn("nothing was auto-paused", i["detail"])
+        self.assertEqual(a.attention("remote-server")["items"], [])
+
+    def test_orphan_repo_names(self):
+        a = self._run(
+            [{"id": "s1", "repo": "cobrowser", "last_result": {"ok": False}}],
+            jobs=[{"id": "j", "repo": "arii/gone"}, {"id": "k", "repo": "remote-server"}],
+        )
+        self.assertEqual(a.orphan_repo_names(["remote-server"]), ["cobrowser", "gone"])
