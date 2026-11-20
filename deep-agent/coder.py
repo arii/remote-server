@@ -1883,13 +1883,6 @@ def assert_inside(worktree_root, path):
     return full
 
 
-def read_worktree_file(worktree_root, path, limit=20000):
-    """Read a file inside the worktree; escapes raise ValueError."""
-    full = assert_inside(worktree_root, path)
-    with open(full, encoding="utf-8", errors="ignore") as handle:
-        return handle.read(limit)
-
-
 def gate_spec_markdown(brief, allowed_files):
     """Minimal verify-scope spec from a brief + allowed file list."""
     lines = [

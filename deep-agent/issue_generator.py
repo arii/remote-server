@@ -270,33 +270,6 @@ def evidence_cites_repo_file(evidence, repo_root):
     return hits
 
 
-def assemble_spec(brief, context="", answers=None):
-    """Render the canonical spec markdown from brief + context + Q&A."""
-    answers = answers or {}
-    lines = [f"# {brief.strip()}", ""]
-    lines += ["## Problem Statement", (context or "").strip() or brief.strip(), ""]
-    lines += ["## Goal", brief.strip(), ""]
-    lines += ["## Scope", "Touched files: TBD during investigation.", ""]
-    lines += ["## Definition of Done", "Acceptance criteria below hold.", ""]
-    lines += [
-        "## Scope & File Boundaries",
-        "### Allowed Files",
-        "- TBD",
-        "### Forbidden Files",
-        "- TBD",
-        "",
-    ]
-    lines += ["## Implementation Plan", "1. TBD", ""]
-    lines += ["## Acceptance Criteria", "- [ ] TBD", ""]
-    if answers:
-        lines += ["## Q&A Context", ""]
-        for key in sorted(answers):
-            lines.append(f"- **{key}**: {answers[key]}")
-        lines.append("")
-    lines += ["## Verification Commands", "```bash", "# TBD", "```", ""]
-    return "\n".join(lines)
-
-
 def extract_questions(text):
     """Numbered/bulleted questions the draft asks the human."""
     questions = []

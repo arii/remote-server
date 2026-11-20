@@ -67,7 +67,7 @@ class TestWorktreeGuard(unittest.TestCase):
             with self.assertRaises(ValueError):
                 coder.assert_inside(root, "/etc/passwd")
             with self.assertRaises(ValueError):
-                coder.read_worktree_file(root, "../../x")
+                coder.assert_inside(root, "../../x")
 
     def test_allows_inside(self):
         with tempfile.TemporaryDirectory() as root:
@@ -75,7 +75,7 @@ class TestWorktreeGuard(unittest.TestCase):
             os.makedirs(os.path.dirname(target))
             with open(target, "w", encoding="utf-8") as handle:
                 handle.write("x = 1\n")
-            self.assertEqual(coder.read_worktree_file(root, "sub/f.py"), "x = 1\n")
+            self.assertEqual(coder.assert_inside(root, "sub/f.py"), target)
 
     def test_gate_spec_markdown_shape(self):
         spec = coder.gate_spec_markdown("Fix it", ["a.py", "b.py"])
@@ -443,6 +443,7 @@ class TestReadCacheAndTruncation(unittest.TestCase):
         middleware = coder.worktree_file_middleware(
             "/tmp/wt", written, read_cache=cache
         )
+        call_mw = getattr(middleware, "wrap_tool_call", middleware)
 
         # Mock tool call request object
         class FakeRequest:
@@ -458,7 +459,7 @@ class TestReadCacheAndTruncation(unittest.TestCase):
         req1 = FakeRequest(
             {"id": "call_1", "name": "read_file", "args": {"file_path": "a.py"}}
         )
-        res1 = middleware(
+        res1 = call_mw(
             req1,
             lambda r: ToolMessage(
                 content="print('hello')",
@@ -473,7 +474,7 @@ class TestReadCacheAndTruncation(unittest.TestCase):
         req2 = FakeRequest(
             {"id": "call_2", "name": "read_file", "args": {"file_path": "a.py"}}
         )
-        res2 = middleware(
+        res2 = call_mw(
             req2,
             lambda r: ToolMessage(
                 content="print('hello')",
@@ -489,7 +490,7 @@ class TestReadCacheAndTruncation(unittest.TestCase):
         req_edit = FakeRequest(
             {"id": "call_3", "name": "edit_file", "args": {"file_path": "a.py"}}
         )
-        middleware(
+        call_mw(
             req_edit,
             lambda r: ToolMessage(
                 content="ok", tool_call_id="call_3", name="edit_file", status="success"
@@ -501,7 +502,7 @@ class TestReadCacheAndTruncation(unittest.TestCase):
         req4 = FakeRequest(
             {"id": "call_4", "name": "read_file", "args": {"file_path": "a.py"}}
         )
-        res4 = middleware(
+        res4 = call_mw(
             req4,
             lambda r: ToolMessage(
                 content="print('updated')",
@@ -517,7 +518,7 @@ class TestReadCacheAndTruncation(unittest.TestCase):
         req5 = FakeRequest(
             {"id": "call_5", "name": "read_file", "args": {"file_path": "big.py"}}
         )
-        res5 = middleware(
+        res5 = call_mw(
             req5,
             lambda r: ToolMessage(
                 content=long_content,
