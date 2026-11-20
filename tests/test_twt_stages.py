@@ -86,6 +86,29 @@ class TestTwtStageModels(unittest.TestCase):
             )
         self.assertEqual(spec["provider_models"]["nebius"], "other")
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("langchain_openai"), "needs deep-agent venv"
+    )
+    def test_per_stage_free_provider_override_supported(self):
+        env = {
+            "TWT_CODER_GROQ_MODEL": "llama-3.3-70b-versatile",
+            "TWT_CODER_OPENROUTER_MODEL": "qwen/qwen-2.5-coder-32b-instruct:free",
+        }
+        with mock.patch.dict(os.environ, env):
+            _, spec = model_router.build_chat_model(
+                spec={
+                    "provider": "twt",
+                    "model": "default",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                },
+                stage="coder",
+            )
+        self.assertEqual(spec["provider_models"]["groq"], "llama-3.3-70b-versatile")
+        self.assertEqual(
+            spec["provider_models"]["openrouter"],
+            "qwen/qwen-2.5-coder-32b-instruct:free",
+        )
+
     @unittest.skipUnless(importlib.util.find_spec("openai"), "needs deep-agent venv")
     def test_stage_controls_on_actual_sync_and_async_sdk_wire(self):
         import httpx

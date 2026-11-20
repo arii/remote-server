@@ -545,7 +545,7 @@ def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
     if stage is not None and stage not in STAGE_NEBIUS_MODELS:
         raise ValueError(f"unknown pipeline model stage: {stage}")
     if spec.get("provider") == "twt" and stage is not None:
-        spec["provider_models"] = {
+        provider_models = {
             "nvidia": _env(
                 f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
             ),
@@ -553,6 +553,18 @@ def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
                 f"TWT_{stage.upper()}_NEBIUS_MODEL", STAGE_NEBIUS_MODELS[stage]
             ),
         }
+        for provider_name in (
+            "google",
+            "groq",
+            "openrouter",
+            "mistral",
+            "sambanova",
+            "cloudflare",
+        ):
+            override = _env(f"TWT_{stage.upper()}_{provider_name.upper()}_MODEL")
+            if override:
+                provider_models[provider_name] = override
+        spec["provider_models"] = provider_models
         spec["provider_reasoning_effort"] = dict.fromkeys(("nvidia", "nebius"), "low")
     kwargs = chat_kwargs(spec)
     if spec.get("provider") == "twt" and spec.get("provider_models"):
