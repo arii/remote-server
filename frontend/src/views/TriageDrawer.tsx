@@ -7,9 +7,9 @@ import { useState, type ReactNode } from 'react';
 import ReviewView from './ReviewView';
 import JobsView from './JobsView';
 import QueueView from './QueueView';
-// Briefing fold-down (D5): the digest, notification controls, and
-// next actions render as a drawer section.
 import BriefingView from './BriefingView';
+import { isRollupRepo } from '../components/RepoPicker';
+import { RollupGate } from '../components/RollupGate';
 
 export type TriageSection = 'review' | 'jobs' | 'queue' | 'briefing';
 
@@ -64,37 +64,49 @@ export default function TriageDrawer({
         </button>
       </div>
       {section === 'review' && (
-        <ReviewView
-          repo={repo}
-          defaultBranch={defaultBranch}
-          onAskAgent={onAskAgent}
-          onSelectPr={setLastPr}
-          createRequest={createRequest}
-        />
+        isRollupRepo(repo) ? (
+          <RollupGate view="Review" />
+        ) : (
+          <ReviewView
+            repo={repo}
+            defaultBranch={defaultBranch}
+            onAskAgent={onAskAgent}
+            onSelectPr={setLastPr}
+            createRequest={createRequest}
+          />
+        )
       )}
       {section === 'jobs' && (
-        <JobsView
-          repo={repo}
-          defaultBranch={defaultBranch}
-          onAskAgent={onAskAgent}
-          initialPr={lastPr}
-          onOpenChat={onOpenChat}
-          pendingTdCommand={pendingTdCommand}
-          onPendingTdHandled={onPendingTdHandled}
-        />
+        isRollupRepo(repo) ? (
+          <RollupGate view="Jobs" />
+        ) : (
+          <JobsView
+            repo={repo}
+            defaultBranch={defaultBranch}
+            onAskAgent={onAskAgent}
+            initialPr={lastPr}
+            onOpenChat={onOpenChat}
+            pendingTdCommand={pendingTdCommand}
+            onPendingTdHandled={onPendingTdHandled}
+          />
+        )
       )}
       {section === 'queue' && <QueueView repo={repo} />}
       {section === 'briefing' && (
-        <BriefingView
-          repo={repo}
-          onAskAgent={onAskAgent}
-          onOpenHistory={onOpenHistory}
-          // Pipeline-pill fallback (#902): pills without a backend
-          // URL hop to this drawer's Review section.
-          onOpenReview={() => onSectionChange('review')}
-          reloadRequest={reloadRequest}
-          active={open}
-        />
+        isRollupRepo(repo) ? (
+          <RollupGate view="Briefing" />
+        ) : (
+          <BriefingView
+            repo={repo}
+            onAskAgent={onAskAgent}
+            onOpenHistory={onOpenHistory}
+            // Pipeline-pill fallback (#902): pills without a backend
+            // URL hop to this drawer's Review section.
+            onOpenReview={() => onSectionChange('review')}
+            reloadRequest={reloadRequest}
+            active={open}
+          />
+        )
       )}
     </section>
   );

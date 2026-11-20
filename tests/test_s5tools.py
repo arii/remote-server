@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import s5tools
 
@@ -493,36 +494,59 @@ class _DoubleHandler:
         route = self.server.routes.get(self.path)
         if route is None:
             body = b"not found"
-            self.send_response(404)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(404)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             return
         status, headers, body = route
         if callable(body):
             body = body()
-        self.send_response(status)
-        for k, v in headers:
-            self.send_header(k, v)
-        if not any(k.lower() == "content-length" for k, v in headers):
-            self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            for k, v in headers:
+                self.send_header(k, v)
+            if not any(k.lower() == "content-length" for k, v in headers):
+                self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def log_message(self, *args):
         pass
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc_type, _, _ = sys.exc_info()
+        if exc_type in (BrokenPipeError, ConnectionResetError):
+            return
+        if sys is None or getattr(sys, "stderr", None) is None:
+            return
+        super().handle_error(request, client_address)
 
 
 class TestFetchUrl(unittest.TestCase):
     def _double(self, routes):
         import threading
-        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         class Handler(_DoubleHandler, BaseHTTPRequestHandler):
             def do_GET(self):
                 self._serve()
 
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server = QuietThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.daemon_threads = True
         server.routes = routes
         thread = threading.Thread(target=server.serve_forever)
@@ -689,13 +713,12 @@ def _wait_page(query, countdown=0):
 class TestSearchWeb(unittest.TestCase):
     def _double(self, routes):
         import threading
-        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         class Handler(_DoubleHandler, BaseHTTPRequestHandler):
             def do_GET(self):
                 self._serve()
 
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server = QuietThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.daemon_threads = True
         server.routes = routes
         thread = threading.Thread(target=server.serve_forever)

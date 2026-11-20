@@ -15,6 +15,7 @@ import {
   fetchRepoLabels,
   postActionHref,
   snoozeAttention,
+  startAuthedInterval,
   unsnoozeAttention,
   warmViewCaches,
 } from '../apiClient';
@@ -1432,13 +1433,13 @@ export default function NowView({
   // without a reload. Paused in a hidden tab and while reporting.
   useEffect(() => {
     if (useMock() || !data || dialogOpen) return;
-    const timer = window.setInterval(
+    const stopPoll = startAuthedInterval(
       () => {
         if (!document.hidden) void refresh();
       },
       nowPollMs(data.attention.length),
     );
-    return () => window.clearInterval(timer);
+    return stopPoll;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo, data, dialogOpen]);
 

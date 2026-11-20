@@ -11,8 +11,10 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import auditor
+import verdicts
 
 try:
     import langgraph  # noqa: F401
@@ -266,6 +268,88 @@ class TestAuditorGraph(unittest.TestCase):
             final = gen.run(resume={"decision": "approve"})
             self.assertTrue(final.get("persisted"))
             self.assertGreaterEqual(len(seen), 2)
+
+    def test_audit_once_single_shot_structured_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = auditor.AuditorGraph(tmp, thread_id="test-single-shot")
+            gen.semantic_payload = lambda gate: {
+                "diff": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b",
+                "spec": "goal",
+                "gate": {},
+                "verification": {},
+            }
+
+            fake_verdict = verdicts.Verdict(
+                verdict="APPROVE", findings=[], summary="Diff verified clean"
+            )
+
+            class FakeStructuredModel:
+                def invoke(self, messages, config=None):
+                    return fake_verdict
+
+            import model_router
+
+            with (
+                mock.patch.object(
+                    model_router,
+                    "build_chat_model",
+                    return_value=(FakeStructuredModel(), {"model": "fake"}),
+                ),
+                mock.patch.object(
+                    model_router,
+                    "build_structured_chat_model",
+                    return_value=(FakeStructuredModel(), {"model": "fake"}),
+                ),
+                mock.patch("langchain.agents.create_agent") as mock_create_agent,
+            ):
+                raw = gen.audit_once({})
+                data = json.loads(raw)
+                self.assertTrue(data.get("verified"))
+                self.assertEqual(data.get("findings"), [])
+                mock_create_agent.assert_not_called()
+
+    def test_audit_once_fallback_to_tools_when_forced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = auditor.AuditorGraph(tmp, thread_id="test-forced-tools")
+            gen.semantic_payload = lambda gate: {
+                "diff": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b",
+                "spec": "goal",
+                "gate": {},
+                "verification": {},
+            }
+
+            class FakeAgent:
+                def invoke(self, payload, config=None):
+                    class FakeAiMsg:
+                        type = "ai"
+                        tool_calls = []
+                        content = json.dumps(
+                            {
+                                "verdict": "APPROVE",
+                                "findings": [],
+                                "summary": "Approved via tools",
+                            }
+                        )
+
+                    return {"messages": [FakeAiMsg()]}
+
+            import model_router
+
+            with (
+                mock.patch.object(
+                    model_router,
+                    "build_chat_model",
+                    return_value=(FakeAgent(), {"model": "fake"}),
+                ),
+                mock.patch.dict(os.environ, {"S5_AUDIT_FORCE_TOOLS": "1"}),
+                mock.patch(
+                    "langchain.agents.create_agent", return_value=FakeAgent()
+                ) as mock_create_agent,
+            ):
+                raw = gen.audit_once({})
+                data = json.loads(raw)
+                self.assertTrue(data.get("verified"))
+                mock_create_agent.assert_called_once()
 
 
 class TestAskOnce(unittest.TestCase):
@@ -615,6 +699,65 @@ class TestAskMain(unittest.TestCase):
         self.assertEqual(len(recorded), 1)
         self.assertEqual(recorded[0][0][0], "auditor.py")
         self.assertIn("boom", recorded[0][1]["extra"]["error"])
+
+
+class TestParseReviewWithVerdicts(unittest.TestCase):
+    def test_parses_pydantic_verdict_approve(self):
+        import verdicts
+
+        v = verdicts.Verdict(
+            verdict="APPROVE",
+            findings=[verdicts.Finding(file="app.py", line=10, note="clean")],
+            summary="All good",
+        )
+        review = auditor.parse_review(v)
+        self.assertTrue(review.get("verified"))
+        self.assertEqual(review.get("verdict"), "APPROVE")
+        self.assertEqual(review.get("summary"), "All good")
+        self.assertEqual(len(review.get("findings", [])), 1)
+        self.assertEqual(review["findings"][0]["severity"], "low")
+        self.assertEqual(review["findings"][0]["description"], "app.py:10: clean")
+
+    def test_parses_pydantic_verdict_block(self):
+        import verdicts
+
+        v = verdicts.Verdict(
+            verdict="BLOCK",
+            findings=[verdicts.Finding(file="bad.py", line=5, note="syntax error")],
+            summary="Broken syntax",
+        )
+        review = auditor.parse_review(v)
+        self.assertFalse(review.get("verified"))
+        self.assertEqual(review.get("verdict"), "BLOCK")
+        self.assertEqual(len(review.get("findings", [])), 1)
+        self.assertEqual(review["findings"][0]["severity"], "blocking")
+
+    def test_parses_verdict_json_string(self):
+        payload = '{"verdict": "READY", "findings": [], "summary": "Ready to merge"}'
+        review = auditor.parse_review(payload)
+        self.assertTrue(review.get("verified"))
+        self.assertEqual(review.get("verdict"), "READY")
+
+    def test_parses_verdict_fenced_with_prose(self):
+        text = (
+            "Here is the audit review:\n```json\n"
+            '{"verdict": "APPROVE", "findings": [], "summary": "Verified"}\n'
+            "```\nHope that helps!"
+        )
+        review = auditor.parse_review(text)
+        self.assertTrue(review.get("verified"))
+        self.assertEqual(review.get("verdict"), "APPROVE")
+
+    def test_legacy_format_still_supported(self):
+        legacy = json.dumps(
+            {
+                "verified": True,
+                "findings": [{"severity": "low", "description": "naming note"}],
+            }
+        )
+        review = auditor.parse_review(legacy)
+        self.assertTrue(review.get("verified"))
+        self.assertEqual(len(review.get("findings")), 1)
 
 
 if __name__ == "__main__":

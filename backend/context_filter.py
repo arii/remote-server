@@ -127,17 +127,6 @@ def structural_hidden_files(diff_text: str) -> list:
     return paths
 
 
-def estimate_tokens(text: str) -> int:
-    """Fast approximation of token count based on length and whitespace/punctuation.
-
-    Useful both programmatically for context budget estimations and as a CLI diagnostic helper.
-    """
-    if not text:
-        return 0
-    # Roughly 3.5 to 4 chars per token for code/markdown/diffs
-    return max(1, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
-
-
 def is_excluded_path(path: str, patterns=None) -> bool:
     """Return True if path matches any excluded pattern.
 

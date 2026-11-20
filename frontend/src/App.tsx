@@ -29,6 +29,7 @@ import {
   repoAction,
   restartContainer,
   startJobRun,
+  startAuthedInterval,
   subscribeApiFailures,
   warmRepoMetrics,
 } from './apiClient';
@@ -463,11 +464,11 @@ export default function App() {
         // Keep the last good snapshot; the next tick retries.
       }
     });
-    const timer = window.setInterval(refresh, HEALTH_POLL_MS);
+    const stopPoll = startAuthedInterval(refresh, HEALTH_POLL_MS);
     const unsubscribe = subscribeApiFailures(refresh);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      stopPoll();
       unsubscribe();
     };
   }, []);
@@ -612,12 +613,12 @@ export default function App() {
       };
     }
     void fetchAgentBrowserState().then(applyState, failState);
-    const timer = window.setInterval(() => {
+    const stopPoll = startAuthedInterval(() => {
       void fetchAgentBrowserState().then(applyState, failState);
     }, BROWSER_POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      stopPoll();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -760,7 +761,7 @@ export default function App() {
     });
     void prefetchTabPayloads(repo);
     refresh();
-    const timer = window.setInterval(refresh, HEALTH_POLL_MS);
+    const stopPoll = startAuthedInterval(refresh, HEALTH_POLL_MS);
     const onVisible = () => {
       if (document.visibilityState === 'visible') refresh();
     };
@@ -768,7 +769,7 @@ export default function App() {
     const unsubscribe = subscribeApiFailures(refresh);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      stopPoll();
       document.removeEventListener('visibilitychange', onVisible);
       unsubscribe();
     };

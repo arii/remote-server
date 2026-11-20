@@ -21,6 +21,8 @@ import twt_receipts
 
 UNVERIFIED_CODER = "pipeline coder did not pass verification"
 MAX_AUDIT_CYCLES_DEFAULT = 2
+MAX_REPAIR_CYCLES_DEFAULT = 2
+MAX_ESCALATIONS_DEFAULT = 1
 DRIVE_LIMIT_DEFAULT = 25
 
 APPROVED = "APPROVED"
@@ -28,6 +30,29 @@ CHANGES_REQUESTED = "CHANGES_REQUESTED"
 BLOCKED = "BLOCKED_DETERMINISTIC"
 
 AGENT_PAUSED = "PAUSED_BY_USER"
+
+
+def choose_model_tier(
+    attempt: int,
+    failure_class: str | None,
+    escalations_used: int = 0,
+    max_escalations: int = 1,
+) -> tuple[str, int]:
+    """Select model tier ('fast' vs 'strong') based on failure classification and retry attempt.
+
+    Rules:
+    - Attempt <= 1 or failure_class == 'mechanical' always stays on 'fast'.
+    - Attempt >= 2 with 'test_failure' or 'audit_semantic' escalates to 'strong' if
+      escalations_used < max_escalations.
+    - Strong-tier escalations are capped at max_escalations (default 1).
+    Returns (tier, new_escalations_used).
+    """
+    if attempt <= 1 or failure_class == "mechanical" or not failure_class:
+        return "fast", escalations_used
+    if failure_class in ("test_failure", "audit_semantic"):
+        if escalations_used < max_escalations:
+            return "strong", escalations_used + 1
+    return "fast", escalations_used
 
 
 def control_state_path():
@@ -76,7 +101,23 @@ def run_td(argv, cwd=None, timeout=300):
         return 127, "td CLI not found on PATH"
     except Exception as exc:
         return 1, f"td {' '.join(argv)} failed: {exc}"
-    return proc.returncode, (proc.stdout or "").strip()
+    stdout = (proc.stdout or "").strip()
+    if proc.returncode:
+        try:
+            payload = json.loads(stdout)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            payload["_td_diagnostics"] = {
+                "exit_code": proc.returncode,
+                "stderr": (proc.stderr or "").strip(),
+            }
+            return proc.returncode, json.dumps(payload)
+        stderr = (proc.stderr or "").strip()
+        return proc.returncode, (
+            f"td exited with code {proc.returncode}\nstdout: {stdout}\nstderr: {stderr}"
+        )
+    return proc.returncode, stdout
 
 
 def parse_json_output(out):
@@ -122,6 +163,67 @@ def final_interrupt(interrupts):
     )
 
 
+def prepare_worktree_for_submit(
+    repo_root, worktree_root, base_ref="origin/main", log_fn=None
+):
+    """Prepare worktree for PR submission (#1394).
+
+    1. Rebases the worktree cleanly onto origin/main (with --autostash and
+       aborting on conflict so worktree is never left broken).
+    2. Atomically mirrors .agent_tool_receipt.json from repo root into worktree
+       root if present so td agent submit-pr finds it without failing
+       mandatory tool receipts check.
+    """
+    import shutil
+
+    def _log(msg):
+        if log_fn:
+            log_fn(msg)
+
+    # 1. Fetch origin/main and rebase worktree branch
+    try:
+        subprocess.run(
+            ["git", "-C", worktree_root, "fetch", "origin", "main"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        rebase = subprocess.run(
+            ["git", "-C", worktree_root, "rebase", "--autostash", base_ref],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if rebase.returncode != 0:
+            subprocess.run(
+                ["git", "-C", worktree_root, "rebase", "--abort"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            _log(
+                f"warning: auto-rebase onto {base_ref} failed: {rebase.stderr.strip()}"
+            )
+    except Exception as exc:
+        _log(f"warning: auto-rebase error: {exc}")
+
+    # 2. Mirror .agent_tool_receipt.json from repo root into worktree root
+    try:
+        repo_receipt = os.path.join(repo_root, ".agent_tool_receipt.json")
+        worktree_receipt = os.path.join(worktree_root, ".agent_tool_receipt.json")
+        if os.path.isfile(repo_receipt) and os.path.abspath(
+            repo_receipt
+        ) != os.path.abspath(worktree_receipt):
+            tmp_receipt = worktree_receipt + ".tmp"
+            shutil.copy2(repo_receipt, tmp_receipt)
+            os.replace(tmp_receipt, worktree_receipt)
+            _log("mirrored .agent_tool_receipt.json to worktree root")
+    except Exception as exc:
+        _log(f"warning: receipt mirror error: {exc}")
+
+    return True
+
+
 class Pipeline:
     """Autonomous 4-stage loop. Inject fakes for deterministic tests."""
 
@@ -146,6 +248,9 @@ class Pipeline:
         drive_limit=DRIVE_LIMIT_DEFAULT,
         preview_url=None,
         keep_worktree=False,
+        pre_audit_fn=None,
+        max_repair_cycles=None,
+        max_escalations=MAX_ESCALATIONS_DEFAULT,
     ):
         self.repo = os.path.abspath(repo)
         self.intent = intent
@@ -162,6 +267,15 @@ class Pipeline:
         self.submit_pr = submit_pr
         self.keep_worktree = keep_worktree
         self.max_audit_cycles = max_audit_cycles
+        self.pre_audit_fn = pre_audit_fn
+        self.max_repair_cycles = (
+            max_repair_cycles
+            if max_repair_cycles is not None
+            else int(os.environ.get("S5_MAX_REPAIR_CYCLES", MAX_REPAIR_CYCLES_DEFAULT))
+        )
+        self.max_escalations = max_escalations
+        self.current_model_tier = "fast"
+        self.escalations_used = 0
         self.thread_id = thread_id or f"pipeline-{int(time.time())}"
         self.verification_commands = list(verification_commands or [])
         self.verification_evidence = []
@@ -244,7 +358,10 @@ class Pipeline:
                 f"Repair notes:\n{repair_notes}\n\nErrors:\n{errors}"
             )
             kwargs = {}
+            if getattr(self, "current_model_tier", None):
+                kwargs["model_tier"] = self.current_model_tier
             if errors or repair_notes:
+                kwargs["repair"] = True
                 kwargs["repair_files"] = [
                     path
                     for path in dict.fromkeys(
@@ -292,6 +409,9 @@ class Pipeline:
             return summary
 
         def plan(task, root, context):
+            context = {**self.answers, **context}
+            if repair_notes:
+                context["repair_notes"] = repair_notes
             result = (self.plan_fn or coder._default_plan_fn)(task, root, context)
             result = dict(result)
             result["allowed_files"] = list(
@@ -307,14 +427,30 @@ class Pipeline:
         context = dict(self.answers)
         if repair_notes:
             context["repair_notes"] = repair_notes
+        brief_with_rag = brief
+        try:
+            import retrieval
+
+            rag_hits = retrieval.search_td(brief, self.repo, top_k=5)
+            if (
+                rag_hits
+                and not rag_hits.startswith("no doc hits")
+                and not rag_hits.startswith("doc search unavailable")
+            ):
+                brief_with_rag = (
+                    f"{brief}\n\n### Grounded Code Context (RAG):\n{rag_hits}"
+                )
+        except Exception:
+            brief_with_rag = brief
         graph = coder.InitCoderGraph(
             self.repo,
             self.issue_id or 0,
-            brief,
+            brief_with_rag,
             plan_fn=plan,
             implement_fn=self.implement_fn or implement,
             td_runner=lambda args, cwd: self.td_run(list(args), cwd or self.repo),
             thread_id=f"{self.thread_id}-coder-{int(time.time())}",
+            **({"max_fix_loops": 0, "max_replans": 0} if repair_notes else {}),
         )
         if worktree_root:
             # Same-worktree repair: skip provisioning, reuse the root
@@ -345,6 +481,78 @@ class Pipeline:
         if not state.get("valid"):
             return False, state, (state.get("errors") or ["coder invalid"])
         return True, state, state.get("worktree_root", "") or worktree_root
+
+    def pre_audit_check(self, worktree_root):
+        """Run fast, deterministic pre-audit checks before invoking AuditorGraph.
+
+        Checks:
+        1. Python AST/syntax on modified .py files -> 'mechanical' failure
+        2. Verification commands (diff-scoped tests/linter) -> 'test_failure' or 'mechanical'
+
+        Returns (passed: bool, failure_class: str | None, reason: str).
+        """
+        if self.pre_audit_fn is not None:
+            return self.pre_audit_fn(worktree_root)
+        import ast
+
+        # 1. AST syntax validation on modified .py files
+        try:
+            diff_proc = subprocess.run(
+                ["git", "diff", "--name-only", "origin/main", "--", "."],
+                cwd=worktree_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            changed_files = [
+                f.strip() for f in (diff_proc.stdout or "").splitlines() if f.strip()
+            ]
+        except Exception:
+            changed_files = []
+
+        for rel_path in changed_files:
+            if rel_path.endswith(".py"):
+                full_path = os.path.join(worktree_root, rel_path)
+                if os.path.isfile(full_path):
+                    try:
+                        with open(full_path, "r", encoding="utf-8") as handle:
+                            ast.parse(handle.read(), filename=rel_path)
+                    except SyntaxError as syn_err:
+                        err_msg = (
+                            f"SyntaxError in {rel_path}:{syn_err.lineno}: {syn_err.msg}"
+                        )
+                        return False, "mechanical", err_msg
+
+        # 2. Deterministic verification commands
+        for argv in self.verification_commands:
+            try:
+                proc = subprocess.run(
+                    list(argv),
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    cwd=worktree_root,
+                    check=False,
+                )
+                if proc.returncode != 0:
+                    output = ((proc.stderr or "") + (proc.stdout or ""))[-2000:]
+                    cmd_str = " ".join(argv)
+                    f_class = "test_failure"
+                    if "SyntaxError" in output or "IndentationError" in output:
+                        f_class = "mechanical"
+                    return (
+                        False,
+                        f_class,
+                        f"Command '{cmd_str}' failed (exit {proc.returncode}):\n{output}",
+                    )
+            except Exception as exc:
+                return (
+                    False,
+                    "mechanical",
+                    f"Verification command {argv} execution error: {exc}",
+                )
+
+        return True, None, ""
 
     def _audit_policy(self, interrupts, state):
         import auditor
@@ -390,11 +598,21 @@ class Pipeline:
         verdict = state.get("verdict", {}) or gen.build_verdict(dict(state))
         status = verdict.get("status", CHANGES_REQUESTED)
         detail = verdict.get("findings", "") or "; ".join(verdict.get("errors", []))
+        try:
+            semantic = json.loads(detail)
+        except (ValueError, TypeError):
+            semantic = {}
+        if isinstance(semantic, dict) and semantic.get("truncated") is True:
+            return BLOCKED, state, detail
         return status, state, detail
 
     def stage_submit(self, worktree_root, title, body=""):
         """Submit via td agent submit-pr. Returns (ok, url-or-error)."""
+        prepare_worktree_for_submit(
+            self.repo, worktree_root, log_fn=lambda msg: self.log("submit", msg)
+        )
         argv = [
+            "--json",
             "agent",
             "submit-pr",
             "--worktree",
@@ -403,14 +621,15 @@ class Pipeline:
             title,
             "--body",
             body,
-            "--json",
         ]
         if self.issue_id:
             argv += ["--issue", str(self.issue_id)]
         code, out = self.td_run(argv, self.repo)
+        if code != 0:
+            return False, out or f"td agent submit-pr exited with code {code}"
         payload, error = parse_json_output(out)
-        if code != 0 or error:
-            return False, error or out[:300]
+        if error:
+            return False, error
         url = (payload or {}).get("url") or (payload or {}).get("pr_url")
         return True, url or json.dumps(payload)
 
@@ -423,7 +642,7 @@ class Pipeline:
             return False, out[:300]
         return True, ""
 
-    def _await_if_paused(self, poll_s=0.5, timeout_s=None):
+    def _await_if_paused(self, poll_s=0.5, timeout_s=30.0):
         """Block while a human has taken over the shared browser head.
 
         The pause signal comes from POST /api/agent/pause (first
@@ -490,6 +709,7 @@ class Pipeline:
 
         worktree = ""
         audit_cycles = 0
+        repair_cycles = 0
         # One refactor away from a NameError: the first loop pass
         # reads `detail` only when audit_cycles is nonzero, so it
         # survived uninitialized — initialize it outright. (#1136)
@@ -499,26 +719,79 @@ class Pipeline:
             ok, _code_state, worktree = self.stage_code(
                 spec,
                 worktree_root=worktree or None,
-                repair_notes=detail if audit_cycles else "",
+                repair_notes=detail if repair_cycles else "",
             )
             if not ok:
                 reason = _code_state if isinstance(_code_state, str) else "coder failed"
                 self.log("code", f"BLOCKED: {reason}")
-                return self._result(BLOCKED, worktree, reason, audit_cycles, started)
+                return self._result(
+                    BLOCKED,
+                    worktree,
+                    reason,
+                    audit_cycles,
+                    started,
+                    repair_cycles=repair_cycles,
+                )
             self.log("code", f"worktree={worktree}")
             self._await_if_paused()
+
+            # Deterministic pre-audit gate (#1403)
+            pre_ok, failure_class, reason = self.pre_audit_check(worktree)
+            if not pre_ok:
+                repair_cycles += 1
+                self.log("pre_audit", f"FAILED ({failure_class}): {reason[:200]}")
+                if repair_cycles >= self.max_repair_cycles:
+                    return self._result(
+                        CHANGES_REQUESTED,
+                        worktree,
+                        f"repair cycles exhausted ({repair_cycles}/{self.max_repair_cycles}): pre-audit {failure_class}: {reason}",
+                        audit_cycles,
+                        started,
+                        repair_cycles=repair_cycles,
+                    )
+                self.current_model_tier, self.escalations_used = choose_model_tier(
+                    attempt=repair_cycles + 1,
+                    failure_class=failure_class,
+                    escalations_used=self.escalations_used,
+                    max_escalations=self.max_escalations,
+                )
+                detail = f"Pre-audit {failure_class} failure:\n{reason}"
+                continue
+
             status, _audit_state, detail = self.stage_audit(worktree)
             if status == APPROVED:
                 self.log("audit", "APPROVED")
                 break
             self.log("audit", f"{status}: {detail[:200]}")
             if status == BLOCKED:
-                return self._result(BLOCKED, worktree, detail, audit_cycles, started)
-            audit_cycles += 1
-            if audit_cycles > self.max_audit_cycles:
                 return self._result(
-                    CHANGES_REQUESTED, worktree, detail, audit_cycles - 1, started
+                    BLOCKED,
+                    worktree,
+                    detail,
+                    audit_cycles,
+                    started,
+                    repair_cycles=repair_cycles,
                 )
+            audit_cycles += 1
+            repair_cycles += 1
+            if (
+                repair_cycles >= self.max_repair_cycles
+                or audit_cycles > self.max_audit_cycles
+            ):
+                return self._result(
+                    CHANGES_REQUESTED,
+                    worktree,
+                    detail,
+                    audit_cycles,
+                    started,
+                    repair_cycles=repair_cycles,
+                )
+            self.current_model_tier, self.escalations_used = choose_model_tier(
+                attempt=repair_cycles + 1,
+                failure_class="audit_semantic",
+                escalations_used=self.escalations_used,
+                max_escalations=self.max_escalations,
+            )
 
         receipts = twt_receipts.current.get()
         if receipts is not None:
@@ -571,12 +844,16 @@ class Pipeline:
         started,
         submit_url="",
         cleaned=False,
+        repair_cycles=None,
     ):
         return {
             "status": status,
             "worktree": worktree,
             "detail": (detail if isinstance(detail, str) else json.dumps(detail))[:500],
             "audit_cycles": audit_cycles,
+            "repair_cycles": repair_cycles
+            if repair_cycles is not None
+            else audit_cycles,
             "submit_url": submit_url,
             "cleaned": cleaned,
             "elapsed_s": round(time.time() - started, 2),

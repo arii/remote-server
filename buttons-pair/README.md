@@ -5,8 +5,11 @@ Requires Chrome 116+. This is separate from LocalForm; nothing under
 
 1. Open `chrome://extensions`, enable Developer mode, click **Load unpacked**,
    and select this `buttons-pair/` directory. No build is needed.
-2. Sign in once to https://dev-onasafari.ddns.net:8443/buttons **in that Chrome
-   profile**. The extension reuses this profile's OAuth cookie.
+2. Set the **pairing token** in Options: the same value as the server's
+   `BUTTONS_EXT_PAIRING_TOKEN` (.env). A WebSocket from an extension is a
+   cross-site request, so the OAuth cookie cannot prove pairing (#1409);
+   the token rides as a `Sec-WebSocket-Protocol` subprotocol instead. A
+   server with no token configured refuses every pairing (fail closed).
 3. Click **Buttons pair** and **Connect**. Installation alone never pairs.
    The popup shows **Paired**, **Not paired**, or **sign in to Buttons first**.
 4. Select the backend's `paired` target. The first operation creates a tab in
@@ -24,7 +27,11 @@ Chrome internal pages cannot be driven. The `scripting` permission is necessary
 for `chrome.scripting.executeScript`; other permissions are debugger, tabs,
 tabGroups, storage and alarms. Optional host access is requested only by Save.
 
-The backend accepts only WebSocket handshakes with a `chrome-extension://` Origin.
+The backend accepts only WebSocket handshakes with a `chrome-extension://`
+Origin and, on token-configured servers, a matching `pair.<token>` subprotocol
+checked in constant time before the socket is accepted. The proxy skips OAuth
+on that one exact route (`GET /buttons/api/browser/ext`), so the token is what
+keeps the CDP drive channel closed to everyone else.
 
 Only tabs created by this extension are attached. Trusted pointer/key/touch
 input in that tab signals takeover without transmitting key values. Agent CDP

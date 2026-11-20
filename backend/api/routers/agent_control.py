@@ -24,8 +24,9 @@ router = APIRouter(prefix="/api/agent", tags=["agent_control"])
 
 def state_file() -> Path:
     """Resolve the state file at call time so tests can redirect it."""
-    return Path(os.environ.get(
-        "AGENT_CONTROL_STATE_FILE", "/tmp/agent_control_state.json"))
+    return Path(
+        os.environ.get("AGENT_CONTROL_STATE_FILE", "/tmp/agent_control_state.json")
+    )
 
 
 class AgentControlState(BaseModel):
@@ -41,6 +42,7 @@ class AgentControlState(BaseModel):
     handoff_reason: str | None = None
     handoff_url: str | None = None
     handoff_requested_at: float | None = None
+    handoff_pending: bool = False
 
 
 class HandoffRequest(BaseModel):
@@ -67,8 +69,7 @@ def write_control_state(state: AgentControlState) -> AgentControlState:
     state.updated_at = time.time()
     path = state_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state.model_dump(), indent=2),
-                    encoding="utf-8")
+    path.write_text(json.dumps(state.model_dump(), indent=2), encoding="utf-8")
     return state
 
 
@@ -109,6 +110,7 @@ def request_handoff(body: HandoffRequest) -> dict[str, Any]:
     reason = (body.reason or "").strip()
     if not reason:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=400, detail="reason is required")
     current = read_control_state()
     current.state = "PAUSED_BY_USER"
@@ -117,6 +119,7 @@ def request_handoff(body: HandoffRequest) -> dict[str, Any]:
     current.handoff_reason = reason[:500]
     current.handoff_url = (body.current_url or "").strip() or None
     current.handoff_requested_at = time.time()
+    current.handoff_pending = handoff_pending(current)
     return write_control_state(current).model_dump()
 
 
@@ -133,4 +136,5 @@ def resolve_handoff(body: HandoffResolve) -> dict[str, Any]:
     current.state = "RUNNING"
     current.current_step = "Resuming - mandatory DOM re-snapshot scheduled"
     current.requires_dom_refresh = True
+    current.handoff_pending = handoff_pending(current)
     return write_control_state(current).model_dump()

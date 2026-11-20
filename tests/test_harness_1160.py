@@ -12,6 +12,7 @@ Stdlib-only (venv-only imports are faked). Run:
 python3 -m unittest tests.test_harness_1160
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -367,13 +368,27 @@ class TestDitherGuard1176(unittest.TestCase):
             )
             history = coder.trace_check_history(path)
         self.assertEqual(
-            history,
+            [(command, code, empty) for command, code, empty, _ in history],
             [
                 (cmd, 1, False),
                 (cmd, 0, True),
                 (cmd, 0, True),
                 (cmd, 0, True),
                 (cmd, 0, False),
+            ],
+        )
+        # #1374: each entry also carries a digest of its recorded preview.
+        self.assertEqual(
+            [digest for _, _, _, digest in history],
+            [
+                hashlib.sha1(preview.encode("utf-8")).hexdigest()
+                for preview in [
+                    "exit=1\nboom",
+                    "exit=0",
+                    "exit=0\n",
+                    "exit=0\n   \n",
+                    "exit=0\nsome output",
+                ]
             ],
         )
 
@@ -406,7 +421,10 @@ class TestDitherGuard1176(unittest.TestCase):
                     + "\n"
                 )
             history = coder.trace_check_history(path)
-        self.assertEqual(history, [(cmd, -1, False), (cmd, -1, False)])
+        self.assertEqual(
+            [(command, code, empty) for command, code, empty, _ in history],
+            [(cmd, -1, False), (cmd, -1, False)],
+        )
 
     def test_trace_empty_success_streak_flags_dither_end_to_end(self):
         with tempfile.TemporaryDirectory() as d:

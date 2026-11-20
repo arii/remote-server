@@ -49,6 +49,108 @@ class ReceiptTests(unittest.TestCase):
         fetch.assert_not_called()
         self.assertFalse(Path(ledger.LEDGER).exists())
 
+    def bounded(self, trace_id, bound=0.6):
+        return {
+            **self.reply(trace_id, None),
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "http_status": 502,
+            "cost_basis": "upper_bound",
+            "cost_upper_bound_usd": bound,
+        }
+
+    def test_nebius_529_bound_is_reserved_and_enforces_spend_cap(self):
+        import model_router
+
+        scope = receipts.ReceiptRun("nebius-529")
+        trace_id = scope.request()
+        receipt = self.bounded(trace_id)
+        scope.reconcile(lambda *_: [receipt])
+        self.assertIsNone(scope.error)
+        (row,) = self.rows()
+        self.assertEqual(row["cost_basis"], "upper_bound")
+        self.assertEqual(row["cost_upper_bound_usd"], 0.6)
+        self.assertEqual(row["cost_usd"], 0.6)
+        self.assertNotIn("reported_cost_usd", row["usage"])
+        self.assertFalse(receipt["cost_complete"])
+        self.assertEqual(
+            runs.total_metered_spend(ledger.LEDGER), {"spent": 0.6, "unknown": 0}
+        )
+        with (
+            mock.patch.object(model_router, "api_key"),
+            mock.patch.object(runs, "LEDGER", ledger.LEDGER),
+            mock.patch.object(model_router.pricing, "spend_cap", return_value=0.5),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "spend cap hit"):
+                model_router._remote_spec("twt", "default", "http://localhost/v1")
+        record = json.loads(scope.path.with_suffix(".settlement.json").read_text())
+        self.assertEqual(record["missing"], [])
+        self.assertIsNone(record["error"])
+        self.assertFalse(record["receipts"][0]["cost_complete"])
+
+    def test_bounded_reservation_survives_outage_and_upgrades_to_actual(self):
+        scope = receipts.ReceiptRun("reservation")
+        trace_id = scope.request()
+        scope.reconcile(lambda *_: [self.bounded(trace_id)])
+        recovered = receipts.ReceiptRun("reservation")
+        recovered.ids, recovered.path = scope.ids, scope.path
+        recovered.reconcile(mock.Mock(side_effect=OSError("offline")))
+        self.assertIsNone(recovered.error)
+        self.assertEqual(self.rows()[0]["cost_usd"], 0.6)
+        recovered.settled = False
+        recovered.reconcile(lambda *_: [self.reply(trace_id, 0.01)])
+        self.assertIsNone(recovered.error)
+        (row,) = self.rows()
+        self.assertEqual(row["cost_usd"], 0.01)
+        self.assertNotIn("cost_basis", row)
+        self.assertNotIn("cost_upper_bound_usd", row)
+        recovered.reconcile(mock.Mock(side_effect=AssertionError("already exact")))
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_mixed_exact_and_bounded_receipts_add_without_double_counting(self):
+        scope = receipts.ReceiptRun("mixed-bounds")
+        first, second = scope.request(), scope.request()
+        ledger.record(
+            "chat.py",
+            "default",
+            "mixed-bounds",
+            [],
+            0,
+            provider="twt",
+            usage={"twt_trace_ids": [first, second]},
+            extra={"llm_call": True},
+        )
+        scope.reconcile(lambda *_: [self.reply(first, 0.1), self.bounded(second, 0.2)])
+        self.assertIsNone(scope.error)
+        self.assertAlmostEqual(self.rows()[0]["cost_usd"], 0.3)
+        self.assertAlmostEqual(runs.total_metered_spend(ledger.LEDGER)["spent"], 0.3)
+        scope.reconcile(mock.Mock(side_effect=AssertionError("idempotent")))
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_invalid_or_unmarked_bounds_still_fail_closed(self):
+        for bound in (None, -1, float("inf"), float("nan"), True, "0.1"):
+            with self.subTest(bound=bound):
+                receipt = self.bounded("id", bound)
+                self.assertIsNone(receipts.receipt_cost(receipt))
+                self.assertEqual(
+                    runs._row_cost(
+                        {
+                            "cost_basis": "upper_bound",
+                            "cost_usd": 0,
+                            "cost_upper_bound_usd": bound,
+                        }
+                    ),
+                    (None, True),
+                )
+        receipt = self.bounded("id")
+        receipt.pop("cost_basis")
+        self.assertIsNone(receipts.receipt_cost(receipt))
+        scope = receipts.ReceiptRun("unbounded")
+        trace_id = scope.request()
+        scope.reconcile(lambda *_: [{**receipt, "trace_id": trace_id}])
+        self.assertIsNotNone(scope.error)
+        self.assertEqual(runs.total_metered_spend(ledger.LEDGER)["unknown"], 1)
+
     def test_deleted_local_run_is_not_resurrected_by_journal_recovery(self):
         scope = receipts.ReceiptRun("deleted-local")
         trace_id = scope.request(local_only=True)
@@ -94,6 +196,33 @@ class ReceiptTests(unittest.TestCase):
         (row,) = self.rows()
         self.assertTrue(row["deleted"])
         self.assertEqual(row["cost_usd"], 0.012)
+
+    def test_deleted_reservation_remains_provisional_and_accepts_actual_charge(self):
+        scope = receipts.ReceiptRun("deleted-reservation")
+        trace_id = scope.request()
+        scope.reconcile(lambda *_: [self.bounded(trace_id, 0.6)])
+        self.assertTrue(runs.delete_run("run-0", ledger_path=ledger.LEDGER))
+        (row,) = self.rows()
+        self.assertEqual(row.get("cost_basis"), "upper_bound")
+        self.assertEqual(row.get("cost_upper_bound_usd"), 0.6)
+        self.assertNotIn(trace_id, receipts._settled_trace_ids())
+        with (
+            mock.patch("sys.argv", ["twt_receipts.py", str(scope.path)]),
+            mock.patch.object(
+                receipts, "fetch", return_value=[self.reply(trace_id, 0.8)]
+            ) as fetch,
+        ):
+            self.assertEqual(receipts.main(), 0)
+            fetch.assert_called_once()
+        (row,) = self.rows()
+        self.assertTrue(row["deleted"])
+        self.assertEqual(row["cost_usd"], 0.8)
+        self.assertNotIn("cost_basis", row)
+        self.assertNotIn("cost_upper_bound_usd", row)
+        self.assertEqual(runs.list_runs(ledger_path=ledger.LEDGER), [])
+        self.assertEqual(
+            runs.total_metered_spend(ledger.LEDGER), {"spent": 0.8, "unknown": 0}
+        )
 
     def test_partial_settlement_survives_scope_exit_and_gateway_outage(self):
         with mock.patch.object(receipts, "fetch") as fetch:

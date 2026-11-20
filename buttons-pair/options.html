@@ -6,6 +6,9 @@
   <form>
     <label for="origin">Server origin (HTTPS)</label>
     <input id="origin" type="url" required>
+    <label for="token">Pairing token</label>
+    <input id="token" type="password" autocomplete="off">
+    <p>The shared secret from the server's .env (BUTTONS_EXT_PAIRING_TOKEN). Servers that set one refuse pairing without it.</p>
     <p><label><input id="sites" type="checkbox"> Allow takeover detection on other HTTP and HTTPS sites</label></p>
     <p>This optional site access lets Buttons detect your input only in the tab it creates. Without it, driving is restricted to granted sites. Revoke previously granted access in Chrome's extension settings.</p>
     <button type="submit">Save and disconnect</button>

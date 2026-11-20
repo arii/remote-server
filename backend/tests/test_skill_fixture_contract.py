@@ -67,8 +67,13 @@ class LocalFormFixtureContractTest(unittest.TestCase):
         try:
             self.page = self.driver._ensure()
         except Error as exc:
-            if "Executable doesn't exist" in str(exc):
-                self.skipTest("#1261 acceptance requires installed Chromium")
+            msg = str(exc)
+            if (
+                "Executable doesn't exist" in msg
+                or "cannot open shared object file" in msg
+                or "Target page, context or browser has been closed" in msg
+            ):
+                self.skipTest(f"#1261 acceptance requires installed Chromium: {msg}")
             raise
         self.changed_layout = False
         self.blocked = []

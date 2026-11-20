@@ -250,6 +250,11 @@ class PrsTest(unittest.TestCase):
             pulls_mod.prs(repo="nope/../evil")
         self.assertEqual(ctx.exception.status_code, 400)
 
+        with self.assertRaises(HTTPException) as ctx_all:
+            pulls_mod.prs(repo="all")
+        self.assertEqual(ctx_all.exception.status_code, 400)
+        self.assertIn("not 'all'", ctx_all.exception.detail)
+
     def test_list_gh_failure_is_500(self):
         from fastapi import HTTPException
 

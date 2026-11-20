@@ -74,9 +74,15 @@ route to installed local models without disabling cloud globally or
 restarting the shared Ollama daemon. Keep agent `ASK_MODEL` aligned with
 the service's configured model.
 
-Hosted provider order is Google, Groq, NVIDIA, Mistral, OpenRouter,
-SambaNova, Cloudflare, Nebius. All preceding providers are free-only;
-Nebius is last. Local and hosted traces share the same private database
+Hosted provider catalog includes Google, Groq, NVIDIA, OpenRouter,
+SambaNova, Cloudflare (with 10,000 daily free Neurons), Mistral, and Nebius.
+Google, Groq, NVIDIA, OpenRouter, SambaNova, and Cloudflare are free-only
+providers and serve only zero-priced models on the default route. Mistral
+is metered, not free-only: its API requires active billing, so Mistral
+attempts bill per token instead of serving as a zero-cost fallback, and
+when TWT_DAILY_BUDGET_USD is set they pass through the same daily budget
+gate as Nebius. Nebius remains the paid fallback.
+Local and hosted traces share the same private database
 and appear together in `twt inspect` and `twt report`.
 
 The shared model router caps every pipeline stage at 8192 output tokens

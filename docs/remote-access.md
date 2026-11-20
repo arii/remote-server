@@ -231,3 +231,30 @@ The consequences:
 - **Phone UX specifics** (touch keyboard behavior, pinch-zoom in xterm.js):
   assessed from xterm.js/ttyd/zellij docs, not hands-on testing on Ari's
   phone — verify on first login.
+
+## Shared terminal safety (#1387)
+
+The terminal is a **shared zellij session**: every attached browser,
+agent, and device sees the same panes and, once its input is unlocked,
+types into whichever pane has focus. Treat it that way:
+
+- **Secrets broadcast to every attached client.** A pane showing a
+  file with API keys or tokens is visible to all attached sessions.
+  Do not open secret-bearing files in the shared session; view them in
+  a private shell (SSH/Tailscale) instead. If a secret was displayed
+  and there is any doubt about which sessions were attached, rotate
+  it. Access is still gated to the owner's GitHub account — the risk
+  is inside that boundary, across her own agents and devices.
+- **Input is locked by default** (spectator mode). The page's input
+  lock blocks keystrokes and paste until "tap to type" is pressed, so
+  landing on the page cannot accidentally type into a running agent's
+  prompt. Re-lock when done.
+- **Detach vs exit.** "Bye from Zellij!" after a client detach does
+  NOT mean the session ended — tabs, panes, and running work persist
+  server-side. The attach wrapper (`terminal/bin/zellij-attach-loop`)
+  says which happened and reconnects on Enter; a real session exit
+  starts a fresh session.
+- **Takeover is single-slot.** ttyd runs `--max-clients=1`; "Switch to
+  this terminal" drops the takeover marker and SIGHUPs the current
+  attach client (Buttons `POST /api/terminal/takeover`), which is also
+  what makes Enter-to-reconnect work after a dead overlay.

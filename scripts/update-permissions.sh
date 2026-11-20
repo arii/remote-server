@@ -57,6 +57,42 @@ RULES_TO_ALLOW = [
     "command(openssl)",
     "command(ssh-keyscan)",
 
+    # Deploy verification & repository operations in /srv/remote-server
+    "command(git status)",
+    "command(git status*)",
+    "command(git diff)",
+    "command(git diff*)",
+    "command(git stash list)",
+    "command(git stash list*)",
+    "command(git stash show)",
+    "command(git stash show*)",
+    "command(git stash branch)",
+    "command(git stash branch*)",
+    "command(git checkout)",
+    "command(git checkout*)",
+    "command(git pull --ff-only)",
+    "command(git pull --ff-only*)",
+    "command(git pull*)",
+    "command(git rev-parse)",
+    "command(git rev-parse*)",
+    "command(docker compose ps)",
+    "command(docker compose ps*)",
+    "command(docker compose up -d --build buttons)",
+    "command(docker compose up -d --build buttons*)",
+    "command(./scripts/buttons-up.sh)",
+    "command(./scripts/buttons-up.sh*)",
+    "command(scripts/buttons-up.sh)",
+    "command(scripts/buttons-up.sh*)",
+    "command(bash ./scripts/buttons-up.sh)",
+    "command(bash ./scripts/buttons-up.sh*)",
+    "command(bash scripts/buttons-up.sh)",
+    "command(bash scripts/buttons-up.sh*)",
+    "command(gh pr view)",
+    "command(gh pr view*)",
+    "command(gh pr list*)",
+    "command(cat /srv/remote-server/*)",
+    "command(ls /srv/remote-server/*)",
+
     # Remote copy / shell (routine deploy and checkout sync)
     "command(ssh)",
     "command(scp)",
@@ -65,16 +101,23 @@ RULES_TO_ALLOW = [
     # User-requested common CLI inspection/utility commands
     "command(echo)",
     "command(head)",
+    "command(head*)",
     "command(tail)",
+    "command(tail*)",
     "command(stat)",
     "command(file)",
     "command(touch)",
     "command(sed)",
+    "command(strings)",
+    "command(strings*)",
 
     # Standard complementary CLI utilities
     "command(cat)",
+    "command(cat*)",
     "command(ls)",
+    "command(ls*)",
     "command(grep)",
+    "command(grep*)",
     "command(find)",
     "command(awk)",
     "command(diff)",
@@ -169,13 +212,14 @@ def update_cli_settings(filepath):
     print(f"Updated {filepath}: added {added_count} new rule(s) (total allowed: {len(allows)}).")
 
 def update_global_config(filepath):
-    if not os.path.exists(filepath):
-        return
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    data = {}
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
 
     user_settings = data.setdefault("userSettings", {})
     grants = user_settings.setdefault("globalPermissionGrants", {})

@@ -226,7 +226,7 @@ def preflight_ollama(timeout: int = 5) -> Optional[str]:
     """
     base = ollama_base_url()
     model = ollama_model()
-    tags_url = base + OLLAMA_TAGS_PATH
+    tags_url = ollama_tags_url(base)
     try:
         req = urllib.request.Request(tags_url, method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as resp:

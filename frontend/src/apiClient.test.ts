@@ -61,6 +61,7 @@ import {
   setDigestSchedule,
   saveNotificationPreferences,
   snoozeAttention,
+  startAuthedInterval,
   startJobRun,
   startTdRun,
   subscribeApiFailures,
@@ -1719,5 +1720,55 @@ describe('auth expiry (issue #1035)', () => {
     vi.stubGlobal('fetch', mockFetchJson({ error: 'unauthorized' }, false, 401));
     await expect(fetchSystemHealth()).rejects.toBeInstanceOf(AuthExpiredError);
     expect(isAuthExpired()).toBe(true);
+  });
+
+  it('stops failure broadcasts once the expiry trip latches (issue #1410)', async () => {
+    // A failed poll notifies listeners; listeners refresh; each
+    // refresh fails and notifies again. Latching the banner must
+    // break that cycle or the console floods until re-login.
+    const seen: number[] = [];
+    const unsubscribe = subscribeApiFailures(() => {
+      seen.push(1);
+    });
+    try {
+      vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+      for (let i = 0; i < 5; i += 1) {
+        await expect(fetchJobs()).rejects.toThrow('Failed to fetch');
+      }
+      expect(isAuthExpired()).toBe(true);
+      expect(seen).toHaveLength(5);
+      await expect(fetchJobs()).rejects.toThrow('Failed to fetch');
+      await expect(fetchJobs()).rejects.toThrow('Failed to fetch');
+      expect(seen).toHaveLength(5);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('startAuthedInterval skips ticks while the expiry banner is up (issue #1410)', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+      for (let i = 0; i < 5; i += 1) {
+        await expect(fetchJobs()).rejects.toThrow('Failed to fetch');
+      }
+      expect(isAuthExpired()).toBe(true);
+      const ticks: number[] = [];
+      const stop = startAuthedInterval(() => {
+        ticks.push(1);
+      }, 1000);
+      vi.advanceTimersByTime(3000);
+      expect(ticks).toHaveLength(0);
+      // Recovery (re-login in another tab) retires the flag and
+      // polling resumes on its own.
+      __clearAuthExpired();
+      vi.advanceTimersByTime(2000);
+      expect(ticks).toHaveLength(2);
+      stop();
+      vi.advanceTimersByTime(2000);
+      expect(ticks).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

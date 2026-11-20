@@ -4,7 +4,6 @@ Subprocess is mocked except for the watchdog tests, which must run a
 real hung process (a short python sleep) to prove the kill.
 """
 
-import asyncio
 import inspect
 import os
 import signal
@@ -1447,43 +1446,6 @@ class AsyncPlanTest(unittest.TestCase):
 
         self.assertFalse(
             inspect.iscoroutinefunction(jobs_router.start_run_plan))
-
-    def test_td_run_async_echo(self):
-        out = asyncio.run(engine.td_run_async("echo hi"))
-        self.assertEqual(out, "hi\n")
-
-    def test_td_run_async_timeout_kills(self):
-        start = time.time()
-        with self.assertRaises(RuntimeError) as ctx:
-            asyncio.run(engine.td_run_async("sleep 5", timeout=0.2))
-        self.assertIn("timed out", str(ctx.exception))
-        self.assertLess(time.time() - start, 5)
-
-    def test_td_run_async_timeout_kills_grandchildren(self):
-        # #445: same whole-tree kill for the async path — the
-        # bash child's grandchild must not survive the timeout.
-        import shlex
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            pidfile = os.path.join(tmp, "grandchild.pid")
-            cmd = " ".join(
-                shlex.quote(a) for a in _spawner_step(pidfile))
-            with self.assertRaises(RuntimeError) as ctx:
-                asyncio.run(engine.td_run_async(cmd, timeout=0.5))
-            self.assertIn("timed out", str(ctx.exception))
-            with open(pidfile) as f:
-                grandchild = int(f.read().strip())
-            _assert_pid_dead(self, grandchild)
-
-    def test_td_run_async_overlaps(self):
-        async def _two():
-            await asyncio.gather(
-                engine.td_run_async("sleep 0.5"),
-                engine.td_run_async("sleep 0.5"))
-        start = time.time()
-        asyncio.run(_two())
-        self.assertLess(time.time() - start, 1.0)
 
 
 class CancelRunTest(_LedgerTmpDir, unittest.TestCase):

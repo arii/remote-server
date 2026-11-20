@@ -377,3 +377,187 @@ class TestUnknownSpend(unittest.TestCase):
             self.assertEqual(
                 runs.total_metered_spend(ledger_path=path), {"spent": 0.0, "unknown": 0}
             )
+
+
+class TestSpecBounds(unittest.TestCase):
+    """Deterministic bounds for spec generation (issue #1404)."""
+
+    def test_env_positive_int(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("S5_SPEC_MAX_TURNS", None)
+            self.assertEqual(
+                issue_generator._env_positive_int("S5_SPEC_MAX_TURNS", 4), 4
+            )
+        with mock.patch.dict(os.environ, {"S5_SPEC_MAX_TURNS": "7"}):
+            self.assertEqual(
+                issue_generator._env_positive_int("S5_SPEC_MAX_TURNS", 4), 7
+            )
+        for bad in ("0", "-2", "nope"):
+            with mock.patch.dict(os.environ, {"S5_SPEC_MAX_TURNS": bad}):
+                with self.assertRaises(ValueError):
+                    issue_generator._env_positive_int("S5_SPEC_MAX_TURNS", 4)
+
+    def test_recursion_limit_derives_from_turn_budget(self):
+        graph = issue_generator.IssueGeneratorGraph("/tmp")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("S5_SPEC_RECURSION_LIMIT", None)
+            self.assertEqual(graph._spec_recursion_limit(), 9)  # 2*4 + 1
+        with mock.patch.dict(os.environ, {"S5_SPEC_RECURSION_LIMIT": "30"}):
+            self.assertEqual(graph._spec_recursion_limit(), 30)
+        with mock.patch.dict(os.environ, {"S5_SPEC_RECURSION_LIMIT": "0"}):
+            with self.assertRaises(ValueError):
+                graph._spec_recursion_limit()
+
+    def test_explicit_bounds_validated(self):
+        for kwargs in (
+            {"max_spec_turns": 0},
+            {"max_spec_tool_calls": -1},
+            {"max_spec_turns": "4"},
+            {"max_spec_tool_calls": True},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    issue_generator.IssueGeneratorGraph("/tmp", **kwargs)
+        graph = issue_generator.IssueGeneratorGraph(
+            "/tmp", max_spec_turns=2, max_spec_tool_calls=1
+        )
+        self.assertEqual((graph.max_spec_turns, graph.max_spec_tool_calls), (2, 1))
+
+    def test_tool_output_truncation_head_tail(self):
+        text = "h" * 3000 + "m" * 3000 + "t" * 3000
+        out = issue_generator._truncate_tool_output(
+            text, issue_generator.SPEC_TOOL_OUTPUT_LIMIT
+        )
+        self.assertTrue(out.startswith("h" * 200))
+        self.assertTrue(out.endswith("t" * 200))
+        self.assertIn("chars omitted", out)
+        self.assertLess(len(out), len(text))
+
+    def test_preseed_context_pack_deterministic(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "widget.py").write_text("def widget():\n    return 1\n")
+            Path(root, "README.md").write_text("# repo\n")
+            graph = issue_generator.IssueGeneratorGraph(root)
+            with mock.patch(
+                "retrieval.search_td", return_value="[widget.py:1] rag hit"
+            ):
+                pack = graph.preseed_context_pack("fix widget.py crash")
+                # cached: second call skips every source
+                self.assertIs(pack, graph.preseed_context_pack("fix widget.py crash"))
+            self.assertIn("Repo top level:", pack)
+            self.assertIn("widget.py", pack)
+            self.assertIn("def widget():", pack)
+            self.assertIn("rag hit", pack)
+            self.assertLessEqual(len(pack), issue_generator.PRESEED_CONTEXT_LIMIT + 60)
+
+    def test_preseed_never_raises_on_empty_repo(self):
+        with tempfile.TemporaryDirectory() as root:
+            graph = issue_generator.IssueGeneratorGraph(root)
+            pack = graph.preseed_context_pack("vague brief with no file")
+            self.assertIn("Repo top level:", pack)
+
+    def test_draft_prompt_carries_preseed_pack(self):
+        prompts = []
+
+        class Stub:
+            def invoke(self, prompt, **kwargs):
+                prompts.append(prompt)
+                return "draft"
+
+        graph = issue_generator.IssueGeneratorGraph(
+            "/tmp", model_fn=lambda: Stub(), preseed_fn=lambda brief: "PACK-CONTENTS"
+        )
+        text = graph.draft_text("fix widget", "", [], {})
+        self.assertEqual(text, "draft")
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("PACK-CONTENTS", prompts[0])
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("langgraph"), "agent dependencies not installed"
+)
+class TestSpecToolBudget(unittest.TestCase):
+    """Live agent-loop proof of the tool budget and forced final turn."""
+
+    def _run(self, responses, max_tool_calls):
+        import ledger
+        from langchain_core.language_models.fake_chat_models import (
+            FakeMessagesListChatModel,
+        )
+        from langchain_core.tools import tool
+
+        executed = []
+
+        @tool(description="Read local evidence")
+        def lookup() -> str:
+            executed.append(1)
+            return "widget.py:1 evidence"
+
+        class Model(FakeMessagesListChatModel):
+            def bind_tools(self, tools, **kwargs):
+                return self
+
+        with tempfile.TemporaryDirectory() as root:
+            graph = issue_generator.IssueGeneratorGraph(
+                root,
+                model_fn=lambda: Model(responses=list(responses)),
+                max_spec_tool_calls=max_tool_calls,
+                thread_id="proof-budget",
+            )
+            path = Path(root, "ledger.jsonl")
+            with (
+                mock.patch.object(ledger, "LEDGER", str(path)),
+                mock.patch.dict(os.environ, {"DEEP_AGENT_STATE_DIR": root}),
+                mock.patch.object(graph, "_investigator_tools", return_value=[lookup]),
+                mock.patch.object(
+                    graph, "preseed_context_pack", return_value="pack: widget.py"
+                ),
+            ):
+                try:
+                    evidence = graph.investigate_text("fix widget", "draft")
+                except NotImplementedError as exc:
+                    # test_delegation_guard pops real langchain modules
+                    # from sys.modules after stub-importing; under full
+                    # discover that leaves a duplicated langchain module
+                    # tree where sync wrap_model_call middleware breaks
+                    # (pre-existing pollution, already hits TestSpecUsage
+                    # on main; CI installs no langchain so never sees it).
+                    if "wrap_model_call" in str(exc):
+                        self.skipTest(
+                            "langchain module tree polluted by earlier stub-import tests"
+                        )
+                    raise
+        return evidence, executed
+
+    def test_budget_strips_tools_for_final_turn(self):
+        from langchain_core.messages import AIMessage
+
+        responses = [
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "t1", "name": "lookup", "args": {}}],
+            ),
+            # the agent loop would let the model ask for another call
+            # here; the spent budget must strip tool bindings instead
+            AIMessage(content="widget.py:1 evidence, cited from the tool result"),
+        ]
+        evidence, executed = self._run(responses, max_tool_calls=1)
+        self.assertEqual(len(executed), 1)
+        self.assertIn("widget.py", evidence)
+
+    def test_parallel_calls_over_budget_short_circuit(self):
+        from langchain_core.messages import AIMessage
+
+        responses = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "t1", "name": "lookup", "args": {}},
+                    {"id": "t2", "name": "lookup", "args": {"extra": 1}},
+                ],
+            ),
+            AIMessage(content="widget.py:1 evidence from the single allowed call"),
+        ]
+        evidence, executed = self._run(responses, max_tool_calls=1)
+        self.assertEqual(len(executed), 1)
+        self.assertIn("widget.py", evidence)

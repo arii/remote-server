@@ -11,7 +11,6 @@ is dead).
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -440,39 +439,6 @@ def td_run(cmd, timeout=None, runner=None):
     if proc.returncode != 0:
         raise RuntimeError(_td_failure_message(proc.stderr, proc.stdout))
     return proc.stdout
-
-
-async def td_run_async(cmd, timeout=None):
-    """Async td_run: same command shape and error contract, but the
-    wait happens on the event loop instead of blocking a sync worker
-    thread, so concurrent plan runs overlap instead of starving
-    FastAPI's sync pool (#294). Runs in its own session so a
-    timeout kills the whole tree, not just the bash child (#445).
-    ``timeout`` defaults to the env-resolved TD_RUN_TIMEOUT budget."""
-    timeout = _resolve_td_timeout(timeout)
-    proc = await asyncio.create_subprocess_exec(
-        "bash",
-        "-c",
-        cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=stack_dir(),
-        start_new_session=True,
-    )
-    assert proc.stdout is not None and proc.stderr is not None
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        _kill_tree(proc)
-        await proc.wait()
-        raise RuntimeError(f"command timed out after {timeout}s")
-    if proc.returncode != 0:
-        raise RuntimeError(
-            _td_failure_message(
-                err.decode("utf-8", "replace"), out.decode("utf-8", "replace")
-            )
-        )
-    return out.decode("utf-8", "replace")
 
 
 def action_steps(action, repo, gh, td_cwd, td_argv=None):

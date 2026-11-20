@@ -146,9 +146,11 @@ RUN mkdir -p /etc/ttyd \
     open('/etc/ttyd/index.html', 'w').write(html.replace('</body>', widget + '</body>'))" \
  && rm -f /tmp/takeover.html
 
-# Task-scoped Pi profile scripts (pi-code, pi-review, pi-triage)
+# Task-scoped Pi profile scripts (pi-code, pi-review, pi-triage) and the
+# ttyd zellij wrapper (#1387). chmod covers the wrapper too: git/web
+# uploads do not preserve the exec bit.
 COPY terminal/bin/ /usr/local/bin/
-RUN chmod +x /usr/local/bin/pi-*
+RUN chmod +x /usr/local/bin/pi-* /usr/local/bin/zellij-attach-loop
 
 # Muse resume hint on interactive shell start (#377): one line naming the
 # latest session. /root/.bashrc is image content (not volume-mounted), so
@@ -194,4 +196,4 @@ COPY terminal/pi-config/skills /root/.pi/agent/skills
 
 WORKDIR /srv/remote-server
 EXPOSE 7681
-# CMD comes from docker-compose.yml: ttyd <flags> zellij attach --create main
+# CMD comes from docker-compose.yml: ttyd <flags> zellij-attach-loop main
