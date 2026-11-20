@@ -516,6 +516,74 @@ class TestRunRepoCommand(unittest.TestCase):
                 continue
             self.assertFalse(s5tools.check_allowed(argv), cmd)
 
+    def test_git_inspect_does_not_run_checkout_helpers(self):
+        # A checkout's own config/attributes can name an external diff,
+        # a textconv driver and an fsmonitor hook. None may execute from
+        # the read-only git commands (temp repo only, no host paths).
+        import shutil
+        import subprocess
+        import tempfile
+
+        if not shutil.which("git"):
+            self.skipTest("git not installed")
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "r")
+            os.mkdir(repo)
+
+            def git(*a):
+                subprocess.run(("git", "-C", repo) + a, check=True, capture_output=True)
+
+            git("init", "-q")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "t")
+            with open(os.path.join(repo, ".gitattributes"), "w") as fh:
+                fh.write("*.txt diff=evil\n")
+            with open(os.path.join(repo, "a.txt"), "w") as fh:
+                fh.write("one\n")
+            git("add", "-A")
+            git("commit", "-qm", "i")
+            with open(os.path.join(repo, "a.txt"), "w") as fh:
+                fh.write("two\n")
+            markers = {}
+            for key, cfg in (
+                ("ext", "diff.external"),
+                ("text", "diff.evil.textconv"),
+                ("fsm", "core.fsmonitor"),
+            ):
+                marker = os.path.join(d, key + ".ran")
+                script = os.path.join(d, key + ".sh")
+                with open(script, "w") as fh:
+                    fh.write('#!/bin/sh\ntouch %s\ncat "$1" 2>/dev/null\n' % marker)
+                os.chmod(script, 0o755)
+                git("config", cfg, script)
+                markers[key] = marker
+            # Control: plain git does execute them in this repo.
+            subprocess.run(
+                ("git", "-C", repo, "diff"), capture_output=True, check=False
+            )
+            self.assertTrue(
+                any(os.path.exists(m) for m in markers.values()),
+                "control: helper config should fire on plain git",
+            )
+            for m in markers.values():
+                if os.path.exists(m):
+                    os.remove(m)
+            for cmd in ("git diff", "git log -p -1", "git status"):
+                out = s5tools.run_repo_command(repo, cmd)
+                self.assertTrue(out.startswith("exit=0"), (cmd, out[:200]))
+            for m in markers.values():
+                self.assertFalse(os.path.exists(m), m)
+
+    def test_exec_argv_only_touches_git(self):
+        self.assertEqual(s5tools.exec_argv(["pytest", "-q"]), ["pytest", "-q"])
+        got = s5tools.exec_argv(["git", "diff", "--stat", "--", "a"])
+        self.assertIn("--no-ext-diff", got)
+        self.assertIn("--no-textconv", got)
+        self.assertLess(got.index("--no-ext-diff"), got.index("--"))
+        st = s5tools.exec_argv(["git", "status", "--short"])
+        self.assertNotIn("--no-ext-diff", st)
+        self.assertIn("core.fsmonitor=false", st)
+
     def test_tail_cap(self):
         import tempfile
 
