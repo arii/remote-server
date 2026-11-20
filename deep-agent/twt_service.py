@@ -229,6 +229,13 @@ def create_app(store=None, ollama_client=None, hosted_client=None):
             )
         return JSONResponse(native, headers=headers)
 
+    @app.get("/v1/provenance")
+    async def provenance():
+        from twt_provenance import get_installed_provenance
+
+        info = get_installed_provenance("tokens-with-taste")
+        return JSONResponse({"object": "provenance", "data": info})
+
     app.mount("/", hosted_app(storage, hosted_http, providers()))
     return app
 

@@ -79,6 +79,10 @@ deep-agent/*
 !deep-agent/skills_lock.py
 !deep-agent/skills-lock.json
 !deep-agent/cobrowse_handoff.py
+!deep-agent/twt_provenance.py
+!deep-agent/twt_receipts.py
+!deep-agent/twt_service.py
+!deep-agent/twt_transport.py
 
 # Agent skills (Untracked) — provisioned per-machine, never committed.
 # Present on disk (host bind mount, safe across container recreates),

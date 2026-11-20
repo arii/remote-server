@@ -289,6 +289,17 @@ class Pipeline:
     # -- stage runners ------------------------------------------------
 
     def stage_init(self):
+        if (
+            os.environ.get("S5_ISSUE_PROVIDER") == "twt"
+            and os.environ.get("TWT_PREFLIGHT_REQUIRED") == "1"
+        ):
+            try:
+                import model_router
+
+                if hasattr(model_router, "preflight_gateway"):
+                    model_router.preflight_gateway(stage="coder")
+            except Exception as exc:
+                return False, f"twt gateway preflight failed: {exc}"
         code, out = self.td_run(["init", "--repo-root", self.repo, "--json"], self.repo)
         payload, error = parse_json_output(out)
         if (

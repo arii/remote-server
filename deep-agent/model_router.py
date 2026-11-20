@@ -533,7 +533,37 @@ STAGE_NEBIUS_MODELS = dict.fromkeys(("coder", "spec", "audit"), "zai-org/GLM-5.3
 STAGE_NVIDIA_MODELS = dict.fromkeys(("coder", "spec", "audit"), "z-ai/glm-5.3-flash")
 
 
-def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
+def preflight_gateway(spec=None, expected_sha=None, stage=None):
+    """Preflight check for TwT gateway capabilities and provenance before paid inference."""
+    spec = dict(spec) if spec else resolve_llm()
+    if stage is not None and stage not in STAGE_NEBIUS_MODELS:
+        raise ValueError(f"unknown pipeline model stage: {stage}")
+    if spec.get("provider") != "twt":
+        return
+    import twt_provenance
+
+    base_url = spec.get("base_url") or _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL)
+    uds = spec.get("uds") or (_env("TWT_UDS") or None)
+    provider_models = dict(spec.get("provider_models") or {})
+    if stage is not None and not provider_models:
+        provider_models = {
+            "nvidia": _env(
+                f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
+            ),
+            "nebius": _env(
+                f"TWT_{stage.upper()}_NEBIUS_MODEL", STAGE_NEBIUS_MODELS[stage]
+            ),
+        }
+    sha = expected_sha or _env("TWT_EXPECTED_SHA")
+    twt_provenance.verify_gateway_capabilities(
+        base_url=base_url,
+        uds=uds,
+        provider_models=provider_models,
+        expected_sha=sha,
+    )
+
+
+def build_chat_model(spec=None, think=False, num_ctx=None, stage=None, preflight=False):
     """Container-correct chat model (Ollama no-think default). Venv-only.
 
     resolve_llm() picks local or keyed remote through the spend choke;
@@ -573,6 +603,8 @@ def build_chat_model(spec=None, think=False, num_ctx=None, stage=None):
             kwargs["extra_body"]["provider_reasoning_effort"] = spec[
                 "provider_reasoning_effort"
             ]
+    if preflight or _env("TWT_PREFLIGHT_REQUIRED") == "1":
+        preflight_gateway(spec=spec, stage=stage)
     import twt_receipts
 
     if spec.get("provider") == "ollama":

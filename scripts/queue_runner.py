@@ -339,6 +339,18 @@ def worker(job_dir):
         import runs
 
         install_budget_guard(cap, directory, fatal)
+        try:
+            import model_router
+
+            preflight = getattr(model_router, "preflight_gateway", None)
+        except ImportError:
+            preflight = None
+        if (
+            os.environ.get("S5_ISSUE_PROVIDER") == "twt"
+            and os.environ.get("TWT_PREFLIGHT_REQUIRED") == "1"
+            and preflight is not None
+        ):
+            preflight(stage="coder")
         for stage in ("init", "spec", "code", "audit", "submit", "cleanup"):
             original = getattr(pipeline.Pipeline, "stage_" + stage)
 
