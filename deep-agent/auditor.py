@@ -518,26 +518,10 @@ class AuditorGraph:
             text=True,
             check=True,
         ).stdout
-        diff_stat = subprocess.run(
-            [
-                "git",
-                "diff",
-                "--stat",
-                "--no-color",
-                "origin/main",
-                "--",
-                *paths,
-            ],
-            cwd=self.worktree_root,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
         if not diff.strip():
             raise ValueError("Semantic audit has no diff to verify")
         return self.bound_verification(
             {
-                "diff_stat": diff_stat,
                 "diff": diff,
                 "spec": spec,
                 "gate": copy.deepcopy(gate_payload),
@@ -579,27 +563,48 @@ class AuditorGraph:
 
         # Single-shot tool-free audit bundle pass (issue #1400):
         # When diff is within bundle bounds (<= 12,000 chars) and tool loop not forced,
-        # invoke the structured model directly in 1 turn without create_agent tool overhead.
+        # invoke the model directly in 1 turn without create_agent tool overhead.
         review = None
         diff_len = len(payload.get("diff", ""))
-        use_single_shot = diff_len <= 12000 and not os.environ.get(
-            "S5_AUDIT_FORCE_TOOLS"
+        use_single_shot = (
+            diff_len <= 12000
+            and not os.environ.get("S5_AUDIT_FORCE_TOOLS")
+            and hasattr(model, "invoke")
         )
         if use_single_shot:
-            try:
-                from langchain_core.messages import HumanMessage
+            from langchain_core.messages import HumanMessage
 
-                structured_model, _ = model_router.build_structured_chat_model(
-                    spec=self.last_model_spec, schema=verdicts.Verdict, stage="audit"
-                )
-                v = structured_model.invoke(
+            try:
+                reply = model.invoke(
                     [HumanMessage(content=user_content)],
                     config={"callbacks": [callback]},
                 )
-                if isinstance(v, verdicts.Verdict):
-                    review = parse_review(v)
-            except Exception:
-                review = None
+                if isinstance(reply, verdicts.Verdict):
+                    review = parse_review(reply)
+                else:
+                    tool_calls = getattr(reply, "tool_calls", None)
+                    if not tool_calls:
+                        text = getattr(reply, "content", "")
+                        review = parse_review(text)
+                        if not review:
+                            try:
+                                structured_model, _ = (
+                                    model_router.build_structured_chat_model(
+                                        spec=self.last_model_spec,
+                                        schema=verdicts.Verdict,
+                                        stage="audit",
+                                    )
+                                )
+                                v = structured_model.invoke(
+                                    [HumanMessage(content=user_content)]
+                                )
+                                if isinstance(v, verdicts.Verdict):
+                                    review = parse_review(v)
+                            except Exception:
+                                pass
+            except BaseException as exc:
+                callback.close(exc)
+                raise
 
         # Fall back to tool-enabled ReAct agent only if single-shot was skipped or failed
         if review is None:
