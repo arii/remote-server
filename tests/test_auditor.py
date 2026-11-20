@@ -617,5 +617,64 @@ class TestAskMain(unittest.TestCase):
         self.assertIn("boom", recorded[0][1]["extra"]["error"])
 
 
+class TestParseReviewWithVerdicts(unittest.TestCase):
+    def test_parses_pydantic_verdict_approve(self):
+        import verdicts
+
+        v = verdicts.Verdict(
+            verdict="APPROVE",
+            findings=[verdicts.Finding(file="app.py", line=10, note="clean")],
+            summary="All good",
+        )
+        review = auditor.parse_review(v)
+        self.assertTrue(review.get("verified"))
+        self.assertEqual(review.get("verdict"), "APPROVE")
+        self.assertEqual(review.get("summary"), "All good")
+        self.assertEqual(len(review.get("findings", [])), 1)
+        self.assertEqual(review["findings"][0]["severity"], "low")
+        self.assertEqual(review["findings"][0]["description"], "app.py:10: clean")
+
+    def test_parses_pydantic_verdict_block(self):
+        import verdicts
+
+        v = verdicts.Verdict(
+            verdict="BLOCK",
+            findings=[verdicts.Finding(file="bad.py", line=5, note="syntax error")],
+            summary="Broken syntax",
+        )
+        review = auditor.parse_review(v)
+        self.assertFalse(review.get("verified"))
+        self.assertEqual(review.get("verdict"), "BLOCK")
+        self.assertEqual(len(review.get("findings", [])), 1)
+        self.assertEqual(review["findings"][0]["severity"], "blocking")
+
+    def test_parses_verdict_json_string(self):
+        payload = '{"verdict": "READY", "findings": [], "summary": "Ready to merge"}'
+        review = auditor.parse_review(payload)
+        self.assertTrue(review.get("verified"))
+        self.assertEqual(review.get("verdict"), "READY")
+
+    def test_parses_verdict_fenced_with_prose(self):
+        text = (
+            "Here is the audit review:\n```json\n"
+            '{"verdict": "APPROVE", "findings": [], "summary": "Verified"}\n'
+            "```\nHope that helps!"
+        )
+        review = auditor.parse_review(text)
+        self.assertTrue(review.get("verified"))
+        self.assertEqual(review.get("verdict"), "APPROVE")
+
+    def test_legacy_format_still_supported(self):
+        legacy = json.dumps(
+            {
+                "verified": True,
+                "findings": [{"severity": "low", "description": "naming note"}],
+            }
+        )
+        review = auditor.parse_review(legacy)
+        self.assertTrue(review.get("verified"))
+        self.assertEqual(len(review.get("findings")), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

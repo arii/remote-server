@@ -31,6 +31,20 @@ class TestParseVerdict(unittest.TestCase):
         ok, result = parse_verdict("```\n" + PROBE + "\n```")
         self.assertTrue(ok)
 
+    def test_accepts_fenced_json_with_surrounding_prose(self):
+        text = (
+            "Here is the audit review:\n```json\n" + PROBE + "\n```\nHope this helps!"
+        )
+        ok, result = parse_verdict(text)
+        self.assertTrue(ok)
+        self.assertEqual(result.verdict, "NEEDS-WORK")
+
+    def test_accepts_raw_json_with_surrounding_prose(self):
+        text = "Here is the verdict: " + PROBE + " Done."
+        ok, result = parse_verdict(text)
+        self.assertTrue(ok)
+        self.assertEqual(result.verdict, "NEEDS-WORK")
+
     def test_rejects_bad_json(self):
         ok, _ = parse_verdict("{not json")
         self.assertFalse(ok)
