@@ -533,7 +533,6 @@ class AuditorGraph:
         """LLM audit pass (injected in tests)."""
         if self.audit_fn is not None:
             return self.audit_fn(gate_payload)
-        from langchain.agents import create_agent
         import model_router
         import ask_investigator
         from issue_generator import InvestigationTruncated, investigation_tool_guard
@@ -560,81 +559,137 @@ class AuditorGraph:
             phase="semantic",
         )
         self.review_calls_metered = True
-        evidence = []
-        agent = create_agent(
-            model,
-            [
-                ask_investigator.search_docs,
-                ask_investigator.read_repo_file,
-                ask_investigator.grep_repo,
-            ],
-            middleware=[investigation_tool_guard(evidence)],
-        )
         user_content = self.semantic_prompt(payload)
-        previous = ask_investigator._checkout
-        ask_investigator._checkout = self.worktree_root
-        error = None
-        try:
-            result = agent.invoke(
-                {"messages": [{"role": "user", "content": user_content}]},
-                config={"recursion_limit": limit, "callbacks": [callback]},
-            )
-        except (InvestigationTruncated, GraphRecursionError) as exc:
-            self.audit_truncated = True
-            text = next(
-                (
-                    m.content
-                    for m in reversed(callback.messages)
-                    if not getattr(m, "tool_calls", []) and m.content
-                ),
-                "",
-            )
-            return json.dumps(
-                {
-                    "status": "CHANGES_REQUESTED",
-                    "verified": False,
-                    "truncated": True,
-                    "findings": [
-                        {
-                            "severity": "high",
-                            "description": f"Semantic audit truncated ({type(exc).__name__}: {exc}); verification incomplete, human review required.",
-                            "evidence": evidence,
-                            "last_ai_text": text,
-                        }
-                    ],
-                }
-            )
-        except BaseException as exc:
-            error = exc
-            raise
-        finally:
-            callback.close(
-                error or RuntimeError("audit ended with an unfinished model call")
-            )
-            self.record_review_usage(callback.messages)
-            ask_investigator._checkout = previous
-        messages = result.get("messages", []) if isinstance(result, dict) else []
-        self.record_review_usage(messages)
-        final = messages[-1] if messages else None
-        text = (
-            getattr(final, "content", "")
-            if getattr(final, "type", "") == "ai"
-            and not getattr(final, "tool_calls", [])
-            else ""
-        )
-        review = parse_review(text)
-        if not review:
-            try:
-                from langchain_core.messages import HumanMessage
 
-                structured_model, _ = model_router.build_structured_chat_model(
-                    spec=self.last_model_spec, schema=verdicts.Verdict, stage="audit"
+        # Single-shot tool-free audit bundle pass (issue #1400):
+        # When diff is within bundle bounds (<= 12,000 chars) and tool loop not forced,
+        # invoke the model directly in 1 turn without create_agent tool overhead.
+        review = None
+        diff_len = len(payload.get("diff", ""))
+        use_single_shot = (
+            diff_len <= 12000
+            and not os.environ.get("S5_AUDIT_FORCE_TOOLS")
+            and hasattr(model, "invoke")
+        )
+        if use_single_shot:
+            from langchain_core.messages import HumanMessage
+
+            try:
+                reply = model.invoke(
+                    [HumanMessage(content=user_content)],
+                    config={"callbacks": [callback]},
                 )
-                v = structured_model.invoke([HumanMessage(content=user_content)])
-                if isinstance(v, verdicts.Verdict):
-                    review = parse_review(v)
-            except Exception:
-                pass
+                if isinstance(reply, verdicts.Verdict):
+                    review = parse_review(reply)
+                else:
+                    tool_calls = getattr(reply, "tool_calls", None)
+                    if not tool_calls:
+                        text = getattr(reply, "content", "")
+                        review = parse_review(text)
+                        if not review:
+                            try:
+                                structured_model, _ = (
+                                    model_router.build_structured_chat_model(
+                                        spec=self.last_model_spec,
+                                        schema=verdicts.Verdict,
+                                        stage="audit",
+                                    )
+                                )
+                                v = structured_model.invoke(
+                                    [HumanMessage(content=user_content)]
+                                )
+                                if isinstance(v, verdicts.Verdict):
+                                    review = parse_review(v)
+                            except Exception:
+                                pass
+            except BaseException as exc:
+                callback.close(exc)
+                raise
+
+        # Fall back to tool-enabled ReAct agent only if single-shot was skipped or failed
+        if review is None:
+            from langchain.agents import create_agent
+
+            evidence = []
+            agent = create_agent(
+                model,
+                [
+                    ask_investigator.search_docs,
+                    ask_investigator.read_repo_file,
+                    ask_investigator.grep_repo,
+                ],
+                middleware=[investigation_tool_guard(evidence)],
+            )
+            previous = ask_investigator._checkout
+            ask_investigator._checkout = self.worktree_root
+            error = None
+            try:
+                result = agent.invoke(
+                    {"messages": [{"role": "user", "content": user_content}]},
+                    config={"recursion_limit": limit, "callbacks": [callback]},
+                )
+            except (InvestigationTruncated, GraphRecursionError) as exc:
+                self.audit_truncated = True
+                text = next(
+                    (
+                        m.content
+                        for m in reversed(callback.messages)
+                        if not getattr(m, "tool_calls", []) and m.content
+                    ),
+                    "",
+                )
+                return json.dumps(
+                    {
+                        "status": "CHANGES_REQUESTED",
+                        "verified": False,
+                        "truncated": True,
+                        "findings": [
+                            {
+                                "severity": "high",
+                                "description": f"Semantic audit truncated ({type(exc).__name__}: {exc}); verification incomplete, human review required.",
+                                "evidence": evidence,
+                                "last_ai_text": text,
+                            }
+                        ],
+                    }
+                )
+            except BaseException as exc:
+                error = exc
+                raise
+            finally:
+                callback.close(
+                    error or RuntimeError("audit ended with an unfinished model call")
+                )
+                self.record_review_usage(callback.messages)
+                ask_investigator._checkout = previous
+            messages = result.get("messages", []) if isinstance(result, dict) else []
+            self.record_review_usage(messages)
+            final = messages[-1] if messages else None
+            text = (
+                getattr(final, "content", "")
+                if getattr(final, "type", "") == "ai"
+                and not getattr(final, "tool_calls", [])
+                else ""
+            )
+            review = parse_review(text)
+            if not review:
+                try:
+                    from langchain_core.messages import HumanMessage
+
+                    structured_model, _ = model_router.build_structured_chat_model(
+                        spec=self.last_model_spec,
+                        schema=verdicts.Verdict,
+                        stage="audit",
+                    )
+                    v = structured_model.invoke([HumanMessage(content=user_content)])
+                    if isinstance(v, verdicts.Verdict):
+                        review = parse_review(v)
+                except Exception:
+                    pass
+        else:
+            callback.close(None)
+            self.record_review_usage(callback.messages)
+
         return json.dumps(
             {
                 "verified": review_verified(review),

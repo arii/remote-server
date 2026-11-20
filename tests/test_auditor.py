@@ -11,8 +11,10 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import auditor
+import verdicts
 
 try:
     import langgraph  # noqa: F401
@@ -266,6 +268,88 @@ class TestAuditorGraph(unittest.TestCase):
             final = gen.run(resume={"decision": "approve"})
             self.assertTrue(final.get("persisted"))
             self.assertGreaterEqual(len(seen), 2)
+
+    def test_audit_once_single_shot_structured_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = auditor.AuditorGraph(tmp, thread_id="test-single-shot")
+            gen.semantic_payload = lambda gate: {
+                "diff": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b",
+                "spec": "goal",
+                "gate": {},
+                "verification": {},
+            }
+
+            fake_verdict = verdicts.Verdict(
+                verdict="APPROVE", findings=[], summary="Diff verified clean"
+            )
+
+            class FakeStructuredModel:
+                def invoke(self, messages, config=None):
+                    return fake_verdict
+
+            import model_router
+
+            with (
+                mock.patch.object(
+                    model_router,
+                    "build_chat_model",
+                    return_value=(FakeStructuredModel(), {"model": "fake"}),
+                ),
+                mock.patch.object(
+                    model_router,
+                    "build_structured_chat_model",
+                    return_value=(FakeStructuredModel(), {"model": "fake"}),
+                ),
+                mock.patch("langchain.agents.create_agent") as mock_create_agent,
+            ):
+                raw = gen.audit_once({})
+                data = json.loads(raw)
+                self.assertTrue(data.get("verified"))
+                self.assertEqual(data.get("findings"), [])
+                mock_create_agent.assert_not_called()
+
+    def test_audit_once_fallback_to_tools_when_forced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = auditor.AuditorGraph(tmp, thread_id="test-forced-tools")
+            gen.semantic_payload = lambda gate: {
+                "diff": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b",
+                "spec": "goal",
+                "gate": {},
+                "verification": {},
+            }
+
+            class FakeAgent:
+                def invoke(self, payload, config=None):
+                    class FakeAiMsg:
+                        type = "ai"
+                        tool_calls = []
+                        content = json.dumps(
+                            {
+                                "verdict": "APPROVE",
+                                "findings": [],
+                                "summary": "Approved via tools",
+                            }
+                        )
+
+                    return {"messages": [FakeAiMsg()]}
+
+            import model_router
+
+            with (
+                mock.patch.object(
+                    model_router,
+                    "build_chat_model",
+                    return_value=(FakeAgent(), {"model": "fake"}),
+                ),
+                mock.patch.dict(os.environ, {"S5_AUDIT_FORCE_TOOLS": "1"}),
+                mock.patch(
+                    "langchain.agents.create_agent", return_value=FakeAgent()
+                ) as mock_create_agent,
+            ):
+                raw = gen.audit_once({})
+                data = json.loads(raw)
+                self.assertTrue(data.get("verified"))
+                mock_create_agent.assert_called_once()
 
 
 class TestAskOnce(unittest.TestCase):

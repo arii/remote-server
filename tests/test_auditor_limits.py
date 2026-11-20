@@ -496,6 +496,11 @@ class TestSemanticLimits(unittest.TestCase):
             import ask_investigator
 
             previous = ask_investigator._checkout
+            env = {"DEEP_AGENT_STATE_DIR": root, "S5_AUDIT_RECURSION_LIMIT": limit}
+            if tool is not None or any(
+                getattr(r, "tool_calls", None) for r in responses
+            ):
+                env["S5_AUDIT_FORCE_TOOLS"] = "1"
             with (
                 mock.patch.object(model_router, "resolve_llm", return_value=spec),
                 mock.patch.object(
@@ -511,10 +516,7 @@ class TestSemanticLimits(unittest.TestCase):
                         "gate": {},
                     },
                 ),
-                mock.patch.dict(
-                    os.environ,
-                    {"DEEP_AGENT_STATE_DIR": root, "S5_AUDIT_RECURSION_LIMIT": limit},
-                ),
+                mock.patch.dict(os.environ, env),
                 mock.patch.object(
                     ask_investigator,
                     "read_repo_file",
