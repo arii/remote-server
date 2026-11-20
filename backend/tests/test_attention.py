@@ -210,6 +210,9 @@ class AttentionShapeTest(unittest.TestCase):
         self.assertEqual(len(runs), 1)
         self.assertIn("×2", runs[0]["title"])
         self.assertEqual(runs[0]["branch"], "main, fix/123")
+        serialized = attention.AttentionList.model_validate(body).model_dump()
+        ser_runs = [i for i in serialized["items"] if i["kind"] == "failing-run"]
+        self.assertEqual(ser_runs[0]["branch"], "main, fix/123")
 
     def test_resolved_webhook_failures_hidden(self):
         import backend.ledger as ledger_mod

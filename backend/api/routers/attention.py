@@ -62,6 +62,7 @@ class AttentionItem(BaseModel):
     title: str = ""
     detail: str = ""
     repo: str = ""
+    branch: str | None = None
     severity: str = "info"
     action: Action = Field(default_factory=Action)
     created_at: float = 0.0
