@@ -32,6 +32,9 @@ class ScriptedPipeline(pipeline_mod.Pipeline):
     def __init__(self, script, **kwargs):
         kwargs.setdefault("repo", "/tmp")
         kwargs.setdefault("intent", "test intent")
+        # The scripted worktree path does not exist, so the real git-based
+        # pre-audit check cannot run here (it fails closed by design).
+        kwargs.setdefault("pre_audit_fn", lambda worktree_root: (True, None, ""))
         super().__init__(**kwargs)
         self.script = list(script)
         self.calls = []
