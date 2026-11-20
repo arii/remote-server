@@ -1599,3 +1599,18 @@ describe('shortcut hint touch rule (issue #1179)', () => {
     expect(media![0]).toContain('display: none');
   });
 });
+
+describe('stack-status chip unwrapped (issue #1427)', () => {
+  it('stylesheet allows stack status chip to stay on one line', () => {
+    const rule = indexCss.match(/^\.topbar \.stack-status-chip \{[^}]*\}/m);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('max-width: none');
+    expect(rule![0]).toContain('white-space: nowrap');
+  });
+
+  it('App renders stack-status with stack-status-chip class', () => {
+    const html = renderToStaticMarkup(<App />);
+    expect(html).toContain('data-testid="stack-status"');
+    expect(html).toContain('stack-status-chip');
+  });
+});
