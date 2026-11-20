@@ -138,6 +138,67 @@ def final_interrupt(interrupts):
     )
 
 
+def prepare_worktree_for_submit(
+    repo_root, worktree_root, base_ref="origin/main", log_fn=None
+):
+    """Prepare worktree for PR submission (#1394).
+
+    1. Rebases the worktree cleanly onto origin/main (with --autostash and
+       aborting on conflict so worktree is never left broken).
+    2. Atomically mirrors .agent_tool_receipt.json from repo root into worktree
+       root if present so td agent submit-pr finds it without failing
+       mandatory tool receipts check.
+    """
+    import shutil
+
+    def _log(msg):
+        if log_fn:
+            log_fn(msg)
+
+    # 1. Fetch origin/main and rebase worktree branch
+    try:
+        subprocess.run(
+            ["git", "-C", worktree_root, "fetch", "origin", "main"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        rebase = subprocess.run(
+            ["git", "-C", worktree_root, "rebase", "--autostash", base_ref],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if rebase.returncode != 0:
+            subprocess.run(
+                ["git", "-C", worktree_root, "rebase", "--abort"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            _log(
+                f"warning: auto-rebase onto {base_ref} failed: {rebase.stderr.strip()}"
+            )
+    except Exception as exc:
+        _log(f"warning: auto-rebase error: {exc}")
+
+    # 2. Mirror .agent_tool_receipt.json from repo root into worktree root
+    try:
+        repo_receipt = os.path.join(repo_root, ".agent_tool_receipt.json")
+        worktree_receipt = os.path.join(worktree_root, ".agent_tool_receipt.json")
+        if os.path.isfile(repo_receipt) and os.path.abspath(
+            repo_receipt
+        ) != os.path.abspath(worktree_receipt):
+            tmp_receipt = worktree_receipt + ".tmp"
+            shutil.copy2(repo_receipt, tmp_receipt)
+            os.replace(tmp_receipt, worktree_receipt)
+            _log("mirrored .agent_tool_receipt.json to worktree root")
+    except Exception as exc:
+        _log(f"warning: receipt mirror error: {exc}")
+
+    return True
+
+
 class Pipeline:
     """Autonomous 4-stage loop. Inject fakes for deterministic tests."""
 
@@ -436,6 +497,9 @@ class Pipeline:
 
     def stage_submit(self, worktree_root, title, body=""):
         """Submit via td agent submit-pr. Returns (ok, url-or-error)."""
+        prepare_worktree_for_submit(
+            self.repo, worktree_root, log_fn=lambda msg: self.log("submit", msg)
+        )
         argv = [
             "--json",
             "agent",
