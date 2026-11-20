@@ -1455,7 +1455,11 @@ export function insertTemplateAt(
 // Persisted snapshots hold the settled conversation only: a trailing
 // empty assistant entry is the live typing placeholder (meaningless
 // once streaming stops), so it never reaches sessionStorage. The live
-// state keeps it — only the snapshot is trimmed.
+// state keeps it — only the snapshot is trimmed. The transcript render
+// uses the same settled view (issue #1434): after an abort or stall
+// with zero tokens the placeholder would otherwise stay on screen as
+// a dead empty Assistant card, and the in-flight case is unchanged
+// because the typing indicator already stands in for the placeholder.
 export function settledChatMessages(messages: ChatMessage[]): ChatMessage[] {
   const n = messages.length;
   if (n === 0) return messages;
@@ -1559,6 +1563,26 @@ export function streamProgress(
   return line;
 }
 
+// First-token wait (issue #1434): while zero tokens have landed the
+// stream is open but nothing is streaming yet, so the status line
+// says that instead of repeating the backend's "Streaming response"
+// phase. Local prefill routinely passes 30s, so past that the line
+// escalates from waiting to still waiting, long before the 180s
+// stall watchdog fires. The stall-retry phase and every phase after
+// the first token pass through untouched.
+export const FIRST_TOKEN_WARN_SECONDS = 30;
+
+export function streamPhaseLabel(
+  phase: string | null,
+  tokens: number,
+  elapsedSec: number,
+): string | null {
+  if (tokens > 0 || phase === 'retrying after stall') return phase;
+  return elapsedSec >= FIRST_TOKEN_WARN_SECONDS
+    ? 'still waiting for the first token'
+    : 'waiting for the first token';
+}
+
 // Ticks every second while streaming, so deliberately not a live
 // region (the sr-only phase announcer carries screen-reader updates).
 export function StreamProgress({
@@ -1594,7 +1618,7 @@ export function ChatHistory({
   onRegenerate: (text: string) => void;
 }) {
   const typing = awaitingFirstToken(streaming, messages);
-  const shown = typing ? messages.slice(0, -1) : messages;
+  const shown = settledChatMessages(messages);
   return (
     <ul className="session-list" data-testid="chat-history">
       {shown.map((m, i) => (
@@ -2659,9 +2683,15 @@ export default function ChatView({
           </button>
         </p>
       )}
-      {streaming && <StreamProgress elapsed={elapsed} phase={phase} tokens={tokenCount} />}
+      {streaming && (
+        <StreamProgress
+          elapsed={elapsed}
+          phase={streamPhaseLabel(phase, tokenCount, elapsed)}
+          tokens={tokenCount}
+        />
+      )}
       <span className="sr-only" role="status" data-testid="chat-phase">
-        {streaming ? phase : null}
+        {streaming ? streamPhaseLabel(phase, tokenCount, elapsed) : null}
       </span>
       {/* Split console (#839): the conversation canvas keeps the
           main column; past runs and the agent launcher ride the

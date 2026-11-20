@@ -539,7 +539,7 @@ describe('Now status hero (issue #811)', () => {
         onHistoryDeploys={() => {}}
       />,
     );
-    expect(html).toContain('All clear');
+    expect(html).toContain('Stack clear');
     expect(html).not.toContain('now-hero-status" aria-hidden');
   });
 
@@ -559,7 +559,7 @@ describe('Now status hero (issue #811)', () => {
       />,
     );
     expect(html).toContain('dot-ok');
-    expect(html).toContain('All clear');
+    expect(html).toContain('Stack clear');
     expect(html).toContain('Nothing urgent.');
   });
 
@@ -603,7 +603,7 @@ describe('Now status hero (issue #811)', () => {
 describe('triage banner dynamics (issue #930)', () => {
   it('heroLabel names the queue depth while items are queued', () => {
     expect(heroLabel('loading', 0)).toBe('Loading status…');
-    expect(heroLabel('ok', 0)).toBe('All clear');
+    expect(heroLabel('ok', 0)).toBe('Stack clear');
     expect(heroLabel('warn', 1)).toBe('1 needing attention');
     expect(heroLabel('warn', 3)).toBe('3 needing attention');
     expect(heroLabel('crit', 2)).toBe('2 needing attention');
@@ -659,8 +659,8 @@ describe('guided empty state (issue #809)', () => {
   it('explains what lands here with a run-a-check action', () => {
     const html = renderToStaticMarkup(<NowEmptyState onRunCheck={() => {}} />);
     expect(html).toContain('data-testid="now-empty"');
-    expect(html).toContain('Nothing needs you right now');
-    expect(html).toContain('Failing checks, approvals, and incidents will land here.');
+    expect(html).toContain('Nothing queued right now');
+    expect(html).toContain('Repo failures, approvals, and incidents will land here.');
     expect(html).toContain('data-testid="now-empty-jobs"');
     expect(html).toContain('>Run a check<');
   });

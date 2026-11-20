@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_BACKEND_OPTIONS, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, isTurnInProgressError, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, restoreUserBubble, resumeActionForStatus, runActionLabel, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_BACKEND_OPTIONS, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, isTurnInProgressError, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, restoreUserBubble, resumeActionForStatus, runActionLabel, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, FIRST_TOKEN_WARN_SECONDS, streamPhaseLabel, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -26,6 +26,86 @@ describe('stream progress (issue #376)', () => {
     );
     expect(html).toContain('data-testid="chat-progress"');
     expect(html).toContain('Working… 45s · prefill · 12 tok');
+  });
+});
+
+describe('first-token wait label (issue #1434)', () => {
+  it('names the wait while zero tokens have landed', () => {
+    expect(streamPhaseLabel('Streaming response from model...', 0, 0)).toBe(
+      'waiting for the first token',
+    );
+    expect(streamPhaseLabel(null, 0, 12)).toBe('waiting for the first token');
+  });
+
+  it('escalates the wait before the stall watchdog fires', () => {
+    expect(FIRST_TOKEN_WARN_SECONDS).toBeLessThan(STALL_SECONDS);
+    expect(
+      streamPhaseLabel('Streaming response from model...', 0, FIRST_TOKEN_WARN_SECONDS),
+    ).toBe('still waiting for the first token');
+    expect(
+      streamPhaseLabel('Streaming response from model...', 0, FIRST_TOKEN_WARN_SECONDS - 1),
+    ).toBe('waiting for the first token');
+  });
+
+  it('passes real phases through once tokens flow, and keeps the stall retry', () => {
+    expect(streamPhaseLabel('Streaming response from model...', 5, 90)).toBe(
+      'Streaming response from model...',
+    );
+    expect(streamPhaseLabel(null, 5, 90)).toBeNull();
+    expect(streamPhaseLabel('retrying after stall', 0, 200)).toBe('retrying after stall');
+  });
+
+  it('progress line with the derived label shows the wait, not a streaming claim', () => {
+    const waiting = renderToStaticMarkup(
+      <StreamProgress
+        elapsed={77}
+        phase={streamPhaseLabel('Streaming response from model...', 0, 77)}
+        tokens={0}
+      />,
+    );
+    expect(waiting).toContain('Working… 77s · still waiting for the first token');
+    expect(waiting).not.toContain('Streaming response');
+    const flowing = renderToStaticMarkup(
+      <StreamProgress
+        elapsed={80}
+        phase={streamPhaseLabel('Streaming response from model...', 3, 80)}
+        tokens={3}
+      />,
+    );
+    expect(flowing).toContain('Working… 80s · Streaming response from model... · 3 tok');
+  });
+});
+
+describe('aborted zero-token turn leaves no dead card (issue #1434)', () => {
+  const abortedTurn: ChatMessage[] = [
+    { role: 'user', text: 'Find active TODOs' },
+    { role: 'assistant', text: '' },
+  ];
+
+  it('hides the empty assistant placeholder once settled', () => {
+    const html = historyHtml(abortedTurn, false);
+    expect(html).toContain('chat-msg-user-0');
+    expect(html).not.toContain('chat-msg-assistant');
+    expect(html).not.toContain('chat-typing');
+  });
+
+  it('keeps the typing indicator for the same placeholder in flight', () => {
+    const html = historyHtml(abortedTurn, true);
+    expect(html).not.toContain('chat-msg-assistant');
+    expect(html).toContain('chat-typing');
+  });
+
+  it('keeps partial aborted replies visible', () => {
+    const html = historyHtml([
+      { role: 'user', text: 'q' },
+      { role: 'assistant', text: 'partial answer' },
+    ]);
+    expect(html).toContain('partial answer');
+  });
+
+  it('state still holds the placeholder for resume machinery; only the render trims', () => {
+    expect(settledChatMessages(abortedTurn)).toEqual([{ role: 'user', text: 'Find active TODOs' }]);
+    expect(abortedTurn).toHaveLength(2);
   });
 });
 
