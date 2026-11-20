@@ -17,6 +17,7 @@ import coder
 
 try:
     import langgraph  # noqa: F401
+    import langchain.agents.middleware  # noqa: F401
 
     HAS_AGENT_DEPS = True
 except ImportError:
@@ -385,6 +386,146 @@ class TestCoderDefaults(unittest.TestCase):
     def test_search_tool_handles_empty_query(self):
         tool = coder.build_search_tool("/tmp")
         self.assertEqual(tool.invoke({"query": ""}), "REJECTED: empty query")
+
+
+class TestReadCacheAndTruncation(unittest.TestCase):
+    def test_truncate_tool_output_short_and_exact(self):
+        self.assertEqual(coder._truncate_tool_output("short", limit=4000), "short")
+        exact = "x" * 100
+        self.assertEqual(coder._truncate_tool_output(exact, limit=100), exact)
+
+    def test_truncate_tool_output_long(self):
+        head_mark = "HEADER_START_"
+        tail_mark = "_TRAIL_END"
+        body = head_mark + ("z" * 5000) + tail_mark
+        truncated = coder._truncate_tool_output(body, limit=200)
+        self.assertTrue(truncated.startswith(head_mark))
+        self.assertTrue(truncated.endswith(tail_mark))
+        self.assertIn("chars omitted", truncated)
+        self.assertLess(len(truncated), 300)
+
+    def test_read_cache_duplicate_detection(self):
+        cache = coder.ReadCache()
+        is_dup, d1 = cache.check_and_update("src/main.py", "def main(): pass")
+        self.assertFalse(is_dup)
+        self.assertEqual(len(d1), 64)
+
+        is_dup2, d2 = cache.check_and_update("src/main.py", "def main(): pass")
+        self.assertTrue(is_dup2)
+        self.assertEqual(d1, d2)
+
+    def test_read_cache_invalidation(self):
+        cache = coder.ReadCache()
+        cache.check_and_update("src/main.py", "def main(): pass")
+        self.assertIsNotNone(cache.get("src/main.py"))
+
+        cache.invalidate("src/main.py")
+        self.assertIsNone(cache.get("src/main.py"))
+
+        is_dup, _ = cache.check_and_update("src/main.py", "def main(): pass")
+        self.assertFalse(is_dup)
+
+    def test_read_cache_content_mutation(self):
+        cache = coder.ReadCache()
+        _, d1 = cache.check_and_update("src/main.py", "v1")
+        is_dup, d2 = cache.check_and_update("src/main.py", "v2")
+        self.assertFalse(is_dup)
+        self.assertNotEqual(d1, d2)
+
+    @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langchain_core)")
+    def test_worktree_file_middleware_cache_and_truncation(self):
+        from langchain_core.messages import ToolMessage
+
+        written = set()
+        cache = coder.ReadCache()
+        middleware = coder.worktree_file_middleware(
+            "/tmp/wt", written, read_cache=cache
+        )
+
+        # Mock tool call request object
+        class FakeRequest:
+            def __init__(self, tool_call):
+                self.tool_call = tool_call
+
+            def override(self, **kwargs):
+                if "tool_call" in kwargs:
+                    self.tool_call = kwargs["tool_call"]
+                return self
+
+        # 1. First read
+        req1 = FakeRequest(
+            {"id": "call_1", "name": "read_file", "args": {"file_path": "a.py"}}
+        )
+        res1 = middleware(
+            req1,
+            lambda r: ToolMessage(
+                content="print('hello')",
+                tool_call_id="call_1",
+                name="read_file",
+                status="success",
+            ),
+        )
+        self.assertEqual(res1.content, "print('hello')")
+
+        # 2. Duplicate read -> returns sentinel
+        req2 = FakeRequest(
+            {"id": "call_2", "name": "read_file", "args": {"file_path": "a.py"}}
+        )
+        res2 = middleware(
+            req2,
+            lambda r: ToolMessage(
+                content="print('hello')",
+                tool_call_id="call_2",
+                name="read_file",
+                status="success",
+            ),
+        )
+        self.assertIn("[UNCHANGED: a.py", res2.content)
+        self.assertIn("already in context. Do not re-read.]", res2.content)
+
+        # 3. Edit file -> invalidates cache
+        req_edit = FakeRequest(
+            {"id": "call_3", "name": "edit_file", "args": {"file_path": "a.py"}}
+        )
+        middleware(
+            req_edit,
+            lambda r: ToolMessage(
+                content="ok", tool_call_id="call_3", name="edit_file", status="success"
+            ),
+        )
+        self.assertIn("a.py", written)
+
+        # 4. Third read after edit -> returns fresh content
+        req4 = FakeRequest(
+            {"id": "call_4", "name": "read_file", "args": {"file_path": "a.py"}}
+        )
+        res4 = middleware(
+            req4,
+            lambda r: ToolMessage(
+                content="print('updated')",
+                tool_call_id="call_4",
+                name="read_file",
+                status="success",
+            ),
+        )
+        self.assertEqual(res4.content, "print('updated')")
+
+        # 5. Long output truncation
+        long_content = "X" * 15000
+        req5 = FakeRequest(
+            {"id": "call_5", "name": "read_file", "args": {"file_path": "big.py"}}
+        )
+        res5 = middleware(
+            req5,
+            lambda r: ToolMessage(
+                content=long_content,
+                tool_call_id="call_5",
+                name="read_file",
+                status="success",
+            ),
+        )
+        self.assertIn("chars omitted", res5.content)
+        self.assertLess(len(res5.content), 10000)
 
 
 if __name__ == "__main__":
