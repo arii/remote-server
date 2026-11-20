@@ -11,6 +11,7 @@ import {
   jobPassesKindFilter,
   kindBadge,
   rowInFacet,
+  rowToneClass,
   tailText,
   toHistoryRows,
   visibleFacets,
@@ -64,10 +65,7 @@ export function isQuietAgentRow(r: HistoryRow): boolean {
 
 // Inline status edge (#964): green/red left edge per row, readable
 // without expanding. Muted rows carry no edge.
-export function rowToneClass(tone: HistoryRow['tone']): string {
-  if (tone === 'bad' || tone === 'ok') return ` tone-${tone}`;
-  return '';
-}
+export { rowToneClass };
 
 // Lazy run-output disclosure, same onToggle pattern as the review diff:
 // fetch only when opened. The runs registry is in-memory, so output for

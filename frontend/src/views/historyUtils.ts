@@ -50,6 +50,13 @@ export interface HistoryRow {
   members: HistoryMember[];
 }
 
+// Inline status edge (#964): green/red left edge per row, readable
+// without expanding. Muted rows carry no edge.
+export function rowToneClass(tone: HistoryRow['tone']): string {
+  if (tone === 'bad' || tone === 'ok') return ` tone-${tone}`;
+  return '';
+}
+
 interface FlatEntry {
   kind: string;
   summary: string;

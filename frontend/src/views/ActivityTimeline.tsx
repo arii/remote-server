@@ -6,7 +6,7 @@ import { loadHistory, useMock } from './mockViews';
 import { isTabVisible, onTabVisible } from './jobsUtils';
 import { shouldShowSnapshotContent, useSnapshotData } from './useSnapshotData';
 import { StatusIcon } from './StatusIcon';
-import { rowToneClass } from './HistoryView';
+import { rowToneClass } from './historyUtils';
 import { toTimelineItems } from './timelineUtils';
 import type { TimelineItem } from './timelineUtils';
 
