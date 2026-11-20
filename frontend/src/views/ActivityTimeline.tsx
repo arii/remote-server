@@ -6,6 +6,7 @@ import { loadHistory, useMock } from './mockViews';
 import { isTabVisible, onTabVisible } from './jobsUtils';
 import { shouldShowSnapshotContent, useSnapshotData } from './useSnapshotData';
 import { StatusIcon } from './StatusIcon';
+import { rowToneClass } from './HistoryView';
 import { toTimelineItems } from './timelineUtils';
 import type { TimelineItem } from './timelineUtils';
 
@@ -60,15 +61,24 @@ export function TimelineList({ items }: { items: TimelineItem[] }) {
       {items.map((item) => (
         <li
           key={item.key}
-          className="history-row"
+          className={`history-row${rowToneClass(item.tone)}`}
           data-testid={`timeline-item-${item.feed}`}
         >
-          <span className="row-title">
-            <StatusIcon tone={item.tone} /> {item.summary}
-          </span>
-          <span className="row-meta">
-            {item.feed} · {item.at}
-          </span>
+          <details data-testid="timeline-detail">
+            <summary>
+              <span className="row-title">
+                <StatusIcon tone={item.tone} /> {item.summary}
+              </span>
+              <span className="row-meta">
+                {item.feed} · {item.at}
+              </span>
+            </summary>
+            {item.detail && (
+              <pre data-testid="timeline-detail-body">
+                {item.detail}
+              </pre>
+            )}
+          </details>
         </li>
       ))}
     </ul>

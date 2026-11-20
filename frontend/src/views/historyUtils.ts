@@ -117,6 +117,9 @@ export function epochOf(at: number | string | undefined): number {
 }
 
 function jobStatus(j: JobRecord): string {
+  if (j.done === true && typeof j.exit_code === 'number' && j.exit_code !== 0) {
+    return `failed (exit ${j.exit_code})`;
+  }
   if (j.status) return j.status;
   if (j.state) return j.state;
   return j.done ? 'done' : 'pending';
@@ -142,12 +145,14 @@ function jobFailed(j: JobRecord, status: string): boolean {
 function jobToEntry(j: JobRecord): FlatEntry {
   const status = jobStatus(j);
   const title = jobTitle(j);
-  const summary = plainLanguage(`${title}: ${status}`, 'Job');
+  const failed = jobFailed(j, status);
+  const summary = failed && typeof j.exit_code === 'number' && j.exit_code !== 0
+    ? `${title}: failed (exit ${j.exit_code})`
+    : plainLanguage(`${title}: ${status}`, title || 'Job');
   const lines = [`run: ${j.id}`, `kind: ${j.kind || 'job'}`, `status: ${status}`];
   if (j.repo) lines.push(`repo: ${j.repo}`);
   if (typeof j.exit_code === 'number') lines.push(`exit: ${j.exit_code}`);
   if (j.error) lines.push(`error: ${j.error}`.slice(0, 1500));
-  const failed = jobFailed(j, status);
   const routine = !failed && ROUTINE_RE.test(summary);
   return {
     kind: j.kind || 'job',

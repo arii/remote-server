@@ -66,6 +66,7 @@ describe('timeline merge (issue #812)', () => {
     expect(items).toHaveLength(1);
     expect(items[0].tone).toBe('bad');
     expect(items[0].detail).toContain('exit: 1');
+    expect(items[0].summary).toBe('Briefing: failed (exit 1)');
   });
 
   it('summarizes a turn like the Past runs line', () => {
