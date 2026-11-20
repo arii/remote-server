@@ -133,12 +133,16 @@ def _import_maybe_stubbed(name):
     except ImportError:
         pass
     stubs = _recording_stubs()
+    orig = {k: sys.modules[k] for k in stubs if k in sys.modules}
     sys.modules.update(stubs)
     try:
         return __import__(name)
     finally:
         for _key in stubs:
-            sys.modules.pop(_key, None)
+            if _key in orig:
+                sys.modules[_key] = orig[_key]
+            else:
+                sys.modules.pop(_key, None)
         sys.modules.pop(name, None)
 
 
