@@ -606,6 +606,7 @@ class TestSemanticLimits(unittest.TestCase):
                         "spec": spec,
                         "gate": {"passed": True},
                         "verification": [],
+                        "literal_checks": [],
                     }
                 ),
                 prompt,
