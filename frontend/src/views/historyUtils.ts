@@ -340,6 +340,13 @@ export function sentenceCase(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+// Inline status edge (#964): green/red left edge per row, readable
+// without expanding. Muted rows carry no edge.
+export function rowToneClass(tone: HistoryRow['tone']): string {
+  if (tone === 'bad' || tone === 'ok') return ` tone-${tone}`;
+  return '';
+}
+
 export function jobPassesKindFilter(jobKind: string | undefined, filter: string): boolean {
   if (filter === 'all') return true;
   // Job rows are runs: they answer to the run filter whatever action ran.
