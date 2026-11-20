@@ -258,7 +258,8 @@ class TestVenvEntrypointArgv(unittest.TestCase):
         p = run_script("resolve_conflicts.py")
         self.assertEqual(p.returncode, 2)
         self.assertEqual(
-            p.stderr, "usage: resolve_conflicts.py <worktree-path> [base-ref]\n"
+            p.stderr,
+            "usage: resolve_conflicts.py [--prefer=...] <worktree-path> [base-ref]\n",
         )
 
     def test_triage_fanout_bad_repos(self):
