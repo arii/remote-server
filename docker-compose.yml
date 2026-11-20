@@ -52,6 +52,13 @@ services:
       # app shell and every /api route stay behind the OAuth gate.
       - --skip-auth-route=GET=^/buttons/manifest\.json$
       - --skip-auth-route=GET=^/buttons/icons/.+$
+      # Extension pairing WebSocket (#1409): a chrome-extension
+      # WebSocket is cross-site, so the SameSite=lax OAuth cookie
+      # never rides along and the extension can never pass the gate.
+      # This ONE exact GET route skips auth; the service requires the
+      # BUTTONS_EXT_PAIRING_TOKEN (Sec-WebSocket-Protocol subprotocol)
+      # before accept, so the CDP drive channel stays closed without it.
+      - --skip-auth-route=GET=^/buttons/api/browser/ext$
       - --tls-cert-file=/certs/live/${TERMINAL_DOMAIN}/fullchain.pem
       - --tls-key-file=/certs/live/${TERMINAL_DOMAIN}/privkey.pem
       - --upstream=http://caddy:8080
