@@ -26,6 +26,7 @@ from pathlib import Path
 from threading import Lock
 
 import skills_registry
+import literal_checks
 from coder import DEFAULT_TOOL_OUTPUT_LIMIT, _truncate_tool_output
 from s5tools import verification_guidance
 
@@ -510,6 +511,10 @@ class IssueGeneratorGraph:
             for path in paths:
                 if path.startswith("/") or ".." in path.split("/"):
                     errors.append(f"allowed path must be repo-relative: {path}")
+            # Literal contradiction check (issue #1375): a spec whose
+            # instructions retain a string its acceptance criteria
+            # forbid must redraft before coding, not code the conflict.
+            errors.extend(literal_checks.spec_contradictions(spec_text))
             valid = bool(data.get("valid") or original_errors) and not errors
             data.update(allowed_files=paths, valid=valid, errors=errors)
             return valid, data, errors
