@@ -1039,6 +1039,61 @@ export function IssueRowLabels({
   );
 }
 
+// Issue row actions (issue #1468): Open stays one-tap primary;
+// secondary actions (Defer, Repair, Feedback, Rebase) consolidate into
+// a 44px overflow menu so row actions don't crowd mobile viewports.
+export function IssueRowActions({
+  repo,
+  iss,
+  branch,
+  onOpen,
+  onDefer,
+  onAskAgent,
+}: {
+  repo: string;
+  iss: IssueRow;
+  branch: string;
+  onOpen: () => void;
+  onDefer: () => void;
+  onAskAgent: (seed: string) => void;
+}) {
+  return (
+    <div className="actions">
+      <RowActionButton action="Open" kind="issue" num={iss.number} testid={`open-issue-${iss.number}`} onClick={onOpen} />
+      <details className="row-overflow" data-testid={`issue-more-${iss.number}`}>
+        <summary aria-label={`More actions for issue #${iss.number}`}>More</summary>
+        <div className="actions">
+          <RowActionButton action="Defer" kind="issue" num={iss.number} testid={`defer-issue-${iss.number}`} onClick={onDefer} />
+          <button
+            type="button"
+            data-testid={`repair-issue-${iss.number}`}
+            title="Ask the agent to fix this issue"
+            onClick={() => onAskAgent(repairIssueSeed(repo, iss))}
+          >
+            Repair
+          </button>
+          <button
+            type="button"
+            data-testid={`feedback-issue-${iss.number}`}
+            title="Ask the agent to address the latest feedback on this issue"
+            onClick={() => onAskAgent(feedbackIssueSeed(repo, iss))}
+          >
+            Feedback
+          </button>
+          <button
+            type="button"
+            data-testid={`rebase-issue-${iss.number}`}
+            title="Ask the agent to rebase the working branch onto the latest base"
+            onClick={() => onAskAgent(rebaseIssueSeed(repo, iss, branch))}
+          >
+            Rebase
+          </button>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 // Bulk defer selection keys: "pr:12" / "issue:34" so one set spans
 // both Review lists without kind collisions.
 export function bulkRowKey(kind: 'pr' | 'issue', n: number): string {
@@ -2297,34 +2352,14 @@ export default function ReviewView({
                       ))}
                     </p>
                   )}
-                  <div className="actions">
-                    <RowActionButton action="Open" kind="issue" num={iss.number} testid={`open-issue-${iss.number}`} onClick={() => openIssueUrl(iss.url)} />
-                    <RowActionButton action="Defer" kind="issue" num={iss.number} testid={`defer-issue-${iss.number}`} onClick={() => void deferSelected('issue', iss.number)} />
-                    <button
-                      type="button"
-                      data-testid={`repair-issue-${iss.number}`}
-                      title="Ask the agent to fix this issue"
-                      onClick={() => onAskAgent(repairIssueSeed(repo, iss))}
-                    >
-                      Repair
-                    </button>
-                    <button
-                      type="button"
-                      data-testid={`feedback-issue-${iss.number}`}
-                      title="Ask the agent to address the latest feedback on this issue"
-                      onClick={() => onAskAgent(feedbackIssueSeed(repo, iss))}
-                    >
-                      Feedback
-                    </button>
-                    <button
-                      type="button"
-                      data-testid={`rebase-issue-${iss.number}`}
-                      title="Ask the agent to rebase the working branch onto the latest base"
-                      onClick={() => onAskAgent(rebaseIssueSeed(repo, iss, branch))}
-                    >
-                      Rebase
-                    </button>
-                  </div>
+                  <IssueRowActions
+                    repo={repo}
+                    iss={iss}
+                    branch={branch}
+                    onOpen={() => openIssueUrl(iss.url)}
+                    onDefer={() => void deferSelected('issue', iss.number)}
+                    onAskAgent={onAskAgent}
+                  />
                 </li>
                 );
               })}

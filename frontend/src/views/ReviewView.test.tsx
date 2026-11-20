@@ -4,6 +4,7 @@ import ReviewView, {
   BulkDeferBar,
   BulkRestoreBar,
   DependabotBatchBar,
+  IssueRowActions,
   IssueRowLabels,
   IssueRowTitle,
   MergeBlockDetail,
@@ -1560,3 +1561,37 @@ describe('issues quick filters, badges, and agent seeds (issue #962)', () => {
     expect(html).toContain('c asks agent');
   });
 });
+
+describe('issue row actions overflow disclosure (issue #1468)', () => {
+  const sampleIssue = {
+    number: 7,
+    title: 'Crash on boot',
+    url: 'https://example.invalid/i/7',
+    state: 'open',
+    labels: [{ name: 'bug' }],
+  };
+
+  it('renders primary Open action directly and secondary actions in a row-overflow disclosure', () => {
+    const html = renderToStaticMarkup(
+      <IssueRowActions
+        repo="arii/remote-server"
+        iss={sampleIssue}
+        branch="main"
+        onOpen={() => {}}
+        onDefer={() => {}}
+        onAskAgent={() => {}}
+      />,
+    );
+    // Primary Open button is outside details
+    expect(html).toContain('data-testid="open-issue-7"');
+    // Overflow disclosure wraps secondary actions
+    expect(html).toContain('<details class="row-overflow" data-testid="issue-more-7"');
+    expect(html).toContain('<summary aria-label="More actions for issue #7">More</summary>');
+    // Secondary action buttons are present inside disclosure
+    expect(html).toContain('data-testid="defer-issue-7"');
+    expect(html).toContain('data-testid="repair-issue-7"');
+    expect(html).toContain('data-testid="feedback-issue-7"');
+    expect(html).toContain('data-testid="rebase-issue-7"');
+  });
+});
+

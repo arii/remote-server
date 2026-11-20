@@ -47,32 +47,39 @@ mkdir -p "$SKILLS_DIR"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-# "name|source|skillPath|computedHash" per lock entry.
+# "name|source|skillPath|computedHash|ref" per lock entry.
 lock_entries() {
   python3 - "$LOCK" <<'EOF'
 import json, sys
 with open(sys.argv[1]) as f:
     lock = json.load(f)
 for name, e in lock["skills"].items():
-    print(f"{name}|{e['source']}|{e['skillPath']}|{e['computedHash']}")
+    print(f"{name}|{e['source']}|{e['skillPath']}|{e['computedHash']}|{e.get('ref', '')}")
 EOF
 }
 
 sha256_file() { sha256sum "$1" | cut -d' ' -f1; }
 
 installed=0 skipped=0
-while IFS='|' read -r name source skill_path want; do
+while IFS='|' read -r name source skill_path want ref; do
   dest="$SKILLS_DIR/$name/SKILL.md"
   if [[ -f "$dest" ]] && [[ "$(sha256_file "$dest")" == "$want" ]]; then
     skipped=$((skipped + 1))
     continue
   fi
-  # (Re)install: shallow-clone the source, copy the skill dir.
+  # (Re)install: shallow-clone or fetch pinned ref from the source, copy the skill dir.
   skill_dir="$(dirname "$skill_path")"
   clone_dir="$WORK_DIR/$(echo "$source" | tr '/:' '__')"
   if [[ ! -d "$clone_dir" ]]; then
-    git clone --depth 1 "https://github.com/${source}.git" "$clone_dir" \
-      || { fail "clone failed for $source"; continue; }
+    if [[ -n "$ref" ]]; then
+      git init -q "$clone_dir"
+      git -C "$clone_dir" remote add origin "https://github.com/${source}.git"
+      git -C "$clone_dir" fetch -q --depth 1 origin "$ref" || { fail "fetch $ref failed for $source"; continue; }
+      git -C "$clone_dir" checkout -q "$ref" || { fail "checkout $ref failed for $source"; continue; }
+    else
+      git clone -q --depth 1 "https://github.com/${source}.git" "$clone_dir" \
+        || { fail "clone failed for $source"; continue; }
+    fi
   fi
   if [[ ! -f "$clone_dir/$skill_path" ]]; then
     fail "$source has no $skill_path"
