@@ -13,7 +13,13 @@ class TestVerificationPolicy(unittest.TestCase):
     def test_commands_use_existing_allowlist(self):
         for command in (
             "python3 -m unittest backend.tests.test_repair_worker_fetch",
+            "python3 -m unittest tests.test_deep_chat",
+            "python3 -m unittest tests.test_deep_chat.TestHistoryTrim",
+            "python3 -m unittest tests.test_deep_chat.TestHistoryTrim.test_trim",
             "python3 -m pytest backend/tests/test_repair_worker_fetch.py",
+            "python3 -m pytest tests/test_deep_chat.py",
+            "python3 tests/test_deep_chat.py",
+            "python3 backend/tests/test_repair_worker_fetch.py",
         ):
             self.assertTrue(s5tools.check_allowed(s5tools.parse_check_command(command)))
         for command in (
@@ -21,9 +27,22 @@ class TestVerificationPolicy(unittest.TestCase):
             "npm install",
             "pnpm install --ignore-scripts",
             "python3 -m unittest discover -s backend/tests",
+            "python3 -m unittest os.system",
         ):
             with self.assertRaises(ValueError):
                 s5tools.parse_check_command(command)
+
+    def test_verification_env_prepends_cur_bin_to_path(self):
+        import os
+        import sys
+
+        cur_bin = os.path.dirname(sys.executable)
+        with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
+            with s5tools.verification_env("/checkout") as env:
+                self.assertTrue(
+                    env["PATH"].startswith(cur_bin + os.pathsep)
+                    or env["PATH"] == cur_bin
+                )
 
     def test_coder_and_both_planners_get_canonical_policy(self):
         policy = s5tools.verification_guidance()

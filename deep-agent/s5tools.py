@@ -20,6 +20,7 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -53,8 +54,10 @@ CHECK_PREFIXES = (
 )
 CHECK_TIMEOUT = 300
 CHECK_OUTPUT_LIMIT = 4000
-TEST_FILE_RE = re.compile(r"^tests/test_[A-Za-z0-9_]+\.py$")
-UNITTEST_MODULE_RE = re.compile(r"backend\.tests\.test_[A-Za-z0-9_]+")
+TEST_FILE_RE = re.compile(r"^(?:backend/)?tests/test_[A-Za-z0-9_]+\.py$")
+UNITTEST_MODULE_RE = re.compile(
+    r"(?:backend\.)?tests\.test_[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*"
+)
 
 
 def check_allowed(argv):
@@ -64,7 +67,8 @@ def check_allowed(argv):
     unittest_argv = tupled[1:] if tupled[:1] == ("PYTHONPATH=./deep-agent",) else tupled
     if unittest_argv[:3] == ("python3", "-m", "unittest"):
         return len(unittest_argv) > 3 and all(
-            UNITTEST_MODULE_RE.fullmatch(module) for module in unittest_argv[3:]
+            not module.endswith(".py") and UNITTEST_MODULE_RE.fullmatch(module)
+            for module in unittest_argv[3:]
         )
     if unittest_argv != tupled:
         return False
@@ -87,8 +91,8 @@ def allowed_commands_text():
     """Human list of the allowlisted command heads (tool prompts)."""
     return ", ".join(" ".join(p) for p in CHECK_PREFIXES) + (
         ", pnpm install --frozen-lockfile"
-        ", python3 -m unittest backend.tests.test_<module>"
-        ", PYTHONPATH=./deep-agent python3 -m unittest backend.tests.test_<module>"
+        ", python3 -m unittest [backend.]tests.test_<module>"
+        ", PYTHONPATH=./deep-agent python3 -m unittest [backend.]tests.test_<module>"
     )
 
 
@@ -96,12 +100,12 @@ def verification_guidance():
     heads = ", ".join(" ".join(p) for p in CHECK_PREFIXES)
     return (
         "Verification policy for run_check (overrides commands suggested in the issue):\n"
-        f"Allowed command heads: {heads}; python3 tests/test_NAME.py; "
-        "python3 -m unittest backend.tests.test_NAME "
+        f"Allowed command heads: {heads}; python3 [backend/]tests/test_NAME.py; "
+        "python3 -m unittest [backend.]tests.test_NAME[.<TestCase>[.<test_method>]] "
         "(optionally prefixed with PYTHONPATH=./deep-agent).\n"
         "Replace NAME with an existing test module; read the repository's tests first. "
-        "For backend Python changes prefer targeted python3 -m unittest "
-        "backend.tests.test_NAME or python3 -m pytest with existing test paths. "
+        "For Python changes prefer targeted python3 -m unittest "
+        "[backend.]tests.test_NAME or python3 -m pytest with existing test paths. "
         "Run one command per call, without shell operators. "
         "Do not use npm run test:backend, arbitrary npm scripts, or dependency installs. "
         "Git inspection alone does not verify an implementation."
@@ -144,12 +148,17 @@ def check_env(checkout):
 @contextmanager
 def verification_env(checkout):
     with tempfile.TemporaryDirectory(prefix="agent-verification-") as state:
-        yield {
+        env = {
             **os.environ,
             **check_env(checkout),
             "DEEP_AGENT_STATE_DIR": state,
             "EVAL_LEDGER": os.path.join(state, "ledger.jsonl"),
         }
+        cur_bin = os.path.dirname(sys.executable)
+        path = env.get("PATH", "")
+        if cur_bin and not path.startswith(cur_bin + os.pathsep) and path != cur_bin:
+            env["PATH"] = cur_bin + os.pathsep + path
+        yield env
 
 
 def run_repo_command(checkout, command):
