@@ -108,3 +108,7 @@ frontend/dist/
 
 # td vector index (rebuild with td rag index --repo-root .; machine-local)
 .td_rag/
+
+# Agent/tool runtime state (#1386): machine-local, never repo work
+.agent_tool_receipt.json
+.agents/plans/
