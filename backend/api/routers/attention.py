@@ -410,6 +410,51 @@ def list_pending_approvals() -> list:
     return out
 
 
+def list_failing_schedules() -> list:
+    """Injectable seam: action schedules whose last firing failed
+    (#1487). Read only: nothing here pauses, edits or advances a
+    schedule; monitoring intent stays with whoever owns it."""
+    from backend.api.routers.jobs import load_action_schedules
+
+    out = []
+    for sid, sched in sorted(load_action_schedules().items()):
+        res = sched.get("last_result")
+        if isinstance(res, dict) and res.get("ok") is False:
+            out.append({"id": sid, **sched})
+    return out
+
+
+def _schedule_failure_detail(sched: dict) -> str:
+    err = str((sched.get("last_result") or {}).get("error") or "unknown error")
+    if "unknown repo" in err.lower():
+        kind = (
+            "Repo not found on this host. Stays failing until the checkout "
+            "is restored or the schedule is removed."
+        )
+    else:
+        kind = "Error may be transient; it retries on the next interval."
+    state = "enabled" if sched.get("enabled", True) else "paused"
+    return f"{kind} Last error: {err}. Schedule is {state}; nothing was auto-paused."
+
+
+def orphan_repo_names(known) -> list:
+    """Repo names with failing schedules or failed runs that are not
+    a discovered checkout. The per-repo fan-out never queries them,
+    so without this the rollup reads clear while they fail (#1487)."""
+    known = set(known)
+    seen: list = []
+    raw = [s.get("repo") for s in list_failing_schedules()]
+    raw += [j.get("repo") for j in list_failed_jobs()]
+    for r in raw:
+        text = str(r or "").strip()
+        if not text:
+            continue
+        short = _event_repo(text, "")
+        if short and short not in known and short not in seen:
+            seen.append(short)
+    return seen
+
+
 def _event_repo(raw, name: str) -> str:
     """Short repo name for a global source's repo field.
 
@@ -542,6 +587,29 @@ def _assemble_items(name: str, now: float) -> list[dict]:
                     "intent": "",
                 },
                 "created_at": float(job.get("created_at", now) or now),
+            }
+        )
+    for sched in list_failing_schedules():
+        repo = _event_repo(sched.get("repo"), name)
+        if repo != name:
+            continue
+        res = sched.get("last_result") or {}
+        items.append(
+            {
+                "id": f"schedule-{sched['id']}",
+                "kind": "failed-schedule",
+                "title": f"Schedule failing: {sched.get('action', sched['id'])}",
+                "detail": _schedule_failure_detail(sched),
+                "repo": repo,
+                "severity": "warn",
+                "action": {
+                    "label": "View schedules",
+                    "method": "GET",
+                    "href": "api/schedule",
+                    "destructive": False,
+                    "intent": "",
+                },
+                "created_at": float(res.get("at", now) or now),
             }
         )
     # One row per terminal dispatch (done info, failed warn): the
