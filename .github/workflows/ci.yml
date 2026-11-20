@@ -24,10 +24,16 @@ permissions:
 env:
   TERMINAL_IMAGE: ghcr.io/arii/remote-server-terminal
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Cancel only superseded PR runs; main-branch runs always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   shell:
     name: lint shell scripts
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: bash syntax check
@@ -38,6 +44,7 @@ jobs:
   compose:
     name: validate compose file
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - name: dummy env from example (deleted afterwards)
@@ -51,6 +58,7 @@ jobs:
   terminal-image:
     name: build (+push) terminal image
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -90,6 +98,7 @@ jobs:
   skills-lock:
     name: verify skills lock vs upstream
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: check lock matches upstream skill sources
@@ -98,6 +107,7 @@ jobs:
   skill-shadows:
     name: no shadow skill copies
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: fail on real files under shim skill dirs
@@ -106,6 +116,7 @@ jobs:
   secret-scan:
     name: scan for leaked secrets
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -119,6 +130,7 @@ jobs:
   audit:
     name: fallow code audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       # packageManager is the single pnpm source; a version: here fails the setup.
@@ -135,6 +147,7 @@ jobs:
   frontend:
     name: frontend tsc + vitest
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       # packageManager is the single pnpm source; a version: here fails the setup.
@@ -153,6 +166,7 @@ jobs:
   extension:
     name: extension vitest + syntax + build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       # packageManager is the single pnpm source; a version: here fails the setup.
@@ -178,6 +192,7 @@ jobs:
     # named. Do not rename without updating protection first.
     name: backend tests + type-check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -207,6 +222,7 @@ jobs:
     # the required context stays green on unrelated PRs.
     name: eval fixtures offline check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -233,6 +249,7 @@ jobs:
   format:
     name: ruff format (diff-aware)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -252,6 +269,7 @@ jobs:
     needs: [shell, compose, terminal-image, skills-lock, skill-shadows, secret-scan, audit, frontend, extension, backend, eval-fixtures, format]
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       pull-requests: write
     steps:
