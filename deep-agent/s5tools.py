@@ -342,7 +342,32 @@ def verification_env(checkout):
         path = env.get("PATH", "")
         if cur_bin and not path.startswith(cur_bin + os.pathsep) and path != cur_bin:
             env["PATH"] = cur_bin + os.pathsep + path
+        env.pop("GIT_EXTERNAL_DIFF", None)
         yield env
+
+
+def exec_argv(argv):
+    """argv to actually run. Git read-only commands are launched with the
+    checkout's helper hooks disabled: a checkout's own .git/config or
+    .gitattributes can name diff.external, a textconv driver, or
+    core.fsmonitor, each of which makes `git diff|log|status` execute a
+    program. Verification commands (pytest, go, npm) run checkout code by
+    design; the git inspect commands must stay read-only."""
+    argv = list(argv)
+    if argv[:1] != ["git"] or len(argv) < 2:
+        return argv
+    head = [
+        "git",
+        "--no-pager",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "diff.external=",
+    ]
+    extra = ["--no-ext-diff", "--no-textconv"] if argv[1] in ("diff", "log") else []
+    return head + [argv[1]] + extra + argv[2:]
 
 
 def run_repo_command(checkout, command):
@@ -357,7 +382,7 @@ def run_repo_command(checkout, command):
     try:
         with verification_env(checkout) as env:
             proc = subprocess.run(
-                argv,
+                exec_argv(argv),
                 cwd=checkout,
                 capture_output=True,
                 text=True,

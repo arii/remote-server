@@ -56,6 +56,7 @@ from s5tools import (  # noqa: E402,F401
     allowed_commands_text,
     check_allowed,
     check_env,
+    exec_argv,
     parse_check_command,
     verification_env,
     verification_guidance,
@@ -460,7 +461,7 @@ def build_check_tool(worktree, written_files=None):
         try:
             with verification_env(worktree) as env:
                 proc = subprocess.run(
-                    argv,
+                    exec_argv(argv),
                     cwd=worktree,
                     capture_output=True,
                     text=True,
