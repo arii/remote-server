@@ -40,11 +40,7 @@ def get_drive_service(token_path: str):
 
 def read_ledger(sheet_id: str, token_path: str):
     service = get_drive_service(token_path)
-    csv_bytes = (
-        service.files()
-        .export(fileId=sheet_id, mimeType="text/csv")
-        .execute()
-    )
+    csv_bytes = service.files().export(fileId=sheet_id, mimeType="text/csv").execute()
     csv_text = csv_bytes.decode("utf-8")
     reader = csv.DictReader(io.StringIO(csv_text))
     return list(reader)
@@ -52,10 +48,18 @@ def read_ledger(sheet_id: str, token_path: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Read Agent Ledger headlessly.")
-    parser.add_argument("--sheet-id", default=os.environ.get("AGENT_LEDGER_SHEET_ID", DEFAULT_SHEET_ID))
-    parser.add_argument("--token-file", default=os.environ.get("GOOGLE_TOKEN_FILE", DEFAULT_TOKEN_PATH))
-    parser.add_argument("--status", choices=["Act", "Later", "Needs Okay", "Done", "all"], default=None)
-    parser.add_argument("--all", action="store_true", help="Show all rows including Done")
+    parser.add_argument(
+        "--sheet-id", default=os.environ.get("AGENT_LEDGER_SHEET_ID", DEFAULT_SHEET_ID)
+    )
+    parser.add_argument(
+        "--token-file", default=os.environ.get("GOOGLE_TOKEN_FILE", DEFAULT_TOKEN_PATH)
+    )
+    parser.add_argument(
+        "--status", choices=["Act", "Later", "Needs Okay", "Done", "all"], default=None
+    )
+    parser.add_argument(
+        "--all", action="store_true", help="Show all rows including Done"
+    )
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
 
@@ -74,8 +78,7 @@ def main():
         sys.exit(1)
 
     filtered = [
-        r for r in rows
-        if not filter_status or r.get("Status") in filter_status
+        r for r in rows if not filter_status or r.get("Status") in filter_status
     ]
 
     if args.json:
