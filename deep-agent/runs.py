@@ -472,17 +472,18 @@ def _needs_1121_backfill(row):
 
     Narrow by construction: live rows with no provider on the
     entry or derivable from the model label, a `test-`-prefixed
-    harness thread, an explicit all-zero token usage record,
-    filed metered with no rate. Real spend, rated rows, partial
-    or missing usage, and rows with any provider evidence are
-    never touched — those stay fail-closed. Never raises.
+    harness thread (or `pipeline-` eval run), an explicit all-zero
+    token usage record, filed metered with no rate. Real spend,
+    rated rows, partial or missing usage, and rows with any provider
+    evidence are never touched — those stay fail-closed. Never raises.
     """
     try:
         if not isinstance(row, dict) or _is_deleted(row):
             return False
         if row.get("provider") or ledger._model_provider(row.get("model")):
             return False
-        if not ledger._is_test_thread(row.get("thread_id")):
+        tid = str(row.get("thread_id") or "")
+        if not (ledger._is_test_thread(tid) or tid.startswith("pipeline-")):
             return False
         if not _explicit_zero_usage(row):
             return False

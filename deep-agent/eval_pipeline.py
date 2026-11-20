@@ -39,6 +39,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 import pipeline as pipeline_mod
 
@@ -301,6 +302,7 @@ def _run_pipeline(fixture, **overrides):
         "repo": fixture["repo"],
         "intent": "calc.add subtracts; make it add",
         "issue_id": 42,
+        "thread_id": f"test-pipeline-{int(time.time())}",
         "investigate_fn": _investigate_ok,
         "spec_model_fn": _model_ok,
         "plan_fn": _plan,
@@ -399,6 +401,7 @@ def eval_auditor_reject():
         repo=fixture["repo"],
         intent="calc.add subtracts; make it add",
         issue_id=42,
+        thread_id=f"test-pipeline-{int(time.time())}",
         investigate_fn=_investigate_ok,
         spec_model_fn=_model_ok,
         plan_fn=_plan,
