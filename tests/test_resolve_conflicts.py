@@ -83,12 +83,16 @@ def _install_stubs():
 # every real module imported inside its block, which would detach
 # resolve_conflicts' ledger/observe from the patched copies.
 _STUBS = _install_stubs()
+_ORIG = {k: sys.modules[k] for k in _STUBS if k in sys.modules}
 sys.modules.update(_STUBS)
 try:
     import resolve_conflicts as rc
 finally:
     for _key in _STUBS:
-        sys.modules.pop(_key, None)
+        if _key in _ORIG:
+            sys.modules[_key] = _ORIG[_key]
+        else:
+            sys.modules.pop(_key, None)
 
 import ledger  # noqa: E402 -- after stub dance: stubs must install first
 import observe  # noqa: E402 -- after stub dance: stubs must install first

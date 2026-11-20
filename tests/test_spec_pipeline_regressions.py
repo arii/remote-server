@@ -513,20 +513,7 @@ class TestSpecToolBudget(unittest.TestCase):
                     graph, "preseed_context_pack", return_value="pack: widget.py"
                 ),
             ):
-                try:
-                    evidence = graph.investigate_text("fix widget", "draft")
-                except NotImplementedError as exc:
-                    # test_delegation_guard pops real langchain modules
-                    # from sys.modules after stub-importing; under full
-                    # discover that leaves a duplicated langchain module
-                    # tree where sync wrap_model_call middleware breaks
-                    # (pre-existing pollution, already hits TestSpecUsage
-                    # on main; CI installs no langchain so never sees it).
-                    if "wrap_model_call" in str(exc):
-                        self.skipTest(
-                            "langchain module tree polluted by earlier stub-import tests"
-                        )
-                    raise
+                evidence = graph.investigate_text("fix widget", "draft")
         return evidence, executed
 
     def test_budget_strips_tools_for_final_turn(self):
