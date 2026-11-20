@@ -30,10 +30,13 @@ phone browser ── https://TERMINAL_DOMAIN:TERMINAL_PORT ──▶ oauth2-prox
                                                                    ▼
                                                             caddy:8080 (compose net)
                                                               ├── / (terminal:7681, ttyd + zellij)
-                                                              ├── /buttons* (buttons:8000)
-                                                              └── /code* (code-server:8080, browser VS Code)
-                                                                    └─ Continue extension (Ollama qwen3:8b)
+                                                              ├── /buttons* + /cdp-stream* (buttons:8000)
+                                                              ├── /code* (code-server:8080, browser VS Code)
+                                                              │     └─ Continue extension (Ollama qwen3:8b)
+                                                              └── /hrm* (terminal:3000)
 ```
+
+Full route table: `caddy/Caddyfile`.
 
 Tailscale (VPN, outbound-only) gives admin access to everything else
 (SSH, future services) and is the fallback if the public port is blocked.
@@ -57,7 +60,9 @@ See `docs/remote-access.md` for the threat model.
    (GitHub allows non-443 ports — register it exactly); put the callback
    URL in `.env` (`OAUTH2_PROXY_REDIRECT_URL`).
 5. `docker compose up -d --build` — builds the terminal image (pinned
-   ttyd + zellij), starts oauth2-proxy + terminal + tailscale.
+   ttyd + zellij) and starts the full stack: oauth2-proxy → caddy →
+   terminal / buttons / code-server, plus tailscale, ollama, browser,
+   browser-relay and skills-provisioner.
 6. `sudo ./scripts/install-certbot-deploy-hook.sh` — restarts oauth2-proxy
    whenever certbot renews, so the new cert is picked up.
 7. Phone (on cellular, not WiFi): open
@@ -69,12 +74,15 @@ See `docs/remote-access.md` for the threat model.
 
 1. Create the repo (public is fine) and push this directory. Nothing secret
    is in it: `.env*` is git-ignored and CI scans every push with TruffleHog.
-2. CI (`.github/workflows/ci.yml`) runs on every push/PR:
-   - shellcheck + `bash -n` on `scripts/`
-   - `docker compose config` validation (dummy env, deleted after)
+2. CI (`.github/workflows/ci.yml`) runs on every push/PR, rolled up by a
+   `report` job:
+   - shell (shellcheck + `bash -n` on `scripts/`), compose (`docker
+     compose config` validation, dummy env) and format checks
    - terminal image build from `terminal/Dockerfile`, pushed to
      `ghcr.io/arii/remote-server-terminal` (`main`, `sha-*`, `latest` tags)
-   - TruffleHog secret scan (`--only-verified`)
+   - TruffleHog secret scan (`--only-verified`), fallow code audit
+   - frontend, chrome extension and backend test suites, eval fixtures,
+     skills-lock / skill-shadows guards
 
    The Docker workflow replicates `arii/BoomTick`'s pattern:
    `.github/actions/setup-docker-buildx` (GHCR login + buildx),
@@ -95,58 +103,119 @@ See `docs/remote-access.md` for the threat model.
 
 ## Docs
 
+Setup and access:
+
 - `docs/remote-access.md` — investigation: browser terminal without SSH,
   GitHub OAuth. Recommends oauth2-proxy (TLS with existing LE certs) +
   ttyd + zellij; Tailscale as VPN; DDNS/certbot reuse mechanism; threat model.
-- `docs/agent-harness.md` — ⏸️ **PARTLY ON HOLD** (Pi activated
-  2026-10-27; OpenClaw / Copilot / Gemini still deferred). Preserved
-  evaluation ("pi", LangChain, OpenClaw, OpenHands, Aider, Goose,
-  PR-Agent) + three model routes (local Ollama / Copilot Pro / Gemini API).
-- `docs/pi-setup.md` — Pi 1.4.0 + Node 22 in the terminal image against
-  local Ollama (`qwen3:8b` default, `qwen3:14b` stronger): deploy, use
-  from the phone, read-only review mode, measurement step.
 - `docs/setup-plan.md` — phased Ubuntu install, hardening, Docker,
   DDNS/certbot wiring, VPN, backups, repeatability. Every phase has a
   verification step.
-- `docs/workstation-onboarding.md` — workstation configuration and
-  multi-agent onboarding guide: Antigravity multi-agent toolset,
-  Boomtick MCP, and Browser MCP (v2.3.0).
 - `docs/usb-install-and-network.md` — bootable USB from your Linux box
   (exact ISO link + `dd`/Disks/Etcher), S5 install notes, Nest Wifi DHCP
   reservation + port forward (Google Home app path), No-IP DUC install,
   certbot.
-- `docs/agent-guide.md` — agent GitHub identity (`onasafari`):
-  attribution vs authentication, GPG verified commits.
-- `docs/media.md` — media asset pipeline: YouTube-to-GIF/WebP, ffmpeg,
-  WebM/MP4 for the web.
-- `docs/ux-evaluation-and-redesign-guide.md` — S5 Buttons UX evaluation
-  & enhancement guide (design input; the as-built state is `docs/buttons.md`).
+- `docs/workstation-onboarding.md` — workstation configuration and
+  multi-agent onboarding guide: Antigravity multi-agent toolset,
+  Boomtick MCP, and Browser MCP (v2.3.0).
+- `docs/browser-setup.md` — browser setup: CDP-direct shared autonomy.
+- `docs/durability.md` — container durability: what survives a restart,
+  and what doesn't.
+- `docs/deployment-history.md` — deployment history.
+- `docs/release-train.md` — release train process (issue #1081).
+
+Services and runbooks:
+
+- `docs/buttons.md` — Buttons, the operator console.
+- `docs/twt-queue.md` — durable TwT issue queue runbook.
+- `docs/twt-agents.md` — audited local and hosted agents on S5.
+- `docs/co-browsing-runbook.md` — live co-browsing preflight via `agy`.
+- `docs/impact-pass-runbook.md` — visual impact pass (deep agents).
+- `docs/ux-audit-runbook.md` + `docs/ux-audit-checklist.md` — dispatched
+  UX audit agent and its loop checklist.
 - `docs/autonomous-triage-runbook.md` — retired Nov 2026 (#102);
   execution backend is now the repair worker
   (`POST /api/repair/dispatch`).
+
+Agents and models:
+
+- `docs/agent-harness.md` — ⏸️ **PARTLY ON HOLD** (Pi activated
+  2026-10-27; OpenClaw / Copilot / Gemini still deferred). Preserved
+  evaluation ("pi", LangChain, OpenClaw, OpenHands, Aider, Goose,
+  PR-Agent) + three model routes (local Ollama / Copilot Pro / Gemini API).
+- `docs/pi-setup.md` — Pi in the terminal image against local Ollama
+  (`qwen3:8b` default, `qwen3:14b` stronger): deploy, use from the
+  phone, read-only review mode, measurement step.
+- `docs/agent-guide.md` — agent GitHub identity (`onasafari`):
+  attribution vs authentication, GPG verified commits.
+- `docs/agent-integration-guide.md` — peer SPA ↔ deep-agent lane.
 - `docs/deepagents.md` — DeepAgents direction: LangChain skills,
-  Nebius-then-Ollama route, Pi succession plan.
+  Nebius-then-Ollama route, Pi succession plan. Spike report:
+  `docs/deepagents-spike-report.md`.
+- `docs/langchain-execution-guide.md` — replacing Pi sessions on the
+  buttons site.
+- `docs/skill-contract.md` — browser skill contract.
+- `docs/llm-provider-scorecard.md` — Ollama (local) vs Nebius (cloud).
+- `docs/agy-continuity.md` — agy continuity verdict (issue #400).
+
+UX and media:
+
+- `docs/ux-evaluation-and-redesign-guide.md` — S5 Buttons UX evaluation
+  & enhancement guide (design input; the as-built state is `docs/buttons.md`).
+- `docs/ux-preview.md` — Buttons local UX preview toolkit.
+- `docs/repo-previews.md` — repo preview subpaths (`/<name>`).
+- `docs/media.md` — media asset pipeline: YouTube-to-GIF/WebP, ffmpeg,
+  WebM/MP4 for the web.
+
+Specs and proposals live in `docs/specs/`, archived material in
+`docs/archive/`. Dated reviews, issue drafts
+and one-off reports sit alongside these in `docs/` and are deliberately
+not indexed here — `ls docs/` for the full set.
 
 ## Repo layout
 
 ```
 docker-compose.yml        services: oauth2-proxy (TLS+OAuth, public port),
-                          terminal (ttyd+zellij+Node+Pi, built from terminal/),
-                          tailscale (VPN), ollama (local LLM, CPU-only).
+                          caddy (internal router, caddy/Caddyfile), terminal
+                          (ttyd+zellij+Node 24+Pi, built from terminal/),
+                          buttons (operator console, root Dockerfile),
+                          code-server (browser VS Code), browser (pinned
+                          selenium/standalone-chromium, shared Grid) +
+                          browser-relay (BrowserMCP relay), tailscale (VPN),
+                          ollama (local LLM, CPU-only), skills-provisioner.
                           openclaw / actions-runner commented out
                           under profiles: ["agents"] (decision deferred).
 terminal/                 Dockerfile (pinned ttyd + zellij + Node 24 + Pi
                           + docker CLI + Muse), config.kdl (phone-tuned
                           zellij config), pi-config/ (Pi Ollama provider + defaults)
-config/                   oauth2-proxy.cfg (no secrets)
-scripts/                  bootstrap.sh, install-docker.sh,
-                          tailscale-entrypoint.sh,
-                          certbot-deploy-hook.sh,
-                          install-certbot-deploy-hook.sh, pull-models.sh
-                          (pull-models.sh is dormant until the agents profile
-                          is enabled)
+caddy/                    Caddyfile — internal route table behind oauth2-proxy
+backend/                  Python backend APIs (pytest suite in CI)
+frontend/                 web frontend (pnpm workspace, Vite SPA)
+chrome-extension/         BrowserMCP pairing extension (token-gated pairing)
+buttons-pair/             Buttons pairing helper package
+deep-agent/               deep-agent service
+config/                   oauth2-proxy.cfg (no secrets), browser-relay/Caddyfile
+scripts/                  setup: bootstrap.sh, install-docker.sh,
+                          setup-gh-auth.sh, setup-hooks.sh, setup-webhooks.sh;
+                          runtime: tailscale-entrypoint.sh,
+                          buttons-entrypoint.sh, buttons-up.sh,
+                          certbot-deploy-hook.sh (+installer),
+                          pull-models.sh (dormant until the agents profile
+                          is enabled), stack-probe.sh, edge-liveness-watch.sh
+                          (+cron installer), prune-worktrees.sh,
+                          update-permissions.sh; MCP: allow-boomtick-mcp.sh,
+                          setup-boomtick-mcp.sh, setup-browser-mcp.sh,
+                          setup-browsermcp-tunnel.sh; cutoff-drill.sh;
+                          queue: queue_runner.py,
+                          ledger_post.py, ledger_read.py, twt-queue.service,
+                          config/; verification: verify-*.py, verify-skills.sh,
+                          check-*.sh; UX audit: ux-*.ts
+hooks/                    git hooks (post-merge)
+mk/                       Makefile includes
+gdocs-access/             isolated Google Doc read/write spike
 .env.example              every variable, no values (copy to .env)
 docs/                     guides & runbooks (see Docs above)
+tests/                    repo-level test suites
 ```
 
 ## Security notes
