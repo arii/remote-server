@@ -560,6 +560,7 @@ describe('output drawer (issue #1013)', () => {
     );
     expect(html).toContain('data-testid="jobs-output-drawer"');
     expect(html).toContain('role="dialog"');
+    expect(html).toContain('<span class="row-title">Job output</span>');
     expect(html).toContain('data-testid="jobs-output-close"');
     expect(html).toContain('data-testid="jobs-progress"');
   });

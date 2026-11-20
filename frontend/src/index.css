@@ -63,6 +63,10 @@ body {
   line-height: 1.45;
 }
 
+dialog {
+  color: var(--text);
+}
+
 ::selection { background: var(--accent-solid); color: #fff; }
 
 a { color: var(--accent); }
@@ -243,7 +247,7 @@ h1, h2, h3 { text-wrap: balance; }
 }
 
 .row-meta { color: var(--muted); font-size: 0.85rem; margin: 0; }
-.row-title { display: block; font-weight: 650; font-size: 1rem; margin: 0; }
+.row-title { display: block; font-weight: 650; font-size: 1rem; margin: 0; color: var(--text); }
 
 /* #938: 2-line risk summary on each Review card (+ details pane). */
 .risk-summary { display: grid; gap: 0.1rem; margin: 0.35rem 0; font-size: 0.85rem; line-height: 1.4; }
@@ -625,6 +629,7 @@ button[data-testid="chat-dictate"] { display: inline-flex; align-items: center; 
   width: min(560px, 94vw);
   z-index: 60;
   background: var(--bg);
+  color: var(--text);
   border-left: 1px solid var(--border);
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
   display: flex;
