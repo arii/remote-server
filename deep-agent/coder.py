@@ -1350,6 +1350,9 @@ def existing_implementation_files(worktree, allowed_files):
     return changed & allowed
 
 
+NO_WRITES = "no written files for implementation"
+
+
 def implementation_failure(reply, written_files):
     lines = reply.strip().splitlines()
     contract = (
@@ -1361,7 +1364,7 @@ def implementation_failure(reply, written_files):
     elif contract.group(1) == "BLOCKED":
         reasons.append("coder reported " + contract.group(0))
     if not written_files:
-        reasons.append("no written files for implementation")
+        reasons.append(NO_WRITES)
     return "; ".join(reasons)
 
 
