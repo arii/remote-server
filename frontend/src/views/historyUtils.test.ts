@@ -237,6 +237,19 @@ describe('collapsed outcome clauses (issue #423)', () => {
     expect(rows[0].summary).toBe('Repository path was not found');
   });
 
+  it('does not show a skipped pull as a green success (#1489)', () => {
+    const rows = toHistoryRows([], [
+      { kind: 'webhook', ok: true, advanced: false, detail: 'skipped: tree dirty', ts: 3 },
+      { kind: 'webhook', ok: true, advanced: true, detail: 'fast-forwarded', ts: 2 },
+      { kind: 'webhook', ok: false, detail: 'merge conflict', ts: 1 },
+    ]);
+    expect(rows).toHaveLength(3);
+    expect(rows[0].summary).toContain('skipped: tree dirty');
+    expect(rows[0].tone).toBe('muted');
+    expect(rows[0].recovery).not.toBe('');
+    expect(rows[1].tone).toBe('ok');
+    expect(rows[2].tone).toBe('bad');
+  });
   it('splits rows whose outcomes differ', () => {
     const rows = toHistoryRows([], [
       { kind: 'webhook', detail: 'skipped: tree dirty', ts: 2 },
@@ -444,13 +457,13 @@ describe('webhook skip recovery (issue #855)', () => {
     ...over,
   });
 
-  it('hints stash-or-commit on a dirty skip, staying tone-ok', () => {
+  it('hints stash-or-commit on a dirty skip, as a neutral (non-green) row', () => {
     const rows = toHistoryRows(
       [],
       [skip('skipped: tree dirty — behind by 3 (local changes)')],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].tone).toBe('ok');
+    expect(rows[0].tone).toBe('muted');
     expect(rows[0].recovery).toBe(
       'stash or commit local changes, then retry the pull',
     );
@@ -462,7 +475,7 @@ describe('webhook skip recovery (issue #855)', () => {
       [skip('skipped: tree not ff-able — behind by 1 (local changes)')],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].tone).toBe('ok');
+    expect(rows[0].tone).toBe('muted');
     expect(rows[0].recovery).toBe(
       'rebase local commits onto the remote default, then retry',
     );
@@ -485,7 +498,7 @@ describe('webhook skip recovery (issue #855)', () => {
       ],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].tone).toBe('ok');
+    expect(rows[0].tone).toBe('muted');
     expect(rows[0].recovery).toBe(
       'resolve the held stash, then retry the pull',
     );
