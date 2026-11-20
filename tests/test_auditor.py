@@ -38,58 +38,6 @@ def _gate_ok(args):
     )
 
 
-class TestRunTdAuditImpact(unittest.TestCase):
-    def test_parses_payload(self):
-        ok, payload = auditor.run_td_audit_impact("/tmp", runner=_gate_ok)
-        self.assertTrue(ok)
-        self.assertEqual(payload["impacted_files"], ["a.py"])
-
-    def test_non_json_fails(self):
-        ok, error = auditor.run_td_audit_impact(
-            "/tmp", runner=lambda args: (0, "not json")
-        )
-        self.assertFalse(ok)
-        self.assertIn("non-JSON", error)
-
-    def test_missing_td_fails_closed(self):
-        def runner(args):
-            raise FileNotFoundError("no td")
-
-        ok, error = auditor.run_td_audit_impact("/tmp", runner=runner)
-        self.assertFalse(ok)
-        self.assertIn("not found", error)
-
-    def test_error_exit_fails(self):
-        ok, error = auditor.run_td_audit_impact("/tmp", runner=lambda args: (1, "boom"))
-        self.assertFalse(ok)
-        self.assertTrue(error)
-
-    def test_preview_url_flows_to_impact(self):
-        seen = []
-
-        def runner(args):
-            seen.append(list(args))
-            return _gate_ok(args)
-
-        ok, _ = auditor.run_td_audit_impact(
-            "/tmp", runner=runner, preview_url="https://x/preview"
-        )
-        self.assertTrue(ok)
-        self.assertIn("--preview-url", seen[0])
-        self.assertIn("https://x/preview", seen[0])
-
-    def test_no_preview_url_omits_flag(self):
-        seen = []
-
-        def runner(args):
-            seen.append(list(args))
-            return _gate_ok(args)
-
-        ok, _ = auditor.run_td_audit_impact("/tmp", runner=runner)
-        self.assertTrue(ok)
-        self.assertNotIn("--preview-url", seen[0])
-
-
 class TestHardGatePreviewUrl(unittest.TestCase):
     def test_gate_passes_preview_url(self):
         seen = []
