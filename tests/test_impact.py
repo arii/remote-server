@@ -655,12 +655,12 @@ class TestChatRegistration(unittest.TestCase):
     def test_default_nine_preserved(self):
         import deep_chat
         tools = deep_chat.build_tools("/tmp")
-        self.assertEqual(len(tools), 9)
+        self.assertEqual(len(tools), 14)
 
     def test_opt_in_adds_four(self):
         import deep_chat
         tools = deep_chat.build_tools("/tmp", impact_tools=True)
-        self.assertEqual(len(tools), 13)
+        self.assertEqual(len(tools), 18)
         by_name = {t.name: t for t in tools}
         for name in ("run_ux_capture", "diff_versions", "ask_diff",
                      "lighthouse_read"):

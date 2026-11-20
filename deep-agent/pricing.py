@@ -125,7 +125,11 @@ def rate_for(model):
     try:
         if not isinstance(model, str) or not model:
             return None
-        if model.startswith(FREE_PREFIX):
+        if (
+            model.startswith(FREE_PREFIX)
+            or model.startswith("qwen3")
+            or model in ("none", "unknown", "unknown:model")
+        ):
             return None
         return _model_rate(model)
     except Exception:
@@ -173,7 +177,11 @@ def quote(model, usage, provider=None):
             if separator and prefix in PROVIDERS:
                 model = name
             model = f"{provider}:{model}"
-        if model.startswith(FREE_PREFIX):
+        if (
+            model.startswith(FREE_PREFIX)
+            or model.startswith("qwen3")
+            or model in ("none", "unknown", "unknown:model")
+        ):
             return 0.0, False
         rate = _model_rate(model)
         if rate is None:
