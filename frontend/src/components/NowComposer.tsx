@@ -37,8 +37,21 @@ export default function NowComposer({
         value={prompt}
         onChange={(e) => onChange(e.target.value)}
       />
-      <button type="submit" disabled={reason !== null}>Send</button>
-      {reason && <span className="row-meta">{reason}</span>}
+      <span className="control-with-hint">
+        <button
+          type="submit"
+          disabled={reason !== null}
+          title={reason ?? 'Send prompt'}
+          aria-describedby={reason ? 'now-send-reason' : undefined}
+        >
+          Send
+        </button>
+        {reason && (
+          <span id="now-send-reason" className="row-meta control-hint" data-testid="now-send-reason">
+            {reason}
+          </span>
+        )}
+      </span>
     </form>
   );
 }
