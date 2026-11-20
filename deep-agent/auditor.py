@@ -17,6 +17,7 @@ import time
 
 import skills_registry
 import verdicts
+import literal_checks
 from s5tools import verification_env
 
 MAX_AUDIT_LOOPS_DEFAULT = 2
@@ -83,6 +84,21 @@ def review_verified(value):
             for item in findings
         )
     )
+
+
+def _literal_failure_lines(failures):
+    """Human-readable evidence lines for unsatisfied literal criteria."""
+    lines = []
+    for failure in failures or []:
+        criterion = failure.get("criterion", {})
+        occurrences = failure.get("occurrences") or []
+        first = occurrences[0] if occurrences else {}
+        where = f"{first.get('path')}:{first.get('line')}" if first.get("path") else ""
+        line = f"unsatisfied literal acceptance criterion: {criterion.get('text', '')}"
+        if where:
+            line += f" (first of {failure.get('total', len(occurrences))} at {where})"
+        lines.append(line)
+    return lines
 
 
 def blocking_findings(findings):
@@ -379,10 +395,15 @@ class AuditorGraph:
     def build_verdict(self, state):
         """Structured audit verdict (status + evidence)."""
         verified = review_verified(state.get("findings", ""))
+        # Literal criteria fail closed (issue #1375): a semantic or
+        # human approval must not relax an explicit literal criterion
+        # whose forbidden string survives in the worktree.
+        literal = state.get("literal_checks") or []
         approved = (
             bool(state.get("approved"))
             and verified
             and not blocking_findings(state.get("findings", ""))
+            and not literal
         )
         gate = state.get("gate", {}) or {}
         impacted = []
@@ -395,7 +416,8 @@ class AuditorGraph:
             "valid": state.get("valid"),
             "impacted_files": sorted(set(impacted)),
             "findings": state.get("findings", ""),
-            "errors": state.get("errors", []),
+            "errors": list(state.get("errors", [])) + _literal_failure_lines(literal),
+            "literal_checks": literal,
         }
 
     def semantic_prompt(self, payload):
@@ -475,6 +497,27 @@ class AuditorGraph:
         truncate(low)
         return payload
 
+    def check_literal_criteria(self):
+        """Deterministic zero-occurrence criteria scan (issue #1375).
+
+        Returns [] when no spec file is configured, the spec names no
+        literal criteria, or every criterion is satisfied. Each failure
+        carries the criterion and its surviving occurrences so the
+        semantic audit and the human review see the same evidence.
+        """
+        if not self.spec_file:
+            return []
+        spec_path = os.path.join(self.worktree_root, self.spec_file)
+        try:
+            with open(spec_path, encoding="utf-8") as handle:
+                spec = handle.read()
+        except OSError:
+            return []
+        criteria = literal_checks.find_literal_criteria(spec)
+        if not criteria:
+            return []
+        return literal_checks.unsatisfied_criteria(self.worktree_root, criteria)
+
     def semantic_payload(self, gate_payload):
         if not self.spec_file:
             raise ValueError("Semantic audit requires an issue spec file")
@@ -526,6 +569,7 @@ class AuditorGraph:
                 "spec": spec,
                 "gate": copy.deepcopy(gate_payload),
                 "verification": copy.deepcopy(self.verification_evidence),
+                "literal_checks": self.check_literal_criteria(),
             }
         )
 
@@ -813,6 +857,7 @@ class AuditorGraph:
             valid: bool
             persisted: bool
             verdict: dict
+            literal_checks: list
 
         def hard_gate_node(state):
             valid, payloads, errors = outer.hard_gate()
@@ -821,6 +866,7 @@ class AuditorGraph:
                 "gate": payloads,
                 "errors": errors,
                 "attempts": state.get("attempts", 0) + 1,
+                "literal_checks": outer.check_literal_criteria(),
             }
 
         def ux_audit_node(state):
@@ -840,18 +886,24 @@ class AuditorGraph:
                     for f in (p.get("impacted_files") or [])
                 }
             )
+            literal = state.get("literal_checks") or []
+            literal_lines = _literal_failure_lines(literal)
             reply = interrupt(
                 {
                     "findings": state.get("findings", ""),
                     "impacted": impacted,
-                    "errors": state.get("errors", []),
+                    "errors": list(state.get("errors", [])) + literal_lines,
                 }
             )
             decision = (reply or {}).get("decision", "approve")
-            if decision == "approve" and review_verified(state.get("findings")):
+            if (
+                decision == "approve"
+                and review_verified(state.get("findings"))
+                and not literal
+            ):
                 return {"approved": True}
             notes = (reply or {}).get("notes", "")
-            errors = list(state.get("errors", []))
+            errors = list(state.get("errors", [])) + literal_lines
             if notes:
                 errors.append(f"reviewer requested changes: {notes}")
             return {"approved": False, "errors": errors}

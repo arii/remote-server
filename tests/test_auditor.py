@@ -8,12 +8,14 @@ tests/test_auditor.py
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
 import auditor
+import literal_checks
 import verdicts
 
 try:
@@ -758,6 +760,162 @@ class TestParseReviewWithVerdicts(unittest.TestCase):
         review = auditor.parse_review(legacy)
         self.assertTrue(review.get("verified"))
         self.assertEqual(len(review.get("findings")), 1)
+
+
+class TestLiteralChecksParsing(unittest.TestCase):
+    """Extraction of literal zero-occurrence criteria (issue #1375)."""
+
+    def test_zero_occurrence_backtick_target(self):
+        criteria = literal_checks.find_literal_criteria(
+            "## Acceptance Criteria\n- [ ] zero occurrences of `wrapper_name`\n"
+        )
+        self.assertEqual(len(criteria), 1)
+        self.assertEqual(criteria[0]["target"], "wrapper_name")
+        self.assertFalse(criteria[0]["permits_docs"])
+
+    def test_grep_zero_matches_target(self):
+        criteria = literal_checks.find_literal_criteria(
+            "## Acceptance Criteria\n"
+            '- [ ] `grep -rn "wrapper_name" .` returns zero matches\n'
+        )
+        self.assertEqual(len(criteria), 1)
+        self.assertEqual(criteria[0]["target"], "wrapper_name")
+
+    def test_symbol_reference_scope_permits_docs(self):
+        criteria = literal_checks.find_literal_criteria(
+            "## Acceptance Criteria\n"
+            "- [ ] zero symbol references of `wrapper_name` "
+            "(comments or documentation allowed)\n"
+        )
+        self.assertEqual(len(criteria), 1)
+        self.assertTrue(criteria[0]["permits_docs"])
+
+    def test_criteria_outside_acceptance_section_ignored(self):
+        self.assertEqual(
+            literal_checks.find_literal_criteria(
+                "## Notes\n- zero occurrences of `wrapper_name`\n"
+            ),
+            [],
+        )
+
+
+class TestLiteralCriteriaScan(unittest.TestCase):
+    """Worktree scan classifying survivors of a forbidden string."""
+
+    def _repo(self, tmp, files):
+        subprocess.run(["git", "init", "-q"], cwd=tmp, check=True)
+        for name, content in files.items():
+            path = os.path.join(tmp, name)
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(content)
+        subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
+
+    def test_code_occurrence_fails_symbol_scoped_criterion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._repo(tmp, {"module.py": "def wrapper_name():\n    pass\n"})
+            failures = literal_checks.unsatisfied_criteria(
+                tmp, [{"target": "wrapper_name", "text": "t", "permits_docs": True}]
+            )
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["occurrences"][0]["kind"], "code")
+
+    def test_documentation_mention_fails_unqualified_criterion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._repo(tmp, {"docs/CLAIMS.md": "why: `wrapper_name` was kept\n"})
+            failures = literal_checks.unsatisfied_criteria(
+                tmp, [{"target": "wrapper_name", "text": "t", "permits_docs": False}]
+            )
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["occurrences"][0]["kind"], "documentation")
+
+    def test_documentation_mention_passes_symbol_scoped_criterion(self):
+        """The #1359 regression: a forbidden string retained in a
+        requested historical note is fine when the criterion scopes to
+        symbol references."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._repo(tmp, {"docs/CLAIMS.md": "why: `wrapper_name` was kept\n"})
+            self.assertEqual(
+                literal_checks.unsatisfied_criteria(
+                    tmp, [{"target": "wrapper_name", "text": "t", "permits_docs": True}]
+                ),
+                [],
+            )
+
+
+class TestLiteralCriteriaEnforcement(unittest.TestCase):
+    """Audit-side fail-closed on unsatisfied literal criteria (#1375)."""
+
+    _FAILURE = {
+        "criterion": {
+            "target": "wrapper_name",
+            "text": "zero occurrences of `wrapper_name`",
+            "permits_docs": False,
+        },
+        "total": 1,
+        "occurrences": [
+            {
+                "path": "docs/CLAIMS.md",
+                "line": 3,
+                "kind": "documentation",
+                "text": "why: `wrapper_name` was kept",
+            }
+        ],
+    }
+
+    def _state(self, **extra):
+        state = {
+            "approved": True,
+            "findings": json.dumps({"verified": True, "findings": []}),
+            "gate": {},
+            "valid": True,
+            "errors": [],
+        }
+        state.update(extra)
+        return state
+
+    def test_build_verdict_refuses_approval_with_unsatisfied_criterion(self):
+        verdict = auditor.AuditorGraph("/tmp").build_verdict(
+            self._state(literal_checks=[self._FAILURE])
+        )
+        self.assertEqual(verdict["status"], "CHANGES_REQUESTED")
+        self.assertTrue(
+            any(
+                "unsatisfied literal acceptance criterion" in e
+                for e in verdict["errors"]
+            )
+        )
+
+    def test_build_verdict_unchanged_without_literal_checks(self):
+        verdict = auditor.AuditorGraph("/tmp").build_verdict(self._state())
+        self.assertEqual(verdict["status"], "APPROVED")
+        self.assertEqual(verdict["literal_checks"], [])
+
+    def test_check_literal_criteria_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            TestLiteralCriteriaScan()._repo(
+                tmp,
+                {
+                    "spec.md": (
+                        "# Spec\n\n## Acceptance Criteria\n"
+                        "- [ ] zero occurrences of `wrapper_name` in the repo\n"
+                    ),
+                    "docs/CLAIMS.md": "why: `wrapper_name` was kept\n",
+                },
+            )
+            gen = auditor.AuditorGraph(
+                tmp, spec_file="spec.md", audit_fn=lambda gate: "ok"
+            )
+            failures = gen.check_literal_criteria()
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["criterion"]["target"], "wrapper_name")
+            self.assertEqual(failures[0]["occurrences"][0]["kind"], "documentation")
+
+    def test_check_literal_criteria_no_spec_file(self):
+        gen = auditor.AuditorGraph("/tmp", audit_fn=lambda gate: "ok")
+        self.assertEqual(gen.check_literal_criteria(), [])
 
 
 if __name__ == "__main__":
