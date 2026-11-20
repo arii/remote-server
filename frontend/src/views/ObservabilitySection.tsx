@@ -172,9 +172,12 @@ function RunsList({
   onFindInFeed?: (text: string) => void;
 }) {
   if (flow.workflows.length === 0) {
+    // Scoped claim (issue #1432): the feed excludes pull_request runs
+    // by design (issue #1150, Briefing owns PR signal), so the empty
+    // state names that scope instead of implying every run is green.
     return (
       <p className="row-meta" data-testid="workflow-runs-empty">
-        No failing workflow runs.
+        No failing non-PR workflow runs.
       </p>
     );
   }
