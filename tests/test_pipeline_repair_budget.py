@@ -187,3 +187,177 @@ class TestRepairBudget(unittest.TestCase):
     def test_first_pass_retains_normal_retry_bounds(self):
         graph = pipeline.Pipeline("/tmp", "fix").make_coder("spec")
         self.assertEqual((graph.max_fix_loops, graph.max_replans), (3, 1))
+
+
+class TestModelTierSelector(unittest.TestCase):
+    def test_first_attempt_defaults_to_fast_tier(self):
+        tier, used = pipeline.choose_model_tier(
+            attempt=1, failure_class=None, escalations_used=0, max_escalations=1
+        )
+        self.assertEqual(tier, "fast")
+        self.assertEqual(used, 0)
+
+        # Even with prior failure class, attempt 1 stays on fast tier
+        tier, used = pipeline.choose_model_tier(
+            attempt=1,
+            failure_class="test_failure",
+            escalations_used=0,
+            max_escalations=1,
+        )
+        self.assertEqual(tier, "fast")
+        self.assertEqual(used, 0)
+
+    def test_mechanical_failure_stays_on_fast_tier(self):
+        for attempt in (1, 2, 3, 4):
+            tier, used = pipeline.choose_model_tier(
+                attempt=attempt,
+                failure_class="mechanical",
+                escalations_used=0,
+                max_escalations=1,
+            )
+            self.assertEqual(tier, "fast")
+            self.assertEqual(used, 0)
+
+    def test_test_failure_escalates_to_strong_tier_once(self):
+        # Attempt 2 escalates to strong
+        tier, used = pipeline.choose_model_tier(
+            attempt=2,
+            failure_class="test_failure",
+            escalations_used=0,
+            max_escalations=1,
+        )
+        self.assertEqual(tier, "strong")
+        self.assertEqual(used, 1)
+
+        # Subsequent retry is capped by max_escalations=1, stays on fast
+        tier, used = pipeline.choose_model_tier(
+            attempt=3,
+            failure_class="test_failure",
+            escalations_used=1,
+            max_escalations=1,
+        )
+        self.assertEqual(tier, "fast")
+        self.assertEqual(used, 1)
+
+    def test_audit_semantic_failure_escalates_to_strong_tier_once(self):
+        tier, used = pipeline.choose_model_tier(
+            attempt=2,
+            failure_class="audit_semantic",
+            escalations_used=0,
+            max_escalations=1,
+        )
+        self.assertEqual(tier, "strong")
+        self.assertEqual(used, 1)
+
+        tier, used = pipeline.choose_model_tier(
+            attempt=3,
+            failure_class="audit_semantic",
+            escalations_used=1,
+            max_escalations=1,
+        )
+        self.assertEqual(tier, "fast")
+        self.assertEqual(used, 1)
+
+
+class TestDeterministicPreAuditGate(unittest.TestCase):
+    def test_pre_audit_catches_ast_syntax_error_as_mechanical(self):
+        with tempfile.TemporaryDirectory() as root:
+            # Create a broken py file with invalid syntax
+            broken_file = Path(root, "broken.py")
+            broken_file.write_text("def broken_func(\n")
+            with mock.patch("subprocess.run") as mock_run:
+                mock_run.return_value = SimpleNamespace(
+                    stdout="broken.py\n", stderr="", returncode=0
+                )
+                pipe = pipeline.Pipeline(root, "fix syntax")
+                passed, f_class, reason = pipe.pre_audit_check(root)
+            self.assertFalse(passed)
+            self.assertEqual(f_class, "mechanical")
+            self.assertIn("SyntaxError", reason)
+
+    def test_pre_audit_catches_verification_command_failure_as_test_failure(self):
+        with tempfile.TemporaryDirectory() as root:
+            pipe = pipeline.Pipeline(
+                root,
+                "fix tests",
+                verification_commands=[["python3", "-m", "pytest", "tests/"]],
+            )
+            with (
+                mock.patch("subprocess.run") as mock_run,
+                mock.patch("pathlib.Path.is_file", return_value=False),
+            ):
+                mock_run.side_effect = [
+                    # git diff proc
+                    SimpleNamespace(stdout="", stderr="", returncode=0),
+                    # verification command proc
+                    SimpleNamespace(
+                        stdout="FAILED test_something.py::test_calc\n",
+                        stderr="",
+                        returncode=1,
+                    ),
+                ]
+                passed, f_class, reason = pipe.pre_audit_check(root)
+            self.assertFalse(passed)
+            self.assertEqual(f_class, "test_failure")
+            self.assertIn("FAILED test_something.py::test_calc", reason)
+
+    def test_patch_failing_pre_audit_routes_back_to_coder_skipping_auditor(self):
+        with tempfile.TemporaryDirectory() as root:
+            coder_calls = []
+            audit_mock = mock.Mock()
+
+            def fake_code(brief, worktree_root=None, repair_notes=""):
+                coder_calls.append((worktree_root, repair_notes))
+                return True, {}, root
+
+            pre_audit_outcomes = [
+                (False, "mechanical", "SyntaxError: unexpected EOF"),
+                (True, None, ""),
+            ]
+
+            def fake_pre_audit(worktree_root):
+                return pre_audit_outcomes.pop(0)
+
+            pipe = pipeline.Pipeline(
+                root,
+                "fix helper",
+                pre_audit_fn=fake_pre_audit,
+                audit_fn=audit_mock,
+                max_repair_cycles=2,
+            )
+            pipe.stage_init = lambda: (True, "ready")
+            pipe.stage_spec = lambda: (True, {}, "spec")
+            pipe.stage_code = fake_code
+            pipe.stage_audit = lambda wt: (pipeline.APPROVED, {}, "approved")
+            pipe.stage_cleanup = lambda wt: (True, "")
+
+            result = pipe.run()
+            self.assertEqual(result["status"], pipeline.APPROVED)
+            self.assertEqual(len(coder_calls), 2)
+            # The first repair attempt receives the pre-audit error notes
+            self.assertIn("SyntaxError: unexpected EOF", coder_calls[1][1])
+            # Auditor LLM was never called during the first pre-audit failure
+            audit_mock.assert_not_called()
+
+    def test_pipeline_terminates_cleanly_when_repair_cycles_exhausted(self):
+        with tempfile.TemporaryDirectory() as root:
+
+            def fake_pre_audit(worktree_root):
+                return False, "mechanical", "SyntaxError: unfixable"
+
+            pipe = pipeline.Pipeline(
+                root,
+                "stuck issue",
+                pre_audit_fn=fake_pre_audit,
+                max_repair_cycles=2,
+            )
+            pipe.stage_init = lambda: (True, "ready")
+            pipe.stage_spec = lambda: (True, {}, "spec")
+            pipe.stage_code = lambda brief, worktree_root=None, repair_notes="": (
+                True,
+                {},
+                root,
+            )
+            result = pipe.run()
+            self.assertEqual(result["status"], pipeline.CHANGES_REQUESTED)
+            self.assertIn("repair cycles exhausted (2/2)", result["detail"])
