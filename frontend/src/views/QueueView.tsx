@@ -183,7 +183,7 @@ export function QueueRepoGroup({
         >
           Dispatch next
         </button>
-        {!next && <span className="row-meta">Nothing queued to dispatch.</span>}
+        {!next && <span className="row-meta">No lane items ready.</span>}
       </div>
       <ul className="session-list" data-testid={`queue-group-${group.repo}`}>
         {group.items.map((item) => (
@@ -301,10 +301,13 @@ export default function QueueView({ repo }: { repo: string }) {
       setOpenIssues([]);
       return;
     }
+    setDiscoveryError(null);
     try {
-      setOpenIssues((await fetchAllIssues()).issues);
+      const res = await fetchAllIssues();
+      setOpenIssues(res.issues ?? []);
     } catch (err) {
       setDiscoveryError(err instanceof Error ? err.message : String(err));
+      setOpenIssues([]);
     }
   }, []);
 
