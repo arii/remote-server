@@ -1271,6 +1271,10 @@ class ViewerHtmlTest(unittest.TestCase):
         # actually keeps chrome: and chrome-extension:.
         html = browser_view.VIEWER_HTML
         self.assertIn("about|data|blob|chrome", html)
+        # The mangling check must cover both additions: without
+        # chrome-extension in the keep-list, chrome-extension://
+        # URLs still get https:// prepended.
+        self.assertIn("chrome-extension", html)
 
 
 class MobileViewportTest(unittest.TestCase):
