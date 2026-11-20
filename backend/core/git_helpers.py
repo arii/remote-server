@@ -61,6 +61,7 @@ STATUS_IGNORED_PATHS = (
     ".td_rag/",
     ".agent_tool_receipt.json",
     ".agents/plans/",
+    "project_config.json",
 )
 
 

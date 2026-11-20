@@ -408,6 +408,11 @@ def _fetch_prs(gh: str, name: str, runner=None) -> dict:
 
 @router.get("/prs", response_model=PrList)
 def prs(repo: str = "remote-server", runner=None) -> dict:
+    if repo == "all":
+        raise HTTPException(
+            status_code=400,
+            detail="PR listing requires a concrete repository, not 'all'",
+        )
     try:
         gh = repo_gh(repo)
     except ValueError as exc:

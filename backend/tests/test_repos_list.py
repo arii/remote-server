@@ -387,10 +387,11 @@ class ToolClutterFilterTest(unittest.TestCase):
             "?? .td_rag/\n"
             "?? .agent_tool_receipt.json\n"
             "?? .agents/plans/\n"
+            "?? project_config.json\n"
         )
         self.assertTrue(entry["clean"])
         self.assertEqual(entry["status_count"], 0)
-        self.assertEqual(entry["ignored_status_count"], 3)
+        self.assertEqual(entry["ignored_status_count"], 4)
 
     def test_real_changes_count_without_clutter(self):
         entry = self._list(

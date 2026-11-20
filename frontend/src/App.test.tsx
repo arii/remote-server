@@ -1386,6 +1386,12 @@ describe('repo picker labels', () => {
     expect(label).toContain('dirty');
     expect(label.length).toBeLessThan('arii/remote-server · on main (dirty)'.length);
   });
+  it('omits dirty label when clean is false but status_count is 0 (#1386)', () => {
+    const syncOnly = { name: 'demo', full: 'arii/demo', branch: 'main', clean: false, status_count: 0 };
+    expect(repoOptionLabel(syncOnly)).toBe('demo');
+    const dirtyWithCount = { name: 'demo', full: 'arii/demo', branch: 'main', clean: false, status_count: 2 };
+    expect(repoOptionLabel(dirtyWithCount)).toBe('demo (dirty)');
+  });
   it('selects the checkout by native option; no custom menu (issue #1124)', () => {
     const html = renderToStaticMarkup(
       <RepoPicker repos={[dirty]} value="remote-server" onChange={() => {}} />,
