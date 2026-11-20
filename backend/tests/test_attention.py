@@ -189,6 +189,28 @@ class AttentionShapeTest(unittest.TestCase):
         self.assertEqual(len(runs), 1)
         self.assertIn("×3", runs[0]["title"])
 
+    def test_failing_runs_carry_branch_and_aggregate_branches(self):
+        wfs = [
+            {"id": 1, "name": "CI", "diagnosed_cause": "boom", "branch": "main"},
+            {"id": 2, "name": "CI", "diagnosed_cause": "boom", "branch": "fix/123"},
+        ]
+        orig = self._patch(
+            get_workflow_health=lambda repo: {"workflows": wfs},
+            list_failed_jobs=lambda: [],
+            list_failed_webhooks=lambda: [],
+            list_skipped_webhooks=lambda: [],
+            list_pending_approvals=lambda: [],
+            ollama_up=lambda: True,
+        )
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        runs = [i for i in body["items"] if i["kind"] == "failing-run"]
+        self.assertEqual(len(runs), 1)
+        self.assertIn("×2", runs[0]["title"])
+        self.assertEqual(runs[0]["branch"], "main, fix/123")
+
     def test_resolved_webhook_failures_hidden(self):
         import backend.ledger as ledger_mod
 

@@ -14,6 +14,7 @@ export interface AttentionItem {
   title: string;
   detail: string;
   repo: string;
+  branch?: string;
   severity: AttentionSeverity;
   action: AttentionAction;
   created_at: number;

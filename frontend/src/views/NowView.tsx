@@ -886,11 +886,25 @@ export function SourceDestination({
   );
 }
 
-// Concrete repo context for the source line (issue #930): the
-// row's repo plus its checkout branch and a dirty-worktree flag
-// when known. Unknown repos degrade to the bare name; clean
-// checkouts stay quiet (clean is the default, not news).
-export function repoContextText(repo: string, info: RepoInfo | null | undefined): string {
+// Concrete repo context for the source line (issue #930, #1461):
+// If the attention item itself specifies a branch (e.g. failing-run on CI,
+// or a PR pending approval), attribute the item to that branch.
+// For remote CI runs or PRs without a known branch, do not attribute them
+// to the local checkout branch.
+// For local checkout items (e.g. webhooks pulling into the checkout,
+// local skill verification) or callers omitting item, show checkout branch
+// and dirty flag when known.
+export function repoContextText(
+  repo: string,
+  info: RepoInfo | null | undefined,
+  item?: Pick<AttentionItem, 'kind' | 'branch'> | null,
+): string {
+  if (item?.branch) {
+    return `repo: ${repo} (${item.branch})`;
+  }
+  if (item && (item.kind === 'failing-run' || item.kind === 'pending-approval')) {
+    return `repo: ${repo}`;
+  }
   const branch = info?.branch ? ` (${info.branch})` : '';
   const dirty = info && !info.clean ? ' · dirty worktree' : '';
   return `repo: ${repo}${branch}${dirty}`;
@@ -1026,7 +1040,7 @@ export function AttentionRow({
         </span>
       </p>
       <p className="row-meta" data-testid={`now-source-${item.id}`}>
-        {repoContextText(item.repo, repoInfo)}
+        {repoContextText(item.repo, repoInfo, item)}
         {resolveAttentionTarget(item.action.href) !== null && (
           <>
             {' · opens '}
