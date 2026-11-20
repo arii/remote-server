@@ -5,6 +5,12 @@ Pipeline: brief -> td init -> draft (LLM) -> investigate (LLM + tools)
 persist to decisions.py + ledger.py. Invalid specs loop back to the
 draft node with exact td errors; exhausted loops fail closed.
 
+Spec generation is strictly bounded (issue #1404): the draft opens
+with a deterministically gathered context pack, investigation runs
+under a hard model-turn and tool-call budget with tool bindings
+stripped on the forced final turn, and tool outputs are head/tail
+truncated so exploration cannot bloat the prompt.
+
 Only stdlib imports at module top so unit tests run anywhere;
 langgraph/langchain/ollama imports are lazy (deep-agent venv).
 """
@@ -20,6 +26,7 @@ from pathlib import Path
 from threading import Lock
 
 import skills_registry
+from coder import DEFAULT_TOOL_OUTPUT_LIMIT, _truncate_tool_output
 from s5tools import verification_guidance
 
 REQUIRED_SECTIONS = (
@@ -30,7 +37,13 @@ REQUIRED_SECTIONS = (
 )
 
 MAX_LOOPS_DEFAULT = 5
-SPEC_RECURSION_LIMIT_DEFAULT = 25
+
+# Bounded spec generation (issue #1404).
+SPEC_MAX_TURNS_DEFAULT = 4
+SPEC_MAX_TOOL_CALLS_DEFAULT = 3
+PRESEED_CONTEXT_LIMIT = 6000
+PRESEED_SNIPPET_LIMIT = 1500
+SPEC_TOOL_OUTPUT_LIMIT = DEFAULT_TOOL_OUTPUT_LIMIT
 _URL_RE = re.compile(
     r"https?://[^\s`<>()[\]]+|(?<![\w:/])//[^\s`<>()[\]]+", re.IGNORECASE
 )
@@ -75,21 +88,31 @@ class InvestigationTruncated(RuntimeError):
     pass
 
 
-def investigation_tool_guard(results=None):
+def investigation_tool_guard(results=None, max_calls=None, budget=None):
+    """Repeat-call guard + hard tool budget + output truncation (#1404).
+
+    max_calls bounds executed tool calls. Once the budget is spent,
+    further calls short-circuit with an error ToolMessage and
+    budget['exhausted'] flips, so force_final_turn strips the tool
+    bindings on the next model turn and forces the final answer.
+    """
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
 
     seen = set()
     repeats = 0
+    calls = 0
     lock = Lock()
 
     @wrap_tool_call
     def stop_repeated_call(request, handler):
-        nonlocal repeats
+        nonlocal repeats, calls
         call = request.tool_call
         key = (call["name"], json.dumps(call["args"], sort_keys=True))
         with lock:
             if key in seen:
+                # A repeat loop means the model is stuck, not merely
+                # over budget: raise even once the budget is spent.
                 repeats += 1
                 if repeats >= 3:
                     raise InvestigationTruncated(
@@ -102,9 +125,38 @@ def investigation_tool_guard(results=None):
                     tool_call_id=call["id"],
                     status="error",
                 )
+            if max_calls is not None and calls >= max_calls:
+                # Only executed calls spend the budget; beyond it,
+                # distinct new calls short-circuit with an error.
+                if budget is not None:
+                    budget["exhausted"] = True
+                return ToolMessage(
+                    content=(
+                        f"Spec investigation tool budget exhausted "
+                        f"({max_calls} calls) — answer from the "
+                        "evidence already gathered."
+                    ),
+                    tool_call_id=call["id"],
+                    status="error",
+                )
+            calls += 1
+            if max_calls is not None and calls >= max_calls and budget is not None:
+                budget["exhausted"] = True
             seen.add(key)
         result = handler(request)
         content = getattr(result, "content", result)
+        # Output truncation ships with the spec budget wiring (#1404);
+        # un-budgeted guards (auditor.py) keep their exact old behavior.
+        if max_calls is not None and isinstance(content, str) and content:
+            truncated = _truncate_tool_output(content, SPEC_TOOL_OUTPUT_LIMIT)
+            if truncated != content and isinstance(result, ToolMessage):
+                result = ToolMessage(
+                    content=truncated,
+                    tool_call_id=call["id"],
+                    name=call["name"],
+                    status=getattr(result, "status", "success"),
+                )
+                content = truncated
         if (
             results is not None
             and str(content).strip()
@@ -115,6 +167,24 @@ def investigation_tool_guard(results=None):
         return result
 
     return stop_repeated_call
+
+
+def force_final_turn(budget):
+    """wrap_model_call: strip tool bindings once the budget is spent.
+
+    The model turn after the last allowed tool call must emit the
+    final structured answer instead of starting another exploration
+    loop (issue #1404).
+    """
+    from langchain.agents.middleware import wrap_model_call
+
+    @wrap_model_call
+    def strip_spent_tools(request, handler):
+        if budget.get("exhausted") and getattr(request, "tools", None):
+            request = request.override(tools=[], tool_choice="none")
+        return handler(request)
+
+    return strip_spent_tools
 
 
 def completed_spec(state, allowed_path=None):
@@ -154,6 +224,20 @@ def write_spec(path, text):
 COMPOSE_OLLAMA_URL = "http://ollama:11434"
 
 _REPO_FILE_RE = re.compile(r"(?<![\w/])([\w./-]+\.\w+)(?::\d+)?")
+
+
+def _env_positive_int(name, default):
+    """Positive-int env override, or the default when unset/blank."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
 
 
 def _ollama_base_url():
@@ -251,6 +335,9 @@ class IssueGeneratorGraph:
         max_loops=MAX_LOOPS_DEFAULT,
         thread_id=None,
         event_fn=None,
+        max_spec_turns=None,
+        max_spec_tool_calls=None,
+        preseed_fn=None,
     ):
         self.repo_root = os.path.abspath(repo_root or os.getcwd())
         self.model_fn = model_fn
@@ -261,6 +348,98 @@ class IssueGeneratorGraph:
         self.last_spec = None
         self.event_fn = event_fn
         self.investigation_truncated = False
+        # Bounded spec generation (issue #1404).
+        self.max_spec_turns = self._bound_value(
+            "S5_SPEC_MAX_TURNS", max_spec_turns, SPEC_MAX_TURNS_DEFAULT
+        )
+        self.max_spec_tool_calls = self._bound_value(
+            "S5_SPEC_MAX_TOOL_CALLS", max_spec_tool_calls, SPEC_MAX_TOOL_CALLS_DEFAULT
+        )
+        self._preseed_fn = preseed_fn
+        self._preseed_cache = {}
+
+    @staticmethod
+    def _bound_value(env_name, explicit, default):
+        """Explicit arg > env override > default; always a positive int."""
+        if explicit is not None:
+            if (
+                not isinstance(explicit, int)
+                or isinstance(explicit, bool)
+                or explicit <= 0
+            ):
+                raise ValueError(f"{env_name} must be a positive integer")
+            return explicit
+        return _env_positive_int(env_name, default)
+
+    def _spec_recursion_limit(self):
+        """Graph-step cap: explicit S5_SPEC_RECURSION_LIMIT wins, else
+        derive from the turn budget (2 steps per model turn + 1) (#1404)."""
+        return _env_positive_int("S5_SPEC_RECURSION_LIMIT", 2 * self.max_spec_turns + 1)
+
+    def preseed_context_pack(self, brief):
+        """Deterministic context pack for the first spec turn (#1404).
+
+        Repo tree slice, brief-named file snippets, retrieval.search_td
+        hits, and recent commits for the named files, all gathered in
+        Python before the first LLM turn so scoped briefs resolve
+        without exploration turns. Bounded to PRESEED_CONTEXT_LIMIT.
+        Never raises: each source degrades to an explanatory line.
+        """
+        if self._preseed_fn is not None:
+            return self._preseed_fn(brief)
+        if brief in self._preseed_cache:
+            return self._preseed_cache[brief]
+        parts = []
+        candidates = evidence_cites_repo_file(brief, self.repo_root)
+        try:
+            top = sorted(os.listdir(self.repo_root))
+            top = [e for e in top if e != ".git"][:40]
+            parts.append("Repo top level: " + ", ".join(top))
+        except OSError as exc:
+            parts.append(f"Repo tree unavailable: {exc}")
+        for rel in candidates[:3]:
+            try:
+                with open(
+                    os.path.join(self.repo_root, rel),
+                    encoding="utf-8",
+                    errors="replace",
+                ) as handle:
+                    snippet = handle.read(2 * PRESEED_SNIPPET_LIMIT)
+                parts.append(
+                    f"--- {rel} (excerpt) ---\n"
+                    + _truncate_tool_output(snippet, PRESEED_SNIPPET_LIMIT)
+                )
+            except OSError as exc:
+                parts.append(f"--- {rel} unreadable: {exc}")
+        try:
+            import retrieval
+
+            parts.append(
+                "Related context (search):\n"
+                + retrieval.search_td(brief, self.repo_root, top_k=4)
+            )
+        except Exception as exc:
+            parts.append(f"Related context search unavailable: {exc}")
+        if candidates:
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", self.repo_root, "log", "--oneline", "-5", "--"]
+                    + candidates[:3],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                log = (proc.stdout or "").strip()
+                if proc.returncode == 0 and log:
+                    parts.append("Recent related commits:\n" + log)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        pack = _truncate_tool_output(
+            "\n\n".join(part for part in parts if part).strip(),
+            PRESEED_CONTEXT_LIMIT,
+        )
+        self._preseed_cache[brief] = pack
+        return pack
 
     # -- deterministic pieces (pure, unit-tested) --------------------
 
@@ -444,12 +623,16 @@ class IssueGeneratorGraph:
             "Definition of Done, Scope & File Boundaries with Allowed "
             "Files, Implementation Plan, Acceptance Criteria checklist, "
             "Verification Commands fenced block).\n"
-            "First step, before any other action: read one repo file "
-            "relevant to the task and quote it — a spec that cites no "
-            "repo file is rejected outright. Ask any blocking "
-            "questions as a trailing bulleted list of questions.\n\n"
+            "First step, before any other action: ground the spec in "
+            "the pre-seeded repository context below and quote the "
+            "excerpted repo file — a spec that cites no repo file is "
+            "rejected outright. Ask any blocking questions as a "
+            "trailing bulleted list of questions.\n\n"
             f"{verification_guidance()}\n\n"
-            f"Task: {brief}\n\nContext:\n{context}\n"
+            f"Task: {brief}\n\n"
+            "Pre-seeded repository context (gathered deterministically):\n"
+            f"{self.preseed_context_pack(brief)}\n\n"
+            f"Context:\n{context}\n"
         )
         if errors:
             prompt += (
@@ -485,18 +668,10 @@ class IssueGeneratorGraph:
         from langchain.agents.middleware import wrap_model_call
         from langgraph.errors import GraphRecursionError
 
-        try:
-            limit = int(
-                os.environ.get("S5_SPEC_RECURSION_LIMIT", SPEC_RECURSION_LIMIT_DEFAULT)
-            )
-        except ValueError as exc:
-            raise ValueError(
-                "S5_SPEC_RECURSION_LIMIT must be a positive integer"
-            ) from exc
-        if limit <= 0:
-            raise ValueError("S5_SPEC_RECURSION_LIMIT must be a positive integer")
+        limit = self._spec_recursion_limit()
         observed = {"messages": []}
         results = []
+        budget = {"exhausted": False}
 
         @wrap_model_call
         def capture_messages(request, handler):
@@ -507,7 +682,13 @@ class IssueGeneratorGraph:
         agent = create_agent(
             self._model(),
             self._investigator_tools(),
-            middleware=[investigation_tool_guard(results), capture_messages],
+            middleware=[
+                investigation_tool_guard(
+                    results, max_calls=self.max_spec_tool_calls, budget=budget
+                ),
+                force_final_turn(budget),
+                capture_messages,
+            ],
         )
         previous = ask_investigator._checkout
         ask_investigator._checkout = self.repo_root
@@ -522,6 +703,9 @@ class IssueGeneratorGraph:
                         {
                             "role": "user",
                             "content": f"Gather evidence for: {brief}\n\n"
+                            "Pre-seeded repository context (already "
+                            "gathered; cite it, do not re-read these "
+                            f"files):\n{self.preseed_context_pack(brief)}\n\n"
                             f"Draft so far:\n{draft}\n\n"
                             "Cite every factual claim with a "
                             "repo file path (path:line). If you "
