@@ -6,6 +6,8 @@ prefix convention (buttons serves /buttons/api/*; this backend serves
 
 - POST /api/terminal/takeover  disconnect the ttyd client so this
   window can take over the terminal session (SIGHUP to zellij attach)
+- GET  /api/terminal/status  zellij session listing (name, exited,
+  attached) so the terminal page can label itself (#1387)
 - GET  /api/workflow-health?repo=  failing-run diagnosis (RepoAuditor
   parity: annotations, failed jobs/steps, diagnosed cause)
 - POST /api/clear  clear stored run output only (no cancel), same
@@ -41,6 +43,12 @@ router = APIRouter(prefix="/api", tags=["ops"])
 logger = logging.getLogger(__name__)
 
 
+# Marker file the takeover flow drops inside the terminal container:
+# terminal/bin/zellij-attach-loop exits instead of re-attaching when it
+# finds it, freeing ttyd's single client slot for the requester (#1387).
+TAKEOVER_FLAG = "/tmp/ttyd-takeover"
+
+
 def run_takeover() -> str:
     """SIGHUP the zellij attach client inside the terminal container.
 
@@ -48,13 +56,28 @@ def run_takeover() -> str:
     there (compose exec through the mounted docker socket). The
     pattern is start-anchored so it hits only the attach client,
     never ttyd (whose argv contains the same words) nor the zellij
-    server. The hup_exit marker tells callers whether a client was
-    actually signaled (0) or none matched (1). Injectable for tests.
+    server. Since #1387 the ttyd child is zellij-attach-loop: the
+    marker file tells it to exit instead of re-attaching, and a
+    wrapper waiting between attaches (on the reconnect prompt) is
+    HUP'd directly so the slot frees in that state too. The bracket
+    in the wrapper pattern keeps pkill from matching this exec
+    shell's own command line. The hup_exit marker tells callers
+    whether a client was actually signaled (0) or none matched (1);
+    a no-match run removes the marker again so a later ordinary
+    detach is not mistaken for a takeover. Injectable for tests.
     """
     from backend.exec.engine import exec_argv
 
     proc = subprocess.run(
-        exec_argv("pkill -HUP -f '^zellij attach'; echo hup_exit=$?"),
+        exec_argv(
+            f"touch {TAKEOVER_FLAG}; "
+            "pkill -HUP -f '^zellij attach'; rc1=$?; "
+            "pkill -HUP -f 'zellij-attach-lo[o]p'; rc2=$?; "
+            f'if [ "$rc1" -ne 0 ] && [ "$rc2" -ne 0 ]; then '
+            f"rm -f {TAKEOVER_FLAG}; fi; "
+            'if [ "$rc1" -eq 0 ] || [ "$rc2" -eq 0 ]; then '
+            "echo hup_exit=0; else echo hup_exit=1; fi"
+        ),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=30,
@@ -381,6 +404,67 @@ def takeover(body: TakeoverRequest) -> dict:
     matched = (int(marker.group(1)) == 0) if marker else True
     ledger_append({"kind": "system", "event": "terminal session takeover requested"})
     return {"ok": matched, "matched": matched, "output": out}
+
+
+def parse_zellij_sessions(text: str) -> list[dict]:
+    """One row per session from ``zellij list-sessions`` output.
+
+    Lines look like ``main (Created ...)`` with ``(EXITED)`` appended
+    for dead-but-resurrectable sessions; the first token is the
+    session name.
+    """
+    sessions: list[dict] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        sessions.append(
+            {
+                "name": line.split()[0],
+                "exited": "EXITED" in line,
+                "attached": "ATTACHED" in line,
+                "detail": line,
+            }
+        )
+    return sessions
+
+
+def fetch_terminal_sessions() -> str:
+    """``zellij list-sessions`` inside the terminal container.
+
+    Same compose-exec channel as run_takeover. Injectable for tests.
+    """
+    from backend.exec.engine import exec_argv
+
+    proc = subprocess.run(
+        exec_argv("zellij list-sessions 2>/dev/null || true"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        text=True,
+    )
+    return proc.stdout
+
+
+class TerminalSession(BaseModel):
+    name: str = ""
+    exited: bool = False
+    attached: bool = False
+    detail: str = ""
+
+
+class TerminalStatus(BaseModel):
+    ok: bool = True
+    sessions: list[TerminalSession] = Field(default_factory=list)
+
+
+@router.get("/terminal/status", response_model=TerminalStatus)
+def terminal_status() -> dict:
+    try:
+        out = fetch_terminal_sessions()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)[:500])
+    return {"ok": True, "sessions": parse_zellij_sessions(out)}
 
 
 # TTL cache: the gh subprocess chain behind this endpoint fans out per
