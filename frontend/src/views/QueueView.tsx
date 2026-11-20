@@ -5,6 +5,7 @@ import {
   fetchAllIssues,
   fetchDispatchGates,
   fetchDispatchQueue,
+  startAuthedInterval,
   startDispatch,
 } from '../apiClient';
 import type { DispatchItem } from '../apiTypes';
@@ -318,12 +319,12 @@ export default function QueueView({ repo }: { repo: string }) {
   useEffect(() => {
     if (useMock()) return;
     if (!items || !queueListActive(items)) return;
-    const timer = window.setInterval(() => {
+    const stopPoll = startAuthedInterval(() => {
       if (isTabVisible()) void guarded(load);
     }, 5000);
     const stopResume = onTabVisible(() => void guarded(load));
     return () => {
-      window.clearInterval(timer);
+      stopPoll();
       stopResume();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
