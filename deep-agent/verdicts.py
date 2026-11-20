@@ -19,17 +19,26 @@ class Verdict(BaseModel):
     summary: str = Field(min_length=1, max_length=500)
 
 
-_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?\s*```$", re.DOTALL)
+_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
+
+
+def _extract_json_text(text: str) -> str:
+    stripped = text.strip()
+    m = _FENCE_RE.search(stripped)
+    if m:
+        return m.group(1).strip()
+    first_brace = stripped.find("{")
+    last_brace = stripped.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        return stripped[first_brace : last_brace + 1].strip()
+    return stripped
 
 
 def parse_verdict(text: str) -> tuple[bool, Union[Verdict, str]]:
     """Parse a model reply into a Verdict; never raises."""
     try:
-        stripped = text.strip()
-        m = _FENCE_RE.match(stripped)
-        if m:
-            stripped = m.group(1).strip()
-        data = json.loads(stripped)
+        extracted = _extract_json_text(text)
+        data = json.loads(extracted)
         if not isinstance(data, dict):
             return False, "expected a JSON object"
         return True, Verdict.model_validate(data)

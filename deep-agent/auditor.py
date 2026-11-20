@@ -16,20 +16,56 @@ import sys
 import time
 
 import skills_registry
+import verdicts
 from s5tools import verification_env
 
-MAX_AUDIT_LOOPS_DEFAULT = 3
+MAX_AUDIT_LOOPS_DEFAULT = 2
 
 
 def parse_review(value):
+    if isinstance(value, verdicts.Verdict):
+        is_verified = value.verdict in ("READY", "APPROVE")
+        findings = [
+            {
+                "severity": (
+                    "blocking" if value.verdict in ("NEEDS-WORK", "BLOCK") else "low"
+                ),
+                "description": f"{f.file}:{f.line}: {f.note}",
+                "file": f.file,
+                "line": f.line,
+                "note": f.note,
+            }
+            for f in value.findings
+        ]
+        return {
+            "verified": is_verified,
+            "findings": findings,
+            "verdict": value.verdict,
+            "summary": value.summary,
+        }
+    if isinstance(value, dict):
+        if "verdict" in value and "verified" not in value:
+            ok, v = verdicts.parse_verdict(json.dumps(value))
+            if ok:
+                return parse_review(v)
+        return value
     if isinstance(value, str):
         text = value.strip()
-        fence = re.fullmatch(r"```(?:json)?\s*\n(.*)\n```", text, re.DOTALL)
+        ok, v = verdicts.parse_verdict(text)
+        if ok:
+            return parse_review(v)
+        fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
         try:
-            value = json.loads(fence[1] if fence else text)
+            parsed = json.loads(fence.group(1).strip() if fence else text)
+            if isinstance(parsed, dict):
+                if "verdict" in parsed and "verified" not in parsed:
+                    ok2, v2 = verdicts.parse_verdict(json.dumps(parsed))
+                    if ok2:
+                        return parse_review(v2)
+                return parsed
         except ValueError:
             return {}
-    return value if isinstance(value, dict) else {}
+    return {}
 
 
 def review_verified(value):
@@ -366,11 +402,11 @@ class AuditorGraph:
         user_content = (
             "Audit these changes for rule violations and risky blast "
             "radius against the supplied issue spec (Goal, Definition of Done and "
-            "acceptance criteria) and actual diff. Return only JSON "
-            '{"verified": true|false, "findings": [{"severity": "low|medium|high|critical", '
-            '"description": "..."}]}; use an empty findings list when clear.\n\n'
-            "Set verified=true only after verifying the diff against the spec. "
-            "Missing evidence, incomplete checks or uncertainty require verified=false. "
+            "acceptance criteria) and actual diff.\n\n"
+            + verdicts.verdict_prompt_hint()
+            + "\n\n"
+            "Set verdict to APPROVE or READY only after verifying the diff against the spec. "
+            "Missing evidence, incomplete checks or uncertainty require NEEDS-WORK or BLOCK. "
             "Stale check evidence does not verify the final diff. "
             "Deterministic gates alone are not semantic verification.\n\n"
             f"Audit payload:\n{json.dumps(payload)}"
@@ -587,6 +623,18 @@ class AuditorGraph:
             else ""
         )
         review = parse_review(text)
+        if not review:
+            try:
+                from langchain_core.messages import HumanMessage
+
+                structured_model, _ = model_router.build_structured_chat_model(
+                    spec=self.last_model_spec, schema=verdicts.Verdict, stage="audit"
+                )
+                v = structured_model.invoke([HumanMessage(content=user_content)])
+                if isinstance(v, verdicts.Verdict):
+                    review = parse_review(v)
+            except Exception:
+                pass
         return json.dumps(
             {
                 "verified": review_verified(review),

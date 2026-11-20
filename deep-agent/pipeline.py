@@ -327,10 +327,25 @@ class Pipeline:
         context = dict(self.answers)
         if repair_notes:
             context["repair_notes"] = repair_notes
+        brief_with_rag = brief
+        try:
+            import retrieval
+
+            rag_hits = retrieval.search_td(brief, self.repo, top_k=5)
+            if (
+                rag_hits
+                and not rag_hits.startswith("no doc hits")
+                and not rag_hits.startswith("doc search unavailable")
+            ):
+                brief_with_rag = (
+                    f"{brief}\n\n### Grounded Code Context (RAG):\n{rag_hits}"
+                )
+        except Exception:
+            brief_with_rag = brief
         graph = coder.InitCoderGraph(
             self.repo,
             self.issue_id or 0,
-            brief,
+            brief_with_rag,
             plan_fn=plan,
             implement_fn=self.implement_fn or implement,
             td_runner=lambda args, cwd: self.td_run(list(args), cwd or self.repo),

@@ -64,7 +64,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CODER_DB = os.path.join(HERE, ".coder_threads", "coder.db")
 
 # Coding needs more graph steps than chat turns (read/plan/edit/verify).
-RECURSION_LIMIT = 100
+RECURSION_LIMIT = int(os.environ.get("CODER_RECURSION_LIMIT", "20"))
 DEFAULT_TIMEOUT = 1800
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 DEFAULT_VERIFY_ROUNDS = 2
@@ -106,6 +106,7 @@ CODER_RULES = (
     """You are implementing the task below in the checkout at {worktree}. Rules:
 - File paths are repo-relative like frontend/src/views/NowView.tsx; never use absolute paths or a leading /.
 - Start filesystem discovery with ls(path="."). The worktree above is your sole filesystem root; never list the parent checkout even if task context names it.
+- Use search_code to quickly find relevant code snippets, symbol definitions, and documentation.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
 - Invoke tools through the function-calling interface. Never print JSON commands or pretend a prose command executed.
@@ -572,6 +573,25 @@ def repair_tool_middleware():
     return bound_repair
 
 
+def build_search_tool(worktree):
+    """search_code tool for hybrid RAG search across the repo. Venv-only."""
+    from langchain_core.tools import tool  # noqa: E402
+    import retrieval  # noqa: E402
+
+    @tool
+    def search_code(query: str) -> str:
+        """Search the codebase and documentation using hybrid vector/keyword search.
+
+        Args:
+            query: Natural language or symbol query, e.g. 'AuditorGraph build_verdict' or 'route handler'.
+        """
+        if not query or not query.strip():
+            return "REJECTED: empty query"
+        return retrieval.search_td(query, worktree, top_k=5)
+
+    return search_code
+
+
 def build_agent(
     worktree,
     system,
@@ -587,7 +607,7 @@ def build_agent(
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
-    tools defaults to [run_check]; interrupt_on/permissions pass
+    tools defaults to [run_check, search_code]; interrupt_on/permissions pass
     through to create_deep_agent (the plan agent denies writes and
     pauses on propose_plan; the implement agent leaves all three
     defaulted, exactly as before). spec is the model_router spec the
@@ -638,9 +658,13 @@ def build_agent(
         import observe  # noqa: E402
 
         middleware = observe.trace_middleware(recorder) + middleware
+    if tools is None:
+        default_tools = [build_check_tool(worktree), build_search_tool(worktree)]
+    else:
+        default_tools = list(tools)
     return create_deep_agent(
         model=model,
-        tools=(list(tools) if tools is not None else [build_check_tool(worktree)]),
+        tools=default_tools,
         system_prompt=system,
         backend=backend,
         interrupt_on=interrupt_on,
@@ -931,7 +955,12 @@ def run_bounded(fn, timeout):
 
 
 def run_with_verify(
-    initial_invoke, reinvoke, has_passing_check, max_rounds, dithered=None
+    initial_invoke,
+    reinvoke,
+    has_passing_check,
+    max_rounds,
+    dithered=None,
+    check_stagnant=None,
 ):
     """One invoke plus bounded verify re-invokes.
 
@@ -941,12 +970,16 @@ def run_with_verify(
     repeated-identical-unproductive streak (failing or empty-success
     repeats), re-invokes stop early (#1160 gap 3: fail fast instead
     of burning verify rounds on a spinning agent).
+    When check_stagnant() reports no progress between rounds,
+    re-invokes stop early (Issue #1393 circuit breaker).
     """
     result = initial_invoke()
     rounds = 0
     verified = has_passing_check()
     while not verified and rounds < max_rounds:
         if dithered is not None and dithered():
+            break
+        if check_stagnant is not None and check_stagnant():
             break
         rounds += 1
         result = reinvoke()
@@ -1047,13 +1080,33 @@ def run_coder(
         )
         config = {"configurable": {"thread_id": thread}}
 
+        limit = min(RECURSION_LIMIT, 15) if repair else RECURSION_LIMIT
+
         def _invoke(msgs):
             nonlocal invocation_started
             invocation_started = True
             return agent.invoke(
                 {"messages": msgs},
-                config={**config, "recursion_limit": RECURSION_LIMIT},
+                config={**config, "recursion_limit": limit},
             )
+
+        last_diff = None
+
+        def is_stagnant():
+            nonlocal last_diff
+            try:
+                cur_diff = subprocess.run(
+                    ["git", "-C", worktree, "diff", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout
+            except Exception:
+                return False
+            if last_diff is not None and cur_diff == last_diff:
+                return True
+            last_diff = cur_diff
+            return False
 
         max_rounds = verify_rounds()
         result, rounds, verified = run_with_verify(
@@ -1066,6 +1119,7 @@ def run_coder(
             lambda: trace_has_passing_check(recorder.path),
             max_rounds,
             dithered=lambda: trace_has_dither(recorder.path),
+            check_stagnant=is_stagnant,
         )
         # Keep the checkpointer connection alive until the run returns.
         _ = holder
