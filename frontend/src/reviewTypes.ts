@@ -8,6 +8,9 @@ export interface RepoInfo {
   ahead?: number;
   behind?: number;
   status_count?: number;
+  // Tool-runtime clutter filtered out of clean/status_count (#1386);
+  // optional on older payloads.
+  ignored_status_count?: number;
 }
 
 export interface ReposResponse {

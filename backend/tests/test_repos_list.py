@@ -45,16 +45,27 @@ def _make_client(repos_dir, stack_dir, fake_run):
     app.include_router(repo_router.router)
     app.include_router(repo_router.repos_router)
     patches = [
-        patch.object(repo_router, "list_repos",
-                     wraps=__import__("backend.core", fromlist=["list_repos"]).list_repos),
+        patch.object(
+            repo_router,
+            "list_repos",
+            wraps=__import__("backend.core", fromlist=["list_repos"]).list_repos,
+        ),
     ]
     return app, patches, repos_dir, stack_dir, fake_run
 
 
 class ReposListTest(unittest.TestCase):
-    def _get(self, tmp, names_with_git, names_without_git=(),
-             origins=None, branches=None, dirty=None,
-             stack_with_git=False, missing_root=False):
+    def _get(
+        self,
+        tmp,
+        names_with_git,
+        names_without_git=(),
+        origins=None,
+        branches=None,
+        dirty=None,
+        stack_with_git=False,
+        missing_root=False,
+    ):
         from pathlib import Path
 
         from backend.core.git_helpers import list_repos
@@ -73,8 +84,11 @@ class ReposListTest(unittest.TestCase):
         if stack_with_git:
             stack.mkdir(parents=True, exist_ok=True)
             (stack / ".git").mkdir(exist_ok=True)
-        got = list_repos(repos_dir=root, stack_dir=stack,
-                         run=_fake_run_factory(origins, branches, dirty))
+        got = list_repos(
+            repos_dir=root,
+            stack_dir=stack,
+            run=_fake_run_factory(origins, branches, dirty),
+        )
         app = FastAPI()
         app.include_router(repo_router.router)
         app.include_router(repo_router.repos_router)
@@ -85,33 +99,48 @@ class ReposListTest(unittest.TestCase):
 
     def test_shape(self):
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp:
             resp, got, _, _ = self._get(
-                tmp, ["alpha"],
+                tmp,
+                ["alpha"],
                 origins={"alpha": "git@github.com:arii/alpha.git"},
-                branches={"alpha": "main"})
+                branches={"alpha": "main"},
+            )
             self.assertEqual(resp.status_code, 200)
             body = resp.json()
             self.assertIn("repos", body)
             self.assertEqual(len(body["repos"]), 1)
             entry = body["repos"][0]
-            self.assertEqual(entry, {"name": "alpha", "full": "arii/alpha",
-                                     "branch": "main", "clean": True,
-                                     "ahead": 0, "behind": 0,
-                                     "status_count": 0})
+            self.assertEqual(
+                entry,
+                {
+                    "name": "alpha",
+                    "full": "arii/alpha",
+                    "branch": "main",
+                    "clean": True,
+                    "ahead": 0,
+                    "behind": 0,
+                    "status_count": 0,
+                },
+            )
 
     def test_multiple_repos_sorted_and_dirty_flag(self):
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp:
             resp, got, _, _ = self._get(
-                tmp, ["zeta", "beta"],
-                origins={"zeta": "https://github.com/arii/zeta",
-                         "beta": "git@github.com:arii/beta.git"},
+                tmp,
+                ["zeta", "beta"],
+                origins={
+                    "zeta": "https://github.com/arii/zeta",
+                    "beta": "git@github.com:arii/beta.git",
+                },
                 branches={"zeta": "feat", "beta": "main"},
-                dirty={"zeta"})
+                dirty={"zeta"},
+            )
             body = resp.json()
-            self.assertEqual([r["name"] for r in body["repos"]],
-                             ["beta", "zeta"])
+            self.assertEqual([r["name"] for r in body["repos"]], ["beta", "zeta"])
             by_name = {r["name"]: r for r in body["repos"]}
             self.assertTrue(by_name["beta"]["clean"])
             self.assertFalse(by_name["zeta"]["clean"])
@@ -133,11 +162,10 @@ class ReposListTest(unittest.TestCase):
             if "status" in cmd:
                 if name == "laggy":
                     return _proc(
-                        out="## main...origin/main [behind 3]\n"
-                            " M a.py\n?? b.txt\n")
+                        out="## main...origin/main [behind 3]\n M a.py\n?? b.txt\n"
+                    )
                 if name == "aheady":
-                    return _proc(
-                        out="## main...origin/main [ahead 2, behind 1]\n")
+                    return _proc(out="## main...origin/main [ahead 2, behind 1]\n")
                 return _proc(out="## main...origin/main\n")
             raise AssertionError(f"unexpected git call: {cmd}")
 
@@ -162,14 +190,19 @@ class ReposListTest(unittest.TestCase):
 
     def test_unknown_dir_handling(self):
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp:
             # dir without .git skipped; unparseable origin keeps default full;
             # unsafe name skipped; missing root degrades to stack/empty.
             resp, got, root, stack = self._get(
-                tmp, ["good", "noorigin"],
+                tmp,
+                ["good", "noorigin"],
                 names_without_git=["plain-dir"],
-                origins={"good": "git@github.com:arii/good.git",
-                         "noorigin": "not-a-remote"})
+                origins={
+                    "good": "git@github.com:arii/good.git",
+                    "noorigin": "not-a-remote",
+                },
+            )
             names = [r["name"] for r in resp.json()["repos"]]
             self.assertIn("good", names)
             self.assertIn("noorigin", names)
@@ -179,20 +212,24 @@ class ReposListTest(unittest.TestCase):
             # unsafe names never reach git
             (root / "bad;name").mkdir(exist_ok=True)
             from backend.core.git_helpers import list_repos
-            got2 = list_repos(repos_dir=root, stack_dir=stack,
-                              run=_fake_run_factory(
-                                  {"good": "git@github.com:arii/good.git",
-                                   "noorigin": "not-a-remote"}))
+
+            got2 = list_repos(
+                repos_dir=root,
+                stack_dir=stack,
+                run=_fake_run_factory(
+                    {"good": "git@github.com:arii/good.git", "noorigin": "not-a-remote"}
+                ),
+            )
             self.assertNotIn("bad;name", [r["name"] for r in got2])
             # missing repos root -> empty (no stack checkout here)
-            resp2, got3, _, _ = self._get(
-                tmp + "-missing", ["x"], missing_root=True)
+            resp2, got3, _, _ = self._get(tmp + "-missing", ["x"], missing_root=True)
             self.assertEqual(resp2.json(), {"repos": []})
 
 
 class ReposDirFallbackTest(unittest.TestCase):
     def test_missing_configured_root_falls_through(self):
         from backend.core.repos import get_repos_dir
+
         with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": "/nonexistent-root-xyz"}):
             got = get_repos_dir()
         if Path("/srv/repos").is_dir():
@@ -232,9 +269,19 @@ class ValidateActionBranchTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._checkout(tmp)
             with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": str(root)}):
-                for bad in ("../main", "-main", "a..b", "a//b",
-                            "a.lock", "main.lock", "a b", "a@{b}",
-                            True, 5, ["main"]):
+                for bad in (
+                    "../main",
+                    "-main",
+                    "a..b",
+                    "a//b",
+                    "a.lock",
+                    "main.lock",
+                    "a b",
+                    "a@{b}",
+                    True,
+                    5,
+                    ["main"],
+                ):
                     with self.assertRaises(ValueError, msg=repr(bad)):
                         validate_action_branch("demo", bad, run=boom)
 
@@ -270,8 +317,8 @@ class ValidateActionBranchTest(unittest.TestCase):
             root = self._checkout(tmp)
             with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": str(root)}):
                 self.assertEqual(
-                    validate_action_branch("demo", "  feat/x ", run=present),
-                    "feat/x")
+                    validate_action_branch("demo", "  feat/x ", run=present), "feat/x"
+                )
                 self.assertTrue(seen)
 
     def test_missing_checkout_reads_as_unknown_branch(self):
@@ -296,6 +343,73 @@ class ValidateActionBranchTest(unittest.TestCase):
 
         with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": "/nonexistent-root-xyz"}):
             self.assertEqual(validate_action_branch("demo", "HEAD", run=boom), "")
+
+
+class ToolClutterFilterTest(unittest.TestCase):
+    """Tool-runtime clutter is excluded from dirty state (#1386):
+    .td_rag/, .agent_tool_receipt.json and .agents/plans/ no longer
+    make a checkout read as dirty; their count is reported apart."""
+
+    def _fake_run(self, status_out):
+        def fake_run(cmd, **kwargs):
+            path = cmd[cmd.index("-C") + 1]
+            name = path.rstrip("/").rsplit("/", 1)[-1]
+            if "remote.origin.url" in cmd:
+                return _proc(out=f"git@github.com:arii/{name}.git\n")
+            if "rev-parse" in cmd:
+                return _proc(out="main\n")
+            if "status" in cmd:
+                return _proc(out=status_out)
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        return fake_run
+
+    def _list(self, status_out):
+        import tempfile
+
+        from backend.core.git_helpers import list_repos
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repos"
+            d = root / "demo"
+            d.mkdir(parents=True)
+            (d / ".git").mkdir()
+            got = list_repos(
+                repos_dir=root,
+                stack_dir=Path(tmp) / "stack",
+                run=self._fake_run(status_out),
+            )
+        return got[0]
+
+    def test_clutter_only_checkout_reads_clean(self):
+        entry = self._list(
+            "## main...origin/main\n"
+            "?? .td_rag/\n"
+            "?? .agent_tool_receipt.json\n"
+            "?? .agents/plans/\n"
+        )
+        self.assertTrue(entry["clean"])
+        self.assertEqual(entry["status_count"], 0)
+        self.assertEqual(entry["ignored_status_count"], 3)
+
+    def test_real_changes_count_without_clutter(self):
+        entry = self._list(
+            "## main...origin/main [behind 2]\n"
+            " M docs/app.js\n"
+            "?? notes.txt\n"
+            "?? .td_rag/index.bin\n"
+        )
+        self.assertFalse(entry["clean"])
+        self.assertEqual(entry["status_count"], 2)
+        self.assertEqual(entry["ignored_status_count"], 1)
+        self.assertEqual(entry["behind"], 2)
+
+    def test_clutter_file_contents_still_count_when_modified(self):
+        # Only the tool-state paths themselves are ignored; a tracked
+        # look-alike elsewhere is a real change.
+        entry = self._list("## main\n M tools/.agent_tool_receipt.json\n")
+        self.assertFalse(entry["clean"])
+        self.assertEqual(entry["status_count"], 1)
 
 
 if __name__ == "__main__":
