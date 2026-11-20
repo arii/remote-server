@@ -515,5 +515,48 @@ class TestGraphLoop(unittest.TestCase):
             self.assertLessEqual(final.get("attempts", 0), 1)
 
 
+class TestValidateSpecLiteralContradiction(unittest.TestCase):
+    """Generated-spec regression (issue #1375): contradictory literal
+    acceptance criteria are detected before coding."""
+
+    def _gen(self):
+        return issue_generator.IssueGeneratorGraph(
+            repo_root=tempfile.gettempdir(), td_runner=_valid_td
+        )
+
+    def test_plan_retaining_forbidden_string_fails(self):
+        spec = (
+            "# T\n\n## Acceptance Criteria\n"
+            "- [ ] zero occurrences of `wrapper_name` in the repo\n\n"
+            "## Implementation Plan\n"
+            "- Update docs/CLAIMS.md's `wrapper_name` entry with a why note\n"
+        )
+        valid, _data, errors = self._gen().validate_spec(spec)
+        self.assertFalse(valid)
+        self.assertTrue(any("contradicts the spec" in e for e in errors))
+
+    def test_restatement_of_the_ban_is_not_a_contradiction(self):
+        spec = (
+            "# T\n\n## Acceptance Criteria\n"
+            "- [ ] zero occurrences of `wrapper_name` in the repo\n\n"
+            "## Definition of Done\n"
+            "- Verified: no occurrences of `wrapper_name` remain\n"
+        )
+        valid, _data, errors = self._gen().validate_spec(spec)
+        self.assertTrue(valid)
+        self.assertEqual(errors, [])
+
+    def test_quoted_evidence_is_not_an_instruction(self):
+        spec = (
+            "# T\n\n## Acceptance Criteria\n"
+            "- [ ] zero occurrences of `wrapper_name` in the repo\n\n"
+            "## Investigation Evidence\n"
+            "docs/CLAIMS.md still mentions `wrapper_name` in a why record\n"
+        )
+        valid, _data, errors = self._gen().validate_spec(spec)
+        self.assertTrue(valid)
+        self.assertEqual(errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()
