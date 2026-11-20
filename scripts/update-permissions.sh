@@ -62,6 +62,16 @@ RULES_TO_ALLOW = [
     "command(git status*)",
     "command(git diff)",
     "command(git diff*)",
+    "command(git stash)",
+    "command(git stash *)",
+    "command(git stash push)",
+    "command(git stash push*)",
+    "command(git stash pop)",
+    "command(git stash pop*)",
+    "command(git stash apply)",
+    "command(git stash apply*)",
+    "command(git stash drop)",
+    "command(git stash drop*)",
     "command(git stash list)",
     "command(git stash list*)",
     "command(git stash show)",
@@ -247,6 +257,21 @@ print("\nRules allowed:")
 for r in RULES_TO_ALLOW:
     print(f"  + {r}")
 EOF
+
+# Ensure git repository sharing and file permissions for dual host/container access (#1378).
+# Sets core.sharedRepository=group and ensures group write access across .git refs/logs/objects.
+echo "==> Configuring shared git repository permissions..."
+for repo in "/srv/remote-server" /srv/repos/*; do
+  if [ -d "$repo/.git" ]; then
+    git -C "$repo" config core.sharedRepository group 2>/dev/null || true
+    chmod -R g+rwX "$repo/.git" 2>/dev/null || true
+    if [ "$(id -u)" -eq 0 ]; then
+      HOST_UID="${HOST_UID:-1000}"
+      HOST_GID="${HOST_GID:-1000}"
+      chown -R "$HOST_UID:$HOST_GID" "$repo/.git" 2>/dev/null || true
+    fi
+  fi
+done
 
 echo ""
 echo "Done! Restart your Antigravity CLI session (or run /permissions in chat) to verify."
