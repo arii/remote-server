@@ -531,7 +531,7 @@ class Pipeline:
             return False, out[:300]
         return True, ""
 
-    def _await_if_paused(self, poll_s=0.5, timeout_s=None):
+    def _await_if_paused(self, poll_s=0.5, timeout_s=30.0):
         """Block while a human has taken over the shared browser head.
 
         The pause signal comes from POST /api/agent/pause (first

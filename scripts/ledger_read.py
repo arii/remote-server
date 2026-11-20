@@ -46,6 +46,21 @@ def read_ledger(sheet_id: str, token_path: str):
     return list(reader)
 
 
+def fold_latest_per_key(rows):
+    """Latest row per key wins, per Section 2 of the canonical Handoff Protocol."""
+    import re
+
+    folded = {}
+    for r in rows:
+        key = (r.get("Link") or "").strip()
+        if not key:
+            note = (r.get("Item / Note") or "").strip()
+            m = re.search(r"task-[a-zA-Z0-9_-]+", note)
+            key = m.group(0) if m else note
+        folded[key] = r
+    return list(folded.values())
+
+
 def main():
     parser = argparse.ArgumentParser(description="Read Agent Ledger headlessly.")
     parser.add_argument(
@@ -58,7 +73,10 @@ def main():
         "--status", choices=["Act", "Later", "Needs Okay", "Done", "all"], default=None
     )
     parser.add_argument(
-        "--all", action="store_true", help="Show all rows including Done"
+        "--all", action="store_true", help="Show all tasks including Done"
+    )
+    parser.add_argument(
+        "--raw", action="store_true", help="Show raw un-folded append log"
     )
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
@@ -73,12 +91,15 @@ def main():
 
     try:
         rows = read_ledger(args.sheet_id, args.token_file)
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         print(f"Error reading Agent Ledger: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Fold latest-row-per-key by default unless raw log requested
+    display_rows = rows if args.raw else fold_latest_per_key(rows)
+
     filtered = [
-        r for r in rows if not filter_status or r.get("Status") in filter_status
+        r for r in display_rows if not filter_status or r.get("Status") in filter_status
     ]
 
     if args.json:

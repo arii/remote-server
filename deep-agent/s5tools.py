@@ -807,6 +807,8 @@ def link_worktree_node_modules(root, store):
 
     Best-effort: returns True on link, False otherwise; never raises.
     """
+    if not store:
+        return False
     try:
         store_nm = os.path.join(store, "node_modules")
         target = os.path.join(root, "frontend", "node_modules")
