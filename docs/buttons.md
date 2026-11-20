@@ -51,6 +51,13 @@ Routes by router (verbs + paths; see router files for shapes):
   `GET /api/system/containers/{service}/logs`,
   `POST /api/system/containers/{service}/restart`.
 - `repo.py` — `GET /api/repos`, `GET /api/repo/status|diff|files|health`.
+  `list_repos` (`backend/core/git_helpers.py`) filters tool-runtime
+  clutter (`STATUS_IGNORED_PATHS`: `.td_rag/`,
+  `.agent_tool_receipt.json`, `.agents/plans/`) out of `clean` and
+  `status_count`, reporting it separately as `ignored_status_count`
+  (#1386). The Now strip (`views/DirtyReposStrip.tsx`) lists Dirty
+  (uncommitted changes) and Out of Sync (clean but ahead/behind)
+  as separate groups.
 - `attention.py`, `inbox.py` — `GET /api/attention`,
   `POST /api/attention/snooze|unsnooze`, `GET /api/inbox?repo=`.
 - `pulls.py` — `GET /api/prs|pr-details|pr-diff`, `POST /api/pr-action`
