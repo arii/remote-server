@@ -254,18 +254,6 @@ def run_td_gate(command, worktree_root, timeout=300, runner=None, extra_args=Non
     return True, payload
 
 
-def run_td_audit_impact(
-    worktree_root, top_k=25, timeout=300, runner=None, preview_url=None
-):
-    """td audit-impact --json; returns (ok, payload-or-error)."""
-    extra = ["--top-k", str(top_k)]
-    if preview_url:
-        extra += ["--preview-url", preview_url]
-    return run_td_gate(
-        "audit-impact", worktree_root, timeout=timeout, runner=runner, extra_args=extra
-    )
-
-
 def collect_gate_violations(named_payloads):
     """Format [(name, payload)] gate failures as file:line error lines."""
     errors = []

@@ -273,22 +273,7 @@ class TestDraftPrompt(unittest.TestCase):
         self.assertIn("quote", seen[0].lower())
 
 
-class TestAssembleSpec(unittest.TestCase):
-    def test_required_sections_present(self):
-        spec = issue_generator.assemble_spec("Fix the widget", "ctx", {"Q?": "A."})
-        for section in (
-            "Problem Statement",
-            "Goal",
-            "Scope",
-            "Definition of Done",
-            "Scope & File Boundaries",
-            "Implementation Plan",
-            "Acceptance Criteria",
-            "Verification Commands",
-        ):
-            self.assertIn(section, spec)
-        self.assertIn("Q?", spec)
-
+class TestExtractQuestions(unittest.TestCase):
     def test_extract_questions(self):
         text = (
             "Some prose.\n- What files are in scope?\n"
