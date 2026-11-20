@@ -1262,6 +1262,16 @@ class ViewerHtmlTest(unittest.TestCase):
         self.assertIn("function normalizeUrl(raw)", html)
         self.assertIn("https://' + v", html)
 
+    def test_url_bar_keeps_chrome_pages_reachable(self):
+        # Issue #1391 secondary quirk: chrome://settings typed in
+        # the address box became https://chrome://settings because
+        # the kept-scheme list skipped chrome:, so internal pages
+        # were unreachable from the viewer. The normalizeUrl
+        # comment promises chrome pages are kept; the regex now
+        # actually keeps chrome: and chrome-extension:.
+        html = browser_view.VIEWER_HTML
+        self.assertIn("about|data|blob|chrome", html)
+
 
 class MobileViewportTest(unittest.TestCase):
     def setUp(self):
