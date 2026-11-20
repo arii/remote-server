@@ -75,8 +75,10 @@ restarting the shared Ollama daemon. Keep agent `ASK_MODEL` aligned with
 the service's configured model.
 
 Hosted provider catalog includes Google, Groq, NVIDIA, OpenRouter,
-SambaNova, Cloudflare (with 10,000 daily free Neurons), Mistral, and Nebius.
+SambaNova, Cloudflare (with 10,000 daily free Neurons), and Nebius.
 Free-tier providers precede paid providers; Nebius is the paid fallback.
+Mistral requires active billing and is cataloged as paid/metered (`free_only: false`)
+rather than a zero-cost fallback tier.
 Local and hosted traces share the same private database
 and appear together in `twt inspect` and `twt report`.
 
