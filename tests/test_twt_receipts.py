@@ -529,6 +529,57 @@ class ReceiptTests(unittest.TestCase):
                     receipts.merge_receipts({"id"}, {"id": self.reply("id")}, "run", 0)
                 self.assertEqual(Path(ledger.LEDGER).read_text(), original)
 
+    def test_summary_rows_do_not_collide_with_semantic_receipt_ownership(self):
+        scope = receipts.ReceiptRun("pipeline-summary-overlap")
+        trace_id = scope.request()
+        # Billable semantic review call
+        ledger.record(
+            "auditor.py",
+            "default",
+            "pipeline-summary-overlap",
+            [],
+            0,
+            provider="twt",
+            usage={"twt_trace_ids": [trace_id], "reported_cost_usd": 0.012},
+            extra={"llm_call": True, "metered": True},
+        )
+        # Non-billable summary row carrying trace provenance (#1369)
+        ledger.record(
+            "auditor.py",
+            "default",
+            "pipeline-summary-overlap",
+            [],
+            0,
+            provider="twt",
+            usage={"twt_trace_ids": [trace_id]},
+            extra={"stage": "audit", "phase": "summary", "llm_call": False},
+        )
+        scope.reconcile(lambda *_: [self.reply(trace_id, cost=0.012)])
+        self.assertIsNone(scope.error)
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)
+        # Billable row reconciled
+        self.assertEqual(rows[0]["cost_usd"], 0.012)
+        self.assertTrue(rows[0]["extra"]["twt_receipt_reconciled"])
+        # Non-billable summary row kept without claiming receipt ownership
+        self.assertNotIn("twt_receipt_reconciled", rows[1]["extra"])
+
+    def test_reconcile_handles_merge_receipts_failure_without_unhandled_exception(self):
+        scope = receipts.ReceiptRun("pipeline-overlap-handled")
+        trace_id = scope.request()
+        # Create genuine duplicate ownership conflict
+        rows = [
+            {"metered": True, "usage": {"twt_trace_ids": [trace_id]}},
+            {"metered": True, "usage": {"twt_trace_ids": [trace_id]}},
+        ]
+        Path(ledger.LEDGER).write_text(
+            json.dumps(rows[0]) + "\n" + json.dumps(rows[1]) + "\n"
+        )
+        # reconcile should not raise, but capture the error
+        scope.reconcile(lambda *_: [self.reply(trace_id, cost=0.012)])
+        self.assertIsNotNone(scope.error)
+        self.assertIn("overlap", scope.error)
+
     def test_unmetered_llm_call_owns_its_free_receipt(self):
         scope = receipts.ReceiptRun("free-local")
         trace_id = scope.request()

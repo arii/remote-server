@@ -76,6 +76,8 @@ def _owns_receipts(row):
     extra, usage = row.get("extra", {}), row.get("usage", {})
     if not isinstance(extra, dict) or not isinstance(usage, dict):
         return False
+    if extra.get("phase") == "summary" or extra.get("llm_call") is False:
+        return False
     trace_ids = usage.get("twt_trace_ids", [])
     if not isinstance(trace_ids, list) or any(
         not isinstance(value, str) for value in trace_ids
@@ -449,9 +451,13 @@ class ReceiptRun:
                 if receipt_cost(receipt) is not None
             }
             sleep(min(1, max(0, deadline - clock())))
-        missing = merge_receipts(
-            set(ids), receipts, self.run_id, self.started, local_ids=self.local_ids
-        )
+        try:
+            missing = merge_receipts(
+                set(ids), receipts, self.run_id, self.started, local_ids=self.local_ids
+            )
+        except Exception as error:
+            missing = sorted(ids)
+            failure = failure or str(error)
         self.error = (failure or "unsettled TwT receipts") if missing else None
         temporary = settlement.with_suffix(settlement.suffix + ".tmp")
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
