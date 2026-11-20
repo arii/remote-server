@@ -173,7 +173,7 @@ describe('workflow runs section (issue #931)', () => {
       <WorkflowRunsBody flow={{ ...flow(), workflows: [] }} error={null} />,
     );
     expect(html).toContain('workflow-runs-empty');
-    expect(html).toContain('No failing automated runs');
+    expect(html).toContain('No failing workflow runs.');
   });
 
   it('threads feed search to URL-less runs, hides it without a callback', () => {
