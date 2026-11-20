@@ -43,6 +43,7 @@ export function QueueHeader({
         <h3>Lane queue</h3>
         <p className="row-meta">
           {count} item{count === 1 ? '' : 's'}
+          {count > 0 ? ` · ${dispatchable.length} ready to dispatch` : ''}
           {live ? ' · Live' : ''}
         </p>
       </div>
@@ -52,14 +53,22 @@ export function QueueHeader({
         disabled={dispatchable.length === 0}
         title={
           dispatchable.length === 0
-            ? 'Nothing queued'
+            ? count > 0
+              ? 'Nothing ready to dispatch'
+              : 'Nothing queued'
             : 'Dispatch every queued item; blocked ones report per item'
         }
         onClick={onDispatchAll}
       >
         Dispatch all ({dispatchable.length})
       </button>{' '}
-      {dispatchable.length === 0 && <span className="row-meta">Nothing queued to dispatch.</span>}
+      {dispatchable.length === 0 && (
+        <span className="row-meta">
+          {count > 0
+            ? `${count} item${count === 1 ? ' is' : 's are'} not ready to dispatch (running, blocked or done).`
+            : 'Nothing queued to dispatch.'}
+        </span>
+      )}
       <button type="button" data-testid="queue-refresh" onClick={onRefresh}>
         Refresh
       </button>
