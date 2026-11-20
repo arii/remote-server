@@ -148,6 +148,13 @@ DITHER_EMPTY_NOTICE = (
     "Fix the invocation, or run a different check."
 )
 
+DITHER_UNCHANGED_NOTICE = (
+    "DITHERING: this exact command has returned identical output "
+    "{streak} times in a row. Stop re-inspecting: the check is "
+    "not seeing change. Make the edit it is waiting for, verify "
+    "it landed where the check looks, or run a different check."
+)
+
 # Re-prompt sent when a coder turn finishes with no passing run_check
 # in the trace. Same thread, so the agent sees its own prior work.
 VERIFY_NUDGE = (
@@ -425,15 +432,16 @@ def _inject_replanner_skills():
         return ""
 
 
-def build_check_tool(worktree):
+def build_check_tool(worktree, written_files=None):
     """run_check tool: allowlisted verification commands in worktree."""
     from langchain_core.tools import tool  # noqa: E402
 
     allowed = allowed_commands_text()
-    # Per-tool dither streak: consecutive identical failing or
-    # empty-success commands. Any different command (or a success with
-    # output) resets it.
-    spin = {"last": None, "streak": 0}
+    # Per-tool dither streak: consecutive identical failing,
+    # empty-success, or unchanged-output (#1374) commands. Any
+    # different command or a success with new output resets it, and
+    # so does an actual edit observed through written_files.
+    spin = {"last": None, "streak": 0, "last_out": None, "edits": 0}
 
     @tool
     def run_check(command: str) -> str:
@@ -469,13 +477,36 @@ def build_check_tool(worktree):
         )
         result = f"exit={proc.returncode}\n{out}"
         empty_success = proc.returncode == 0 and not out.strip()
-        if command == spin["last"] and (proc.returncode != 0 or empty_success):
+        if written_files is None:
+            edits = 0
+        else:
+            edits = getattr(written_files, "mutations", len(written_files))
+        if edits != spin["edits"]:
+            spin["edits"] = edits
+            spin["streak"] = 0
+            spin["last_out"] = None
+        unchanged_success = (
+            proc.returncode == 0
+            and not empty_success
+            and command == spin["last"]
+            and spin["last_out"] is not None
+            and out == spin["last_out"]
+        )
+        unproductive = proc.returncode != 0 or empty_success or unchanged_success
+        if command == spin["last"] and unproductive:
             spin["streak"] += 1
         else:
-            spin["streak"] = 0 if proc.returncode == 0 and not empty_success else 1
+            spin["streak"] = 0 if not unproductive else 1
         spin["last"] = command
+        if proc.returncode == 0:
+            spin["last_out"] = out
         if spin["streak"] >= DITHER_THRESHOLD:
-            notice = DITHER_EMPTY_NOTICE if empty_success else DITHER_NOTICE
+            if empty_success:
+                notice = DITHER_EMPTY_NOTICE
+            elif unchanged_success:
+                notice = DITHER_UNCHANGED_NOTICE
+            else:
+                notice = DITHER_NOTICE
             result += "\n" + notice.format(streak=spin["streak"])
         return result
 
@@ -509,6 +540,16 @@ def build_filesystem_backend(worktree):
             return super()._resolve_path(key)
 
     return CoderFilesystemBackend(root_dir=worktree, virtual_mode=True)
+
+
+class WriteTracker(set):
+    """written_files set with a mutation counter: re-edits to an
+    already-tracked file still count, so the run_check dither guard
+    resets after every actual edit, not just new files (#1374)."""
+
+    def __init__(self):
+        super().__init__()
+        self.mutations = 0
 
 
 def worktree_file_middleware(worktree, written_files, read_cache=None):
@@ -569,6 +610,10 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
                 read_cache.invalidate(rel)
             if written_files is not None and target_file:
                 written_files.add(call["args"].get("file_path", target_file))
+                try:
+                    written_files.mutations += 1
+                except AttributeError:
+                    pass
 
         # Check ReadCache on read_file
         if (
@@ -761,7 +806,7 @@ def build_agent(
 
         middleware = observe.trace_middleware(recorder) + middleware
     if tools is None:
-        default_tools = [build_check_tool(worktree)]
+        default_tools = [build_check_tool(worktree, written_files)]
     else:
         default_tools = list(tools)
     return create_deep_agent(
@@ -935,12 +980,16 @@ def trace_verification_evidence(trace_path):
 
 
 def trace_check_history(trace_path):
-    """[(command, exit_code, output_empty)] for run_check calls, in order.
+    """[(command, exit_code, output_empty, output_digest)] per run_check.
 
-    Only strictly consecutive tool_call events count toward a
-    streak: any other tool call between two checks (an edit, a
-    read) means the agent changed approach, not dithered. Never
-    raises: unreadable traces read as empty (no dither).
+    Entries are in order, and only strictly consecutive tool_call
+    events count toward a streak: any other tool call between two
+    checks (an edit, a read) means the agent changed approach, not
+    dithered. output_digest hashes the recorded result preview so
+    unchanged repeated output is detectable; previews are bounded,
+    so outputs differing only past the preview limit read as
+    unchanged (conservative). Never raises: unreadable traces read
+    as empty (no dither).
     """
     history = []
     try:
@@ -968,24 +1017,37 @@ def trace_check_history(trace_path):
                         and not text[len("exit=0\n") :].strip()
                     )
                 )
-                history.append((event.get("args_preview", ""), code, empty))
+                digest = hashlib.sha1(text.encode("utf-8")).hexdigest()
+                history.append((event.get("args_preview", ""), code, empty, digest))
     except (OSError, TypeError):
         return []
     return history
 
 
-def _entry_unproductive(entry):
-    """True when a history entry shows no useful output. Pure.
+def _entry_unproductive(entry, previous=None):
+    """True when a history entry shows no useful progress. Pure.
 
     Failing entries (nonzero exit) are always unproductive. Successful
-    entries count only when the trace records empty output — but
-    legacy 2-tuples carry no output info, so a recorded pass still
-    breaks the streak for them (the pre-#1176 contract). Never raises.
+    entries count when the trace records empty output, or when the
+    output is identical to the previous entry for the same command:
+    a repeated read-only inspection with no intervening progress
+    (#1374). Legacy 2-tuples carry no output info, so a recorded
+    pass still breaks the streak for them (the pre-#1176 contract);
+    3-tuples carry no digest, so the unchanged-output rule applies
+    only when both entries are 4-tuples. Never raises.
     """
     try:
         if len(entry) < 3:
             return entry[1] != 0
-        return entry[1] != 0 or bool(entry[2])
+        if entry[1] != 0 or bool(entry[2]):
+            return True
+        return (
+            previous is not None
+            and len(entry) > 3
+            and len(previous) > 3
+            and entry[0] == previous[0]
+            and entry[3] == previous[3]
+        )
     except (TypeError, ValueError, IndexError):
         return False
 
@@ -994,19 +1056,29 @@ def find_dithered_command(history, threshold=DITHER_THRESHOLD):
     """Dithering command in a check history, or None. Pure.
 
     Returns the command when the last `threshold` entries are the
-    same command, all unproductive (failing, or succeeding with
-    empty output); otherwise None. A success with output, a
-    different command, or too few entries read as no dither.
-    Never raises.
+    same command, all unproductive: failing, succeeding with empty
+    output, or succeeding with output identical to the previous
+    entry. The tail's first entry compares against the history entry
+    right before it, so a repeated unchanged inspection is detected
+    once its first observation falls out of the tail. A success
+    with new output, a different command, or too few entries read
+    as no dither. Never raises.
     """
     try:
-        tail = list(history or [])[-threshold:]
+        entries = list(history or [])
+        tail = entries[-threshold:]
         if len(tail) < threshold:
             return None
         command = tail[0][0]
-        if all(entry[0] == command and _entry_unproductive(entry) for entry in tail):
-            return command
-        return None
+        start = len(entries) - threshold
+        for offset, entry in enumerate(tail):
+            if entry[0] != command:
+                return None
+            index = start + offset
+            previous = entries[index - 1] if index > 0 else None
+            if not _entry_unproductive(entry, previous):
+                return None
+        return command
     except (TypeError, ValueError, IndexError):
         return None
 
@@ -1177,7 +1249,7 @@ def run_coder(
 
     try:
         saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
-        written_files = set()
+        written_files = WriteTracker()
         agent = build_agent(
             worktree,
             system,

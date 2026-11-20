@@ -4,21 +4,24 @@
     "number": 1356,
     "title": "[dead-code] Remove unreferenced estimate_tokens and _split_diff",
     "created_at": "2026-11-18T17:42:02Z",
-    "group": "code-reaper"
+    "group": "code-reaper",
+    "skip_reason": "Merged in deadcode cleanup"
   },
   {
     "repo": "arii/remote-server",
     "number": 1357,
     "title": "[dead-code] Use or remove unused ollama_tags_url",
     "created_at": "2026-11-18T17:42:04Z",
-    "group": "code-reaper"
+    "group": "code-reaper",
+    "skip_reason": "Merged in deadcode cleanup"
   },
   {
     "repo": "arii/remote-server",
     "number": 1358,
     "title": "[dead-code] Remove td_run_async left after run-plan cutover",
     "created_at": "2026-11-18T17:42:05Z",
-    "group": "code-reaper"
+    "group": "code-reaper",
+    "skip_reason": "Merged in deadcode cleanup"
   },
   {
     "repo": "arii/remote-server",
