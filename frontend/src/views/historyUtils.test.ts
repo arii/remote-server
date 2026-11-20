@@ -249,6 +249,10 @@ describe('collapsed outcome clauses (issue #423)', () => {
     expect(rows[0].recovery).not.toBe('');
     expect(rows[1].tone).toBe('ok');
     expect(rows[2].tone).toBe('bad');
+    // The pull's own outcome sentence is shown, not rewritten.
+    expect(rows[1].summary).toContain('fast-forwarded');
+    expect(rows[1].summary).not.toMatch(/could not/i);
+    expect(rows[2].summary).toContain('merge conflict');
   });
   it('splits rows whose outcomes differ', () => {
     const rows = toHistoryRows([], [
