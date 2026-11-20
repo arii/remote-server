@@ -54,7 +54,7 @@ def parse_review(value):
         ok, v = verdicts.parse_verdict(text)
         if ok:
             return parse_review(v)
-        fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+        fence = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
         try:
             parsed = json.loads(fence.group(1).strip() if fence else text)
             if isinstance(parsed, dict):

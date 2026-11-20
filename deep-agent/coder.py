@@ -607,7 +607,7 @@ def build_agent(
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
-    tools defaults to [run_check, search_code]; interrupt_on/permissions pass
+    tools defaults to [run_check]; interrupt_on/permissions pass
     through to create_deep_agent (the plan agent denies writes and
     pauses on propose_plan; the implement agent leaves all three
     defaulted, exactly as before). spec is the model_router spec the
@@ -659,7 +659,7 @@ def build_agent(
 
         middleware = observe.trace_middleware(recorder) + middleware
     if tools is None:
-        default_tools = [build_check_tool(worktree), build_search_tool(worktree)]
+        default_tools = [build_check_tool(worktree)]
     else:
         default_tools = list(tools)
     return create_deep_agent(
