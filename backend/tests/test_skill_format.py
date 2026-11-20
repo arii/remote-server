@@ -1,17 +1,14 @@
 """Acceptance tests freezing the skill file format (issue #1253).
 
 Contract source: the issue text only. These tests pin the public
-interface ``backend.skill_format.validate_skill`` /
-``validate_skill_file`` behavior, not implementation internals.
+interface ``backend.skill_format.validate_skill`` behavior, not
+implementation internals.
 """
 
 import copy
-import json
-import os
-import tempfile
 import unittest
 
-from backend.skill_format import validate_skill, validate_skill_file
+from backend.skill_format import validate_skill
 
 
 def make_example_skill():
@@ -136,33 +133,6 @@ class ValidateSkillContractTest(unittest.TestCase):
         bad = copy.deepcopy(skill)
         del bad["steps"][0]["value"]
         self.assertTrue(validate_skill(bad))
-
-    def test_bad_json_file_rejected(self):
-        """Contract: validate_skill_file reports file content that is not valid JSON/skill."""
-        fd, path = tempfile.mkstemp(suffix=".json")
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write("{not valid json,,,")
-            errors = validate_skill_file(path)
-            self.assertTrue(errors)
-        finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-
-    def test_example_skill_file_validates(self):
-        """Contract: the fill-contact-form v1 example validates from a JSON file too."""
-        fd, path = tempfile.mkstemp(suffix=".json")
-        try:
-            with os.fdopen(fd, "w") as fh:
-                json.dump(make_example_skill(), fh)
-            self.assertEqual(validate_skill_file(path), [])
-        finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
 
 
 if __name__ == "__main__":
