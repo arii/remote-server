@@ -11,6 +11,8 @@ const RULES: Array<[RegExp, string]> = [
   [/annotation|check-run/i, 'Automated check reported a failure'],
   [/conflict/i, 'Changes conflict — manual review is needed'],
   [/permission|forbidden|unauthorized|401|403/i, 'Action was not permitted — check access'],
+  [/fatal:\s*(?:cannot change to|no such file)/i, 'Repository path was not found'],
+  [/fatal:/i, 'Git command failed — see detail trace'],
 ];
 
 export function plainLanguage(raw: string, fallbackKind: string): string {
@@ -20,7 +22,7 @@ export function plainLanguage(raw: string, fallbackKind: string): string {
   }
   if (!text) return `${fallbackKind || 'Event'} — no details recorded`;
   const first = text.split('\n')[0].slice(0, 120);
-  if (/error|fail|exception|stderr|at\s+\S+\(|traceback/i.test(first)) {
+  if (/fatal:|error|fail|exception|stderr|at\s+\S+\(|traceback|\/tmp\//i.test(first)) {
     return `${fallbackKind || 'Event'} failed — see detail trace`;
   }
   return first;
@@ -231,6 +233,10 @@ function cliTurnLines(e: LedgerEntry): string[] {
   return lines;
 }
 
+function isRawStderr(text: string): boolean {
+  return /fatal:|stderr:|\/tmp\/|traceback/i.test(text);
+}
+
 function ledgerToEntry(e: LedgerEntry): FlatEntry {
   if (e.kind === 'cli-turn') {
     return {
@@ -244,9 +250,11 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
     };
   }
   const raw = e.event ?? e.action ?? e.kind;
-  // Backend-supplied reasons are already human sentences; use verbatim.
+  // Backend-supplied reasons are already human sentences; sanitize raw stderr/paths (#1431).
   const errText = e.error?.trim() ?? '';
-  const base = errText ? errText.slice(0, 200) : plainLanguage(raw ?? '', e.kind);
+  const base = errText && !isRawStderr(errText)
+    ? errText.slice(0, 200)
+    : plainLanguage(errText || raw || '', e.kind);
   const routine = ROUTINE_RE.test(base);
   let summary = base;
   if (!errText && !routine) {
