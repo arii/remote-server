@@ -261,8 +261,8 @@ export function ContainersSection({
 export function NowEmptyState({ onRunCheck }: { onRunCheck: () => void }) {
   return (
     <div data-testid="now-empty">
-      <h3>Nothing needs you right now</h3>
-      <p className="row-meta">Failing checks, approvals, and incidents will land here.</p>
+      <h3>Nothing queued right now</h3>
+      <p className="row-meta">Repo failures, approvals, and incidents will land here.</p>
       <div className="actions">
         <button type="button" data-testid="now-empty-jobs" onClick={onRunCheck}>
           Run a check
@@ -515,10 +515,10 @@ export function ActionControl({
 // "is everything fine?". Every count comes from a live fetch —
 // inbox, PRs, jobs, system health — never invented. Worst status
 // wins: a sick container or crit item reads crit, any queued item
-// or a silent stack reads warn, otherwise all clear. All clear is
-// reserved for a truly empty queue (issue #930): even an info-only
-// item keeps the banner amber, so the dot never contradicts the
-// "N needing attention" count beside it.
+// or a silent stack reads warn, otherwise stack clear. The clear
+// state is reserved for a truly empty queue (issue #930): even an
+// info-only item keeps the banner amber, so the dot never
+// contradicts the "N needing attention" count beside it.
 export type HeroStatus = 'loading' | 'ok' | 'warn' | 'crit';
 
 export function heroStatus(
@@ -716,9 +716,13 @@ const HERO_DOT: Record<HeroStatus, string> = {
 // Dynamic status label (issue #930): a non-empty queue always
 // reads its depth ("N needing attention") with the dot carrying
 // the severity; an empty queue names the stack state instead.
+// The ok label claims the stack only (issue #1430): PR-branch CI
+// stays out of this queue by design (issue #1150) and Briefing owns
+// the PR digest, so "All clear" overclaimed and read as a verdict
+// on PRs the hero never checks.
 export function heroLabel(status: HeroStatus, attentionOpen: number): string {
   if (status === 'loading') return 'Loading status…';
-  if (status === 'ok') return 'All clear';
+  if (status === 'ok') return 'Stack clear';
   if (attentionOpen > 0) return `${attentionOpen} needing attention`;
   return status === 'crit' ? 'Action needed' : 'Needs attention';
 }
@@ -766,7 +770,7 @@ export function NowHero({
   // Screen-reader dedup (issue #1068): when the label repeats the
   // attention count, the attention segment button already announces
   // it — hide the label so it is not read twice. Every other label
-  // (All clear, Loading, Action needed) stays exposed.
+  // (Stack clear, Loading, Action needed) stays exposed.
   const dupCount =
     feed.attention.length > 0 && label === `${feed.attention.length} needing attention`;
   return (
