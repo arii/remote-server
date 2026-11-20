@@ -129,7 +129,9 @@ class TestGatewayCapabilitiesPreflight(unittest.TestCase):
                     200,
                     json={
                         "object": "list",
-                        "data": [{"id": "nebius/zai-org/GLM-5.3-Flash", "owned_by": "nebius"}],
+                        "data": [
+                            {"id": "nebius/zai-org/GLM-5.3-Flash", "owned_by": "nebius"}
+                        ],
                     },
                     request=req,
                 )
@@ -166,7 +168,9 @@ class TestGatewayCapabilitiesPreflight(unittest.TestCase):
                     200,
                     json={
                         "object": "list",
-                        "data": [{"id": "nebius/zai-org/GLM-5.3-Flash", "owned_by": "nebius"}],
+                        "data": [
+                            {"id": "nebius/zai-org/GLM-5.3-Flash", "owned_by": "nebius"}
+                        ],
                     },
                     request=req,
                 )
@@ -207,7 +211,9 @@ class TestVCSProvenanceVerification(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             dist_dir = Path(tmpdir) / "pkg-0.1.0.dist-info"
             dist_dir.mkdir()
-            (dist_dir / "METADATA").write_text("Metadata-Version: 2.1\nName: pkg\nVersion: 0.1.0\n")
+            (dist_dir / "METADATA").write_text(
+                "Metadata-Version: 2.1\nName: pkg\nVersion: 0.1.0\n"
+            )
 
             with self.assertRaises(TwTVCSMismatchError) as ctx:
                 verify_installed_vcs_sha("pkg", "1234567", dist_info_dir=dist_dir)
@@ -217,7 +223,9 @@ class TestVCSProvenanceVerification(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             dist_dir = Path(tmpdir) / "tokens_with_taste-0.1.0.dist-info"
             dist_dir.mkdir()
-            (dist_dir / "METADATA").write_text("Metadata-Version: 2.1\nName: tokens-with-taste\nVersion: 0.1.0\n")
+            (dist_dir / "METADATA").write_text(
+                "Metadata-Version: 2.1\nName: tokens-with-taste\nVersion: 0.1.0\n"
+            )
             (dist_dir / "direct_url.json").write_text(
                 '{"url": "https://github.com/arii/boomtick.git", "vcs_info": {"commit_id": "1111111111111111111111111111111111111111", "vcs": "git"}}'
             )
@@ -229,14 +237,20 @@ class TestVCSProvenanceVerification(unittest.TestCase):
                     dist_info_dir=dist_dir,
                 )
             self.assertIn("VCS SHA mismatch", str(ctx.exception))
-            self.assertIn("1111111111111111111111111111111111111111", str(ctx.exception))
-            self.assertIn("Refusing to declare requested SHA installed", str(ctx.exception))
+            self.assertIn(
+                "1111111111111111111111111111111111111111", str(ctx.exception)
+            )
+            self.assertIn(
+                "Refusing to declare requested SHA installed", str(ctx.exception)
+            )
 
     def test_matching_sha_succeeds(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             dist_dir = Path(tmpdir) / "tokens_with_taste-0.1.0.dist-info"
             dist_dir.mkdir()
-            (dist_dir / "METADATA").write_text("Metadata-Version: 2.1\nName: tokens-with-taste\nVersion: 0.1.0\n")
+            (dist_dir / "METADATA").write_text(
+                "Metadata-Version: 2.1\nName: tokens-with-taste\nVersion: 0.1.0\n"
+            )
             sha = "3e970a570aee0a550ec6409de769c201c9a5b900"
             (dist_dir / "direct_url.json").write_text(
                 f'{{"url": "https://github.com/arii/boomtick.git", "vcs_info": {{"commit_id": "{sha}", "vcs": "git"}}}}'
@@ -265,7 +279,9 @@ class TestUnchangedPackageVersionVCSUpgradeRegression(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             dist_dir = Path(tmpdir) / "tokens_with_taste-0.1.0.dist-info"
             dist_dir.mkdir()
-            (dist_dir / "METADATA").write_text("Metadata-Version: 2.1\nName: tokens-with-taste\nVersion: 0.1.0\n")
+            (dist_dir / "METADATA").write_text(
+                "Metadata-Version: 2.1\nName: tokens-with-taste\nVersion: 0.1.0\n"
+            )
 
             sha_old = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             sha_new = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -278,8 +294,12 @@ class TestUnchangedPackageVersionVCSUpgradeRegression(unittest.TestCase):
             # Step 2: Upgrade attempted to sha_new, but package version 0.1.0 caused pip to skip reinstall.
             # Verifier must ABORT clearly on mismatch rather than declaring sha_new installed:
             with self.assertRaises(TwTVCSMismatchError) as ctx:
-                verify_installed_vcs_sha("tokens-with-taste", sha_new, dist_info_dir=dist_dir)
-            self.assertIn("Refusing to declare requested SHA installed", str(ctx.exception))
+                verify_installed_vcs_sha(
+                    "tokens-with-taste", sha_new, dist_info_dir=dist_dir
+                )
+            self.assertIn(
+                "Refusing to declare requested SHA installed", str(ctx.exception)
+            )
             self.assertIn(sha_old, str(ctx.exception))
             self.assertIn(sha_new, str(ctx.exception))
 
@@ -289,7 +309,9 @@ class TestUnchangedPackageVersionVCSUpgradeRegression(unittest.TestCase):
             )
 
             # Step 4: Verification now succeeds with sha_new
-            prov = verify_installed_vcs_sha("tokens-with-taste", sha_new, dist_info_dir=dist_dir)
+            prov = verify_installed_vcs_sha(
+                "tokens-with-taste", sha_new, dist_info_dir=dist_dir
+            )
             self.assertEqual(prov["commit_id"], sha_new)
             self.assertEqual(prov["version"], "0.1.0")
 
@@ -302,9 +324,10 @@ class TestModelRouterPreflightIntegration(unittest.TestCase):
         model_router.preflight_gateway(spec=spec, stage="coder")
 
     def test_model_router_preflight_checks_capabilities(self):
-        with mock.patch.dict("os.environ", {"TWT_UDS": ""}), mock.patch(
-            "twt_provenance.verify_gateway_capabilities"
-        ) as mock_verify:
+        with (
+            mock.patch.dict("os.environ", {"TWT_UDS": ""}),
+            mock.patch("twt_provenance.verify_gateway_capabilities") as mock_verify,
+        ):
             spec = {
                 "provider": "twt",
                 "model": "default",

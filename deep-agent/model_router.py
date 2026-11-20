@@ -563,9 +563,7 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
     )
 
 
-def build_chat_model(
-    spec=None, think=False, num_ctx=None, stage=None, preflight=False
-):
+def build_chat_model(spec=None, think=False, num_ctx=None, stage=None, preflight=False):
     """Container-correct chat model (Ollama no-think default). Venv-only.
 
     resolve_llm() picks local or keyed remote through the spend choke;

@@ -15,11 +15,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 class TwTPreflightError(RuntimeError):
     """Raised when TwT gateway capabilities, reachability, or provenance fail preflight."""
+
     pass
 
 
 class TwTVCSMismatchError(TwTPreflightError):
     """Raised when an installed VCS package SHA does not match the requested commit."""
+
     pass
 
 
@@ -112,7 +114,11 @@ def verify_installed_vcs_sha(
     for candidate in (commit_id, requested_rev):
         if candidate:
             cand = candidate.strip().lower()
-            if cand == expected or (len(expected) >= 7 and cand.startswith(expected)) or (len(cand) >= 7 and expected.startswith(cand)):
+            if (
+                cand == expected
+                or (len(expected) >= 7 and cand.startswith(expected))
+                or (len(cand) >= 7 and expected.startswith(cand))
+            ):
                 matches = True
                 break
 
@@ -143,8 +149,14 @@ def query_gateway_models(
                 f"TwT gateway /v1/models returned HTTP {resp.status_code}: {resp.text[:200]}"
             )
         payload = resp.json()
-        if not isinstance(payload, dict) or "data" not in payload or not isinstance(payload["data"], list):
-            raise TwTPreflightError(f"TwT gateway /v1/models returned invalid schema: {resp.text[:200]}")
+        if (
+            not isinstance(payload, dict)
+            or "data" not in payload
+            or not isinstance(payload["data"], list)
+        ):
+            raise TwTPreflightError(
+                f"TwT gateway /v1/models returned invalid schema: {resp.text[:200]}"
+            )
         return payload["data"]
 
     try:
@@ -164,7 +176,9 @@ def query_gateway_models(
             resp = http_client.get(url)
             return _parse_response(resp)
     except httpx.HTTPError as exc:
-        raise TwTPreflightError(f"Cannot reach TwT gateway at {uds or base_url}: {exc}") from exc
+        raise TwTPreflightError(
+            f"Cannot reach TwT gateway at {uds or base_url}: {exc}"
+        ) from exc
 
 
 def query_gateway_provenance(
@@ -224,7 +238,9 @@ def verify_gateway_capabilities(
     - Any requested provider-model in provider_models is missing from the running gateway catalog.
     - expected_sha is provided and the running gateway provenance fails to match it.
     """
-    models = query_gateway_models(base_url=base_url, uds=uds, timeout=timeout, client=client)
+    models = query_gateway_models(
+        base_url=base_url, uds=uds, timeout=timeout, client=client
+    )
 
     available_pairs: Set[Tuple[str, str]] = set()
     available_ids: Set[str] = set()
@@ -235,13 +251,19 @@ def verify_gateway_capabilities(
         if owned:
             available_pairs.add((owned, mid))
             if mid.startswith(f"{owned}/"):
-                available_pairs.add((owned, mid[len(owned) + 1:]))
+                available_pairs.add((owned, mid[len(owned) + 1 :]))
 
     if provider_models:
         for provider, req_model in provider_models.items():
             qualified = f"{provider}/{req_model}"
-            if qualified not in available_ids and (provider, req_model) not in available_pairs and req_model not in available_ids:
-                matching_provider_models = sorted(m for p, m in available_pairs if p == provider)
+            if (
+                qualified not in available_ids
+                and (provider, req_model) not in available_pairs
+                and req_model not in available_ids
+            ):
+                matching_provider_models = sorted(
+                    m for p, m in available_pairs if p == provider
+                )
                 raise TwTPreflightError(
                     f"TwT gateway capability preflight failed: requested provider model '{provider}={req_model}' "
                     f"is not served by running gateway at {uds or base_url}. "
@@ -249,14 +271,20 @@ def verify_gateway_capabilities(
                 )
 
     if expected_sha:
-        prov = query_gateway_provenance(base_url=base_url, uds=uds, timeout=timeout, client=client)
+        prov = query_gateway_provenance(
+            base_url=base_url, uds=uds, timeout=timeout, client=client
+        )
         if prov:
             commit_id = prov.get("commit_id")
             req_rev = prov.get("requested_revision")
             exp = expected_sha.strip().lower()
             matches = False
             for cand in (commit_id, req_rev):
-                if cand and (cand.strip().lower() == exp or cand.strip().lower().startswith(exp) or exp.startswith(cand.strip().lower())):
+                if cand and (
+                    cand.strip().lower() == exp
+                    or cand.strip().lower().startswith(exp)
+                    or exp.startswith(cand.strip().lower())
+                ):
                     matches = True
                     break
             if not matches:
