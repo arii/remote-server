@@ -327,19 +327,26 @@ export function TemplatePanel({
       aria-label="Prompt templates"
       data-testid="chat-templates-panel"
     >
-      <button
-        type="button"
-        data-testid="chat-template-save"
-        title="Save the current draft as a template"
-        disabled={!canSave || disabled}
-        onMouseDown={(e) => {
-          e.preventDefault();
-        }}
-        onClick={() => onSave()}
-      >
-        Save draft as template
-      </button>
-      {!canSave && <span className="row-meta">Enter a draft before saving a template.</span>}
+      <span className="control-with-hint">
+        <button
+          type="button"
+          data-testid="chat-template-save"
+          title={!canSave ? 'Enter a draft before saving a template.' : 'Save the current draft as a template'}
+          aria-describedby={!canSave ? 'chat-template-save-reason' : undefined}
+          disabled={!canSave || disabled}
+          onMouseDown={(e) => {
+            e.preventDefault();
+          }}
+          onClick={() => onSave()}
+        >
+          Save draft as template
+        </button>
+        {!canSave && (
+          <span id="chat-template-save-reason" className="row-meta control-hint" data-testid="chat-template-save-reason">
+            Enter a draft before saving a template.
+          </span>
+        )}
+      </span>
       {templates.length === 0 && (
         <span className="row-meta" data-testid="chat-templates-empty">
           No templates yet — save the draft above.
@@ -2863,16 +2870,27 @@ export default function ChatView({
               </button>
             ))}
           </div>
-          <button
-            type="submit"
-            data-testid="chat-send"
-            title="Send (Ctrl+Enter or Cmd+Enter)"
-            disabled={streaming || !prompt.trim()}
-          >
-            {streaming ? 'Sending…' : 'Send'}
-          </button>
-          {!streaming && !prompt.trim() && <span className="row-meta">Enter a prompt to send.</span>}
-          {streaming && <span className="row-meta">Reply streaming. Chat controls unlock when it finishes.</span>}
+          <span className="control-with-hint">
+            <button
+              type="submit"
+              data-testid="chat-send"
+              title="Send (Ctrl+Enter or Cmd+Enter)"
+              aria-describedby={!prompt.trim() || streaming ? 'chat-send-reason' : undefined}
+              disabled={streaming || !prompt.trim()}
+            >
+              {streaming ? 'Sending…' : 'Send'}
+            </button>
+            {!streaming && !prompt.trim() && (
+              <span id="chat-send-reason" className="row-meta control-hint" data-testid="chat-send-reason">
+                Enter a prompt to send.
+              </span>
+            )}
+            {streaming && (
+              <span id="chat-send-reason" className="row-meta control-hint" data-testid="chat-send-reason">
+                Reply streaming. Chat controls unlock when it finishes.
+              </span>
+            )}
+          </span>
           {/* Session utilities trail the pills + Send behind a
               hairline divider (#897): one row, three groups. */}
           <div
@@ -2895,16 +2913,23 @@ export default function ChatView({
           >
             New chat
           </button>
-          <button
-            type="button"
-            data-testid="chat-export"
-            title="Download transcript as Markdown (or type /export)"
-            disabled={messages.length === 0}
-            onClick={() => onExportTranscript()}
-          >
-            Export
-          </button>
-          {messages.length === 0 && <span className="row-meta">No messages to export.</span>}
+          <span className="control-with-hint">
+            <button
+              type="button"
+              data-testid="chat-export"
+              title={messages.length === 0 ? 'No messages to export.' : 'Download transcript as Markdown (or type /export)'}
+              aria-describedby={messages.length === 0 ? 'chat-export-reason' : undefined}
+              disabled={messages.length === 0}
+              onClick={() => onExportTranscript()}
+            >
+              Export
+            </button>
+            {messages.length === 0 && (
+              <span id="chat-export-reason" className="row-meta control-hint" data-testid="chat-export-reason">
+                No messages to export.
+              </span>
+            )}
+          </span>
           <button
             type="button"
             data-testid="chat-templates"

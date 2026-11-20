@@ -737,6 +737,10 @@ a.link-chip:hover { border-color: var(--accent); }
    behind a hairline divider so pills / Send / utilities read as
    three groups, still one wrapped row. */
 .actions > .composer-utils { display: inline-flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 0 0.25rem; border-left: 1px solid var(--border); padding-left: 0.75rem; }
+/* Disabled control with grouped hint (issue #1438): reason attaches
+   directly to the button instead of floating loose in action bars. */
+.control-with-hint { display: inline-flex; align-items: center; gap: 0.4rem; }
+.control-with-hint > .control-hint { font-size: 0.8rem; color: var(--muted); }
 
 /* Trace folding: collapsed per-event summary rows on narrow
    viewports; tap a row to expand the full line inline. */
