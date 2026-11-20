@@ -889,11 +889,9 @@ class AuditorGraph:
                 time.time(),
                 extra={
                     "valid": state.get("valid"),
-                    **(
-                        {"stage": "audit", "phase": "summary", "llm_call": False}
-                        if outer.review_calls_metered
-                        else {}
-                    ),
+                    "stage": "audit",
+                    "phase": "summary",
+                    "llm_call": False,
                     "worktree_root": outer.worktree_root,
                     "decisions": lines,
                     "verdict": verdict,
