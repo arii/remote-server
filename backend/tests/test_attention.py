@@ -1281,8 +1281,14 @@ class FailingScheduleAttentionTest(unittest.TestCase):
         ])
         items = a.attention("cobrowser")["items"]
         by = {i["id"]: i for i in items}
-        self.assertIn("not found on this host", by["schedule-s1"]["detail"])
-        self.assertIn("transient", by["schedule-s2"]["detail"])
+        d1 = by["schedule-s1"]["detail"]
+        self.assertIn("did not resolve to a readable checkout", d1)
+        self.assertIn("cannot tell which", d1)
+        # An unresolved repo may be a transient missing or corrupt
+        # checkout: it must never be labelled permanent or removable.
+        for word in ("permanent", "until the checkout is restored", "removed"):
+            self.assertNotIn(word, d1)
+        self.assertIn("another reason", by["schedule-s2"]["detail"])
         for i in items:
             self.assertEqual(i["kind"], "failed-schedule")
             self.assertIn("nothing was auto-paused", i["detail"])
@@ -1294,3 +1300,14 @@ class FailingScheduleAttentionTest(unittest.TestCase):
             jobs=[{"id": "j", "repo": "arii/gone"}, {"id": "k", "repo": "remote-server"}],
         )
         self.assertEqual(a.orphan_repo_names(["remote-server"]), ["cobrowser", "gone"])
+
+    def test_unknown_repo_copy_same_for_missing_and_corrupt(self):
+        a = self._run([
+            {"id": "m", "repo": "r", "action": "x", "last_result": {
+                "ok": False, "at": 1.0, "error": "unknown repo"}},
+            {"id": "c", "repo": "r", "action": "x", "last_result": {
+                "ok": False, "at": 1.0, "error": "unknown repo"}},
+        ])
+        by = {i["id"]: i["detail"] for i in a.attention("r")["items"]}
+        self.assertEqual(by["schedule-m"], by["schedule-c"])
+        self.assertIn("retried on the next interval", by["schedule-m"])
