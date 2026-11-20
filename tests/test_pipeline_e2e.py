@@ -418,3 +418,128 @@ class TestRealTdSmoke(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GatedPipeline(ScriptedPipeline):
+    """Scripted pipeline with recorded tiers, notes and audit calls."""
+
+    def __init__(self, script, **kwargs):
+        super().__init__(script, **kwargs)
+        self.audit_calls = 0
+        self.tiers = []
+        self.notes = []
+
+    def stage_audit(self, worktree_root):
+        self.audit_calls += 1
+        return super().stage_audit(worktree_root)
+
+    def stage_code(self, brief, worktree_root=None, repair_notes=""):
+        self.tiers.append(os.environ.get("CODER_MODEL"))
+        self.notes.append(repair_notes)
+        return super().stage_code(brief, worktree_root, repair_notes)
+
+
+class TestPreAuditRouting(unittest.TestCase):
+    """Pre-audit gate, repair budget and escalation routing (#1403)."""
+
+    def setUp(self):
+        super().setUp()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        env = mock.patch.dict(
+            os.environ,
+            {"AGENT_CONTROL_STATE_FILE": os.path.join(directory.name, "control.json")},
+        )
+        self.addCleanup(env.stop)
+        env.start()
+        os.environ.pop("CODER_MODEL", None)
+        self.addCleanup(os.environ.pop, "CODER_MODEL", None)
+
+    def test_preaudit_failure_skips_auditor_and_routes_back_to_coder(self):
+        gate = mock.Mock(
+            side_effect=[
+                (False, pipeline_mod.MECHANICAL, "lint: F401 unused import"),
+                (True, "", ""),
+            ]
+        )
+        pipe = GatedPipeline([pipeline_mod.APPROVED], preaudit_fn=gate)
+        result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.APPROVED)
+        self.assertEqual(pipe.audit_calls, 1)  # only after the gate passed
+        self.assertEqual(gate.call_count, 2)
+        self.assertEqual(pipe.calls, [(None, False), ("/tmp/wt-1", True)])
+        self.assertEqual(pipe.notes[0], "")
+        self.assertIn("lint: F401 unused import", pipe.notes[1])
+        self.assertEqual(result["repair_cycles"], 1)
+        self.assertEqual(result["audit_cycles"], 0)
+        self.assertEqual(result["escalations_used"], 0)
+        self.assertIn("preaudit", [e["stage"] for e in pipe.events])
+
+    def test_mechanical_failures_exhaust_budget_without_auditor_or_escalation(self):
+        gate = mock.Mock(
+            return_value=(False, pipeline_mod.MECHANICAL, "syntax: a.py: bad indent")
+        )
+        pipe = GatedPipeline([pipeline_mod.APPROVED], preaudit_fn=gate)
+        result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.REPAIR_BUDGET_EXHAUSTED)
+        self.assertEqual(pipe.audit_calls, 0)
+        self.assertEqual(len(pipe.calls), 3)  # initial + 2 repairs
+        self.assertEqual(result["repair_cycles"], 2)
+        self.assertEqual(result["audit_cycles"], 0)
+        self.assertEqual(result["escalations_used"], 0)
+        self.assertEqual(pipe.tiers, [None, None, None])
+        self.assertIn("syntax: a.py: bad indent", result["detail"])
+
+    def test_audit_rejection_escalates_once_then_stays_fast(self):
+        gate = mock.Mock(return_value=(True, "", ""))
+        pipe = GatedPipeline(
+            [
+                pipeline_mod.CHANGES_REQUESTED,
+                pipeline_mod.CHANGES_REQUESTED,
+                pipeline_mod.APPROVED,
+            ],
+            preaudit_fn=gate,
+            strong_tier_model="strong-x",
+        )
+        result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.APPROVED)
+        self.assertEqual(pipe.tiers, [None, "strong-x", None])
+        self.assertEqual(result["escalations_used"], 1)
+        self.assertEqual(result["audit_cycles"], 2)
+        self.assertEqual(result["repair_cycles"], 2)
+        self.assertIsNone(os.environ.get("CODER_MODEL"))  # env restored
+
+    def test_test_failure_allows_one_strong_escalation(self):
+        gate = mock.Mock(
+            side_effect=[
+                (False, pipeline_mod.TEST_FAILURE, "pytest: test_x failed"),
+                (True, "", ""),
+            ]
+        )
+        pipe = GatedPipeline([pipeline_mod.APPROVED], preaudit_fn=gate)
+        result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.APPROVED)
+        self.assertEqual(pipe.tiers, [None, pipeline_mod.STRONG_TIER_MODEL_DEFAULT])
+        self.assertEqual(result["escalations_used"], 1)
+
+    def test_repair_cap_terminates_audit_rejections_with_structured_status(self):
+        gate = mock.Mock(return_value=(True, "", ""))
+        pipe = GatedPipeline(
+            [pipeline_mod.CHANGES_REQUESTED] * 4,
+            preaudit_fn=gate,
+            max_audit_cycles=5,
+            strong_tier_model="strong-x",
+        )
+        result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.REPAIR_BUDGET_EXHAUSTED)
+        self.assertEqual(result["repair_cycles"], 2)
+        self.assertEqual(result["audit_cycles"], 3)
+        self.assertEqual(pipe.tiers, [None, "strong-x", None])
+
+    def test_audit_cap_still_returns_changes_requested(self):
+        gate = mock.Mock(return_value=(True, "", ""))
+        pipe = GatedPipeline([pipeline_mod.CHANGES_REQUESTED] * 4, preaudit_fn=gate)
+        result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.CHANGES_REQUESTED)
+        self.assertEqual(result["audit_cycles"], 2)
+        self.assertEqual(result["repair_cycles"], 2)
