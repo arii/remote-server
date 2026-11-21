@@ -114,7 +114,9 @@ later tick).
 `--skip-auth-route` in `docker-compose.yml`) pulls `main` on push:
 HMAC-SHA256 (`WEBHOOK_SECRET`, fail closed when unset), push-only,
 allowlisted repos, `--ff-only`. Pull only — never rebuild, never
-install. Last pull per repo shows in `GET /api/status`.
+install. The last pull per repo (ok, advanced, detail, skip reason) shows in
+`GET /api/status` under `webhooks`; it is in-memory, so it resets when the
+backend restarts. The ledger (`kind=webhook`) keeps the history.
 
 ## Architecture
 

@@ -32,8 +32,10 @@ const DANGER: DangerAction[] = [
     action: 'deploy-buttons',
     title: 'Redeploy this console',
     label: 'Redeploy',
-    consequence: 'Pulls, rebuilds and restarts the console container.',
-    confirm: 'The console will restart.',
+    consequence:
+      'Pulls main (fast-forward only), rebuilds and restarts the console container.',
+    confirm:
+      'The console will restart. If the pull fails, nothing is rebuilt and the run shows as failed in Jobs and History.',
   },
   // No terminal restart: force-recreating terminal drops live
   // agent sessions with no resume path, so the console must not
