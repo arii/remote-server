@@ -25,6 +25,7 @@ import type { RunCompareResult, UxAuditGroup } from '../apiClient';
 import type { JobRecord } from '../apiTypes';
 import { useTriageKeys } from '../triageKeys';
 import { loadJobs, useMock } from './mockViews';
+import { parseIssueNumber } from './queueUtils';
 import {
   UX_AUDIT_SITES,
   attachIdFromConflict,
@@ -697,6 +698,11 @@ export function UxAuditGroups({ site }: { site: string }) {
               size={8}
             />
           </label>
+          {parseIssueNumber(issue) === null && (
+            <p className="row-meta" data-testid="ux-audit-assign-hint">
+              Enter the findings issue number to enable Assign group.
+            </p>
+          )}
           <ul>
             {groups.map((g) => (
               <li key={g.index} className="detail" data-testid={`ux-audit-group-${g.index}`}>
@@ -710,7 +716,12 @@ export function UxAuditGroups({ site }: { site: string }) {
                   <button
                     type="button"
                     data-testid={`ux-audit-assign-${g.index}`}
-                    disabled={assigning === g.index}
+                    disabled={assigning === g.index || parseIssueNumber(issue) === null}
+                    title={
+                      parseIssueNumber(issue) === null
+                        ? 'Enter the findings issue number first'
+                        : undefined
+                    }
                     onClick={() => void onAssign(g)}
                   >
                     {assigning === g.index ? 'Assigning…' : 'Assign group'}

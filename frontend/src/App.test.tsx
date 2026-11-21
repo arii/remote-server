@@ -1163,7 +1163,9 @@ describe('agent drawer', () => {
     );
     expect(html).toContain('muse (unreachable)');
     expect(html).toContain('value="agy" selected');
-    expect(html).not.toContain('disabled');
+    // Only Launch is disabled (empty task, #1491); nothing is disabled for the provider.
+    expect(html).not.toContain('<select disabled');
+    expect(html).toContain('Describe the task to enable Launch.');
   });
 
   it('disables launch when the selected provider is dead', () => {
