@@ -140,7 +140,7 @@ export default function DangerZone({
             </p>
           </div>
           <TapToFire
-            label="Clear all"
+            label="Clear everything"
             name="Clear everything"
             confirm="All runs will be dropped."
             disabled={runCount === 0 || finishedCount !== runCount}
