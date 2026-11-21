@@ -833,10 +833,16 @@ export default function AgentDrawer({
               label="Launch"
               disabled={
                 providers.length === 0 ||
-                (provider !== '' && status[provider] === false)
+                (provider !== '' && status[provider] === false) ||
+                !prompt.trim()
               }
               onFire={() => void onLaunch()}
             />
+            {!prompt.trim() && providers.length > 0 && (
+              <span className="row-meta" data-testid="agent-launch-hint">
+                Describe the task to enable Launch.
+              </span>
+            )}
             {providers.length === 0 && <span className="row-meta">No agent providers are available.</span>}
             {provider !== '' && status[provider] === false && (
               <p className="row-meta" data-testid="agent-provider-dead" role="status">
