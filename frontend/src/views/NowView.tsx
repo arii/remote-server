@@ -434,6 +434,11 @@ export function ReportDialog({
         <button type="submit" data-testid="report-submit" disabled={!title.trim()}>
           File bug
         </button>
+        {!title.trim() && (
+          <span className="row-meta" data-testid="report-submit-hint">
+            Enter a title to enable File bug.
+          </span>
+        )}
         <button type="button" data-testid="report-cancel" onClick={onCancel}>
           Cancel
         </button>
