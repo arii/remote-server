@@ -147,7 +147,8 @@ class Briefing(BaseModel):
 class BackendStatus(BaseModel):
     """Backend status: mirrors the shape of /buttons/api/status
     (runs, webhooks, health) but honest — this backend owns no run
-    queue, so runs/webhooks are empty and no activity is faked."""
+    queue, so runs is empty. webhooks is the last pull outcome per repo
+    since this process started (#1489); no activity is faked."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -689,13 +690,37 @@ def briefing_refresh(body: BriefingRefreshRequest) -> dict:
     return {"ok": True, "repo": name, "started": not already}
 
 
+def _webhook_summary() -> dict:
+    """Last webhook pull outcome per repo (#1489), from the in-memory
+    state the pull worker already keeps. It resets when the backend
+    restarts, so an absent repo means no pull since start, not never.
+    The ledger (kind=webhook) holds the persistent history."""
+    from backend.notify import webhook as notify_webhook
+
+    out: dict = {}
+    with notify_webhook.webhook_state_lock:
+        for repo, st in notify_webhook.webhook_state.items():
+            if not isinstance(st, dict):
+                continue
+            row = {
+                "at": st.get("at"),
+                "ok": bool(st.get("ok")),
+                "advanced": bool(st.get("advanced")),
+                "detail": str(st.get("detail") or "")[:200],
+            }
+            if st.get("skip_reason"):
+                row["skip_reason"] = str(st["skip_reason"])
+            out[str(repo)] = row
+    return out
+
+
 @router.get("/status", response_model=BackendStatus)
 def status() -> dict:
     return {
         "ok": True,
         "service": "backend",
         "runs": [],
-        "webhooks": {},
+        "webhooks": _webhook_summary(),
         "health": get_system_health(),
     }
 

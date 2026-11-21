@@ -296,7 +296,7 @@ def parse_args(argv):
     return args
 
 
-def build_system(worktree, context):
+def build_system(worktree, context, repo=None):
     """Coder rules plus spawner context, static head first.
 
     The rules block is identical every turn; per-task context varies,
@@ -304,6 +304,10 @@ def build_system(worktree, context):
     separator. Any provider-side prefix cache then survives new tasks.
     """
     rules = CODER_RULES.format(worktree=worktree)
+    if repo is not None:
+        # Swap the default verification policy for the repo's profile
+        # (identical text for unprofiled/unknown repos).
+        rules = rules.replace(verification_guidance(), verification_guidance(repo))
     if context and context.strip():
         return rules + "\n\n---\n\n" + context.strip()
     return rules
@@ -334,7 +338,7 @@ def _default_plan_fn(brief, worktree_root, context):
         "Reply with a numbered step list, one step per line, each "
         "naming its files like [files: path1, path2]. "
         "Keep it to the brief; no questions."
-        f"\n\n{verification_guidance()}"
+        f"\n\n{verification_guidance(context.get('repo') or None)}"
         f"{skills_block}"
         f"\n\nBrief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
         f"\n\nRepair notes:\n{context.get('repair_notes', '')}"
@@ -433,11 +437,11 @@ def _inject_replanner_skills():
         return ""
 
 
-def build_check_tool(worktree, written_files=None):
+def build_check_tool(worktree, written_files=None, repo=None):
     """run_check tool: allowlisted verification commands in worktree."""
     from langchain_core.tools import tool  # noqa: E402
 
-    allowed = allowed_commands_text()
+    allowed = allowed_commands_text(repo)
     # Per-tool dither streak: consecutive identical failing,
     # empty-success, or unchanged-output (#1374) commands. Any
     # different command or a success with new output resets it, and
@@ -453,7 +457,7 @@ def build_check_tool(worktree, written_files=None):
                 {allowed}.
         """
         try:
-            argv = parse_check_command(command)
+            argv = parse_check_command(command, repo)
         except ValueError as exc:
             return f"REJECTED: bad command line: {exc}"
         import subprocess  # noqa: E402
@@ -752,6 +756,7 @@ def build_agent(
     spec=None,
     written_files=None,
     repair=False,
+    repo=None,
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
@@ -807,7 +812,7 @@ def build_agent(
 
         middleware = observe.trace_middleware(recorder) + middleware
     if tools is None:
-        default_tools = [build_check_tool(worktree, written_files)]
+        default_tools = [build_check_tool(worktree, written_files, repo)]
     else:
         default_tools = list(tools)
     return create_deep_agent(
@@ -938,7 +943,7 @@ def trace_has_passing_check(trace_path):
     return verified
 
 
-def trace_verification_evidence(trace_path):
+def trace_verification_evidence(trace_path, repo=None):
     evidence = []
     try:
         with open(trace_path, encoding="utf-8") as handle:
@@ -956,7 +961,7 @@ def trace_verification_evidence(trace_path):
                     command = json.loads(event.get("args_preview", "{}"))["command"]
                     if not isinstance(command, str):
                         continue
-                    parse_check_command(command)
+                    parse_check_command(command, repo)
                 except (ValueError, TypeError, KeyError):
                     continue
                 output = event.get("check_output", event.get("result_preview", ""))
@@ -1193,6 +1198,7 @@ def run_coder(
     repair_files=(),
     repair=False,
     model_tier=None,
+    repo=None,
 ):
     """Invoke the coder with a verify gate.
 
@@ -1260,6 +1266,7 @@ def run_coder(
             spec=spec,
             written_files=written_files,
             repair=repair,
+            repo=repo,
         )
         config = {"configurable": {"thread_id": thread}}
 
@@ -1951,7 +1958,11 @@ class InitCoderGraph:
         self.implement_fn = implement_fn or _default_implement_fn
         self.td_runner = td_runner if td_runner is not None else self._default_td_runner
         self.cmd_runner = (
-            cmd_runner if cmd_runner is not None else s5tools.run_repo_command
+            cmd_runner
+            if cmd_runner is not None
+            else lambda root, command: s5tools.run_repo_command(
+                root, command, s5tools.repo_for_checkout(self.repo)
+            )
         )
         self.max_fix_loops = max_fix_loops
         self.max_replans = max_replans
