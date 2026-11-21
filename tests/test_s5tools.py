@@ -1013,5 +1013,62 @@ class TestSearchWeb(unittest.TestCase):
             )
 
 
+class TestRepoVerifyProfiles(unittest.TestCase):
+    """#1377: pnpm repo scripts are allowed only for a profiled repo."""
+
+    SCRIPTS = (
+        "pnpm run test",
+        "pnpm run build",
+        "pnpm run audit:fallow",
+        "pnpm run test src/a.test.ts",
+    )
+
+    def test_profiled_repo_allows_scripts(self):
+        for cmd in self.SCRIPTS:
+            argv = s5tools.parse_check_command(cmd, "arii/portfolio")
+            self.assertTrue(s5tools.check_allowed(argv, "arii/portfolio"), cmd)
+
+    def test_defaults_unchanged_without_or_for_other_repo(self):
+        for repo in (None, "", "arii/remote-server", "arii/unknown", 7):
+            for cmd in self.SCRIPTS:
+                with self.assertRaises(ValueError, msg=(repo, cmd)):
+                    s5tools.parse_check_command(cmd, repo)
+        self.assertEqual(s5tools.check_prefixes(), s5tools.CHECK_PREFIXES)
+        self.assertEqual(s5tools.check_prefixes("arii/x"), s5tools.CHECK_PREFIXES)
+        self.assertNotIn("audit:fallow", s5tools.verification_guidance())
+        self.assertNotIn("audit:fallow", s5tools.allowed_commands_text())
+        self.assertNotIn("not Python-first", s5tools.verification_guidance())
+
+    def test_profiled_repo_rejects_near_misses(self):
+        for cmd in (
+            "pnpm run test:backend",
+            "pnpm run build:prod",
+            "pnpm run deploy",
+            "pnpm run build --dir /tmp",
+            "pnpm run test --filter x",
+            "pnpm run test /etc/passwd",
+            "pnpm run test ../x",
+            "pnpm run test && pnpm run build",
+        ):
+            with self.assertRaises(ValueError, msg=cmd):
+                s5tools.parse_check_command(cmd, "arii/portfolio")
+
+    def test_guidance_and_text_for_profiled_repo(self):
+        self.assertIn(
+            "pnpm run audit:fallow", s5tools.allowed_commands_text("arii/portfolio")
+        )
+        self.assertIn(
+            "not Python-first", s5tools.verification_guidance("arii/portfolio")
+        )
+
+    def test_run_repo_command_rejects_without_repo(self):
+        out = s5tools.run_repo_command("/nonexistent", "pnpm run build")
+        self.assertTrue(out.startswith("REJECTED"), out)
+        out = s5tools.run_repo_command(
+            "/nonexistent", "pnpm run build", "arii/portfolio"
+        )
+        self.assertFalse(out.startswith("REJECTED"), out)
+
+
 if __name__ == "__main__":
     unittest.main()
