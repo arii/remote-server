@@ -126,6 +126,7 @@ export default function DangerZone({
           <TapToFire
             label="Clear"
             name="Clear finished runs"
+            confirm="Finished runs will be dropped from the list."
             disabled={finishedCount === 0}
             onFire={() => onClear(false)}
           />
