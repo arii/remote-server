@@ -485,10 +485,16 @@ li.detail.merging { opacity: 0.55; }
   border-radius: 6px;
   background: var(--surface);
 }
-.cobrowse-chat { min-width: 0; }
+.cobrowse-chat { min-width: 0; overflow-wrap: anywhere; }
 .cobrowse-notebook { white-space: pre-wrap; overflow-wrap: anywhere; }
 .browser-tasks { min-width: 0; margin-bottom: 1rem; }
 .browser-tasks label { display: block; }
+/* One clean column (#1490): Instructions, Start URL, Mode and Run
+   stack with a gap, so the Mode select never sits against the label
+   or crowds the Run button, at any rail width. */
+.browser-tasks form { display: flex; flex-direction: column; gap: 0.6rem; }
+.browser-tasks select { display: block; width: 100%; min-width: 0; box-sizing: border-box; margin-top: 0.25rem; }
+.browser-tasks form > button[type="submit"] { align-self: flex-start; }
 .browser-tasks input, .browser-tasks textarea { width: 100%; min-width: 0; box-sizing: border-box; }
 .browser-tasks input[type="url"] { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem 0.55rem; }
 .browser-task-report, .browser-task-preview { margin: 0.75rem 0; min-width: 0; overflow-wrap: anywhere; }
