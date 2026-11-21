@@ -528,3 +528,38 @@ export function toHistoryRows(
   }
   return rows;
 }
+
+export interface LastPullLine {
+  repo: string;
+  tone: HistoryTone;
+  text: string;
+}
+
+function agoText(at: number | null, nowSec: number): string {
+  if (at === null || !Number.isFinite(at)) return 'time unknown';
+  const d = Math.max(0, Math.round(nowSec - at));
+  if (d < 90) return 'just now';
+  if (d < 5400) return `${Math.round(d / 60)} min ago`;
+  if (d < 129600) return `${Math.round(d / 3600)} h ago`;
+  return `${Math.round(d / 86400)} d ago`;
+}
+
+// One line per repo for the last webhook pull (#1489). A skipped pull
+// is neutral (the checkout was not updated), a failed pull carries
+// its detail, and only an advancing pull reads as ok.
+export function lastPullLines(
+  pulls: Record<string, { at: number | null; ok: boolean; advanced: boolean; detail: string; skip_reason?: string }>,
+  nowSec: number,
+): LastPullLine[] {
+  return Object.keys(pulls)
+    .sort()
+    .map((repo) => {
+      const p = pulls[repo];
+      const when = agoText(p.at, nowSec);
+      const detail = p.detail ? `: ${p.detail}` : '';
+      if (!p.ok) return { repo, tone: 'bad' as const, text: `pull failed ${when}${detail || ' (no detail recorded)'}` };
+      if (p.skip_reason) return { repo, tone: 'muted' as const, text: `pull skipped ${when} (${p.skip_reason}), checkout not updated` };
+      if (p.advanced) return { repo, tone: 'ok' as const, text: `pulled new commits ${when}${detail}` };
+      return { repo, tone: 'muted' as const, text: `pull ran ${when}, nothing new${detail}` };
+    });
+}

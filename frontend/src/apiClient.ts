@@ -726,6 +726,26 @@ export async function createIssue(repo: string, title: string, body: string, lab
   });
 }
 
+export interface WebhookPull {
+  at: number | null;
+  ok: boolean;
+  advanced: boolean;
+  detail: string;
+  skip_reason?: string;
+}
+
+export interface BackendStatusResponse {
+  webhooks?: Record<string, WebhookPull>;
+}
+
+// Last webhook pull per repo (#1489). In memory on the backend, so
+// it resets on restart; the ledger holds the persistent history.
+export function fetchBackendStatus(): Promise<BackendStatusResponse> {
+  return cachedViewFetch<BackendStatusResponse>('api/status', VIEW_CACHE_SHORT_TTL_MS, () =>
+    getJson<BackendStatusResponse>('api/status'),
+  );
+}
+
 export function fetchLedger(
   kind = 'all',
   limit = 50,
