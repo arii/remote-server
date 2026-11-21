@@ -473,12 +473,15 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
             compose_argv("logs", "--tail=100", "terminal", "ollama"),
         ], None
     if action == "deploy-buttons":
+        # `A && B || true` would swallow a failed pull (#1488): only the
+        # chmod is allowed to fail. A failed pull exits nonzero, the run
+        # stops before the rebuild, and the failure shows as a failed run.
         return [
             exec_argv(
                 "git -c safe.directory=/srv/remote-server "
                 "-c core.hooksPath=/dev/null -C /srv/remote-server "
-                "pull --ff-only && chmod +x "
-                "/srv/remote-server/scripts/*.sh 2>/dev/null || true"
+                "pull --ff-only && { chmod +x "
+                "/srv/remote-server/scripts/*.sh 2>/dev/null || true; }"
             ),
             exec_argv(
                 "HOST_HOME=/home/ari HOME=/home/ari docker compose "

@@ -119,8 +119,15 @@ export function JobListItem({
     >
       <span className="row-title">{labelOf(job)}</span>
       <p className="row-meta">
-        {job.id} · {job.repo || repo} · {job.done ? 'done' : 'active'}
-        {typeof job.exit_code === 'number' ? ` · exit ${job.exit_code}` : ''}
+        {job.id} · {job.repo || repo} ·{' '}
+        {!job.done
+          ? 'active'
+          : typeof job.exit_code === 'number' && job.exit_code !== 0
+            ? `failed (exit ${job.exit_code})`
+            : 'done'}
+        {typeof job.exit_code === 'number' && (!job.done || job.exit_code === 0)
+          ? ` · exit ${job.exit_code}`
+          : ''}
       </p>
       {(job.error || job.detail) && (
         <p className="row-meta job-row-note" title={job.error || job.detail || ''}>
