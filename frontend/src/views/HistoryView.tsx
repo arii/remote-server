@@ -548,6 +548,12 @@ export default function HistoryView({
                 </button>
               ))}
             </div>
+            {scoped.some((r) => r.kind === 'webhook') && (
+              <p className="row-meta" data-testid="history-pull-only-note">
+                Webhook pulls only fast-forward main. They never rebuild, install or
+                restart; use Redeploy for that. A skipped pull did not update the checkout.
+              </p>
+            )}
             {hiddenSkips > 0 && (
               <p className="row-meta" data-testid="history-skips-note">
                 {hiddenSkips} skipped webhook{hiddenSkips === 1 ? '' : 's'} hidden.{' '}
