@@ -1,239 +1,155 @@
-# remote-server — TRIGKEY S5 home server
+# remote-server
 
-Repeatable bring-up of a 24/7 home server on a TRIGKEY S5 Mini PC
-(Ryzen 7 PRO 5850U, 32 GB RAM, 500 GB SSD): browser-based terminal access
-with GitHub OAuth (no SSH client needed), reusing Ari's **existing dynamic
-DDNS + certbot** for the terminal's TLS. Tailscale provides the VPN mesh for
-admin access. Pi + local Ollama are **active** (see `docs/pi-setup.md`); the
-rest of the agent harnesses stay on hold (see `docs/agent-harness.md`).
+Home-server stack for the TRIGKEY S5 Mini PC (Ryzen 7 PRO 5850U,
+32 GB RAM, 500 GB SSD), with a phone-friendly terminal and the Buttons
+operator console behind GitHub OAuth. The stack reuses the host's DDNS
+and certbot certificates. Tailscale provides a separate admin-access path.
 
-## Durable issue queue
+This README describes the checked-in implementation, not the currently
+running host. Source checked November 21, 2026. Building an image, merging
+a PR and deploying that image are separate steps.
 
-The sequential, restart-safe TwT queue is kept in
-[`scripts/queue_runner.py`](scripts/queue_runner.py), with its
-[`systemd --user` unit](scripts/twt-queue.service),
-[triaged manifest](scripts/config/twt-queue-issues.json) and tests. Configure paths
-and runtimes through `--config` or `QUEUE_CONFIG`; nothing depends on a Devin
-session directory. It uses the canonical pipeline, separate per-issue state and
-ledgers, and a maximum $0.50 recorded-spend cap. Bounded reservations count toward
-that cap; unknown unbounded spend still halts. See the
-[queue runbook](docs/twt-queue.md) for configuration, ordering/holds, service setup
-and safe recovery. Nothing starts automatically when installing this repository.
+## Current operator workflow
+
+Open `/buttons/` for the React console (`frontend/`) backed by FastAPI
+(`backend/`). The navigation offers Chat, Now, History and Browser, with
+Review, Jobs, Queue and Briefing sections. Reads gather repository state;
+writes use validated backend actions and approval gates.
+
+- **Chat:** `/api/chat/stream` starts `deep-agent/deep_chat.py` and streams
+  a turn over SSE. Approval requests resume through `/api/chat/resume`.
+  The frontend uses `/buttons/api/*`; Caddy strips `/buttons` before
+  forwarding to FastAPI.
+- **Model routing:** `deep-agent/model_router.py` selects local Ollama
+  through Tokens with Taste when available, then the TwT provider
+  waterfall. Explicit preferences and local-only controls affect that
+  choice. See the module and `.env.example` for the actual environment
+  contract; do not infer the deployed route from this README.
+- **Provider CLI turns:** the separate `/api/agent/turn` path in
+  `backend/exec/agent_turn.py` allows Muse and agy. It does not run Pi.
+- **Repair work:** issue dispatch uses `/api/repair/dispatch`; jobs and
+  their results are exposed through `/api/jobs/*`. See
+  [Buttons](docs/buttons.md) and the implementation for endpoint contracts.
+
+Pi is not the Buttons chat/session backend. The terminal Dockerfile still
+installs Pi and seeds `terminal/pi-config/`, so those files remain relevant
+to manual terminal use. Their presence does not mean a Pi session powers
+Buttons. The legacy `/api/pi-progress/{rid}` name remains only as a progress
+fallback; the old Ask/Suggest start routes were removed.
 
 ## Architecture
 
-```
-phone browser ── https://TERMINAL_DOMAIN:TERMINAL_PORT ──▶ oauth2-proxy
-   (any network, no app needed)     (existing DDNS + LE cert,      │
-                                     router port-forward)          │ TLS terminates here
-                                                                   │ GitHub OAuth, single-user
-                                                                   ▼
-                                                            caddy:8080 (compose net)
-                                                              ├── / (terminal:7681, ttyd + zellij)
-                                                              ├── /buttons* + /cdp-stream* (buttons:8000)
-                                                              ├── /code* (code-server:8080, browser VS Code)
-                                                              │     └─ Continue extension (Ollama qwen3:8b)
-                                                              └── /hrm* (terminal:3000)
+```text
+phone browser
+  -> https://TERMINAL_DOMAIN:TERMINAL_PORT
+  -> oauth2-proxy (TLS + GitHub OAuth)
+  -> caddy:8080 (internal router)
+       /                         -> terminal:7681 (ttyd + zellij)
+       /buttons* + /cdp-stream*   -> buttons:8000 (FastAPI + React)
+       /code*                    -> code-server:8080
+       /hrm*                     -> terminal:3000 (when that service runs)
 ```
 
-Full route table: `caddy/Caddyfile`.
+The route table is [`caddy/Caddyfile`](caddy/Caddyfile). Compose also defines
+Ollama, the shared Chromium browser, browser relay, Tailscale and skills
+provisioning. OpenClaw and actions-runner examples are commented out, not
+started services. Tailscale is not required for the OAuth-gated terminal.
 
-Tailscale (VPN, outbound-only) gives admin access to everything else
-(SSH, future services) and is the fallback if the public port is blocked.
-The terminal itself does not require Tailscale.
+## Initial host setup
 
-Nothing else listens publicly. UFW default-deny inbound with exactly two
-allow rules: the terminal port (public, OAuth-gated) and SSH from the LAN.
-See `docs/remote-access.md` for the threat model.
+These are provisioning instructions, not commands to run during a docs
+check or to refresh an existing deployment. Review the scripts, volume
+mounts and environment settings before changing a host.
 
-## Quickstart
+1. Follow [the Ubuntu setup plan](docs/setup-plan.md), including
+   `scripts/bootstrap.sh` and `scripts/install-docker.sh`.
+2. Confirm certbot already holds a valid certificate for the hostname used
+   as `TERMINAL_DOMAIN`. The stack reads the existing certificate directory.
+3. Copy `.env.example` to `.env`. Set the host paths, domain, ports, OAuth
+   settings and only the optional integrations you intend to use. Generate
+   secrets locally, for example with `openssl rand -base64 32`; never commit
+   `.env`.
+4. Create a GitHub OAuth App with the exact callback
+   `https://<TERMINAL_DOMAIN>:<TERMINAL_PORT>/oauth2/callback` and set the
+   matching redirect URL and credentials in `.env`.
+5. From the host checkout, `docker compose up -d --build` builds/starts the
+   configured stack. This changes running services. Existing hosts need a
+   separate reviewed deployment plan, not a blind repeat of this step.
+6. Install the certbot renewal hook with
+   `sudo ./scripts/install-certbot-deploy-hook.sh` if required. The hook
+   restarts oauth2-proxy on renewal to pick up the new certificate.
+7. Verify the public terminal from an external network and inspect
+   `docker compose ps`. Verify Buttons separately at `/buttons/`.
 
-1. Install Ubuntu Server 24.04 per `docs/setup-plan.md` (phases 0–3):
-   `scripts/bootstrap.sh`, then `scripts/install-docker.sh`.
-   (Your existing certbot/DDNS setup is untouched — we only read its certs.)
-2. `certbot certificates` — confirm a valid cert exists for the hostname
-   you'll use as `TERMINAL_DOMAIN`.
-3. `cp .env.example .env` and fill in every value. Generate secrets:
-   `openssl rand -base64 32`.
-4. Create the GitHub OAuth App with callback
-   `https://<TERMINAL_DOMAIN>:<TERMINAL_PORT>/oauth2/callback`
-   (GitHub allows non-443 ports — register it exactly); put the callback
-   URL in `.env` (`OAUTH2_PROXY_REDIRECT_URL`).
-5. `docker compose up -d --build` — builds the terminal image (pinned
-   ttyd + zellij) and starts the full stack: oauth2-proxy → caddy →
-   terminal / buttons / code-server, plus tailscale, ollama, browser,
-   browser-relay and skills-provisioner.
-6. `sudo ./scripts/install-certbot-deploy-hook.sh` — restarts oauth2-proxy
-   whenever certbot renews, so the new cert is picked up.
-7. Phone (on cellular, not WiFi): open
-   `https://<TERMINAL_DOMAIN>:<TERMINAL_PORT>` → GitHub login → terminal.
-   No Tailscale app needed for this. `docker compose ps` from the phone
-   to prove the socket mount works.
+The terminal image defaults to the published
+`ghcr.io/arii/remote-server-terminal:latest`; see `TERMINAL_IMAGE` in
+`.env.example` for pinning or local builds. Pulling an image alone does not
+replace a running container.
 
-## GitHub repo + CI
+## Durable issue queue
 
-1. Create the repo (public is fine) and push this directory. Nothing secret
-   is in it: `.env*` is git-ignored and CI scans every push with TruffleHog.
-2. CI (`.github/workflows/ci.yml`) runs on every push/PR, rolled up by a
-   `report` job:
-   - shell (shellcheck + `bash -n` on `scripts/`), compose (`docker
-     compose config` validation, dummy env) and format checks
-   - terminal image build from `terminal/Dockerfile`, pushed to
-     `ghcr.io/arii/remote-server-terminal` (`main`, `sha-*`, `latest` tags)
-   - TruffleHog secret scan (`--only-verified`), fallow code audit
-   - frontend, chrome extension and backend test suites, eval fixtures,
-     skills-lock / skill-shadows guards
+[`scripts/queue_runner.py`](scripts/queue_runner.py) implements the
+sequential, restart-safe TwT queue, with a
+[user-service unit](scripts/twt-queue.service),
+[manifest](scripts/config/twt-queue-issues.json), per-issue state and ledgers.
+Configure paths/runtimes through `--config` or `QUEUE_CONFIG`. Bounded
+reservations count toward its maximum $0.50 recorded-spend cap; unknown
+unbounded spend halts. Installing this repository does not start the queue.
+See [the queue runbook](docs/twt-queue.md) before enabling or recovering it.
 
-   The Docker workflow replicates `arii/BoomTick`'s pattern:
-   `.github/actions/setup-docker-buildx` (GHCR login + buildx),
-   `docker/metadata-action` tags, `build-push-action` with GHA layer cache.
+## CI and local checks
 
-   **CI needs zero secrets** — pushes use the automatic `GITHUB_TOKEN`.
-   Dependabot (`.github/dependabot.yml`) watches the Dockerfile base image
-   and the Actions weekly; ttyd/zellij pins are build ARGs — bump
-   `TTYD_VERSION`/`ZELLIJ_VERSION` in `.env.example` manually.
-3. Secrets live in exactly one place: `.env` on the box. If you ever want
-   CI-driven deploys later, that's when repo Actions secrets would enter
-   the picture — not needed for build/validate/scan.
-4. To run the CI-built image on the box instead of building locally:
-   nothing to do — it's the default (`TERMINAL_IMAGE` in compose
-   defaults to `ghcr.io/arii/remote-server-terminal:latest`, public, so
-   `docker compose pull terminal` needs no login). To pin a tag or build
-   locally, see the `TERMINAL_IMAGE` comment in `.env.example`.
+[CI](.github/workflows/ci.yml) runs on main pushes and PRs: shell syntax and
+shellcheck, Compose validation, skills integrity/shadow checks, secret scan,
+code audit, frontend/extension/backend tests, eval fixtures and formatting.
+Terminal image builds are classified separately: frontend and `docs/*.md`
+only PRs can skip them; root README changes do not qualify for that skip.
+Image publication uses the workflow's `GITHUB_TOKEN` on main.
 
-## Docs
+The separate [AI review workflow](.github/workflows/ai-review.yml) runs on
+PR open/synchronize/reopen and uses configured GitHub App and Gemini
+secrets. Therefore "CI needs no secrets" applies to the build/validation
+workflow, not every workflow in the repository. A green job is not proof
+of substantive impact review: inspect the actual findings and failure logs.
 
-Setup and access:
+For local frontend checks, use the scripts in `frontend/package.json`
+(`pnpm test`, `pnpm exec tsc --noEmit`). Backend and root test commands and
+required Python paths are recorded in the CI workflow. These commands do
+not establish host deployment or live-service health.
 
-- `docs/remote-access.md` — investigation: browser terminal without SSH,
-  GitHub OAuth. Recommends oauth2-proxy (TLS with existing LE certs) +
-  ttyd + zellij; Tailscale as VPN; DDNS/certbot reuse mechanism; threat model.
-- `docs/setup-plan.md` — phased Ubuntu install, hardening, Docker,
-  DDNS/certbot wiring, VPN, backups, repeatability. Every phase has a
-  verification step.
-- `docs/usb-install-and-network.md` — bootable USB from your Linux box
-  (exact ISO link + `dd`/Disks/Etcher), S5 install notes, Nest Wifi DHCP
-  reservation + port forward (Google Home app path), No-IP DUC install,
-  certbot.
-- `docs/workstation-onboarding.md` — workstation configuration and
-  multi-agent onboarding guide: Antigravity multi-agent toolset,
-  Boomtick MCP, and Browser MCP (v2.3.0).
-- `docs/browser-setup.md` — browser setup: CDP-direct shared autonomy.
-- `docs/durability.md` — container durability: what survives a restart,
-  and what doesn't.
-- `docs/deployment-history.md` — deployment history.
-- `docs/release-train.md` — release train process (issue #1081).
+## Source and documentation map
 
-Services and runbooks:
+- `frontend/src/App.tsx`: console navigation and sections.
+- `backend/server.py`, `backend/api/routers/`: API assembly and contracts.
+- `backend/exec/`: allowlisted jobs, provider turns and execution helpers.
+- `deep-agent/`: chat, repair and model-routing implementation.
+- `terminal/`: terminal image, zellij configuration, CLI tools and retained
+  Pi configuration; `docker-compose.yml`: services, mounts and environment.
+- `chrome-extension/`, `buttons-pair/`: browser pairing and control.
+- `scripts/`: host setup, verification, queue and maintenance scripts.
+- [Access and threat model](docs/remote-access.md),
+  [durability](docs/durability.md), [browser setup](docs/browser-setup.md),
+  [repo previews](docs/repo-previews.md),
+  [deployment history](docs/deployment-history.md) and
+  [release process](docs/release-train.md).
 
-- `docs/buttons.md` — Buttons, the operator console.
-- `docs/twt-queue.md` — durable TwT issue queue runbook.
-- `docs/twt-agents.md` — audited local and hosted agents on S5.
-- `docs/co-browsing-runbook.md` — live co-browsing preflight via `agy`.
-- `docs/impact-pass-runbook.md` — visual impact pass (deep agents).
-- `docs/ux-audit-runbook.md` + `docs/ux-audit-checklist.md` — dispatched
-  UX audit agent and its loop checklist.
-- `docs/autonomous-triage-runbook.md` — retired Nov 2026 (#102);
-  execution backend is now the repair worker
-  (`POST /api/repair/dispatch`).
+Historical migration material includes [Pi setup](docs/pi-setup.md),
+[agent-harness evaluation](docs/agent-harness.md),
+[DeepAgents direction](docs/deepagents.md) and
+[LangChain migration notes](docs/langchain-execution-guide.md). These retain
+old Pi/session and cutover descriptions. Use the current source above for
+what Buttons runs, not their historical rollout status. Archived material
+is under `docs/archive/` and proposals under `docs/specs/`.
 
-Agents and models:
+## Security boundaries
 
-- `docs/agent-harness.md` — ⏸️ **PARTLY ON HOLD** (Pi activated
-  2026-10-27; OpenClaw / Copilot / Gemini still deferred). Preserved
-  evaluation ("pi", LangChain, OpenClaw, OpenHands, Aider, Goose,
-  PR-Agent) + three model routes (local Ollama / Copilot Pro / Gemini API).
-- `docs/pi-setup.md` — Pi in the terminal image against local Ollama
-  (`qwen3:8b` default, `qwen3:14b` stronger): deploy, use from the
-  phone, read-only review mode, measurement step.
-- `docs/agent-guide.md` — agent GitHub identity (`onasafari`):
-  attribution vs authentication, GPG verified commits.
-- `docs/agent-integration-guide.md` — peer SPA ↔ deep-agent lane.
-- `docs/deepagents.md` — DeepAgents direction: LangChain skills,
-  Nebius-then-Ollama route, Pi succession plan. Spike report:
-  `docs/deepagents-spike-report.md`.
-- `docs/langchain-execution-guide.md` — replacing Pi sessions on the
-  buttons site.
-- `docs/skill-contract.md` — browser skill contract.
-- `docs/llm-provider-scorecard.md` — Ollama (local) vs Nebius (cloud).
-- `docs/agy-continuity.md` — agy continuity verdict (issue #400).
-
-UX and media:
-
-- `docs/ux-evaluation-and-redesign-guide.md` — S5 Buttons UX evaluation
-  & enhancement guide (design input; the as-built state is `docs/buttons.md`).
-- `docs/ux-preview.md` — Buttons local UX preview toolkit.
-- `docs/repo-previews.md` — repo preview subpaths (`/<name>`).
-- `docs/media.md` — media asset pipeline: YouTube-to-GIF/WebP, ffmpeg,
-  WebM/MP4 for the web.
-
-Specs and proposals live in `docs/specs/`, archived material in
-`docs/archive/`. Dated reviews, issue drafts
-and one-off reports sit alongside these in `docs/` and are deliberately
-not indexed here — `ls docs/` for the full set.
-
-## Repo layout
-
-```
-docker-compose.yml        services: oauth2-proxy (TLS+OAuth, public port),
-                          caddy (internal router, caddy/Caddyfile), terminal
-                          (ttyd+zellij+Node 24+Pi, built from terminal/),
-                          buttons (operator console, root Dockerfile),
-                          code-server (browser VS Code), browser (pinned
-                          selenium/standalone-chromium, shared Grid) +
-                          browser-relay (BrowserMCP relay), tailscale (VPN),
-                          ollama (local LLM, CPU-only), skills-provisioner.
-                          openclaw / actions-runner commented out
-                          under profiles: ["agents"] (decision deferred).
-terminal/                 Dockerfile (pinned ttyd + zellij + Node 24 + Pi
-                          + docker CLI + Muse), config.kdl (phone-tuned
-                          zellij config), pi-config/ (Pi Ollama provider + defaults)
-caddy/                    Caddyfile — internal route table behind oauth2-proxy
-backend/                  Python backend APIs (pytest suite in CI)
-frontend/                 web frontend (pnpm workspace, Vite SPA)
-chrome-extension/         BrowserMCP pairing extension (token-gated pairing)
-buttons-pair/             Buttons pairing helper package
-deep-agent/               deep-agent service
-config/                   oauth2-proxy.cfg (no secrets), browser-relay/Caddyfile
-scripts/                  setup: bootstrap.sh, install-docker.sh,
-                          setup-gh-auth.sh, setup-hooks.sh, setup-webhooks.sh;
-                          runtime: tailscale-entrypoint.sh,
-                          buttons-entrypoint.sh, buttons-up.sh,
-                          certbot-deploy-hook.sh (+installer),
-                          pull-models.sh (dormant until the agents profile
-                          is enabled), stack-probe.sh, edge-liveness-watch.sh
-                          (+cron installer), prune-worktrees.sh,
-                          update-permissions.sh; MCP: allow-boomtick-mcp.sh,
-                          setup-boomtick-mcp.sh, setup-browser-mcp.sh,
-                          setup-browsermcp-tunnel.sh; cutoff-drill.sh;
-                          queue: queue_runner.py,
-                          ledger_post.py, ledger_read.py, twt-queue.service,
-                          config/; verification: verify-*.py, verify-skills.sh,
-                          check-*.sh; UX audit: ux-*.ts
-hooks/                    git hooks (post-merge)
-mk/                       Makefile includes
-gdocs-access/             isolated Google Doc read/write spike
-.env.example              every variable, no values (copy to .env)
-docs/                     guides & runbooks (see Docs above)
-tests/                    repo-level test suites
-```
-
-## Security notes
-
-- `.env` is git-ignored. No secret is ever committed; review diffs before push.
-- The terminal port is **public by design** (your existing DDNS setup).
-  The GitHub OAuth single-user allowlist (`GITHUB_USER`) is the entire auth
-  boundary — protect the GitHub account with passkey/2FA.
-- oauth2-proxy allowlist is exactly one GitHub user; 12h cookie expiry,
-  1h refresh; `reverse_proxy = false` (it is the TLS edge — don't trust
-  client X-Forwarded headers).
-- The terminal container mounts the Docker socket (root-equivalent, so the
-  stack is manageable from the phone). Same trust level as SSH key auth.
-- Let's Encrypt privkey is mounted read-only from the host certbot dir;
-  the key never leaves the host. Whole-dir mount (not file mounts) so
-  renewals don't go stale; the deploy-hook restarts the proxy on renewal.
-- Tailscale is VPN-only by default — no `tailscale funnel` (that would be a
-  second public ingress); the tailnet serve fallback is opt-in via `TS_SERVE=1`
-  (see `scripts/tailscale-entrypoint.sh`).
-- Keep images pinned and updated; re-read `docs/remote-access.md` "what I
-  could not verify" before trusting version-sensitive flags.
+- Keep `.env` and credentials out of Git; inspect diffs before pushing.
+- The public terminal is OAuth-gated. Protect the allowed GitHub account.
+  Pairing WebSocket exceptions use their own token checks; inspect
+  `.env.example` and the backend before enabling them.
+- The terminal mounts the Docker socket, which grants host-level control.
+  Treat that access like an admin shell.
+- Certbot certificates are mounted read-only as a whole directory so
+  renewal symlink changes remain visible.
+- Tailscale is a separate VPN path. `TS_SERVE=1` is opt-in; do not enable a
+  second public ingress as part of routine verification.
