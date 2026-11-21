@@ -16,6 +16,7 @@ import {
   allQueuedAcrossGroups,
   groupQueueByRepo,
   nextDispatchable,
+  parseIssueNumber,
   queueItemKey,
   queueListActive,
   queueRowActions,
@@ -377,8 +378,8 @@ export default function QueueView({ repo }: { repo: string }) {
   }, [items]);
 
   async function onEnqueue() {
-    const n = issue.trim().replace(/^#+/, '');
-    if (!/^\d+$/.test(n)) {
+    const n = parseIssueNumber(issue);
+    if (n === null) {
       setError('Enter an issue number first.');
       return;
     }
@@ -499,6 +500,8 @@ export default function QueueView({ repo }: { repo: string }) {
         <button
           type="button"
           data-testid="queue-enqueue"
+          disabled={parseIssueNumber(issue) === null}
+          title={parseIssueNumber(issue) === null ? 'Enter an issue number first' : undefined}
           onClick={() => void guarded(onEnqueue)}
         >
           Queue {repo} issue
