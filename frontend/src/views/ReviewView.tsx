@@ -2453,7 +2453,11 @@ export default function ReviewView({
               />
             </label>
             <div className="actions">
-              <button type="submit" disabled={creatingIssue}>
+              <button
+                type="submit"
+                disabled={creatingIssue || !newTitle.trim()}
+                title={newTitle.trim() ? undefined : 'Enter a title first'}
+              >
                 {creatingIssue ? 'Creating…' : 'Create issue'}
               </button>
             </div>
