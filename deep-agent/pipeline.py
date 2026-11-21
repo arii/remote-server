@@ -17,6 +17,7 @@ import os
 import subprocess
 import time
 
+import s5tools
 import twt_receipts
 
 UNVERIFIED_CODER = "pipeline coder did not pass verification"
@@ -283,6 +284,10 @@ class Pipeline:
         self.preview_url = preview_url
         self.events = []
 
+    def _repo_slug(self):
+        """owner/name for the checkout, '' when unknown (default verify policy)."""
+        return s5tools.repo_for_checkout(self.repo)
+
     def log(self, stage, message):
         self.events.append({"stage": stage, "message": message})
 
@@ -387,9 +392,10 @@ class Pipeline:
                 result = coder.run_coder(
                     root,
                     prompt,
-                    coder.build_system(root, ""),
+                    coder.build_system(root, "", self._repo_slug()),
                     f"{self.thread_id}-edit-{time.time_ns()}",
                     coder._timeout(),
+                    repo=self._repo_slug(),
                     **kwargs,
                 )
             except RuntimeError as exc:
@@ -401,7 +407,9 @@ class Pipeline:
                     ) from exc
                 raise
             summary, usage, calls, started, label, trace, verified, _ = result
-            self.verification_evidence = coder.trace_verification_evidence(trace)
+            self.verification_evidence = coder.trace_verification_evidence(
+                trace, self._repo_slug()
+            )
             provider, _, model = label.partition(":")
             graph.last_model_spec = {"provider": provider, "model": model}
             import ledger
@@ -432,6 +440,8 @@ class Pipeline:
             context = {**self.answers, **context}
             if repair_notes:
                 context["repair_notes"] = repair_notes
+            if self._repo_slug():
+                context.setdefault("repo", self._repo_slug())
             result = (self.plan_fn or coder._default_plan_fn)(task, root, context)
             result = dict(result)
             result["allowed_files"] = list(

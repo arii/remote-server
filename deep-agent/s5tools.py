@@ -52,6 +52,17 @@ CHECK_PREFIXES = (
     ("git", "status"),
     ("git", "log"),
 )
+# Per-repo verify profiles (#1377). Extra prefixes apply only to the named
+# repo; every other repo, and an unknown or missing repo, keeps CHECK_PREFIXES
+# unchanged (fail closed). Extra prefixes go through the same argument
+# grammar as the defaults.
+REPO_CHECK_PREFIXES = {
+    "arii/portfolio": (
+        ("pnpm", "run", "test"),
+        ("pnpm", "run", "build"),
+        ("pnpm", "run", "audit:fallow"),
+    ),
+}
 CHECK_TIMEOUT = 300
 CHECK_OUTPUT_LIMIT = 4000
 TEST_FILE_RE = re.compile(r"^(?:backend/)?tests/test_[A-Za-z0-9_]+\.py$")
@@ -60,9 +71,17 @@ UNITTEST_MODULE_RE = re.compile(
 )
 
 
-def check_allowed(argv):
+def check_prefixes(repo=None):
+    """Allowed command prefixes for repo (defaults when repo is unknown)."""
+    if isinstance(repo, str):
+        return CHECK_PREFIXES + REPO_CHECK_PREFIXES.get(repo, ())
+    return CHECK_PREFIXES
+
+
+def check_allowed(argv, repo=None):
     """True when argv starts with an allowlisted verify prefix, or
-    runs one repo test file directly (python3 tests/test_x.py)."""
+    runs one repo test file directly (python3 tests/test_x.py).
+    repo adds that repo's profile prefixes (REPO_CHECK_PREFIXES)."""
     tupled = tuple(argv)
     unittest_argv = tupled[1:] if tupled[:1] == ("PYTHONPATH=./deep-agent",) else tupled
     if unittest_argv[:3] == ("python3", "-m", "unittest"):
@@ -84,7 +103,7 @@ def check_allowed(argv):
                 return False
             del rest[i : i + 2]
         return rest == ["--frozen-lockfile"]
-    for prefix in CHECK_PREFIXES:
+    for prefix in check_prefixes(repo):
         if tupled[: len(prefix)] == prefix:
             return _check_args_safe(prefix, tupled[len(prefix) :])
     return False
@@ -271,17 +290,23 @@ def _check_args_safe(prefix, args):
     return _args_with_flags(list(args), frozenset())
 
 
-def allowed_commands_text():
+def allowed_commands_text(repo=None):
     """Human list of the allowlisted command heads (tool prompts)."""
-    return ", ".join(" ".join(p) for p in CHECK_PREFIXES) + (
+    return ", ".join(" ".join(p) for p in check_prefixes(repo)) + (
         ", pnpm install --frozen-lockfile"
         ", python3 -m unittest [backend.]tests.test_<module>"
         ", PYTHONPATH=./deep-agent python3 -m unittest [backend.]tests.test_<module>"
     )
 
 
-def verification_guidance():
-    heads = ", ".join(" ".join(p) for p in CHECK_PREFIXES)
+def verification_guidance(repo=None):
+    heads = ", ".join(" ".join(p) for p in check_prefixes(repo))
+    extra = ""
+    if repo in REPO_CHECK_PREFIXES:
+        extra = (
+            f"This repo ({repo}) is not Python-first: use its own pnpm scripts "
+            "from the allowed heads instead of pytest/unittest. "
+        )
     return (
         "Verification policy for run_check (overrides commands suggested in the issue):\n"
         f"Allowed command heads: {heads}; python3 [backend/]tests/test_NAME.py; "
@@ -291,15 +316,18 @@ def verification_guidance():
         "For Python changes prefer targeted python3 -m unittest "
         "[backend.]tests.test_NAME or python3 -m pytest with existing test paths. "
         "Run one command per call, without shell operators. "
+        f"{extra}"
         "Do not use npm run test:backend, arbitrary npm scripts, or dependency installs. "
         "Git inspection alone does not verify an implementation."
     )
 
 
-def parse_check_command(command):
+def parse_check_command(command, repo=None):
     argv = shlex.split(command)
-    if not argv or not check_allowed(argv):
-        raise ValueError("command must start with one of: " + allowed_commands_text())
+    if not argv or not check_allowed(argv, repo):
+        raise ValueError(
+            "command must start with one of: " + allowed_commands_text(repo)
+        )
     return argv[1:] if argv[0] == "PYTHONPATH=./deep-agent" else argv
 
 
@@ -370,13 +398,13 @@ def exec_argv(argv):
     return head + [argv[1]] + extra + argv[2:]
 
 
-def run_repo_command(checkout, command):
+def run_repo_command(checkout, command, repo=None):
     """Run an allowlisted verification command in checkout. Never
     raises: returns "exit=<n>\\n<tail>", "REJECTED: ...", "TIMEOUT
     ...", or "exec failed: ...". argv is tupled from shlex — never
     shell=True — so metachars are inert arg bytes, never control."""
     try:
-        argv = parse_check_command(command)
+        argv = parse_check_command(command, repo)
     except ValueError as exc:
         return f"REJECTED: bad command line: {exc}"
     try:

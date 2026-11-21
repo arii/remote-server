@@ -274,7 +274,17 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
   const failed = entryFailed(e, raw ?? '', base);
   const routine = (!failed || /chat aborted/i.test(base)) && ROUTINE_RE.test(base);
   let summary = base;
-  if (!errText && !routine) {
+  // Webhook pulls carry their own outcome sentence in detail (#1489):
+  // show it verbatim instead of letting plain-language rewriting turn
+  // a fast-forward into "could not fast-forward" or a failure into a
+  // bare "Webhook".
+  const rawDetail = e.kind === 'webhook' && !errText ? (e.detail ?? '').trim() : '';
+  const pullDetail = rawDetail && isRawStderr(rawDetail)
+    ? plainLanguage(rawDetail, e.kind)
+    : rawDetail.slice(0, 200);
+  if (pullDetail) {
+    summary = failed ? `Webhook pull failed — ${pullDetail}` : `Webhook — ${pullDetail}`;
+  } else if (!errText && !routine) {
     const clause = outcomeClause(e);
     const lower = clause.toLowerCase();
     const baseLower = base.toLowerCase();
@@ -469,7 +479,9 @@ function toRow(entry: FlatEntry, members: FlatEntry[], index: number): HistoryRo
     at: entry.at,
     repeat: count,
     recovery: failed || skipped ? recoveryFor(entry.kind, entry.summary) : '',
-    tone: failed ? 'bad' : entry.routine ? 'muted' : 'ok',
+    // A skipped pull did not move the checkout (#1489): a neutral
+    // dash, never the green check that reads as "pulled".
+    tone: failed ? 'bad' : entry.routine || skipped ? 'muted' : 'ok',
     detail: entry.detail,
     members: members.map((m) => ({
       at: m.at,
