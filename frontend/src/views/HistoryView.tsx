@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import CopyButton from '../components/CopyButton';
 import RetryableError from '../components/RetryableError';
-import { fetchJobRun, fetchJobs, fetchLedger, rerunJob } from '../apiClient';
+import { fetchBackendStatus, fetchJobRun, fetchJobs, fetchLedger, rerunJob } from '../apiClient';
+import type { BackendStatusResponse, WebhookPull } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
 import {
   HISTORY_FACETS,
+  lastPullLines,
   facetCounts,
   historyRowMatches,
   jobPassesKindFilter,
@@ -25,17 +27,22 @@ import { StatusIcon } from './StatusIcon';
 interface HistorySnapshot {
   jobs: JobRecord[];
   entries: LedgerEntry[];
+  pulls: Record<string, WebhookPull>;
 }
 
-const EMPTY_HISTORY: HistorySnapshot = { jobs: [], entries: [] };
+const EMPTY_HISTORY: HistorySnapshot = { jobs: [], entries: [], pulls: {} };
 
 async function loadHistorySnapshot(): Promise<HistorySnapshot> {
   if (useMock()) {
     const h = loadHistory();
-    return { jobs: h.jobs, entries: h.entries };
+    return { jobs: h.jobs, entries: h.entries, pulls: {} };
   }
-  const [j, l] = await Promise.all([fetchJobs(), fetchLedger('all', 100)]);
-  return { jobs: j.jobs, entries: l.entries };
+  const [j, l, st] = await Promise.all([
+    fetchJobs(),
+    fetchLedger('all', 100),
+    fetchBackendStatus().catch(() => ({}) as BackendStatusResponse),
+  ]);
+  return { jobs: j.jobs, entries: l.entries, pulls: st.webhooks ?? {} };
 }
 
 function kindOptions(entries: LedgerEntry[]): string[] {
@@ -383,6 +390,7 @@ export default function HistoryView({
   }, [filterRequest]);
   const all = entries;
   const filtering = query.trim().length > 0 || facet !== 'all';
+  const pullLines = lastPullLines(data.pulls, Date.now() / 1000);
   const scoped = toHistoryRows(
     jobs.filter((j) => jobPassesKindFilter(j.kind, kind)),
     filterByKind(all, kind),
@@ -548,6 +556,15 @@ export default function HistoryView({
                 </button>
               ))}
             </div>
+            {pullLines.length > 0 && (
+              <ul className="row-meta" data-testid="history-last-pull" aria-label="Last pull per repo">
+                {pullLines.map((l) => (
+                  <li key={l.repo} className={rowToneClass(l.tone)}>
+                    {l.repo}: {l.text}
+                  </li>
+                ))}
+              </ul>
+            )}
             {scoped.some((r) => r.kind === 'webhook') && (
               <p className="row-meta" data-testid="history-pull-only-note">
                 Webhook pulls only fast-forward main. They never rebuild, install or
