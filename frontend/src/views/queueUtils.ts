@@ -81,3 +81,10 @@ export function splitBlockReasons(detail: string): string[] {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 }
+
+// Issue number from the Queue box: "#12", "12" and " 12 " all give
+// "12"; anything else is null so the Queue button can stay disabled.
+export function parseIssueNumber(raw: string): string | null {
+  const n = raw.trim().replace(/^#+/, '');
+  return /^\d+$/.test(n) ? n : null;
+}
