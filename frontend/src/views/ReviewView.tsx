@@ -1580,6 +1580,9 @@ export default function ReviewView({
   // generation guard drops late settles after repo switches, the
   // same protection the old per-effect cancelled flag gave.
   const loadGen = useRef(0);
+  // Deferred mutations belong to a repo visit, not just its name (#1504).
+  // Invalidate on cleanup too, so A -> B -> A cannot accept an old A settle.
+  const deferredMutationGen = useRef(0);
   const loadLists = useCallback(async () => {
     if (useMock()) {
       setPrs(loadPrs());
@@ -1625,6 +1628,10 @@ export default function ReviewView({
     setDetails(null);
     setError(null);
     setBulkSelected(new Set());
+    setBulkRestore(new Set());
+    setBulkBusy(false);
+    setBulkRestoreBusy(false);
+    setNotice(null);
     void loadLists();
     // Stale-list guard (issue #1116): the nav badge refetches on
     // this same clock plus tab-visible; the list used to freeze at
@@ -1638,6 +1645,7 @@ export default function ReviewView({
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       loadGen.current++;
+      deferredMutationGen.current++;
       stopPoll();
       document.removeEventListener('visibilitychange', onVisible);
     };
@@ -1673,6 +1681,8 @@ export default function ReviewView({
   }
 
   async function deferSelected(kind: 'pr' | 'issue', n: number) {
+    const generation = deferredMutationGen.current;
+    const live = () => generation === deferredMutationGen.current;
     setError(null);
     if (isRowDeferred(deferred, kind, n)) return;
     if (useMock()) {
@@ -1680,8 +1690,10 @@ export default function ReviewView({
     } else {
       try {
         const r = await deferRow(repo, kind, n);
+        if (!live()) return;
         setDeferred(r.deferred);
       } catch (err) {
+        if (!live()) return;
         setError(err instanceof Error ? err.message : String(err));
         return;
       }
@@ -1707,6 +1719,8 @@ export default function ReviewView({
   // the selection clears. Pointer-path only — j/k/d still defer the
   // single cursor row via deferSelected.
   async function deferBulk() {
+    const generation = deferredMutationGen.current;
+    const live = () => generation === deferredMutationGen.current;
     const rows = parseBulkSelection(bulkSelected);
     if (rows.length === 0) return;
     setError(null);
@@ -1723,6 +1737,7 @@ export default function ReviewView({
         });
       } else {
         const r = await deferRowsBulk(repo, 'defer', rows);
+        if (!live()) return;
         setDeferred(r.deferred);
       }
       if (selected !== null && rows.some((r) => r.kind === 'pr' && r.number === selected)) {
@@ -1733,21 +1748,26 @@ export default function ReviewView({
       setBulkSelected(new Set());
       setNotice(bulkDeferNotice(rows.length));
     } catch (err) {
+      if (!live()) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBulkBusy(false);
+      if (live()) setBulkBusy(false);
     }
   }
 
   async function restoreSelected(kind: 'pr' | 'issue', n: number) {
+    const generation = deferredMutationGen.current;
+    const live = () => generation === deferredMutationGen.current;
     setError(null);
     if (useMock()) {
       setDeferred((prev) => prev.filter((d) => !(d.kind === kind && d.number === n)));
     } else {
       try {
         const r = await restoreRow(repo, kind, n);
+        if (!live()) return;
         setDeferred(r.deferred);
       } catch (err) {
+        if (!live()) return;
         setError(err instanceof Error ? err.message : String(err));
         return;
       }
@@ -1768,6 +1788,8 @@ export default function ReviewView({
   // refreshes the disclosure and the selection clears. Mirrors
   // deferBulk; single-row Restore keeps its own shape.
   async function restoreBulk() {
+    const generation = deferredMutationGen.current;
+    const live = () => generation === deferredMutationGen.current;
     const rows = parseBulkSelection(bulkRestore);
     if (rows.length === 0) return;
     setError(null);
@@ -1778,14 +1800,16 @@ export default function ReviewView({
         setDeferred((prev) => prev.filter((d) => !drop.has(bulkRowKey(d.kind, d.number))));
       } else {
         const r = await deferRowsBulk(repo, 'restore', rows);
+        if (!live()) return;
         setDeferred(r.deferred);
       }
       setBulkRestore(new Set());
       setNotice(bulkRestoreNotice(rows.length));
     } catch (err) {
+      if (!live()) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBulkRestoreBusy(false);
+      if (live()) setBulkRestoreBusy(false);
     }
   }
 
@@ -2489,4 +2513,4 @@ export default function ReviewView({
       </div>
     </section>
   );
-}
+    }
