@@ -431,7 +431,7 @@ export function ReportDialog({
         </details>
       )}
       <div className="actions">
-        <button type="submit" data-testid="report-submit">
+        <button type="submit" data-testid="report-submit" disabled={!title.trim()}>
           File bug
         </button>
         <button type="button" data-testid="report-cancel" onClick={onCancel}>
