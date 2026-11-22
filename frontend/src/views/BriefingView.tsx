@@ -216,7 +216,7 @@ export function actionableWorkflowLines(data: BriefingResponse): string[] {
 // A narrative that names a risk while the counts are empty must not
 // sit beside a bare "All clear" (#1487): the counts only cover PRs,
 // conflicts and runs, so with a narrative the claim is scoped to them.
-export function briefingClearHeading(data: BriefingResponse): string {
+function briefingClearHeading(data: BriefingResponse): string {
   return typeof data.narrative === 'string' && data.narrative.trim() !== ''
     ? 'Nothing open in PRs, conflicts or runs'
     : 'All clear';
