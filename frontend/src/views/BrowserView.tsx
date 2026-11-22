@@ -39,7 +39,10 @@ export function bannerTextFor(
     const what = currentStep.slice('Browser drive:'.length).trim();
     return `Agent driving the browser (${what}) — click the page to take over`;
   }
-  if (state === 'RUNNING') {
+  // Resume and handoff-resolve park the control state on RUNNING with a
+  // "Resuming - ..." marker and nothing clears it until the next agent
+  // action, so it must not read as a live agent (#1490).
+  if (state === 'RUNNING' && !currentStep?.startsWith('Resuming')) {
     return currentStep
       ? `Agent active (${currentStep}) — select the browser view to take over`
       : 'Agent active — select the browser view to take over';

@@ -21,6 +21,10 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     expect(bannerTextFor('RUNNING', null)).toContain('Agent active');
     expect(bannerTextFor('RUNNING', 'auditing')).toContain('auditing');
     expect(bannerTextFor('PAUSED_BY_USER', null)).toContain('Manual control active');
+    // The resume marker is not live agent work (#1490).
+    expect(bannerTextFor('RUNNING', 'Resuming - mandatory DOM re-snapshot scheduled')).toBe(
+      'Shared browser ready',
+    );
   });
 
   it('has no takeover overlay in any state (server pauses on input)', () => {
