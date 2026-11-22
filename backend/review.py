@@ -323,7 +323,7 @@ def _extract_json(text):
     return None
 
 
-def normalize_findings(raw, known_paths):
+def normalize_findings(raw):
     """Findings into [{file, line, severity, claim, suggestion}].
 
     Drops entries without a file or claim; unknown severities become
@@ -401,8 +401,7 @@ def synthesize(plan, diff_text, context="", prefer="ollama", model_factory=None)
         raw = _extract_json(_response_text(model.invoke(prompt)))
     except Exception as exc:
         raise ReviewError(f"model invoke failed ({label}): {_short(exc)}")
-    known = [e["path"] for e in plan["files"]]
-    findings = normalize_findings(raw, known)
+    findings = normalize_findings(raw)
     summary = raw.get("summary") if isinstance(raw, dict) else None
     summary = (
         summary.strip()

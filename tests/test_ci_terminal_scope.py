@@ -81,8 +81,13 @@ class TerminalScopeTests(unittest.TestCase):
                 self.assertFalse(
                     GATE.terminal_unaffected(GATE.changed_paths(head, renamed))
                 )
+                # Valid commits with no common ancestor: real git refuses
+                # the three-dot diff (no merge base).
+                git("checkout", "-q", "--orphan", "unrelated")
+                git("commit", "-qm", "unrelated root", "--allow-empty")
+                unrelated = git("rev-parse", "HEAD")
                 with self.assertRaises(subprocess.CalledProcessError):
-                    GATE.changed_paths("f" * 40, head)
+                    GATE.changed_paths(unrelated, head)
                 with self.assertRaises(ValueError):
                     GATE.changed_paths("--help", head)
             finally:

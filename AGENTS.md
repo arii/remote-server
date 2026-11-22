@@ -20,6 +20,17 @@ When using BoomTick MCP tools:
 - **Fix root causes**: Diagnose the actual failure, fix the root cause, and keep ONE canonical command or code path.
 - **Allowed exception**: A fallback is permitted ONLY for genuine platform variance (e.g., Linux vs macOS) and MUST include an explanatory comment documenting why the platform variance exists.
 
+## Working rules
+
+Why: cruft from earlier agent sessions (generated assets, unused pins, duplicate helpers, docs for code that never existed) cost more to remove than to write. These rules keep it from coming back.
+
+- Search for an existing helper before writing one; duplicates cost us later.
+- Edit before you add. New files need a one-line reason in the PR.
+- No new dependency without saying what it replaces or enables.
+- No placeholder code that returns fake success. Fail loudly or don't ship.
+- Run the smoke test (`npm run lint && npm test`, plus `npm run test:root`) before reporting done, and paste the result.
+- Keep PRs small enough to read. Component status lives in [STATUS.md](STATUS.md); update it when a component's state changes.
+
 ## Commands
 
 - `./scripts/buttons-up.sh` — restart the buttons service (buttons only; never bare `docker compose up -d` or the terminal service — that kills the shell you run in)

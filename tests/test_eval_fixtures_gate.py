@@ -13,6 +13,7 @@ import io
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -147,54 +148,41 @@ class TestEvalFixturesCiGate(unittest.TestCase):
             "unrelated PRs must skip the check step, not fail it",
         )
 
-    def test_filter_shape_matches_this_branch_and_ignores_unrelated(self):
-        try:
-            subprocess.run(
-                ["git", "rev-parse", "--verify", "origin/main"],
-                cwd=ROOT,
-                capture_output=True,
-                check=True,
+    def test_filter_shape_matches_deep_agent_changes_and_ignores_unrelated(self):
+        # Temp repo with a known branch shape, so the result does not
+        # depend on which files the checked-out branch touches.
+        with tempfile.TemporaryDirectory() as directory:
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", "-C", directory, *args],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.name", "CI test")
+            git("config", "user.email", "ci@example.invalid")
+            os.makedirs(os.path.join(directory, "deep-agent"))
+            os.makedirs(os.path.join(directory, "docs"))
+            for rel in ("deep-agent/a.py", "docs/evaluation-and-next-steps.md"):
+                with open(os.path.join(directory, rel), "w") as f:
+                    f.write("base\n")
+            git("add", ".")
+            git("commit", "-qm", "base")
+            git("checkout", "-qb", "feature")
+            with open(os.path.join(directory, "deep-agent/a.py"), "w") as f:
+                f.write("changed\n")
+            git("commit", "-qam", "touch deep-agent")
+
+            base = ["diff", "--name-only", "main...HEAD", "--"]
+            in_scope = git(*base, "backend", "deep-agent", ".agents")
+            self.assertEqual(in_scope.strip(), "deep-agent/a.py")
+            out_of_scope = git(*base, "docs/evaluation-and-next-steps.md")
+            self.assertEqual(
+                out_of_scope.strip(), "", "filter must stay quiet on unrelated paths"
             )
-        except subprocess.CalledProcessError:
-            self.skipTest("no origin/main ref here")
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        main = subprocess.run(
-            ["git", "rev-parse", "origin/main"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        if head == main:
-            self.skipTest("on main: no PR diff to filter")
-        base = ["git", "diff", "--name-only", "origin/main...HEAD", "--"]
-        in_scope = subprocess.run(
-            base + ["backend", "deep-agent", ".agents"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(in_scope.returncode, 0)
-        # This branch touches deep-agent/, so the filter must fire.
-        self.assertTrue(
-            in_scope.stdout.strip(), "filter must match a branch touching deep-agent/"
-        )
-        out_of_scope = subprocess.run(
-            base + ["docs/evaluation-and-next-steps.md"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(out_of_scope.returncode, 0)
-        self.assertEqual(
-            out_of_scope.stdout.strip(), "", "filter must stay quiet on unrelated paths"
-        )
 
 
 if __name__ == "__main__":

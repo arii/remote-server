@@ -151,6 +151,51 @@ oauth2-proxy.
   `/api` routes stay gated. The manifest link also sends
   `crossorigin="use-credentials"` so credentialed fetches work.
 
+## State volume
+
+`/var/lib/buttons` is a **container path**, backed by the named compose volume
+`buttons-data` (`remote_buttons-data` on S5, project prefix `remote_`). It is
+mounted read-write in the `buttons` and `terminal` containers. It is not a
+checkout path and not a host bind mount, so the S5 host has no
+`/var/lib/buttons` directory and a missing host directory is not a fault.
+A local test run that cannot find it (no Docker, stale venv, absent fixtures)
+says nothing about the live volume.
+
+Both containers run as root (no `USER` in the Dockerfile), so state files are
+owned by `0:0`. Do not chown them or bind-mount a host directory over the
+volume.
+
+Expected state (written on first use; a fresh volume lacks the files until the
+feature runs):
+
+| File | Written by |
+| --- | --- |
+| `jobs_schedules.json` | action schedules (`backend/api/routers/jobs.py`) |
+| `jobs_runs.json` | job run snapshot (`backend/exec/engine.py`) |
+| `agent_control_state.json` | co-browse pause state (`agent_control.py`) |
+| `attention_snooze.json`, `deferred.json` | attention snooze and deferred queue |
+| `deep-agent/` | deep-agent state dir (`DEEP_AGENT_STATE_DIR`) |
+| `impact-pass/` | impact pass state (`backend/impact_pass.py`) |
+
+Inspect read-only on S5 (neither command changes anything):
+
+```bash
+docker volume inspect remote_buttons-data
+docker compose exec -T buttons sh -c 'stat -c "%n %u:%g %s" /var/lib/buttons/* && find /var/lib/buttons -maxdepth 1'
+```
+
+Smoke check (run from the checkout inside the `terminal` container, which
+mounts the volume; the buttons image does not ship `scripts/`. Read-only,
+exits non-zero if the directory or `jobs_schedules.json` is unreadable):
+
+```bash
+cd /srv/remote-server && sh scripts/buttons-volume-check.sh
+```
+
+Override with `BUTTONS_DATA_DIR` and `BUTTONS_REQUIRED_STATE`. The script is
+covered by `tests/test_buttons_volume_check.py` against a temp directory, which
+is how local runs stay separate from live-deployment checks.
+
 ## Deploy
 
 On the S5, from the stack checkout:

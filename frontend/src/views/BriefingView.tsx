@@ -213,9 +213,22 @@ export function actionableWorkflowLines(data: BriefingResponse): string[] {
   return data.workflow_lines.filter(isActionableLine);
 }
 
+// The counts only cover PRs, conflicts and runs. Any non-empty narrative
+// may name a risk they miss, so it scopes the claim instead of sitting
+// beside a bare "All clear" (#1487). The narrative text is not parsed.
+function briefingClearHeading(data: BriefingResponse): string {
+  return typeof data.narrative === 'string' && data.narrative.trim() !== ''
+    ? 'Nothing open in PRs, conflicts or runs'
+    : 'All clear';
+}
+
 // One-line condensation of briefing state, always visible.
 export function briefingSummary(data: BriefingResponse): string {
-  if (briefingAllClear(data)) return 'All clear — nothing open.';
+  if (briefingAllClear(data)) {
+    return briefingClearHeading(data) === 'All clear'
+      ? 'All clear — nothing open.'
+      : `${briefingClearHeading(data)}.`;
+  }
   const attention = actionableAttention(data);
   const runs = actionableWorkflowLines(data);
   const parts: string[] = [];
@@ -1544,7 +1557,7 @@ export function BriefingBody({
       )}
       {briefingAllClear(data) ? (
         <div data-testid="briefing-clear">
-          <h3>All clear</h3>
+          <h3>{briefingClearHeading(data)}</h3>
           <p className="row-meta">No open PRs, no conflicts, no failing runs.</p>
           <div className="actions">
             <button

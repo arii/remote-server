@@ -99,6 +99,8 @@ See [the queue runbook](docs/twt-queue.md) before enabling or recovering it.
 
 ## CI and local checks
 
+Per-component working/experimental/broken status: [STATUS.md](STATUS.md).
+
 [CI](.github/workflows/ci.yml) runs on main pushes and PRs: shell syntax and
 shellcheck, Compose validation, skills integrity/shadow checks, secret scan,
 code audit, frontend/extension/backend tests, eval fixtures and formatting.

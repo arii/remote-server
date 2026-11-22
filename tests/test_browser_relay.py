@@ -1,18 +1,12 @@
-import json
-import subprocess
 import unittest
+
+from test_durability import compose_config, needs_docker
 
 
 class TestBrowserRelay(unittest.TestCase):
+    @needs_docker
     def test_compose_browser_relay(self):
-        res = subprocess.run(
-            ["docker", "compose", "--env-file", ".env.example", "config", "--format", "json"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True
-        )
-        relay = json.loads(res.stdout)["services"]["browser-relay"]
+        relay = compose_config()["services"]["browser-relay"]
         self.assertEqual(relay["image"], "caddy:2-alpine")
         # Shares terminal's netns to reach the daemon's loopback-only relay;
         # port publishing is forbidden with this network mode (daemon rejects

@@ -186,6 +186,8 @@ jobs:
         run: pnpm --filter frontend lint
       - name: unit tests
         run: pnpm --filter frontend test
+      - name: build
+        run: pnpm --filter frontend build
 
   extension:
     name: extension vitest + syntax + build
