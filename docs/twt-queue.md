@@ -105,6 +105,35 @@ then clears the halt and `STOP`. Failed reconciliation cannot be overridden by
 this flag. Do not delete an unfinished directory to force a retry or
 edit ledger costs by hand. Keep state on persistent storage, not `/tmp`.
 
+### Retry a transiently blocked issue
+
+With the queue service idle, requeue one finished, failed issue (the plain service
+start below assumes no STOP marker or saved halt):
+
+```sh
+python3 scripts/queue_runner.py --config /absolute/queue-config.json --retry 'arii/remote-server#1537'
+systemctl --user start twt-queue.service
+```
+
+`--retry` is a state-only operator command: it never launches a pipeline. It takes
+the supervisor lock, requires exactly one eligible manifest entry and a failed
+summary without a saved worker halt, and runs canonical receipt reconciliation
+before moving the old run directory to `state_dir/archive/ISSUE-TIMESTAMP`.
+Logs, journals, ledger and summary are preserved after reconciliation (journal ledger paths
+still describe the original run location). It removes only that issue from
+`completed`, records the archive in `status.json`, and prioritizes its next attempt
+ahead of the normal manifest order. No manifest edit is needed. A live supervisor,
+an unfinished/current run, a successful run, or unresolved receipt costs prevent
+retry. Only one retry can be pending at a time.
+
+Prior reconciled spend, including reservations, reduces the next attempt's budget;
+retry does not grant a fresh $0.50 allowance. Exhausted budgets cannot be retried.
+The command does not clear STOP, explicit supervisor halts, or saved worker halts.
+If shutdown left STOP, or a supervisor halt remains, explicitly acknowledge it
+with the existing `--clear-halt` recovery procedure before resuming; a plain service
+start stays stopped. The usual held/closed issue checks still apply. Do not remove a completed
+entry or delete a run directory by hand to force a retry.
+
 ## User service
 
 Install `scripts/twt-queue.service` in `~/.config/systemd/user/`. Create a mode-0600
