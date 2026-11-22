@@ -4,8 +4,8 @@ Last verified: 2026-11-21 on branch `chore/cleanup-and-open-issues`, Python 3.11
 
 | Component | Status | Evidence |
 | --- | --- | --- |
-| backend (`backend/`) | working | 1633 unittest pass, 4 skipped (`npm run test:backend`). `/health` boot smoke test (`backend/tests/test_health_boot_smoke.py`) starts uvicorn with `PYTHONPATH=<repo>:<repo>/deep-agent`, the Dockerfile contract. `PYTHONPATH=.` alone does not boot: backend imports `cli`, `runs`, `pricing`, `model_router`, `s5tools` from `deep-agent/`. Partial: [#1508](https://github.com/arii/remote-server/issues/1508). |
-| frontend (`frontend/`) | working | 1379 vitest tests in 61 files pass. `pnpm --filter frontend lint` (tsc, knip, oxlint) reports 0 errors. `pnpm --filter frontend build` succeeds. |
+| backend (`backend/`) | working | 1635 unittest pass, 4 skipped (`npm run test:backend`). `/health` boot smoke test (`backend/tests/test_health_boot_smoke.py`) starts uvicorn with `PYTHONPATH=<repo>:<repo>/deep-agent`, the Dockerfile contract. `PYTHONPATH=.` alone does not boot: backend imports `cli`, `runs`, `pricing`, `model_router`, `s5tools` from `deep-agent/`. Partial: [#1508](https://github.com/arii/remote-server/issues/1508). |
+| frontend (`frontend/`) | working | 1380 vitest tests in 61 files pass. `pnpm --filter frontend lint` (tsc, knip, oxlint) reports 0 errors. `pnpm --filter frontend build` succeeds. |
 | deep-agent (`deep-agent/`) | experimental | Covered by backend and root tests. Live model calls are not run in the sandbox. `coder.py` accepts `model_tier` but ignores it, so model escalation in `pipeline.py` has no effect on the coder. |
 | terminal (`terminal/`) | unverified | Image build needs Docker. CI builds it, this sandbox cannot. |
 | caddy (`caddy/`) | unverified | Needs Docker and the S5 host. |
@@ -16,7 +16,7 @@ Last verified: 2026-11-21 on branch `chore/cleanup-and-open-issues`, Python 3.11
 | browser relay | broken on S5, untested here | `tests/test_browser_relay.py` compose test skips without a working `docker compose`. Upstream not restored on S5: [#1513](https://github.com/arii/remote-server/issues/1513). |
 | gdocs-access | experimental | No automated tests run in this sandbox. Not exercised against Google. |
 | scripts (`scripts/`) | working | `bash -n` and shellcheck run in `npm run lint` and CI. `scripts/check-no-shadow-skills.sh` passes. |
-| root tests (`tests/`) | working | 1546 run, 33 skipped. Tests needing a working `docker compose` or `openssl` skip with a reason when absent. Only `test_twt_bounds` (4 subtests) errors here; fix in open PR [#1515](https://github.com/arii/remote-server/pull/1515). CI runs `npm run test:root`. [#1509](https://github.com/arii/remote-server/issues/1509). |
+| root tests (`tests/`) | working | 1550 run, 33 skipped. Tests needing a working `docker compose` or `openssl` skip with a reason when absent. Only `test_twt_bounds` (4 subtests) errors here; fix in open PR [#1515](https://github.com/arii/remote-server/pull/1515). CI runs `npm run test:root`. [#1509](https://github.com/arii/remote-server/issues/1509). |
 
 ## Not verifiable in the sandbox
 
