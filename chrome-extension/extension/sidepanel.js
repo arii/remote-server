@@ -6,6 +6,12 @@
 import { aliasMatches } from "./lib/matcher.js";
 import { deduplicateVault } from "./lib/vault.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
+import {
+  REFINEMENT_SCHEMA,
+  buildRefinementPrompt,
+  mergeRefinement,
+  parseRefinement
+} from "./lib/learning.js";
 
 // Global state cache & pre-warmed AI pool
 let currentExportDoc = null;
@@ -625,6 +631,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
         for (const entry of userContextVault) {
           const aliases = [entry.key, ...(entry.aliases || [])];
           if (aliases.some((a) => aliasMatches(q, a))) {
+          field.entryId = entry.id;
             matchedVaultEssay = entry.value;
             break;
           }
@@ -659,6 +666,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       for (const entry of userContextVault) {
         if (autoAttr && entry.autocomplete && entry.autocomplete === autoAttr) {
           field.value = entry.value;
+          field.entryId = entry.id;
           field.confidence = 0.99;
           break;
         }
@@ -688,6 +696,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       durationMs: performance.now() - stage1T0,
       details: summarizeHydrationResult(stage1Result)
     });
+    reportFillVerdicts(doc, stage1Result);
     statusBox.textContent = `Stage 1 filled ${stage1Result.filledCount} fields instantly...`;
 
     // 4. Stage 2: On-Device LLM synthesis ONLY for remaining tailored essays or unmapped fields
@@ -970,7 +979,93 @@ document.getElementById("file-import-vault").addEventListener("change", async (e
 // ----------------------------------------------------------------------------
 // PHASE 7: OBSERVER & DIFF APPROVAL QUEUE
 // ----------------------------------------------------------------------------
+// Verified-fill verdicts for fields matched to a vault entry. The content
+// script itemizes failures (failedFields) and successes (filledFields); only
+// fields carrying an entryId can be attributed. The worker records them.
+function reportFillVerdicts(doc, result) {
+  const entryByField = new Map((doc.fields || []).filter((f) => f.entryId).map((f) => [f.fieldId, f.entryId]));
+  const verdicts = [
+    ...(result?.filledFields || []).map((f) => ({ ...f, ok: true })),
+    ...(result?.failedFields || []).map((f) => ({ ...f, ok: false }))
+  ]
+    .filter((f) => entryByField.has(f.fieldId))
+    .map((f) => ({ label: f.query, entryId: entryByField.get(f.fieldId), ok: f.ok }));
+  if (verdicts.length === 0) return;
+  chrome.runtime.sendMessage({ type: "learning:recordVerdicts", verdicts }).catch(() => {});
+}
+
+// Learned section: deterministic proposals, optionally refined by the
+// on-device LanguageModel (untrusted output, strict schema + verifyProposal).
+async function refineWithLanguageModel(proposals, cases, vault) {
+  try {
+    const lm = self.LanguageModel || self.ai?.languageModel;
+    if (!lm || proposals.length === 0) return proposals;
+    const avail = await lm.availability?.();
+    // "downloadable" is skipped on purpose: creating a session would start a
+    // multi-GB model download from a queue render. Deterministic fallback.
+    if (avail !== "available") return proposals;
+    const session = await createPromptSession();
+    try {
+      const text = await session.prompt(buildRefinementPrompt(proposals), { responseConstraint: REFINEMENT_SCHEMA });
+      return mergeRefinement(proposals, parseRefinement(text, proposals, cases, vault));
+    } finally {
+      session.destroy?.();
+    }
+  } catch {
+    return proposals;
+  }
+}
+
+async function renderLearned() {
+  const box = document.getElementById("learned-container");
+  if (!box) return;
+  let res;
+  try {
+    res = await chrome.runtime.sendMessage({ type: "learning:getProposals" });
+  } catch {
+    return;
+  }
+  if (!res || res.error) return;
+  const proposals = await refineWithLanguageModel(res.proposals || [], res.cases || [], res.vault || []);
+  const keyOf = (id) => (res.vault || []).find((e) => e.id === id)?.key || id;
+  const learned = res.learned || [];
+  if (proposals.length === 0 && learned.length === 0) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = `
+    <div style="font-weight:700; font-size:11.5px; margin: 8px 0 4px;">Learned</div>
+    ${proposals
+      .map(
+        (p, i) => `
+      <div class="item-card" style="margin-bottom:6px;">
+        <div style="font-size:11px;">Alias <b>${escapeHtml(p.alias)}</b> &rarr; ${escapeHtml(keyOf(p.entryId))}
+          <span style="color:var(--text-muted);">(${Number(p.count) || 0} corrections)</span></div>
+        <div class="btn-row" style="margin-top:4px;">
+          <button class="btn btn-primary btn-sm btn-promote-alias" data-index="${i}">Add alias</button>
+        </div>
+      </div>`
+      )
+      .join("")}
+    ${learned
+      .slice(0, 5)
+      .map(
+        (l) => `<div style="font-size:10.5px; color:var(--text-muted);">Learned: ${escapeHtml(l.alias)} &rarr; ${escapeHtml(l.entryKey)}</div>`
+      )
+      .join("")}`;
+  box.querySelectorAll(".btn-promote-alias").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const { label, entryId, alias } = proposals[Number(btn.dataset.index)];
+      const r = await chrome.runtime.sendMessage({ type: "learning:promote", proposal: { label, entryId, alias } });
+      if (r && r.ok === false) alert(`Alias not added: ${r.reason}`);
+      renderVault();
+      renderLearned();
+    });
+  });
+}
+
 async function renderObserverQueue() {
+  renderLearned();
   const { pendingDeltas = [] } = await chrome.storage.local.get(["pendingDeltas"]);
   const container = document.getElementById("observer-deltas-container");
   const countBadge = document.getElementById("observer-queue-count");
