@@ -85,7 +85,17 @@ export function TimelineList({ items }: { items: TimelineItem[] }) {
   );
 }
 
-export default function ActivityTimeline({ active = true }: { active?: boolean }) {
+export default function ActivityTimeline({
+  active = true,
+  repo = '',
+  query = '',
+}: {
+  active?: boolean;
+  // Selected repo and History search text narrow this feed too
+  // (#1491 findings 5, 22).
+  repo?: string;
+  query?: string;
+}) {
   const { data: feeds, error, loading, load } = useSnapshotData(loadTimelineFeeds, EMPTY_FEEDS);
 
   useEffect(() => {
@@ -100,10 +110,11 @@ export default function ActivityTimeline({ active = true }: { active?: boolean }
     };
   }, [load, active]);
 
-  const items = toTimelineItems(feeds.jobs, feeds.turns, feeds.pulls, feeds.merges);
+  const items = toTimelineItems(feeds.jobs, feeds.turns, feeds.pulls, feeds.merges, { repo, query });
   // Stale-first (#907): the poll must not flash the list away —
   // rows persist with a Refreshing note while reloading.
-  const initial = items.length === 0;
+  const initial =
+    feeds.jobs.length + feeds.turns.length + feeds.pulls.length + feeds.merges.length === 0;
   const showContent = shouldShowSnapshotContent(initial, loading);
 
   return (

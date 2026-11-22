@@ -368,6 +368,13 @@ export function jobPassesKindFilter(jobKind: string | undefined, filter: string)
 // and every member's detail block (the expansion text). Mirrors
 // the Review row filter: case-insensitive substring, leading '#'
 // ignored, empty query matches all.
+// Repo scope (#1491 finding 5): a selected repo hides other repos'
+// events. Rows with no repo are host-wide (deploys, schedulers) and
+// stay visible, since hiding them would drop real activity.
+export function inRepoScope(rowRepo: string | null | undefined, repo: string): boolean {
+  return !rowRepo || !repo || rowRepo === repo;
+}
+
 export function historyRowMatches(row: HistoryRow, query: string): boolean {
   const q = query.trim().replace(/^#+/, '').toLowerCase();
   if (!q) return true;
