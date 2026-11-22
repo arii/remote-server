@@ -41,7 +41,9 @@ export function bannerTextFor(
   }
   // Resume and handoff-resolve park the control state on RUNNING with a
   // "Resuming - ..." marker and nothing clears it until the next agent
-  // action, so it must not read as a live agent (#1490).
+  // action, so it must not read as a live agent (#1490). The prefix is set
+  // in backend/api/routers/agent_control.py and pinned by
+  // backend/tests/test_agent_control_resume_marker.py.
   if (state === 'RUNNING' && !currentStep?.startsWith('Resuming')) {
     return currentStep
       ? `Agent active (${currentStep}) — select the browser view to take over`
