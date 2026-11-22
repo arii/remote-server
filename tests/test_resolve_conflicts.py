@@ -143,7 +143,10 @@ def _run_main(worktree, env, agent, prefer=None):
                     with mock.patch.object(
                         rc.model_router,
                         "build_chat_model",
-                        side_effect=lambda spec, think=False, max_tokens=None: (agent, spec),
+                        side_effect=lambda spec, think=False, max_tokens=None: (
+                            agent,
+                            spec,
+                        ),
                     ):
                         buf = io.StringIO()
                         with redirect_stdout(buf):

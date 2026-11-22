@@ -287,7 +287,10 @@ class TestPreferSelection(unittest.TestCase):
             mock.patch.object(
                 triage_fanout.model_router,
                 "build_chat_model",
-                side_effect=lambda spec=None, think=False, max_tokens=None: (mock.Mock(), spec),
+                side_effect=lambda spec=None, think=False, max_tokens=None: (
+                    mock.Mock(),
+                    spec,
+                ),
             ) as ollama_cls,
             mock.patch.object(triage_fanout, "create_deep_agent", return_value=agent),
             mock.patch.object(triage_fanout.ledger, "record") as record_mock,
