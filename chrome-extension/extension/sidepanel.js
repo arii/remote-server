@@ -3,7 +3,7 @@
 // Implements Phases 1 through 7 for Chrome's Built-in On-Device AI
 // ============================================================================
 
-import { aliasMatches } from "./lib/matcher.js";
+import { matchField } from "./lib/matcher.js";
 import { deduplicateVault } from "./lib/vault.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
 import {
@@ -627,15 +627,9 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
 
       if (isLongFormEssay) {
         // If vault has a direct deterministic match for this essay/project prompt (e.g. "Share something cool you've built"), use it!
-        let matchedVaultEssay = null;
-        for (const entry of userContextVault) {
-          const aliases = [entry.key, ...(entry.aliases || [])];
-          if (aliases.some((a) => aliasMatches(q, a))) {
-          field.entryId = entry.id;
-            matchedVaultEssay = entry.value;
-            break;
-          }
-        }
+        const essayMatch = matchField({ label: q }, userContextVault);
+        const matchedVaultEssay = essayMatch ? essayMatch.entry.value : null;
+        if (essayMatch) field.entryId = essayMatch.entry.id;
         if (matchedVaultEssay) {
           field.value = matchedVaultEssay;
           field.confidence = 0.98;
@@ -662,24 +656,18 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       }
 
       // Deterministic match for standard atomic inputs
-      const autoAttr = field.constraints?.autocomplete;
-      for (const entry of userContextVault) {
-        if (autoAttr && entry.autocomplete && entry.autocomplete === autoAttr) {
+      const atomicMatch = matchField({ label: q, autocomplete: field.constraints?.autocomplete }, userContextVault);
+      if (atomicMatch) {
+        const { entry, pass, confidence } = atomicMatch;
+        if (pass === "autocomplete") {
           field.value = entry.value;
           field.entryId = entry.id;
-          field.confidence = 0.99;
-          break;
+        } else if (field.inputType === "checkbox") {
+          field.value = /^(yes|true|1)$/i.test(String(entry.value).trim());
+        } else {
+          field.value = entry.value;
         }
-        const aliases = [entry.key, ...(entry.aliases || [])];
-        if (aliases.some((a) => aliasMatches(q, a))) {
-          if (field.inputType === "checkbox") {
-            field.value = /^(yes|true|1)$/i.test(String(entry.value).trim());
-          } else {
-            field.value = entry.value;
-          }
-          field.confidence = 0.98;
-          break;
-        }
+        field.confidence = confidence;
       }
     }
 

@@ -133,6 +133,79 @@ Golden tests (`tests/matcher.test.js`) run the waterfall against committed
 fixtures in `tests/fixtures/` — Ashby, Greenhouse, and Lever markup with
 `expected-matches.json` — and pin the short-alias and word-boundary cases above.
 
+4. **`fieldSignature({label, name, autocomplete, type})`** — the four
+   parts normalized with `normalizeLabel` and joined with `|`. The stable key
+   for a control across visits (used by the learned mappings in #1540).
+5. **`matchField(field, vault, {learned, host})`** — the one deterministic
+   vault match. `field` is `{label, autocomplete}`. For each vault entry in
+   order it tries the autocomplete token first (exact equality with the
+   entry's `autocomplete`, confidence 0.99), then `aliasMatches` over
+   `[key, ...aliases]` (0.98). Returns `{entry, pass: "autocomplete"|"alias",
+   confidence}` or `null`. The side panel's Stage 1 loop calls it for both
+   the essay and atomic branches (checkbox yes/no coercion stays in the side
+   panel). `learned` and `host` are accepted now and unused until the learned
+   mapping lookup lands. Verdict reporting is unchanged: `field.entryId` is
+   set on autocomplete matches and on the essay branch, not on atomic alias
+   matches.
+
+### 4.1 Offline fill-accuracy eval (`eval/run-eval.mjs`, #1538)
+
+`npm run eval` measures how often the deterministic matcher picks the right
+vault entry, with no network or model calls. It parses the committed fixtures
+with happy-dom, labels each control with `resolveLabel`, builds its
+`fieldSignature`, runs `matchField` against `eval/eval-vault.json`, and
+compares the matched entry key with the `fills` array in
+`tests/fixtures/expected-matches.json` (fixture, locator by `id` or `name`,
+expected entry key or `null`, optional `type` and `step`). All fixtures and
+vault values are synthetic (placeholder URLs, `example.com`, `555-01xx`).
+
+**Scoring.** Each fill gets exactly one outcome:
+
+| Outcome | Expected | Got |
+| --- | --- | --- |
+| correct fill | key K | K |
+| wrong fill | key K | a different key |
+| correct abstain | `null` (blank is correct) | `null` |
+| wrong abstain | key K | `null` |
+
+A fill where `null` was expected is also a wrong fill, so filling a field that
+should stay blank is penalized. `accuracy = (correct fill + correct abstain) /
+total`, rounded to 4 places. Output has per fixture, per case type and total
+counts (including the four outcome counts), a one-line JSON summary with the
+per-type accuracy, and `eval/last-run.json`. That file has no timestamps, so
+it is byte-stable and committed as the baseline.
+
+**Case types** (`type` on a `fills` entry; default `plain`):
+
+- `plain`: the Ashby, Greenhouse and Lever fixtures.
+- `ambiguous`: `ambiguous-fieldsets.html`, billing and shipping fieldsets with
+  identical `ZIP code`, street and city labels, plus aria-labelled variants.
+- `mismatch`: `mismatched-controls.html`, selects, radios and ARIA controls
+  whose visible text differs from the option value or the opaque `name`.
+- `dynamic`: `dynamic-multistep.html`, fields injected after a step.
+- `abstain`: `abstain.html`, prompts with no vault entry (favorite color,
+  maiden name, security question) where blank is correct.
+
+**Dynamic steps.** Elements marked `data-step=N` are detached when the
+document loads. A `fills` entry with `"step": N` re-attaches that step's
+elements to their original parent just before it is processed, then labels and
+matches them, mimicking the content script re-scan after a step renders. A
+control that is still detached throws, so a wrong `step` cannot pass silently.
+
+Baseline expectations are true to the fixtures, not tuned to pass: fieldset
+ZIP/street/city labels carry no billing or shipping word, so the deterministic
+matcher abstains there, and a `GitHub profile` label against the 6-character
+alias `github` also misses. #1540 learned mappings are meant to improve these.
+
+`tests/eval.test.js` fails when accuracy falls below the committed
+`last-run.json`, when the run no longer equals it, when a deliberately broken
+alias does not lower accuracy, when a wrongly filled abstain field does not
+lower accuracy, when a case type has no cases, or when a fixture contains
+email or phone strings other than `example.com` and `555-01xx`. To refresh the
+baseline after an intended improvement, run `npm run eval` and commit the new
+`last-run.json`. CI runs the eval as a step of the `extension` job, after the
+vitest run.
+
 ## 5. Verified-fill contract
 
 A field counts as filled **only when the landed value is proven**. There are no

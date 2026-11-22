@@ -124,7 +124,38 @@ function resolveLabel(el, doc = globalThis.document) {
   return cleanLabelText(el.name || el.id) || "Unnamed Field";
 }
 
+// Stable signature for a form control: normalized label, name, autocomplete
+// token and type joined with "|". Same input shape the content script reads
+// off the element, so a mapping learned on one visit matches the next.
+function fieldSignature({ label, name, autocomplete, type } = {}) {
+  return [label, name, autocomplete, type].map(normalizeLabel).join("|");
+}
+
+// Deterministic vault match, extracted from the sidepanel Stage 1 loop so the
+// side panel and the offline eval (eval/run-eval.mjs) share one path.
+// `field` is {label, autocomplete}; for each entry in vault order the
+// autocomplete token is tried first (confidence 0.99), then aliasMatches over
+// [key, ...aliases] (0.98). Returns {entry, pass, confidence} or null.
+// `learned` and `host` are accepted for the learned-mapping lookup (#1540)
+// and are not used yet.
+function matchField(field, vault, { learned = null, host = "" } = {}) {
+  void learned;
+  void host;
+  const query = field?.label || "";
+  const autoAttr = field?.autocomplete;
+  for (const entry of vault || []) {
+    if (autoAttr && entry.autocomplete && entry.autocomplete === autoAttr) {
+      return { entry, pass: "autocomplete", confidence: 0.99 };
+    }
+    const aliases = [entry.key, ...(entry.aliases || [])];
+    if (aliases.some((a) => aliasMatches(query, a))) {
+      return { entry, pass: "alias", confidence: 0.98 };
+    }
+  }
+  return null;
+}
+
 // ─── Generated attach — edit lib/matcher.js, not this file. ───
 if (typeof window !== "undefined") {
-  window.__LOCALFORM_MATCHER__ = { escapeRegExp, normalizeLabel, aliasMatches, cleanLabelText, resolveLabel };
+  window.__LOCALFORM_MATCHER__ = { escapeRegExp, normalizeLabel, aliasMatches, cleanLabelText, resolveLabel, fieldSignature, matchField };
 }

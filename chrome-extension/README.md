@@ -55,7 +55,12 @@ npm run check
 
 # Direct build
 npm run build
+
+# Offline fill-accuracy eval (writes eval/last-run.json)
+npm run eval
 ```
+
+`npm run eval` runs the shared matcher over the Ashby, Greenhouse and Lever fixtures plus synthetic ambiguous (billing vs shipping), mismatched-control, multi-step and abstain fixtures against a sample vault (`eval/eval-vault.json`). It scores correct fill, wrong fill, correct abstain and wrong abstain, and prints accuracy per fixture, per case type and in total. It makes no network or model calls. `npm test` fails if accuracy drops below the committed `eval/last-run.json`; after an intended improvement, rerun `npm run eval` and commit the new file.
 
 This validates `manifest.json`, checks all referenced scripts and icons, outputs the ready-to-load extension in `dist/`, and packages `dist/localform-ai-extension.zip`.
 
@@ -80,6 +85,7 @@ This validates `manifest.json`, checks all referenced scripts and icons, outputs
 ```text
 chrome-extension/
 ├── package.json               # Build and syntax test scripts
+├── eval/                      # Offline fill-accuracy eval (run-eval.mjs, eval-vault.json, last-run.json)
 ├── scripts/
 │   └── build.mjs             # Validation, asset packaging, and zip builder
 ├── extension/                 # Source extension files (Manifest V3)
