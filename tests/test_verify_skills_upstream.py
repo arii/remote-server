@@ -53,8 +53,11 @@ class PinnedUpstreamTest(unittest.TestCase):
             "args = sys.argv[1:]\n"
             "with open(os.environ['SKILL_TEST_LOG'], 'a') as log:\n"
             "    log.write(json.dumps(args) + '\\n')\n"
+            "if 'https://github.com/arii/skills.git' in args:\n"
+            "    sys.stderr.write(\"fatal: repository 'https://github.com/arii/skills.git/' not found\\n\")\n"
+            "    sys.exit(128)\n"
             "args = [os.environ['SKILL_TEST_REPO'] if arg == "
-            "'https://github.com/example/skills' else arg for arg in args]\n"
+            "'https://github.com/example/skills.git' else arg for arg in args]\n"
             "os.execv(os.environ['SKILL_TEST_GIT'], ['git', *args])\n"
         )
         wrapper.chmod(0o755)
@@ -161,3 +164,24 @@ class PinnedUpstreamTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("UPSTREAM-MISMATCH alpha", result.stderr)
         self.assertEqual(json.loads(self.lock.read_text())["skills"]["alpha"], entry)
+
+    def test_unreadable_private_source_is_skipped(self):
+        entry = {**self._entries()["alpha"], "source": "arii/skills"}
+        result = self._run({"alpha": entry})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SKIPPED  alpha", result.stderr)
+        self.assertIn("1 private skill(s) skipped", result.stdout)
+
+    def test_unreadable_non_private_source_still_fails(self):
+        entry = {**self._entries()["alpha"], "source": "bogus-owner/nonexistent"}
+        result = self._run({"alpha": entry})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("SKIPPED", result.stderr)
+
+    def test_skipped_private_does_not_hide_readable_mismatch(self):
+        private = {**self._entries()["alpha"], "source": "arii/skills"}
+        wrong = {**self._entries()["beta"], "computedHash": "0" * 64}
+        result = self._run({"alpha": private, "beta": wrong})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("SKIPPED  alpha", result.stderr)
+        self.assertIn("UPSTREAM-MISMATCH beta", result.stderr)

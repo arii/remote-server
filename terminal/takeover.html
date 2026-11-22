@@ -4,9 +4,6 @@
   top: 10px;
   right: 10px;
   z-index: 99999;
-  display: flex;
-  gap: 8px;
-  align-items: center;
 }
 .takeover-btn {
   background: #2563eb;
@@ -23,148 +20,54 @@
 }
 .takeover-btn:hover { background: #1d4ed8; }
 .takeover-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.takeover-btn.input-locked { background: #475569; border-color: #334155; }
-.takeover-btn.input-locked:hover { background: #334155; }
-.takeover-btn.input-unlocked { background: #16a34a; border-color: #15803d; }
-.takeover-btn.input-unlocked:hover { background: #15803d; }
-#session-label {
-  background: rgba(15, 23, 42, 0.85);
-  color: #e2e8f0;
-  border: 1px solid #334155;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  font-size: 12px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-}
 </style>
 <div id="takeover-bar">
-  <span id="session-label">Session: &hellip;</span>
-  <button id="input-lock-btn" class="takeover-btn input-locked" type="button">Input locked &mdash; tap to type</button>
   <button id="takeover-btn" class="takeover-btn" type="button" onclick="window.__switchTerminal()">Switch to this terminal</button>
 </div>
 <script>
-(function () {
-  // --- Session label (#1387): name the session this page attaches to,
-  // so "Switch to this terminal" is no longer a blind jump.
-  fetch('/buttons/api/terminal/status')
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (data) {
-      var label = document.getElementById('session-label');
-      if (!label || !data) return;
-      var sessions = (data && data.sessions) || [];
-      var main = null;
-      for (var i = 0; i < sessions.length; i++) {
-        if (sessions[i].name === 'main') { main = sessions[i]; break; }
-      }
-      main = main || sessions[0];
-      if (main) {
-        label.textContent = 'Session: ' + main.name + (main.exited ? ' (ended)' : ' (running)');
-        label.title = main.detail || '';
-      } else {
-        label.textContent = 'Session: none yet';
-      }
-    })
-    .catch(function () { /* label keeps its placeholder */ });
-
-  // --- Takeover: disconnect whoever holds the single ttyd slot so
-  // this window gets it.
-  window.__switchTerminal = async function() {
-    const btn = document.getElementById('takeover-btn');
-    const fail = (msg) => {
-      if (btn) { btn.disabled = false; btn.textContent = msg; }
-    };
-    if (btn) { btn.disabled = true; btn.textContent = 'Switching...'; }
-    try {
-      const res = await fetch('/buttons/api/terminal/takeover', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ intent: 'terminal-takeover', confirmed: true }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        fail('Takeover failed (' + res.status + ') — tap to retry');
-        return;
-      }
-      if (btn && data.output && data.output.indexOf('hup_exit=1') !== -1) {
-        btn.textContent = 'No other session — reloading...';
-      }
-    } catch (e) {
-      fail('Takeover request failed — tap to retry');
+window.__switchTerminal = async function() {
+  const btn = document.getElementById('takeover-btn');
+  const fail = (msg) => {
+    if (btn) { btn.disabled = false; btn.textContent = msg; }
+  };
+  if (btn) { btn.disabled = true; btn.textContent = 'Switching...'; }
+  try {
+    const res = await fetch('/buttons/api/terminal/takeover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent: 'terminal-takeover', confirmed: true }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      fail('Takeover failed (' + res.status + ') — tap to retry');
       return;
     }
-    setTimeout(() => {
-      location.reload();
-    }, 600);
-  };
-
-  // --- Shared overlay detection: ttyd's "Connection Closed / Press ⏎"
-  // overlay after the server side dropped this client.
-  function reconnectOverlayVisible() {
-    const overlays = document.querySelectorAll('.xterm-overlay');
-    let found = false;
-    overlays.forEach(function (el) {
-      if (el.textContent && (el.textContent.includes('Connection Closed') || el.textContent.includes('Press ⏎') || el.textContent.includes('Reconnecting'))) {
-        found = true;
-      }
-    });
-    return found;
-  }
-
-  // Monitor for connection failure or disconnection overlays
-  setInterval(() => {
-    const btn = document.getElementById('takeover-btn');
-    if (!btn) return;
-    if (reconnectOverlayVisible()) {
-      btn.style.background = '#ef4444';
-      btn.style.borderColor = '#dc2626';
-      btn.textContent = 'Reconnect this terminal';
+    if (btn && data.output && data.output.indexOf('hup_exit=1') !== -1) {
+      btn.textContent = 'No other session — reloading...';
     }
-  }, 1000);
+  } catch (e) {
+    fail('Takeover request failed — tap to retry');
+    return;
+  }
+  setTimeout(() => {
+    location.reload();
+  }, 600);
+};
 
-  // --- Enter on the dead overlay reconnects for real (#1387). ttyd's
-  // own "Press ⏎ to Reconnect" can land on the same dead overlay
-  // because the stale client still holds the single slot
-  // (--max-clients=1). Release it via takeover first, then reload.
-  // Registered before the input lock so it works while locked.
-  document.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && reconnectOverlayVisible()) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      window.__switchTerminal();
+// Monitor for connection failure or disconnection overlays
+setInterval(() => {
+  const overlays = document.querySelectorAll('.xterm-overlay');
+  const btn = document.getElementById('takeover-btn');
+  if (!btn) return;
+  let hasClosed = false;
+  overlays.forEach(el => {
+    if (el.textContent && (el.textContent.includes('Connection Closed') || el.textContent.includes('Press ⏎') || el.textContent.includes('Reconnecting'))) {
+      hasClosed = true;
     }
-  }, true);
-
-  // --- Input lock (#1387): spectator by default. With several agents
-  // and devices attached to the same zellij session, a stray keystroke
-  // otherwise lands in whatever pane has focus — including another
-  // agent's pending prompt. Typing and paste pass only after an
-  // explicit unlock; scrolling and tap-to-focus stay live either way.
-  let inputLocked = true;
-  const lockBtn = document.getElementById('input-lock-btn');
-  function renderLock() {
-    if (!lockBtn) return;
-    lockBtn.classList.toggle('input-locked', inputLocked);
-    lockBtn.classList.toggle('input-unlocked', !inputLocked);
-    lockBtn.textContent = inputLocked
-      ? 'Input locked — tap to type'
-      : 'Typing unlocked — tap to lock';
-  }
-  if (lockBtn) {
-    lockBtn.addEventListener('click', function () {
-      inputLocked = !inputLocked;
-      renderLock();
-    });
-    renderLock();
-  }
-  function blockIfLocked(e) {
-    if (!inputLocked) return;
-    if (e.target && e.target.closest && e.target.closest('#takeover-bar')) return;
-    e.preventDefault();
-    e.stopImmediatePropagation();
-  }
-  ['keydown', 'keypress', 'keyup', 'paste'].forEach(function (t) {
-    document.addEventListener(t, blockIfLocked, true);
   });
-})();
+  if (hasClosed) {
+    btn.style.background = '#ef4444';
+    btn.style.borderColor = '#dc2626';
+  }
+}, 1000);
 </script>

@@ -8,6 +8,13 @@
       "computedHash": "cac8f34af374f085900fd9b211a92fdfb387f63826571e1221cfb927fb31a5ca",
       "ref": "35b54dc660aa7d11428ee62c5788ad36bc18ac3c"
     },
+    "ari-workspace-quickstart": {
+      "source": "arii/skills",
+      "sourceType": "github",
+      "skillPath": "skills/ari-workspace-quickstart/SKILL.md",
+      "computedHash": "92447f8c4f0ac4d1e023ca818811aea10aebf7e4ecfb61346e15d74df866ffc3",
+      "ref": "1e1c05ac5dae1ff386814f8de65af8bb3e0a741a"
+    },
     "deep-agents-core": {
       "source": "langchain-ai/langchain-skills",
       "sourceType": "github",
@@ -57,12 +64,26 @@
       "computedHash": "47c93e705a3a21ab28ab0b2289488cb5e02da0e52729ca857a0c1d008a401c0b",
       "ref": "32d6228affabb653720d6c20187a8a7afc292478"
     },
+    "hostile-anti-slop-audit": {
+      "source": "arii/skills",
+      "sourceType": "github",
+      "skillPath": "skills/hostile-anti-slop-audit/SKILL.md",
+      "computedHash": "3b6122a95d4245f75d01936e3883991c836d544496bd9fdc5a5c332bc345325e",
+      "ref": "1e1c05ac5dae1ff386814f8de65af8bb3e0a741a"
+    },
     "impeccable": {
       "source": "pbakaus/impeccable",
       "sourceType": "github",
       "skillPath": ".agents/skills/impeccable/SKILL.md",
       "computedHash": "eb54ca0b7010b3eb7d680ad9bca8e36444388ec0ed88742a104ef9efa21758ae",
       "ref": "06ce00f6f1504c034979a58f409992304974a95d"
+    },
+    "independent-tests": {
+      "source": "arii/skills",
+      "sourceType": "github",
+      "skillPath": "skills/independent-tests/SKILL.md",
+      "computedHash": "e2cd2e2660256dd4592bc2217b6ce6f9fc9ae77cc2f93ba8fd725d6299bb8a0e",
+      "ref": "1e1c05ac5dae1ff386814f8de65af8bb3e0a741a"
     },
     "karpathy-guidelines": {
       "source": "nvidia/nemo-fabric",
@@ -77,6 +98,13 @@
       "skillPath": "skill/SKILL.md",
       "computedHash": "7a9d104edaa24d5b6fb5d049e67597c10bf770f564299ca33fb8eff9b829e37f",
       "ref": "f6e2ae32b30443ec7bd0da4da971ee18d8f8ffcb"
+    },
+    "lane-orchestrator": {
+      "source": "arii/skills",
+      "sourceType": "github",
+      "skillPath": "skills/lane-orchestrator/SKILL.md",
+      "computedHash": "73df2212b2901371cec6aa253161003af3eb5870e2f01e8c580ceb9675f770e1",
+      "ref": "1e1c05ac5dae1ff386814f8de65af8bb3e0a741a"
     },
     "langchain-dependencies": {
       "source": "langchain-ai/langchain-skills",
@@ -175,6 +203,20 @@
       "skillPath": "config/skills/managed-deep-agents/SKILL.md",
       "computedHash": "2d36944c6bf05e4be3e522fc2ed983c95bfee06db740fbeec584f75c1f3b8b23",
       "ref": "32d6228affabb653720d6c20187a8a7afc292478"
+    },
+    "remote-server-computer-browser": {
+      "source": "arii/skills",
+      "sourceType": "github",
+      "skillPath": "skills/remote-server-computer-browser/SKILL.md",
+      "computedHash": "b77614c452930d694d0ea24746ed220563b7537a9a6d5d26d03d386021d97836",
+      "ref": "1e1c05ac5dae1ff386814f8de65af8bb3e0a741a"
+    },
+    "td-tools": {
+      "source": "arii/skills",
+      "sourceType": "github",
+      "skillPath": "skills/td-tools/SKILL.md",
+      "computedHash": "24de19d8166002319044c7bf65a54e4dc733137bbd0d36939369bb2e9c655350",
+      "ref": "1e1c05ac5dae1ff386814f8de65af8bb3e0a741a"
     }
   }
 }

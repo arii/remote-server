@@ -54,7 +54,7 @@ function extractRemoveKeys(source) {
   return keys;
 }
 
-const PROTECTED_KEYS = ["userContextVault", "pendingDeltas"];
+const PROTECTED_KEYS = ["userContextVault", "pendingDeltas", "learningCases", "learnedAliases"];
 
 describe("single-writer boundary (source guard)", () => {
   it("never writes or removes userContextVault/pendingDeltas from the side panel", () => {
