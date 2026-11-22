@@ -23,7 +23,7 @@ Fake-gate semantics:
   empty (nothing to audit) -- never in these evals.
 
 ``main()`` runs all evals and prints a JSON report; exit 0 iff all
-pass. Used by ``deep-agent/cli.py eval-pipeline``.
+pass. Used by ``python3 -m backend.shared.cli eval-pipeline``.
 
 ``--verify-fixtures`` runs the offline fixture check instead: no
 pipeline, no models, no network — embedded fixtures must compile,

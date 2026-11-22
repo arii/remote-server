@@ -123,7 +123,7 @@ These scripts represent sequential phases of the PR triage lifecycle (discoverin
    - `triage_agent.discover_and_fanout()`: Detect open PRs across active repositories and schedule triage checks.
    - `triage_agent.evaluate_pr(pr_number)`: Execute diff filtering, context pruning, and deterministic evaluation.
    - `triage_agent.explain(evaluation)`: Generate structured triage explanations and publish comments/ledger entries.
-3. Reuse a shared LLM execution helper and ledger instance (`deep-agent/ledger.py`).
+3. Reuse a shared LLM execution helper and ledger instance (`backend/shared/ledger.py`).
 4. Update `docs/autonomous-triage-runbook.md` and automated scheduled runners to use `python -m deep_agent.triage`.
 
 ### Acceptance Criteria

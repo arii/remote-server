@@ -33,7 +33,7 @@ mode — a qwen3 thinking trace costs 15+ min per prompt on this box.
 ## Routing ladder
 
 Deterministic command → Ollama `qwen3:8b` → Ollama `qwen3:14b` →
-API-token LLM. Encoded in `deep-agent/model_router.py`:
+API-token LLM. Encoded in `backend/shared/model_router.py`:
 
 - Try a deterministic command first; the LLM handles judgment,
   explanation, and summarization only.
@@ -50,9 +50,9 @@ API-token LLM. Encoded in `deep-agent/model_router.py`:
 
 ## Observability
 
-Every run is ledgered (`deep-agent/ledger.py`) and traced
+Every run is ledgered (`backend/shared/ledger.py`) and traced
 (`deep-agent/observe.py` → `traces/*.jsonl`). Read runs with
-`deep-agent/runs.py`, render traces with
+`backend/shared/runs.py`, render traces with
 `deep-agent/trace_view.py` (phone text or self-contained HTML).
 See `deep-agent/OBSERVABILITY.md`; the wire contract is
 `deep-agent/API_CONTRACT_PROPOSAL.md`, and the SPA wiring recipe
@@ -108,7 +108,7 @@ forces Nebius. Verified 2026-11-06: direct Ollama generate ~3 s,
 Ollama models present, Nebius `resolve_llm(prefer='nebius')` returns
 a spec after the Nemotron rate-card fix (#1009). One fail-closed rule
 to know: a single unrated metered ledger row blocks ALL Nebius calls
-— rate new models in `deep-agent/pricing.py` from the live Token
+— rate new models in `backend/shared/pricing.py` from the live Token
 Factory catalog (`GET /v1/models?verbose=true`). Chat
 `prefer=cloud` is the fast path for large tasks; local agentic loops
 are CPU-bound (multi-round, large context) with no auto-escalation.

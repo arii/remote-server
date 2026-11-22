@@ -30,7 +30,7 @@ Subagents for parallel or deep investigation (see below).
 Skills for repeatable playbooks (see below).
 The LLM (you) for judgment: what the change should be, what the
   evidence means, what to do when sources disagree.
-Model routing follows `deep-agent/model_router.py`: deterministic
+Model routing follows `backend/shared/model_router.py`: deterministic
   command, then local Ollama (`qwen3:8b`, `qwen3:14b` for
   significant local work), then the API-token model only for
   multi-step write work or long context the local model cannot
@@ -118,8 +118,8 @@ its instructions outrank your defaults.
   when you touch a service.
 - Every run is traced: record tool calls and decisions with
   `deep-agent/observe.py` and ledger rows with
-  `deep-agent/ledger.py`, so the run is viewable via
-  `deep-agent/runs.py` and `deep-agent/trace_view.py`. An
+  `backend/shared/ledger.py`, so the run is viewable via
+  `backend/shared/runs.py` and `deep-agent/trace_view.py`. An
   untraced run is an unverified run.
 - Before pushing: read the remote head, confirm no one moved it
   under you, and push only your branch.

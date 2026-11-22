@@ -20,7 +20,7 @@ writes use validated backend actions and approval gates.
   a turn over SSE. Approval requests resume through `/api/chat/resume`.
   The frontend uses `/buttons/api/*`; Caddy strips `/buttons` before
   forwarding to FastAPI.
-- **Model routing:** `deep-agent/model_router.py` selects local Ollama
+- **Model routing:** `backend/shared/model_router.py` selects local Ollama
   through Tokens with Taste when available, then the TwT provider
   waterfall. Explicit preferences and local-only controls affect that
   choice. See the module and `.env.example` for the actual environment
@@ -126,7 +126,7 @@ not establish host deployment or live-service health.
 - `frontend/src/App.tsx`: console navigation and sections.
 - `backend/server.py`, `backend/api/routers/`: API assembly and contracts.
 - `backend/exec/`: allowlisted jobs, provider turns and execution helpers.
-- `deep-agent/`: chat, repair and model-routing implementation.
+- `deep-agent/`: chat and repair implementation. Model routing and run ledger live in `backend/shared/`.
 - `terminal/`: terminal image, zellij configuration, CLI tools and retained
   Pi configuration; `docker-compose.yml`: services, mounts and environment.
 - `chrome-extension/`, `buttons-pair/`: browser pairing and control.

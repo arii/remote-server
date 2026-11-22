@@ -40,7 +40,7 @@ already hardened for small-model quirks; reuse them verbatim.
 - One script per slice in `deep-agent/`, mirroring `ask_investigator.py`:
   strict argv validation, repo allowlist + checkout sandboxing (reject path
   escapes), timeouts on every subprocess, `ledger.record(...)` every run.
-- Model routing: use `deep-agent/model_router.py` (`resolve_llm()` +
+- Model routing: use `backend/shared/model_router.py` (`resolve_llm()` +
   `chat_kwargs()`, stdlib-only so system-python tests can import it).
   Explicit prefer wins; otherwise local Ollama (`ASK_MODEL`, default
   `qwen3:8b`) when reachable; otherwise Nebius (`NEBIUS_MODEL`, default
@@ -48,7 +48,7 @@ already hardened for small-model quirks; reuse them verbatim.
   `NEBIUS_ONLY=1` forces cloud, `OLLAMA_STRICT=1` fails instead of falling
   back. Embeddings stay local (`nomic-embed-text`). Never log specs or
   kwargs — the API key must not reach the ledger or progress files.
-- Shared helpers: import from `deep-agent/s5tools.py` — `run`
+- Shared helpers: import from `backend/shared/s5tools.py` — `run`
   (timeout, no shell, capped errors), `td`, `checkout_for`,
   `read_repo_file`, `grep_repo`. Never re-implement gh/td/file access;
   new code reads validators from `s5tools`, not from slice scripts.

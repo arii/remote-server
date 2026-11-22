@@ -57,7 +57,7 @@ agents keep shelling out to the stale CLI.
   gate is faked pass (AST/slop coverage lives in boomtick's
   `test_ast_audit.py`); git worktrees, `git status` scope checks, and
   `pytest` verification commands are REAL.
-- CLI entry is `python3 deep-agent/cli.py eval-pipeline`
+- CLI entry is `python3 -m backend.shared.cli eval-pipeline`
   (`deep_agent` is not an importable package, so the guide's
   `python -m deep_agent.cli` form does not resolve).
 

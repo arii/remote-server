@@ -18,7 +18,7 @@ Agent contract source of truth:
 
 - `agents.py` (`health`, `agent_runs`, `agent_run`) — `GET /api/agents/health`,
   `GET /api/agents/runs`, `GET /api/agents/runs/{run_id}`.
-  Backed by `deep-agent/runs.py` (`runs.list_runs`, `runs.get_run`).
+  Backed by `backend/shared/runs.py` (`runs.list_runs`, `runs.get_run`).
   Agent-shaped: the runs surface from step 4.
 - `chat.py` (`chat_stream_get`, `chat_stream_post`) — `GET`/`POST /api/chat/stream` (SSE),
   `chat_abort` abort, `pi_progress` pi-progress.
@@ -171,12 +171,11 @@ Cross-thread concurrency is fine.
 
 ### Step 4 — Serve `runs.py` for run detail
 
-`deep-agent/runs.py` is stdlib-only — import it
+`backend/shared/runs.py` is stdlib-only — import it
 directly (no venv, no subprocess):
 
 ```python
-sys.path.insert(0, "deep-agent")
-import runs
+from backend.shared import runs
 
 @app.get("/api/agents/runs")
 def agent_runs(limit: int = 50):

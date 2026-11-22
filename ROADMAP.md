@@ -60,7 +60,6 @@ Held for a decision (3 branches); none are pruned until the exact diff and file 
 
 ### Open items
 
-- [#1508](https://github.com/arii/remote-server/issues/1508): backend imports five deep-agent modules at load, so booting needs the Dockerfile `PYTHONPATH`.
 - [#1487](https://github.com/arii/remote-server/issues/1487): failing cobrowser schedules live in the S5 data volume.
 - [#1490](https://github.com/arii/remote-server/issues/1490): the blank terminal needs S5 host diagnosis. The Browser layout was fixed in #1499.
 - [#1491](https://github.com/arii/remote-server/issues/1491): batch issue; remaining findings need a pass against the deployed console.
