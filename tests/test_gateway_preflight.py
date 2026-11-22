@@ -315,13 +315,15 @@ class TestUnchangedPackageVersionVCSUpgradeRegression(unittest.TestCase):
             self.assertEqual(prov["commit_id"], sha_new)
             self.assertEqual(prov["version"], "0.1.0")
 
-
     def _gateway(self, provenance_response):
         def handler(req):
             if req.url.path == "/v1/models":
                 return httpx.Response(
                     200,
-                    json={"object": "list", "data": [{"id": "m", "owned_by": "nebius"}]},
+                    json={
+                        "object": "list",
+                        "data": [{"id": "m", "owned_by": "nebius"}],
+                    },
                     request=req,
                 )
             if req.url.path == "/v1/provenance":
@@ -360,7 +362,9 @@ class TestUnchangedPackageVersionVCSUpgradeRegression(unittest.TestCase):
         client = self._gateway(
             lambda req: httpx.Response(
                 200,
-                json={"data": {"commit_id": "c2ddafcdca38f553f9ad1a1473be67bc4b91f825"}},
+                json={
+                    "data": {"commit_id": "c2ddafcdca38f553f9ad1a1473be67bc4b91f825"}
+                },
                 request=req,
             )
         )
