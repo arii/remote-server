@@ -33,14 +33,9 @@ Run the smoke tests on the S5 host, which has docker, openssl and pytest:
 - Static checks: `npm run compile-check && npm run lint:python`.
 - Root suite: `PYTHONPATH=./deep-agent python3 -m unittest discover -s tests`. The sandbox run had 5 failures and 10 errors. Most are likely environmental: `test_eval_fixtures_gate`, `test_pipeline_e2e` and the `test_coder_backend` verification test need pytest. `test_certbot_deploy_hook`, `test_durability` and `test_browser_relay` need openssl and docker. Confirm these pass on S5.
 
-### Reproduce `test_twt_bounds` on S5
+### `test_twt_bounds` (fixed)
 
-`test_twt_bounds::BoundsTests::test_fanout_and_resolver_merge_explicit_output_budget` fails in the sandbox with four subtests (entrypoints `triage_fanout` and `resolve_conflicts`, ceilings 8192 and 1500). Each raises `AttributeError: 'NoneType' object has no attribute 'kwargs'`. The cause is unexplained.
-
-1. Run it on S5: `PYTHONPATH=./deep-agent python3 -m unittest tests.test_twt_bounds -v`.
-2. If it fails there, find which object is `None` where `.kwargs` is read. This is probably a mocked model or call capture that was never set.
-3. If it passes on S5, record the missing sandbox dependency.
-4. Fix the cause or document it.
+Fixed in PR #1515 (branch `fix/twt-bounds-explicit-output-budget`). Refactor #1483 moved model construction into `model_router.build_chat_model` and dropped the explicit output-token caps (`min(2000, ceiling)` in `triage_fanout.py`, `min(4000, ceiling)` in `resolve_conflicts.py`). The test also patched a dead `ChatOpenAI = None` placeholder. No S5 reproduction is needed. The S5 smoke tests above still cover the remaining root-suite errors that need docker and openssl: `test_certbot_deploy_hook`, `test_durability` (4) and `test_browser_relay::test_compose_browser_relay`.
 
 ## Next: core loop hardening
 
@@ -49,4 +44,20 @@ Run the smoke tests on the S5 host, which has docker, openssl and pytest:
 
 ## Cleanup (gated on PR review)
 
-`chrome-extension/` and `gdocs-access/` stay in `main`. No deletion or pruning of the 85 remote branches happens until the exact diff and file list is reviewed in a PR.
+`chrome-extension/` and `gdocs-access/` stay in `main`.
+
+Done, on the user's approval: 71 remote branches whose PRs were merged with an identical branch tip were deleted. All are recoverable from the merged PRs' `refs/pull/<n>/head` and from `archive/pre-cleanup` at `7f3a2cc`.
+
+Held for a decision (11 branches); none are pruned until the exact diff and file list is reviewed in a PR:
+
+- `fix/timeline-failure-details-1453`
+- `single-canonical-repo-path-2090810062843671711`
+- `fix/preaudit-gate-1403`
+- `docs/branch-protection-config-2956332781543753827`
+- `fix/report-dialog-compact`
+- `fix/review-issue-selection-232030301160202618`
+- `tap-to-fire-jobs-actions-12378469273495919378`
+- `feat/localform-ai-chrome-extension-untracked`
+- `s5-heal-rescue`
+- `docs/operator-notes-batch-d`
+- `skill/gemini-repo-ask`
