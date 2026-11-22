@@ -13,10 +13,10 @@ Last verified: 2026-11-21 on branch `chore/cleanup-and-open-issues`, Python 3.11
 | webhook and certbot hooks (`hooks/`) | experimental | `test_certbot_deploy_hook` errors in the sandbox (needs openssl). Not exercised against a real certificate. |
 | chrome-extension | experimental | 65 vitest tests pass. Canonical form-observer extension is undecided: [#1510](https://github.com/arii/remote-server/issues/1510). |
 | buttons-pair | experimental | 31 tests pass. Lint runs in `npm run lint`. |
-| browser relay | broken on S5, untested here | `tests/test_browser_relay.py` compose test needs Docker. Upstream not restored on S5: [#1513](https://github.com/arii/remote-server/issues/1513). |
+| browser relay | broken on S5, untested here | `tests/test_browser_relay.py` compose test skips without a working `docker compose`. Upstream not restored on S5: [#1513](https://github.com/arii/remote-server/issues/1513). |
 | gdocs-access | experimental | No automated tests run in this sandbox. Not exercised against Google. |
 | scripts (`scripts/`) | working | `bash -n` and shellcheck run in `npm run lint` and CI. `scripts/check-no-shadow-skills.sh` passes. |
-| root tests (`tests/`) | partly broken | 1546 run, 10 errors, all environmental: `test_certbot_deploy_hook` 1, `test_durability` 4, `test_browser_relay` compose 1 (no Docker or openssl), `test_twt_bounds` 4 subtests (fix in open PR [#1515](https://github.com/arii/remote-server/pull/1515)). Clean-checkout runnability: [#1509](https://github.com/arii/remote-server/issues/1509). |
+| root tests (`tests/`) | working | 1546 run, 33 skipped. Tests needing a working `docker compose` or `openssl` skip with a reason when absent. Only `test_twt_bounds` (4 subtests) errors here; fix in open PR [#1515](https://github.com/arii/remote-server/pull/1515). CI runs `npm run test:root`. [#1509](https://github.com/arii/remote-server/issues/1509). |
 
 ## Not verifiable in the sandbox
 

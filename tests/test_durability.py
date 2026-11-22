@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import unittest
 
@@ -15,7 +16,24 @@ def compose_config():
     return json.loads(res.stdout)
 
 
+def _compose_available():
+    if not shutil.which("docker"):
+        return False
+    probe = subprocess.run(
+        ["docker", "compose", "version"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return probe.returncode == 0
+
+
+needs_docker = unittest.skipUnless(
+    _compose_available(), "needs a working `docker compose` CLI to render the config"
+)
+
+
 class TestDurability(unittest.TestCase):
+    @needs_docker
     def test_all_services_log_rotated(self):
         services = compose_config()["services"]
         for name in ("oauth2-proxy", "terminal", "ollama", "tailscale",
@@ -26,6 +44,7 @@ class TestDurability(unittest.TestCase):
                 self.assertEqual(logging.get("options", {}).get("max-size"), "10m")
                 self.assertEqual(logging.get("options", {}).get("max-file"), "3")
 
+    @needs_docker
     def test_healthchecks(self):
         services = compose_config()["services"]
         for name in ("terminal", "code-server", "buttons", "caddy", "ollama"):
@@ -39,6 +58,7 @@ class TestDurability(unittest.TestCase):
                 # (agent-managed daemon).
                 self.assertNotIn("healthcheck", services[name])
 
+    @needs_docker
     def test_depends_on_conditions(self):
         deps = compose_config()["services"]["caddy"]["depends_on"]
         for name in ("terminal", "buttons", "code-server"):
@@ -47,6 +67,7 @@ class TestDurability(unittest.TestCase):
         code_server = compose_config()["services"]["code-server"]["depends_on"]
         self.assertEqual(code_server["ollama"]["condition"], "service_healthy")
 
+    @needs_docker
     def test_terminal_persists_shell_state(self):
         env = compose_config()["services"]["terminal"]["environment"]
         self.assertEqual(env.get("HISTFILE"), "/root/.local/share/bash_history")

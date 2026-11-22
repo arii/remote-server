@@ -9,6 +9,7 @@ no real renewal or container is needed.
 """
 import http.server
 import os
+import shutil
 import socket
 import ssl
 import stat
@@ -109,6 +110,7 @@ class TestCertbotDeployHook(unittest.TestCase):
                              stderr=subprocess.PIPE, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
 
+    @unittest.skipUnless(shutil.which("openssl"), "needs openssl to mint the TLS stub cert")
     def test_healthy_restart_logs_served_expiry(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cert, key = _make_cert(tmpdir)
