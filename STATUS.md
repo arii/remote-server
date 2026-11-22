@@ -4,7 +4,7 @@ Last verified: 2026-11-21 on branch `chore/cleanup-and-open-issues`, Python 3.11
 
 | Component | Status | Evidence |
 | --- | --- | --- |
-| backend (`backend/`) | working | 1633 unittest pass, 4 skipped (`npm run test:backend`). Clean-checkout `/health` smoke test is still missing: [#1508](https://github.com/arii/remote-server/issues/1508). |
+| backend (`backend/`) | working | 1633 unittest pass, 4 skipped (`npm run test:backend`). `/health` boot smoke test (`backend/tests/test_health_boot_smoke.py`) starts uvicorn with `PYTHONPATH=<repo>:<repo>/deep-agent`, the Dockerfile contract. `PYTHONPATH=.` alone does not boot: backend imports `cli`, `runs`, `pricing`, `model_router`, `s5tools` from `deep-agent/`. Partial: [#1508](https://github.com/arii/remote-server/issues/1508). |
 | frontend (`frontend/`) | working | 1379 vitest tests in 61 files pass. `pnpm --filter frontend lint` (tsc, knip, oxlint) reports 0 errors. `pnpm --filter frontend build` succeeds. |
 | deep-agent (`deep-agent/`) | experimental | Covered by backend and root tests. Live model calls are not run in the sandbox. `coder.py` accepts `model_tier` but ignores it, so model escalation in `pipeline.py` has no effect on the coder. |
 | terminal (`terminal/`) | unverified | Image build needs Docker. CI builds it, this sandbox cannot. |
