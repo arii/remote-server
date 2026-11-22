@@ -1,4 +1,4 @@
-"""Shared CLI entrypoint helpers for deep-agent/ scripts.
+"""Shared CLI entrypoint helpers for deep-agent/ scripts and the backend.
 
 Stdlib-only: safe to import from system python3 (validators, readers)
 as well as the venv entrypoints. Only patterns repeated 3+ times
@@ -14,32 +14,46 @@ import os
 import sys
 
 
-def bootstrap():
-    """Put this directory first on sys.path for sibling imports.
+def deep_agent_dir():
+    """Absolute path of the checkout's deep-agent/ directory.
 
-    Idempotent: under the normal `python3 deep-agent/foo.py`
-    invocation the script directory is already sys.path[0], so this
-    is a no-op. Call it before importing sibling modules (ledger,
-    s5tools, ...).
+    Derived from this file's location (no S5_CHECKOUT override): it
+    names the source dir that holds the agent scripts and the default
+    run-ledger state.
     """
-    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "deep-agent",
+    )
+
+
+def bootstrap():
+    """Put deep-agent/ on sys.path so its flat sibling modules import.
+
+    Idempotent. The shared modules live in backend/shared and import
+    through the `backend` package (repo root on the path); the
+    deep-agent scripts still import each other flat, and cli.main()
+    lazily imports pipeline/eval_pipeline from there. Call it before
+    importing those siblings.
+    """
+    here = deep_agent_dir()
     if here not in sys.path:
         sys.path.insert(0, here)
 
 
 def repo_root():
-    """Checkout root for this deep-agent install (S5_CHECKOUT override).
+    """Checkout root for this install (S5_CHECKOUT override).
 
     Derived from this file's location so worktree and non-production
     runs resolve their own checkout's .env and chroma_db instead of
     the production paths (#540): dotenv loading and the RAG index
     stay hermetic per checkout. Production behavior unchanged: there
-    this file lives under the production checkout's deep-agent dir.
+    this file lives under the production checkout's backend/shared dir.
     """
     override = os.environ.get("S5_CHECKOUT", "")
     if isinstance(override, str) and override.strip():
         return override.strip()
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def usage_error(*lines):
@@ -106,15 +120,15 @@ def main(argv=None):
     args = list(argv if argv is not None else sys.argv[1:])
     if not args:
         return usage_error(
-            "usage: cli.py run-pipeline --intent <text> --repo <path>",
-            "               [--issue <id>] [--submit-pr] [--local-only]",
-            "               [--keep-worktree] [--qna-file PATH]",
-            "       cli.py eval-pipeline",
+            "usage: python3 -m backend.shared.cli run-pipeline --intent <text> --repo <path>",
+            "                                              [--issue <id>] [--submit-pr] [--local-only]",
+            "                                              [--keep-worktree] [--qna-file PATH]",
+            "       python3 -m backend.shared.cli eval-pipeline",
         )
     command, args = args[0], args[1:]
     if command == "eval-pipeline":
         if args:
-            return usage_error("usage: cli.py eval-pipeline")
+            return usage_error("usage: python3 -m backend.shared.cli eval-pipeline")
         import eval_pipeline
 
         return eval_pipeline.main()
@@ -131,9 +145,9 @@ def main(argv=None):
     qna_file, args = _option(args, "--qna-file")
     if not intent or not repo or args:
         return usage_error(
-            "usage: cli.py run-pipeline --intent <text> --repo <path>",
-            "               [--issue <id>] [--submit-pr] [--local-only]",
-            "               [--keep-worktree] [--qna-file PATH]",
+            "usage: python3 -m backend.shared.cli run-pipeline --intent <text> --repo <path>",
+            "                                              [--issue <id>] [--submit-pr] [--local-only]",
+            "                                              [--keep-worktree] [--qna-file PATH]",
         )
     try:
         issue_id = int(issue) if issue else None

@@ -17,9 +17,9 @@ import os
 import unittest
 
 import intent
-import model_router
+from backend.shared import model_router
 import re
-import s5tools
+from backend.shared import s5tools
 from backend.exec import engine
 
 # Claim -> evidence (path relative to repo root) -> why deferred.
@@ -43,7 +43,7 @@ CLAIMS = [
     {
         "claim": "tool-output compaction",
         "files": {
-            "deep-agent/s5tools.py": [
+            "backend/shared/s5tools.py": [
                 "MAX_OUT = 4000",
                 "FETCH_DEFAULT_MAX_BYTES",
                 "SEARCH_MAX_RESULTS = 10",
@@ -69,7 +69,7 @@ CLAIMS = [
             ]
         },
         "status": "mislocated, already met",
-        "why": "runs.py holds ledger/trace reads only (no live message "
+        "why": "backend/shared/runs.py holds ledger/trace reads only (no live message "
         "state); trimming already happens at deep_chat turn start. "
         "The plan_history_trim wrapper was removed as dead code under "
         "#1359; trim_history_by_count is the surviving count-trim "
@@ -78,7 +78,7 @@ CLAIMS = [
     {
         "claim": "two-tier model routing",
         "files": {
-            "deep-agent/model_router.py": [
+            "backend/shared/model_router.py": [
                 "def resolve_llm",
                 "def chat_kwargs",
                 '"reasoning_effort": "low"',
@@ -101,7 +101,7 @@ def _source(module):
 def _tree_source(rel):
     """Source text for a repo-relative path (works for venv-only
     modules like triage_fanout that stdlib tests cannot import)."""
-    from cli import repo_root
+    from backend.shared.cli import repo_root
 
     path = os.path.join(repo_root(), rel)
     with open(path, encoding="utf-8") as handle:
@@ -152,7 +152,8 @@ class TestTrimLocationPinned(unittest.TestCase):
             self.assertTrue(callable(getattr(deep_chat, name)), name)
 
     def test_runs_holds_no_message_state_trim(self):
-        runs = __import__("runs")
+        from backend.shared import runs
+
         source = _source(runs)
         self.assertNotIn("def trim", source)
         self.assertNotIn("MAX_HISTORY", source)

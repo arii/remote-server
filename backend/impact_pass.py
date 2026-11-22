@@ -25,7 +25,7 @@ import re
 import shutil
 import sys
 
-from cli import repo_root
+from backend.shared.cli import repo_root
 
 DEFAULT_STATE_DIR = "/var/lib/buttons/impact-pass"
 DEFAULT_ROUTES = "/:desktop,/:mobile"

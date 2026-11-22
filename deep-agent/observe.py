@@ -27,7 +27,7 @@ import re
 import secrets
 import time
 
-import ledger
+from backend.shared import ledger
 
 PREVIEW_LIMIT = 2000
 _THREAD_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -52,7 +52,7 @@ def default_trace_path(script, thread_id):
     share (and interleave) one file. The timestamp keeps its position so
     names stay chronologically sortable.
     """
-    import ledger
+    from backend.shared import ledger
 
     safe = _THREAD_SAFE.sub("_", thread_id or "run")[:64] or "run"
     base = os.path.join(ledger.state_dir(), "traces")

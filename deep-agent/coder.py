@@ -43,14 +43,14 @@ import sys
 import threading
 import time
 
-import cli
+from backend.shared import cli
 
 cli.bootstrap()
 
 # run_check allowlist lives in s5tools now, shared with the chat/ask
 # run_repo_command tool (#633); names re-exported here so existing
 # imports (coder.check_allowed, tests) keep working unchanged.
-from s5tools import (  # noqa: E402,F401
+from backend.shared.s5tools import (  # noqa: E402,F401
     CHECK_OUTPUT_LIMIT,
     CHECK_PREFIXES,
     CHECK_TIMEOUT,
@@ -317,7 +317,7 @@ def build_system(worktree, context, repo=None):
 
 def build_model(model_override=None):
     """LLM via model_router (Ollama no-think default). Venv-only."""
-    import model_router  # noqa: E402
+    from backend.shared import model_router  # noqa: E402
 
     spec = model_router.resolve_llm()
     model_override = model_override or os.environ.get("CODER_MODEL", "").strip()
@@ -350,7 +350,7 @@ def _default_plan_fn(brief, worktree_root, context):
     started = time.time()
     recorder = None
     if spec.get("model"):
-        import ledger
+        from backend.shared import ledger
         import observe
 
         thread = context.get("thread_id") or f"coder-plan-{time.time_ns()}"
@@ -774,7 +774,7 @@ def build_agent(
     from deepagents import create_deep_agent  # noqa: E402
     from deepagents.middleware.filesystem import FilesystemMiddleware
 
-    import model_router  # noqa: E402
+    from backend.shared import model_router  # noqa: E402
 
     if model is None:
         model, _ = build_model()
@@ -1231,7 +1231,7 @@ def run_coder(
     from langchain_core.messages import HumanMessage  # noqa: E402
 
     import deep_chat  # noqa: E402
-    import ledger  # noqa: E402
+    from backend.shared import ledger  # noqa: E402
 
     started = time.time()
     override = tier_model(model_tier)
@@ -1398,7 +1398,7 @@ def implementation_failure(reply, written_files):
 
 def latest_plan(thread):
     """Newest plan_pending ledger row for thread, or None. Never raises."""
-    import ledger  # noqa: E402
+    from backend.shared import ledger  # noqa: E402
 
     try:
         with open(ledger.LEDGER, encoding="utf-8") as fh:
@@ -1475,7 +1475,7 @@ def plan_and_pause(worktree, brief, system, thread, timeout):
     )
 
     import deep_chat  # noqa: E402
-    import ledger  # noqa: E402
+    from backend.shared import ledger  # noqa: E402
 
     started = time.time()
     recorder = observe.TraceRecorder(observe.default_trace_path("coder_plan", thread))
@@ -1588,7 +1588,7 @@ def plan_and_pause(worktree, brief, system, thread, timeout):
 
 def _implement_and_finish(worktree, brief, system, thread, timeout, extra=None):
     """run_coder plus the ledger row + stdout summary. Returns exit code."""
-    import ledger  # noqa: E402
+    from backend.shared import ledger  # noqa: E402
     from langchain_core.messages import (  # noqa: E402
         AIMessage,
         HumanMessage,
@@ -1647,7 +1647,7 @@ def _cmd_resume(
     )
 
     import deep_chat  # noqa: E402
-    import ledger  # noqa: E402
+    from backend.shared import ledger  # noqa: E402
 
     if verdict not in ("approve", "reject"):
         return cli.usage_error(f"bad verdict {verdict!r}: want 'approve'/'reject'")
@@ -1969,7 +1969,7 @@ class InitCoderGraph:
         max_replans=1,
         thread_id=None,
     ):
-        import s5tools  # noqa: E402  (stdlib-only module)
+        from backend.shared import s5tools  # noqa: E402  (stdlib-only module)
 
         self.repo = repo
         self.issue_id = issue_id
@@ -1991,7 +1991,7 @@ class InitCoderGraph:
 
     @staticmethod
     def _default_td_runner(args, cwd):
-        import s5tools
+        from backend.shared import s5tools
 
         out = s5tools.td(["--json"] + list(args), cwd)
         return 0, out
@@ -2149,7 +2149,7 @@ class InitCoderGraph:
             if error:
                 return {"fatal": error}
             # Best-effort: link shared node_modules into the fresh worktree (#1235).
-            import s5tools  # noqa: E402  (stdlib-only module)
+            from backend.shared import s5tools  # noqa: E402  (stdlib-only module)
 
             s5tools.link_worktree_node_modules(
                 root, os.environ.get("DEEP_AGENT_MODSTORE", "")
@@ -2275,7 +2275,7 @@ class InitCoderGraph:
 
         def persist_node(state):
             import decisions
-            import ledger
+            from backend.shared import ledger
 
             calls = [
                 {"name": "td worktree create", "args": f"--issue {outer.issue_id}"},

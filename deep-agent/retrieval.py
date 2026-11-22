@@ -14,7 +14,7 @@ import hashlib
 import os
 import re
 
-import cli
+from backend.shared import cli
 
 DB_DIR = os.path.join(cli.repo_root(), "deep-agent", "chroma_db")
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")

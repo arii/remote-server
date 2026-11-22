@@ -38,7 +38,7 @@ from backend.core.validation import validate_repo_name
 from backend.exec.engine import validate_td_command
 from backend.gh import run_gh, validate_gh
 
-import s5tools  # noqa: E402
+from backend.shared import s5tools  # noqa: E402
 
 # Executor prompt template + coder CLI, resolved from the repo root:
 # every entry point runs with cwd=root, so abspath() of the literal
@@ -405,6 +405,18 @@ def fill_executor_prompt(
     return template
 
 
+def _coder_env() -> dict:
+    """Child env with the repo root first on PYTHONPATH.
+
+    coder.py imports backend.shared; the child runs with
+    cwd=worktree, so the root must come from here, not the cwd.
+    """
+    root = os.path.dirname(_DEEP_AGENT_DIR)
+    base = os.environ.get("PYTHONPATH", "")
+    path = root + (os.pathsep + base if base else "")
+    return {**os.environ, "PYTHONPATH": path}
+
+
 def start_coder_session(worktree_path: str, system_prompt: str, brief: str) -> dict:
     """Spawn the coder executor detached. Returns {pid, log}.
 
@@ -426,6 +438,7 @@ def start_coder_session(worktree_path: str, system_prompt: str, brief: str) -> d
                 brief,
             ],
             cwd=worktree_path,
+            env=_coder_env(),
             start_new_session=True,
             stdout=log_fh,
             stderr=subprocess.STDOUT,

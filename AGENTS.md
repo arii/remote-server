@@ -47,6 +47,7 @@ Why: cruft from earlier agent sessions (generated assets, unused pins, duplicate
 ## Code Map
 
 - `backend` — application source (incl. relocated tooling: `python3 -m backend.repair_worker …`, `python3 -m backend.impact_pass …`)
+- `backend/shared` — modules shared by backend and deep-agent (`cli`, `runs`, `pricing`, `model_router`, `s5tools`, `ledger`, `twt_*`); import as `from backend.shared import <module>`, run entry points as `python3 -m backend.shared.<module>`
 - `deep-agent` — LangGraph agents + evals (tracked files only; see `.gitignore` allowlist)
 - `tests` — automated tests
 - `docs` — project documentation

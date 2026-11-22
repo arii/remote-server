@@ -109,7 +109,7 @@ and waits at most 200 seconds for already-dispatched calls to settle.
 Reconciliation joins exact IDs against ledger rows, refreshes aggregate
 costs, and inserts missing receipts without double billing. Unsettled or
 unknown receipts fail closed; a journal can be resumed after a hard kill
-with `python3 deep-agent/twt_receipts.py <journal.jsonl>` using the original
+with `python3 -m backend.shared.twt_receipts <journal.jsonl>` using the original
 ledger/state environment. Receipt responses contain billing metadata, not
 prompts. TwT checks client disconnection again after cooldowns and before
 upstream dispatch, so a disconnected client cannot start paid fallback.

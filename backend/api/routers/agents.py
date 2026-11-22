@@ -11,8 +11,8 @@ from pydantic import BaseModel
 
 from fastapi import HTTPException
 
-import runs  # noqa: E402
-import pricing  # noqa: E402
+from backend.shared import runs  # noqa: E402
+from backend.shared import pricing  # noqa: E402
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -68,12 +68,14 @@ def agent_budget() -> dict:
     total = runs.total_metered_spend()
     spent = total["spent"]
     # Mirror the router trip: unrated rows block when capped.
-    blocked = cap is not None and (
-        spent >= cap or total["unknown"] > 0)
-    return {"cap_usd": cap, "spent_usd": spent,
-            "remaining_usd": round(max(0.0, cap - spent), 6)
-            if cap is not None else None,
-            "blocked": blocked, "unknown": total["unknown"]}
+    blocked = cap is not None and (spent >= cap or total["unknown"] > 0)
+    return {
+        "cap_usd": cap,
+        "spent_usd": spent,
+        "remaining_usd": round(max(0.0, cap - spent), 6) if cap is not None else None,
+        "blocked": blocked,
+        "unknown": total["unknown"],
+    }
 
 
 @router.post("/runs/clear", response_model=ClearRunsResult)

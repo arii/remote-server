@@ -270,7 +270,7 @@ jobs:
           fi
       - name: offline fixture verification
         if: steps.scope.outputs.matched == 'true'
-        run: python3 deep-agent/eval_pipeline.py --verify-fixtures
+        run: PYTHONPATH=. python3 deep-agent/eval_pipeline.py --verify-fixtures
 
   format:
     name: ruff format (diff-aware)

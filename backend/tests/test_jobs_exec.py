@@ -31,8 +31,11 @@ class DeployHealthGateTest(unittest.TestCase):
         # must use the root-served /api/status, not /buttons/api/status
         # (which 404s and fails every deploy).
         steps, err = engine.action_steps(
-            "deploy-buttons", "remote-server",
-            "arii/remote-server", "/srv/remote-server")
+            "deploy-buttons",
+            "remote-server",
+            "arii/remote-server",
+            "/srv/remote-server",
+        )
         self.assertIsNone(err)
         gate = " ".join(" ".join(s) for s in steps)
         self.assertIn("http://buttons:8000/api/status", gate)
@@ -47,18 +50,27 @@ class CheckNotificationsScheduledContextTest(unittest.TestCase):
         # cwd — not the manual shape) so a context regression fails
         # here instead of silently in the 15-minute schedule.
         steps, err = engine.action_steps(
-            "check-notifications", "boomtick",
-            "arii/boomtick", "/srv/remote-server")
+            "check-notifications", "boomtick", "arii/boomtick", "/srv/remote-server"
+        )
         self.assertIsNone(err)
-        self.assertEqual(steps, [[
-            sys.executable, "-m", "backend.notify_check",
-            "--repo", "boomtick", "--gh", "arii/boomtick"]])
+        self.assertEqual(
+            steps,
+            [
+                [
+                    sys.executable,
+                    "-m",
+                    "backend.notify_check",
+                    "--repo",
+                    "boomtick",
+                    "--gh",
+                    "arii/boomtick",
+                ]
+            ],
+        )
         env = engine.step_env(steps)
         cwd = engine.step_cwd(steps)
         self.assertIsNotNone(env)
-        self.assertTrue(
-            env["PYTHONPATH"].split(os.pathsep)[0] ==
-            engine.ENGINE_ROOT)
+        self.assertTrue(env["PYTHONPATH"].split(os.pathsep)[0] == engine.ENGINE_ROOT)
         self.assertEqual(cwd, engine.ENGINE_ROOT)
 
     def test_scheduled_module_resolves_in_context(self):
@@ -68,15 +80,19 @@ class CheckNotificationsScheduledContextTest(unittest.TestCase):
         # (--help) in the exact scheduled env/cwd and require
         # exit 0 with usage on record.
         steps, err = engine.action_steps(
-            "check-notifications", "boomtick",
-            "arii/boomtick", "/srv/remote-server")
+            "check-notifications", "boomtick", "arii/boomtick", "/srv/remote-server"
+        )
         self.assertIsNone(err)
         env = engine.step_env(steps)
         cwd = engine.step_cwd(steps)
         out: list = []
         code = engine.run_step_pipe(
             [sys.executable, "-m", "backend.notify_check", "--help"],
-            out.append, env=env, cwd=cwd, timeout=60)
+            out.append,
+            env=env,
+            cwd=cwd,
+            timeout=60,
+        )
         self.assertEqual(code, 0)
         self.assertIn("usage:", "".join(out))
 
@@ -94,25 +110,29 @@ class CheckNotificationsScheduledContextTest(unittest.TestCase):
         with open(gh_stub, "w") as f:
             f.write("#!/bin/sh\n")
             f.write('if [ "$1" = "run" ]; then\n')
-            f.write("  echo '[{\"name\":\"CI\",\"headBranch\":\"main\","
-                    "\"conclusion\":\"success\",\"event\":\"push\","
-                    "\"url\":\"https://example.invalid/r/1\"}]'\n")
+            f.write(
+                '  echo \'[{"name":"CI","headBranch":"main",'
+                '"conclusion":"success","event":"push",'
+                '"url":"https://example.invalid/r/1"}]\'\n'
+            )
             f.write("else\n")
             f.write("  echo '[]'\n")
             f.write("fi\n")
         os.chmod(gh_stub, 0o755)
         child_env = dict(env or {})
-        child_env["PATH"] = (bindir + os.pathsep
-                             + os.environ.get("PATH", ""))
+        child_env["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
         child_env["BUTTONS_NOTIFIER_STATE_PATH"] = os.path.join(
-            tmp, "notifier_state.json")
-        child_env["BUTTONS_JOBS_RUNS_PATH"] = os.path.join(
-            tmp, "jobs_runs.json")
+            tmp, "notifier_state.json"
+        )
+        child_env["BUTTONS_JOBS_RUNS_PATH"] = os.path.join(tmp, "jobs_runs.json")
         child_env["DIGEST_INTERVAL_HOURS"] = "0"
         child_env["NOTIFY_EVENTS"] = "ci_fail,conflict,job_fail"
-        for var in ("NTFY_TOPIC", "NTFY_TOKEN",
-                    "NOTIFICATION_WEBHOOK_URL",
-                    "BUTTONS_PUBLIC_URL"):
+        for var in (
+            "NTFY_TOPIC",
+            "NTFY_TOKEN",
+            "NOTIFICATION_WEBHOOK_URL",
+            "BUTTONS_PUBLIC_URL",
+        ):
             child_env.pop(var, None)
         return child_env
 
@@ -123,18 +143,17 @@ class CheckNotificationsScheduledContextTest(unittest.TestCase):
         import tempfile
 
         steps, err = engine.action_steps(
-            "check-notifications", "boomtick",
-            "arii/boomtick", "/srv/remote-server")
+            "check-notifications", "boomtick", "arii/boomtick", "/srv/remote-server"
+        )
         self.assertIsNone(err)
         env = engine.step_env(steps)
         cwd = engine.step_cwd(steps)
-        with tempfile.TemporaryDirectory(
-                prefix="notify1125") as tmp:
+        with tempfile.TemporaryDirectory(prefix="notify1125") as tmp:
             child_env = self._hermetic_child_env(env, tmp)
             out: list = []
             code = engine.run_step_pipe(
-                steps[0], out.append, env=child_env, cwd=cwd,
-                timeout=120)
+                steps[0], out.append, env=child_env, cwd=cwd, timeout=120
+            )
         text = "".join(out)
         self.assertEqual(code, 0)
         self.assertIn("notify-check repo=boomtick", text)
@@ -150,21 +169,19 @@ class CheckNotificationsScheduledContextTest(unittest.TestCase):
         import tempfile
 
         steps, err = engine.action_steps(
-            "check-notifications", "boomtick",
-            "arii/boomtick", "/srv/remote-server")
+            "check-notifications", "boomtick", "arii/boomtick", "/srv/remote-server"
+        )
         self.assertIsNone(err)
         env = engine.step_env(steps)
         cwd = engine.step_cwd(steps)
-        with tempfile.TemporaryDirectory(
-                prefix="notify1125") as tmp:
+        with tempfile.TemporaryDirectory(prefix="notify1125") as tmp:
             child_env = self._hermetic_child_env(env, tmp)
-            with open(child_env["BUTTONS_NOTIFIER_STATE_PATH"],
-                      "w") as f:
+            with open(child_env["BUTTONS_NOTIFIER_STATE_PATH"], "w") as f:
                 f.write('{"ci": []}')
             out: list = []
             code = engine.run_step_pipe(
-                steps[0], out.append, env=child_env, cwd=cwd,
-                timeout=120)
+                steps[0], out.append, env=child_env, cwd=cwd, timeout=120
+            )
         text = "".join(out)
         self.assertNotEqual(code, 0)
         self.assertTrue(text.strip())
@@ -185,9 +202,7 @@ class ValidateTdCommandTest(unittest.TestCase):
     def test_reject_non_allowlisted(self):
         # #428: fix-ci dispatches to a dead backend, cut from the allowlist.
         self.assertIsNone(
-            engine.validate_td_command(
-                "td --json agent fix-ci --pr 3 --execute"
-            )
+            engine.validate_td_command("td --json agent fix-ci --pr 3 --execute")
         )
         self.assertIsNone(engine.validate_td_command("td rm -rf /"))
         self.assertIsNone(engine.validate_td_command("td context-warm --force"))
@@ -214,7 +229,9 @@ class ValidateTdCommandTest(unittest.TestCase):
     def test_reject_audit_submit_and_bare_audit(self):
         # --submit posts a review: never one-tap dispatchable.
         self.assertIsNone(
-            engine.validate_td_command("td gh audit-pr --pr 12 --fetch --audit --submit")
+            engine.validate_td_command(
+                "td gh audit-pr --pr 12 --fetch --audit --submit"
+            )
         )
         # Bare audit-pr with no stage flags is a server-side no-op.
         self.assertIsNone(engine.validate_td_command("td gh audit-pr --pr 12"))
@@ -231,22 +248,27 @@ class TdRunFailureMessageTest(unittest.TestCase):
         class Runner:
             def run(self, *args, **kwargs):
                 return proc
+
         return Runner()
 
     def test_json_error_on_stdout_names_cause(self):
         proc = FakeProc(
-            returncode=1, stderr="",
-            stdout=('{"status": "error", "message": '
-                    '"Missing GITHUB_TOKEN environment variable.", '
-                    '"type": "ValueError", "code": 1}'))
+            returncode=1,
+            stderr="",
+            stdout=(
+                '{"status": "error", "message": '
+                '"Missing GITHUB_TOKEN environment variable.", '
+                '"type": "ValueError", "code": 1}'
+            ),
+        )
         with self.assertRaises(RuntimeError) as ctx:
-            engine.td_run("td --json repo workflow-runs",
-                          runner=self._runner(proc))
+            engine.td_run("td --json repo workflow-runs", runner=self._runner(proc))
         self.assertIn("Missing GITHUB_TOKEN", str(ctx.exception))
 
     def test_stderr_last_line_still_wins(self):
-        proc = FakeProc(returncode=2, stderr="boom\nlast line\n",
-                        stdout='{"status": "error"}')
+        proc = FakeProc(
+            returncode=2, stderr="boom\nlast line\n", stdout='{"status": "error"}'
+        )
         with self.assertRaises(RuntimeError) as ctx:
             engine.td_run("td doctor", runner=self._runner(proc))
         self.assertEqual(str(ctx.exception), "last line")
@@ -279,20 +301,32 @@ class ValidatePlanArgvTest(unittest.TestCase):
             [],
             ["td", "--json", "agent"],
             ["td", "--json", "agent", "plan-issue-audit"],
-            ["td", "--json", "agent", "plan-issue-audit",
-             "--all-open", "--extra"],
-            ["td", "--json", "agent", "plan-workflow-audit",
-             "--all-open"],
+            ["td", "--json", "agent", "plan-issue-audit", "--all-open", "--extra"],
+            ["td", "--json", "agent", "plan-workflow-audit", "--all-open"],
             ["td", "--json", "agent", "plan-review", "--pr", "0"],
             ["td", "--json", "agent", "plan-review", "--pr", "abc"],
-            ["td", "--json", "agent", "plan-review", "--pr", "3",
-             "--execute"],
-            ["td", "--json", "agent", "plan-aggregation",
-             "--target", "x.md"],
-            ["td", "--json", "agent", "plan-aggregation",
-             "--pr", "3", "--target", "no spaces"],
-            ["td", "--json", "agent", "plan-aggregation",
-             "--pr", "0", "--target", "x.md"],
+            ["td", "--json", "agent", "plan-review", "--pr", "3", "--execute"],
+            ["td", "--json", "agent", "plan-aggregation", "--target", "x.md"],
+            [
+                "td",
+                "--json",
+                "agent",
+                "plan-aggregation",
+                "--pr",
+                "3",
+                "--target",
+                "no spaces",
+            ],
+            [
+                "td",
+                "--json",
+                "agent",
+                "plan-aggregation",
+                "--pr",
+                "0",
+                "--target",
+                "x.md",
+            ],
             ["td", "--json", "agent", "plan-nuke", "--all-open"],
             ["td", "context-warm"],
             ["td", "--json", "agent", "plan-review", "--pr", "3; reboot"],
@@ -376,6 +410,7 @@ class ClearSemanticsTest(unittest.TestCase):
         # of failing; finishing the head promotes it.
         reg = RunRegistry()
         import backend.exec.engine as engine_mod
+
         cap = engine_mod.MAX_CONCURRENT_RUNS
         ids = []
         for _ in range(cap):
@@ -405,15 +440,11 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_run_td_rejects_bad_command(self):
-        resp = self.client.post(
-            "/api/jobs/run-td", json={"command": "td rm -rf /"}
-        )
+        resp = self.client.post("/api/jobs/run-td", json={"command": "td rm -rf /"})
         self.assertEqual(resp.status_code, 400)
 
     def test_run_plan_rejects_bad_plan(self):
-        resp = self.client.post(
-            "/api/jobs/run-plan", json={"plan": "nuke"}
-        )
+        resp = self.client.post("/api/jobs/run-plan", json={"plan": "nuke"})
         self.assertEqual(resp.status_code, 400)
 
     def test_run_plan_starts_first_class_run(self):
@@ -423,18 +454,16 @@ class RouterTest(unittest.TestCase):
         import backend.api.routers.jobs as jobs_router
 
         jobs_router.registry = RunRegistry()
-        with mock.patch(
-            "backend.api.routers.jobs._launch"
-        ) as launched:
-            resp = self.client.post(
-                "/api/jobs/run-plan", json={"plan": "issue-audit"}
-            )
+        with mock.patch("backend.api.routers.jobs._launch") as launched:
+            resp = self.client.post("/api/jobs/run-plan", json={"plan": "issue-audit"})
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
             launched.assert_called_once_with(
-                rid, "run-plan", "remote-server",
-                td_argv=["td", "--json", "agent",
-                         "plan-issue-audit", "--all-open"])
+                rid,
+                "run-plan",
+                "remote-server",
+                td_argv=["td", "--json", "agent", "plan-issue-audit", "--all-open"],
+            )
             rows = self.client.get("/api/jobs").json()["jobs"]
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["id"], rid)
@@ -454,8 +483,7 @@ class RouterTest(unittest.TestCase):
             body2 = resp2.json()
             self.assertFalse(body2["queued"])
             self.assertEqual(body2["position"], 0)
-            resp3 = self.client.post(
-                "/api/jobs/run", json={"action": "logs"})
+            resp3 = self.client.post("/api/jobs/run", json={"action": "logs"})
             self.assertEqual(resp3.status_code, 200)
             body3 = resp3.json()
             self.assertTrue(body3["queued"])
@@ -472,21 +500,17 @@ class RouterTest(unittest.TestCase):
 
         jobs_router.registry = RunRegistry()
         with mock.patch("backend.api.routers.jobs._launch"):
-            resp = self.client.post(
-                "/api/jobs/run", json={"action": "logs"})
+            resp = self.client.post("/api/jobs/run", json={"action": "logs"})
             self.assertEqual(resp.status_code, 200)
-            resp_b = self.client.post(
-                "/api/jobs/run", json={"action": "logs"})
+            resp_b = self.client.post("/api/jobs/run", json={"action": "logs"})
             self.assertEqual(resp_b.status_code, 200)
             self.assertFalse(resp_b.json()["queued"])
-            resp2 = self.client.post(
-                "/api/jobs/run-plan", json={"plan": "issue-audit"})
+            resp2 = self.client.post("/api/jobs/run-plan", json={"plan": "issue-audit"})
             self.assertEqual(resp2.status_code, 200)
             body2 = resp2.json()
             self.assertTrue(body2["queued"])
             self.assertEqual(body2["position"], 1)
-        for done_id in (resp.json()["id"], resp_b.json()["id"],
-                        body2["id"]):
+        for done_id in (resp.json()["id"], resp_b.json()["id"], body2["id"]):
             jobs_router.registry.finish_run(done_id, 0)
         jobs_router.registry = RunRegistry()
 
@@ -505,13 +529,14 @@ class RouterTest(unittest.TestCase):
         import backend.api.routers.jobs as jobs_router
 
         jobs_router.registry = RunRegistry()
-        with mock.patch(
-            "backend.api.routers.jobs._launch"
-        ) as launched, mock.patch(
-            # Repo validation reads real checkouts; this test is
-            # about the run flow, so the repo is stubbed.
-            "backend.core.git_helpers.get_repo_status",
-            return_value={"repo": "remote-server"},
+        with (
+            mock.patch("backend.api.routers.jobs._launch") as launched,
+            mock.patch(
+                # Repo validation reads real checkouts; this test is
+                # about the run flow, so the repo is stubbed.
+                "backend.core.git_helpers.get_repo_status",
+                return_value={"repo": "remote-server"},
+            ),
         ):
             resp = self.client.post(
                 "/api/jobs/run-td", json={"command": "td context-warm"}
@@ -519,8 +544,8 @@ class RouterTest(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
             launched.assert_called_once_with(
-                rid, "run-td", "remote-server",
-                td_argv=["td", "context-warm"])
+                rid, "run-td", "remote-server", td_argv=["td", "context-warm"]
+            )
             # Queue (#1025): the engine holds two slots, so the
             # second run starts too instead of conflicting.
             resp2 = self.client.post("/api/jobs/run", json={"action": "logs"})
@@ -534,8 +559,8 @@ class RouterTest(unittest.TestCase):
         resp3 = self.client.post("/api/jobs/clear", json={})
         self.assertEqual(resp3.status_code, 400)
         resp3 = self.client.post(
-            "/api/jobs/clear",
-            json={"intent": "jobs-clear", "confirmed": True})
+            "/api/jobs/clear", json={"intent": "jobs-clear", "confirmed": True}
+        )
         self.assertEqual(resp3.json(), {"ok": True, "cleared": 0})
         jobs_router.registry.finish_run(rid, 0)
         jobs_router.registry.finish_run(rid2, 0)
@@ -553,42 +578,43 @@ class RouterTest(unittest.TestCase):
             seen["branch"] = branch
             return branch
 
-        with mock.patch(
-            "backend.api.routers.jobs._launch"
-        ), mock.patch(
-            "backend.core.git_helpers.get_repo_status",
-            return_value={"repo": "remote-server"},
-        ), mock.patch(
-            "backend.core.git_helpers.validate_action_branch",
-            side_effect=fake_branch,
+        with (
+            mock.patch("backend.api.routers.jobs._launch"),
+            mock.patch(
+                "backend.core.git_helpers.get_repo_status",
+                return_value={"repo": "remote-server"},
+            ),
+            mock.patch(
+                "backend.core.git_helpers.validate_action_branch",
+                side_effect=fake_branch,
+            ),
         ):
             resp = self.client.post(
                 "/api/jobs/run",
-                json={"action": "logs", "repo": "remote-server",
-                      "branch": "main"},
+                json={"action": "logs", "repo": "remote-server", "branch": "main"},
             )
             self.assertEqual(resp.status_code, 200)
-            self.assertEqual(
-                seen, {"repo": "remote-server", "branch": "main"})
+            self.assertEqual(seen, {"repo": "remote-server", "branch": "main"})
         jobs_router.registry = RunRegistry()
 
     def test_run_rejects_unknown_branch(self):
         import backend.api.routers.jobs as jobs_router
 
         jobs_router.registry = RunRegistry()
-        with mock.patch(
-            "backend.api.routers.jobs._launch"
-        ), mock.patch(
-            "backend.core.git_helpers.get_repo_status",
-            return_value={"repo": "remote-server"},
-        ), mock.patch(
-            "backend.core.git_helpers.validate_action_branch",
-            side_effect=ValueError("unknown branch: 'gone'"),
+        with (
+            mock.patch("backend.api.routers.jobs._launch"),
+            mock.patch(
+                "backend.core.git_helpers.get_repo_status",
+                return_value={"repo": "remote-server"},
+            ),
+            mock.patch(
+                "backend.core.git_helpers.validate_action_branch",
+                side_effect=ValueError("unknown branch: 'gone'"),
+            ),
         ):
             resp = self.client.post(
                 "/api/jobs/run",
-                json={"action": "logs", "repo": "remote-server",
-                      "branch": "gone"},
+                json={"action": "logs", "repo": "remote-server", "branch": "gone"},
             )
             self.assertEqual(resp.status_code, 400)
             self.assertIn("unknown branch", resp.json()["detail"])
@@ -601,15 +627,17 @@ class RouterTest(unittest.TestCase):
         import backend.api.routers.jobs as jobs_router
 
         jobs_router.registry = RunRegistry()
-        with mock.patch(
-            "backend.api.routers.jobs._launch"
-        ), mock.patch(
-            "backend.core.git_helpers.get_repo_status",
-            return_value={"repo": "remote-server"},
-        ), mock.patch(
-            "backend.core.git_helpers.validate_action_branch",
-            return_value="",
-        ) as branch_mock:
+        with (
+            mock.patch("backend.api.routers.jobs._launch"),
+            mock.patch(
+                "backend.core.git_helpers.get_repo_status",
+                return_value={"repo": "remote-server"},
+            ),
+            mock.patch(
+                "backend.core.git_helpers.validate_action_branch",
+                return_value="",
+            ) as branch_mock,
+        ):
             resp = self.client.post(
                 "/api/jobs/run",
                 json={"action": "logs", "repo": "remote-server"},
@@ -622,19 +650,24 @@ class RouterTest(unittest.TestCase):
         import backend.api.routers.jobs as jobs_router
 
         jobs_router.registry = RunRegistry()
-        with mock.patch(
-            "backend.api.routers.jobs._launch"
-        ) as launched, mock.patch(
-            "backend.core.git_helpers.get_repo_status",
-            return_value={"repo": "remote-server"},
-        ), mock.patch(
-            "backend.core.git_helpers.validate_action_branch",
-            return_value="main",
-        ) as branch_mock:
+        with (
+            mock.patch("backend.api.routers.jobs._launch") as launched,
+            mock.patch(
+                "backend.core.git_helpers.get_repo_status",
+                return_value={"repo": "remote-server"},
+            ),
+            mock.patch(
+                "backend.core.git_helpers.validate_action_branch",
+                return_value="main",
+            ) as branch_mock,
+        ):
             resp = self.client.post(
                 "/api/jobs/run-td",
-                json={"command": "td context-warm",
-                      "repo": "remote-server", "branch": "main"},
+                json={
+                    "command": "td context-warm",
+                    "repo": "remote-server",
+                    "branch": "main",
+                },
             )
             self.assertEqual(resp.status_code, 200)
             branch_mock.assert_called_once_with("remote-server", "main")
@@ -654,8 +687,8 @@ class RouterTest(unittest.TestCase):
         try:
             resp = self.client.post(
                 "/api/jobs/clear",
-                json={"all": True, "intent": "jobs-clear",
-                      "confirmed": True})
+                json={"all": True, "intent": "jobs-clear", "confirmed": True},
+            )
             self.assertEqual(resp.status_code, 409)
             listed = self.client.get("/api/jobs").json()["jobs"]
             self.assertEqual([j["id"] for j in listed], [rid])
@@ -664,15 +697,13 @@ class RouterTest(unittest.TestCase):
             self.assertIn(rid, resp.json()["detail"])
             # Queue (#1025): a second dispatch takes the free slot
             # and a third waits queued — neither conflicts.
-            resp2 = self.client.post(
-                "/api/jobs/run", json={"action": "logs"})
+            resp2 = self.client.post("/api/jobs/run", json={"action": "logs"})
             self.assertEqual(resp2.status_code, 200)
             body2 = resp2.json()
             self.assertFalse(body2["queued"])
             self.assertEqual(body2["position"], 0)
             extra_ids.append(body2["id"])
-            resp_q = self.client.post(
-                "/api/jobs/run", json={"action": "logs"})
+            resp_q = self.client.post("/api/jobs/run", json={"action": "logs"})
             self.assertEqual(resp_q.status_code, 200)
             body_q = resp_q.json()
             self.assertTrue(body_q["queued"])
@@ -684,28 +715,29 @@ class RouterTest(unittest.TestCase):
                 jobs_router.registry.finish_run(extra, 0)
         resp3 = self.client.post(
             "/api/jobs/clear",
-            json={"all": True, "intent": "jobs-clear",
-                  "confirmed": True})
+            json={"all": True, "intent": "jobs-clear", "confirmed": True},
+        )
         self.assertEqual(resp3.json(), {"ok": True, "cleared": 3})
 
     def test_run_destructive_requires_confirm(self):
         import backend.api.routers.jobs as jobs_router
 
         jobs_router.registry = RunRegistry()
-        resp = self.client.post(
-            "/api/jobs/run", json={"action": "recreate-code"})
+        resp = self.client.post("/api/jobs/run", json={"action": "recreate-code"})
         self.assertEqual(resp.status_code, 400)
-        with mock.patch(
-            "backend.api.routers.jobs._launch"
-        ) as launched:
+        with mock.patch("backend.api.routers.jobs._launch") as launched:
             resp = self.client.post(
                 "/api/jobs/run",
-                json={"action": "recreate-code", "intent": "jobs-run",
-                      "confirmed": True})
+                json={
+                    "action": "recreate-code",
+                    "intent": "jobs-run",
+                    "confirmed": True,
+                },
+            )
             self.assertEqual(resp.status_code, 200)
             launched.assert_called_once_with(
-                resp.json()["id"], "recreate-code", "remote-server",
-                td_argv=None)
+                resp.json()["id"], "recreate-code", "remote-server", td_argv=None
+            )
         jobs_router.registry.finish_run(resp.json()["id"], 0)
 
     def test_run_recreate_rejected_no_resume_path(self):
@@ -718,21 +750,21 @@ class RouterTest(unittest.TestCase):
         jobs_router.registry = RunRegistry()
         self.assertNotIn("recreate", engine.ALLOWED_ACTIONS)
         self.assertNotIn("recreate", engine.DESTRUCTIVE_ACTIONS)
-        steps, err = engine.action_steps(
-            "recreate", "remote-server", "", "")
+        steps, err = engine.action_steps("recreate", "remote-server", "", "")
         self.assertIsNone(steps)
         self.assertEqual(err, "unknown action")
-        for body in ({"action": "recreate"},
-                     {"action": "recreate", "intent": "jobs-run",
-                      "confirmed": True}):
+        for body in (
+            {"action": "recreate"},
+            {"action": "recreate", "intent": "jobs-run", "confirmed": True},
+        ):
             resp = self.client.post("/api/jobs/run", json=body)
             self.assertEqual(resp.status_code, 400)
             self.assertEqual(resp.json()["detail"], "unknown action")
 
     def test_run_repo_scoped_validates_repo(self):
         resp = self.client.post(
-            "/api/jobs/run",
-            json={"action": "preflight", "repo": "no-such-repo"})
+            "/api/jobs/run", json={"action": "preflight", "repo": "no-such-repo"}
+        )
         self.assertEqual(resp.status_code, 400)
 
     def test_jobs_list_carries_timestamps(self):
@@ -774,7 +806,8 @@ class RouterTest(unittest.TestCase):
 
         jobs_router.registry = RunRegistry()
         rid, err = jobs_router.registry.start_run(
-            "run-td", "remote-server", td_argv=["td", "context-warm"])
+            "run-td", "remote-server", td_argv=["td", "context-warm"]
+        )
         self.assertIsNone(err)
         resp = self.client.get("/api/jobs")
         rows = [j for j in resp.json()["jobs"] if j["id"] == rid]
@@ -813,33 +846,34 @@ class RouterTest(unittest.TestCase):
             plans.mkdir(parents=True)
             (plans / "2026-11-03-briefing-plan.md").write_text("# plan\n")
             (plans / "notes.txt").write_text("not a plan")
-            with mock.patch.object(jobs_router, "_plans_dir",
-                                   return_value=plans):
-                resp = self.client.get("/api/jobs/plans",
-                                       params={"repo": "remote-server"})
+            with mock.patch.object(jobs_router, "_plans_dir", return_value=plans):
+                resp = self.client.get(
+                    "/api/jobs/plans", params={"repo": "remote-server"}
+                )
                 self.assertEqual(resp.status_code, 200)
                 names = [p["name"] for p in resp.json()["plans"]]
                 self.assertEqual(names, ["2026-11-03-briefing-plan.md"])
                 resp = self.client.get(
                     "/api/jobs/plans/2026-11-03-briefing-plan.md",
-                    params={"repo": "remote-server"})
+                    params={"repo": "remote-server"},
+                )
                 self.assertEqual(resp.status_code, 200)
                 self.assertEqual(resp.json()["content"], "# plan\n")
-                resp = self.client.get("/api/jobs/plans/missing.md",
-                                       params={"repo": "remote-server"})
+                resp = self.client.get(
+                    "/api/jobs/plans/missing.md", params={"repo": "remote-server"}
+                )
                 self.assertEqual(resp.status_code, 404)
 
     def test_plans_rejects_traversal_and_bad_repo(self):
-        resp = self.client.get("/api/jobs/plans/..%2Fsecret.md",
-                               params={"repo": "remote-server"})
+        resp = self.client.get(
+            "/api/jobs/plans/..%2Fsecret.md", params={"repo": "remote-server"}
+        )
         self.assertEqual(resp.status_code, 404)
-        resp = self.client.get("/api/jobs/plans/x.md",
-                               params={"repo": "no-such-repo"})
+        resp = self.client.get("/api/jobs/plans/x.md", params={"repo": "no-such-repo"})
         self.assertEqual(resp.status_code, 400)
 
     def test_sync_agents_cut(self):
-        resp = self.client.post(
-            "/api/jobs/run", json={"action": "sync-agents"})
+        resp = self.client.post("/api/jobs/run", json={"action": "sync-agents"})
         self.assertEqual(resp.status_code, 400)
 
     def test_compose_env_file_resolution(self):
@@ -885,8 +919,7 @@ class CompareEndpointTest(unittest.TestCase):
         out = "line1\nline2\nok\n"
         a = self._make_run(out)
         b = self._make_run(out)
-        resp = self.client.get(
-            "/api/jobs/runs/compare", params={"a": a, "b": b})
+        resp = self.client.get("/api/jobs/runs/compare", params={"a": a, "b": b})
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertEqual(body["a_id"], a)
@@ -896,16 +929,14 @@ class CompareEndpointTest(unittest.TestCase):
 
     def test_same_id_empty_diff(self):
         a = self._make_run("x\ny\n")
-        resp = self.client.get(
-            "/api/jobs/runs/compare", params={"a": a, "b": a})
+        resp = self.client.get("/api/jobs/runs/compare", params={"a": a, "b": a})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["unified_diff"], "")
 
     def test_differing_outputs_hunks(self):
         a = self._make_run("line1\nold value\nline3\n")
         b = self._make_run("line1\nnew value\nline3\n")
-        resp = self.client.get(
-            "/api/jobs/runs/compare", params={"a": a, "b": b})
+        resp = self.client.get("/api/jobs/runs/compare", params={"a": a, "b": b})
         self.assertEqual(resp.status_code, 200)
         diff = resp.json()["unified_diff"]
         self.assertIn(f"--- a/{a}", diff)
@@ -916,24 +947,21 @@ class CompareEndpointTest(unittest.TestCase):
 
     def test_bad_shape_id_404(self):
         a = self._make_run("x\n")
-        resp = self.client.get(
-            "/api/jobs/runs/compare", params={"a": a, "b": "nothex"})
+        resp = self.client.get("/api/jobs/runs/compare", params={"a": a, "b": "nothex"})
         self.assertEqual(resp.status_code, 404)
-        resp = self.client.get("/api/jobs/runs/compare",
-                               params={"a": a})
+        resp = self.client.get("/api/jobs/runs/compare", params={"a": a})
         self.assertEqual(resp.status_code, 404)
 
     def test_missing_and_cleared_id_404(self):
         a = self._make_run("x\n")
         resp = self.client.get(
-            "/api/jobs/runs/compare",
-            params={"a": a, "b": "aaaaaaaaaaaa"})
+            "/api/jobs/runs/compare", params={"a": a, "b": "aaaaaaaaaaaa"}
+        )
         self.assertEqual(resp.status_code, 404)
         with self.reg._lock:
             del self.reg.runs[a]
         b = self._make_run("y\n")
-        resp = self.client.get(
-            "/api/jobs/runs/compare", params={"a": a, "b": b})
+        resp = self.client.get("/api/jobs/runs/compare", params={"a": a, "b": b})
         self.assertEqual(resp.status_code, 404)
 
     def test_cap_note_on_giant_output(self):
@@ -944,8 +972,7 @@ class CompareEndpointTest(unittest.TestCase):
         big = "L\n" * (jobs_router.COMPARE_MAX_PER_SIDE + 100)
         with self.reg._lock:
             self.reg.runs[b]["output"] = big
-        resp = self.client.get(
-            "/api/jobs/runs/compare", params={"a": a, "b": b})
+        resp = self.client.get("/api/jobs/runs/compare", params={"a": a, "b": b})
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertTrue(body["truncated"])
@@ -1090,12 +1117,11 @@ class PushStreamTest(unittest.TestCase):
         self.assertEqual(frames[0][0], "jobs")
         self.assertEqual(frames[0][1]["jobs"][0]["id"], rid)
         self.assertEqual(
-            self.client.get("/api/jobs/runs/not-a-rid/stream").status_code,
-            404)
+            self.client.get("/api/jobs/runs/not-a-rid/stream").status_code, 404
+        )
         self.assertEqual(
-            self.client.get(
-                "/api/jobs/runs/deadbeef0000/stream").status_code,
-            404)
+            self.client.get("/api/jobs/runs/deadbeef0000/stream").status_code, 404
+        )
 
 
 class _LedgerTmpDir:
@@ -1109,7 +1135,8 @@ class _LedgerTmpDir:
         self._ledger_tmp = tempfile.TemporaryDirectory()
         self._ledger_old = os.environ.get("BUTTONS_LEDGER_PATH")
         os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
-            self._ledger_tmp.name, "ledger.jsonl")
+            self._ledger_tmp.name, "ledger.jsonl"
+        )
 
     def _ledger_teardown(self):
         import os
@@ -1138,8 +1165,14 @@ class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
         reg, rid = self._reg("health")
         seen = []
         engine.execute_run(
-            reg, rid, "health", "remote-server", "", "",
-            runner=lambda argv: seen.append(argv) or (0, "ok\n"))
+            reg,
+            rid,
+            "health",
+            "remote-server",
+            "",
+            "",
+            runner=lambda argv: seen.append(argv) or (0, "ok\n"),
+        )
         run = reg.runs[rid]
         self.assertTrue(run["done"])
         self.assertEqual(run["exit_code"], 0)
@@ -1150,8 +1183,8 @@ class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
     def test_failing_step_stops_with_note(self):
         reg, rid = self._reg("status")
         engine.execute_run(
-            reg, rid, "status", "remote-server", "", "",
-            runner=lambda argv: (1, ""))
+            reg, rid, "status", "remote-server", "", "", runner=lambda argv: (1, "")
+        )
         run = reg.runs[rid]
         self.assertTrue(run["done"])
         self.assertEqual(run["exit_code"], 1)
@@ -1165,9 +1198,14 @@ class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
         rid, err = reg.start_run("check-notifications", "boomtick")
         self.assertIsNone(err)
         engine.execute_run(
-            reg, rid, "check-notifications", "boomtick",
-            "arii/boomtick", "/srv/remote-server",
-            runner=lambda argv: (1, ""))
+            reg,
+            rid,
+            "check-notifications",
+            "boomtick",
+            "arii/boomtick",
+            "/srv/remote-server",
+            runner=lambda argv: (1, ""),
+        )
         run = reg.runs[rid]
         self.assertTrue(run["done"])
         self.assertEqual(run["exit_code"], 1)
@@ -1187,14 +1225,25 @@ class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
             try:
                 reg, rid = self._reg("logs")
                 engine.execute_run(
-                    reg, rid, "logs", "remote-server", "", "",
-                    runner=lambda argv: (0, "ok\n"))
+                    reg,
+                    rid,
+                    "logs",
+                    "remote-server",
+                    "",
+                    "",
+                    runner=lambda argv: (0, "ok\n"),
+                )
                 reg2, rid2 = self._reg("run-td")
                 engine.execute_run(
-                    reg2, rid2, "run-td", "remote-server",
-                    "arii/remote-server", "/srv/remote-server",
+                    reg2,
+                    rid2,
+                    "run-td",
+                    "remote-server",
+                    "arii/remote-server",
+                    "/srv/remote-server",
                     td_argv=["td", "context-warm"],
-                    runner=lambda argv: (0, "ok\n"))
+                    runner=lambda argv: (0, "ok\n"),
+                )
             finally:
                 if old is None:
                     os.environ.pop("BUTTONS_LEDGER_PATH", None)
@@ -1202,42 +1251,49 @@ class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
                     os.environ["BUTTONS_LEDGER_PATH"] = old
             with open(path) as f:
                 entries = [json.loads(line) for line in f]
-        by_action = {e["action"]: e for e in entries
-                     if e.get("kind") == "run"}
+        by_action = {e["action"]: e for e in entries if e.get("kind") == "run"}
         self.assertEqual(by_action["logs"]["exit"], 0)
         self.assertEqual(by_action["logs"]["repo"], "remote-server")
         self.assertIn("elapsed_s", by_action["logs"])
-        self.assertEqual(by_action["run-td"]["command"],
-                         "td context-warm")
+        self.assertEqual(by_action["run-td"]["command"], "td context-warm")
 
     def test_run_td_builds_validated_step(self):
         reg, rid = self._reg("run-td")
         seen = []
         engine.execute_run(
-            reg, rid, "run-td", "remote-server", "arii/remote-server",
-            "/srv/remote-server", td_argv=["td", "context-warm"],
-            runner=lambda argv: seen.append(argv) or (0, "ok\n"))
+            reg,
+            rid,
+            "run-td",
+            "remote-server",
+            "arii/remote-server",
+            "/srv/remote-server",
+            td_argv=["td", "context-warm"],
+            runner=lambda argv: seen.append(argv) or (0, "ok\n"),
+        )
         self.assertEqual(reg.runs[rid]["exit_code"], 0)
         self.assertEqual(len(seen), 1)
         self.assertIn("td context-warm", seen[0][-1])
         reg2, rid2 = self._reg("run-td")
         engine.execute_run(
-            reg2, rid2, "run-td", "remote-server", "arii/remote-server",
-            "/srv/remote-server", runner=lambda argv: (0, ""))
+            reg2,
+            rid2,
+            "run-td",
+            "remote-server",
+            "arii/remote-server",
+            "/srv/remote-server",
+            runner=lambda argv: (0, ""),
+        )
         self.assertEqual(reg2.runs[rid2]["exit_code"], 1)
-        self.assertIn("validated td command",
-                      reg2.runs[rid2]["output"])
+        self.assertIn("validated td command", reg2.runs[rid2]["output"])
 
     def test_run_plan_builds_validated_step(self):
         argv, err = engine.build_plan_argv("review", "12", [], "")
         self.assertIsNone(err)
-        steps, err = engine.action_steps(
-            "run-plan", "remote-server", "", "", argv)
+        steps, err = engine.action_steps("run-plan", "remote-server", "", "", argv)
         self.assertIsNone(err)
         self.assertEqual(steps, [argv])
         for bad in (None, [], ["td", "context-warm"]):
-            steps, err = engine.action_steps(
-                "run-plan", "remote-server", "", "", bad)
+            steps, err = engine.action_steps("run-plan", "remote-server", "", "", bad)
             self.assertIsNone(steps)
             self.assertIn("validated plan command", err)
 
@@ -1249,9 +1305,15 @@ class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
         self.assertIsNone(err)
         reg, rid = self._reg("run-plan")
         engine.execute_run(
-            reg, rid, "run-plan", "remote-server", "", "",
+            reg,
+            rid,
+            "run-plan",
+            "remote-server",
+            "",
+            "",
             td_argv=argv,
-            runner=lambda step: (0, '{"plan_path": "p.md"}\n'))
+            runner=lambda step: (0, '{"plan_path": "p.md"}\n'),
+        )
         run = reg.runs[rid]
         self.assertTrue(run["done"])
         self.assertEqual(run["exit_code"], 0)
@@ -1259,19 +1321,20 @@ class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
         path = os.environ["BUTTONS_LEDGER_PATH"]
         with open(path) as f:
             entries = [json.loads(line) for line in f]
-        plans = [e for e in entries
-                 if e.get("kind") == "run"
-                 and e.get("action") == "run-plan"]
+        plans = [
+            e
+            for e in entries
+            if e.get("kind") == "run" and e.get("action") == "run-plan"
+        ]
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0]["exit"], 0)
         self.assertEqual(
-            plans[0]["command"],
-            "td --json agent plan-issue-audit --all-open")
+            plans[0]["command"], "td --json agent plan-issue-audit --all-open"
+        )
 
 
 def _sleep_step(seconds):
-    return [sys.executable, "-c",
-            f"import time;time.sleep({seconds})"]
+    return [sys.executable, "-c", f"import time;time.sleep({seconds})"]
 
 
 def _spawner_step(pidfile):
@@ -1333,8 +1396,7 @@ class WatchdogTest(_LedgerTmpDir, unittest.TestCase):
     def test_hung_step_killed_by_watchdog(self):
         chunks = []
         start = time.time()
-        code = engine.run_step_pipe(_sleep_step(3), chunks.append,
-                                    timeout=0.2)
+        code = engine.run_step_pipe(_sleep_step(3), chunks.append, timeout=0.2)
         elapsed = time.time() - start
         self.assertEqual(code, 124)
         self.assertIn("watchdog", "".join(chunks))
@@ -1347,9 +1409,12 @@ class WatchdogTest(_LedgerTmpDir, unittest.TestCase):
         reg = jobs_router.registry
         rid, err = reg.start_run("logs")
         self.assertIsNone(err)
-        with mock.patch.object(engine, "action_steps",
-                               return_value=([_sleep_step(3)], None)), \
-                mock.patch.object(engine, "STEP_TIMEOUT", 0.2):
+        with (
+            mock.patch.object(
+                engine, "action_steps", return_value=([_sleep_step(3)], None)
+            ),
+            mock.patch.object(engine, "STEP_TIMEOUT", 0.2),
+        ):
             engine.execute_run(reg, rid, "logs", "remote-server", "", "")
         run = reg.runs[rid]
         self.assertTrue(run["done"])
@@ -1360,7 +1425,8 @@ class WatchdogTest(_LedgerTmpDir, unittest.TestCase):
     def test_normal_step_unaffected(self):
         chunks = []
         code = engine.run_step_pipe(
-            [sys.executable, "-c", "print('hi')"], chunks.append)
+            [sys.executable, "-c", "print('hi')"], chunks.append
+        )
         self.assertEqual(code, 0)
         self.assertIn("hi", "".join(chunks))
 
@@ -1374,7 +1440,8 @@ class WatchdogTest(_LedgerTmpDir, unittest.TestCase):
             pidfile = os.path.join(tmp, "grandchild.pid")
             chunks = []
             code = engine.run_step_pipe(
-                _spawner_step(pidfile), chunks.append, timeout=0.5)
+                _spawner_step(pidfile), chunks.append, timeout=0.5
+            )
             self.assertEqual(code, 124)
             with open(pidfile) as f:
                 grandchild = int(f.read().strip())
@@ -1392,10 +1459,16 @@ class FinishGuaranteeTest(_LedgerTmpDir, unittest.TestCase):
         reg = RunRegistry()
         rid, err = reg.start_run("logs")
         self.assertIsNone(err)
-        with mock.patch.object(reg, "append",
-                               side_effect=RuntimeError("store down")):
-            engine.execute_run(reg, rid, "logs", "remote-server", "", "",
-                               runner=lambda argv: (0, "ok\n"))
+        with mock.patch.object(reg, "append", side_effect=RuntimeError("store down")):
+            engine.execute_run(
+                reg,
+                rid,
+                "logs",
+                "remote-server",
+                "",
+                "",
+                runner=lambda argv: (0, "ok\n"),
+            )
         run = reg.runs[rid]
         self.assertTrue(run["done"])
         self.assertEqual(run["exit_code"], 1)
@@ -1420,14 +1493,17 @@ class FinishGuaranteeTest(_LedgerTmpDir, unittest.TestCase):
             ("/api/jobs/run-plan", {"plan": "issue-audit"}),
         ):
             jobs_router.registry = RunRegistry()
-            with mock.patch(
-                "backend.api.routers.jobs._launch",
-                side_effect=RuntimeError("thread starved"),
-            ), mock.patch(
-                # Stub the checkout so the test asserts the
-                # launch failure, not the absence of /srv/repos.
-                "backend.core.git_helpers.get_repo_status",
-                return_value={"repo": "remote-server"},
+            with (
+                mock.patch(
+                    "backend.api.routers.jobs._launch",
+                    side_effect=RuntimeError("thread starved"),
+                ),
+                mock.patch(
+                    # Stub the checkout so the test asserts the
+                    # launch failure, not the absence of /srv/repos.
+                    "backend.core.git_helpers.get_repo_status",
+                    return_value={"repo": "remote-server"},
+                ),
             ):
                 resp = client.post(path, json=payload)
             self.assertEqual(resp.status_code, 500)
@@ -1444,8 +1520,7 @@ class AsyncPlanTest(unittest.TestCase):
         # a coroutine awaiting anything inline.
         import backend.api.routers.jobs as jobs_router
 
-        self.assertFalse(
-            inspect.iscoroutinefunction(jobs_router.start_run_plan))
+        self.assertFalse(inspect.iscoroutinefunction(jobs_router.start_run_plan))
 
 
 class CancelRunTest(_LedgerTmpDir, unittest.TestCase):
@@ -1560,20 +1635,23 @@ class CancelRunTest(_LedgerTmpDir, unittest.TestCase):
 
         reg = RunRegistry()
         pidfile = os.path.join(self._ledger_tmp.name, "child.pid")
-        parent = [sys.executable, "-c",
-                  "import subprocess,sys,time;"
-                  "p=subprocess.Popen([sys.executable,'-c',"
-                  "'import time;time.sleep(20)']);"
-                  f"open({pidfile!r},'w').write(str(p.pid));"
-                  "time.sleep(20)"]
+        parent = [
+            sys.executable,
+            "-c",
+            "import subprocess,sys,time;"
+            "p=subprocess.Popen([sys.executable,'-c',"
+            "'import time;time.sleep(20)']);"
+            f"open({pidfile!r},'w').write(str(p.pid));"
+            "time.sleep(20)",
+        ]
         rid, err = reg.start_run("logs")
         self.assertIsNone(err)
         thread = threading.Thread(
             target=engine.execute_run,
             args=(reg, rid, "logs", "remote-server", "", ""),
-            daemon=True)
-        with mock.patch.object(engine, "action_steps",
-                               return_value=([parent], None)):
+            daemon=True,
+        )
+        with mock.patch.object(engine, "action_steps", return_value=([parent], None)):
             thread.start()
             proc = self._wait_for_proc(reg, rid)
             child = self._wait_for_pidfile(pidfile)
@@ -1609,10 +1687,11 @@ class CancelRunTest(_LedgerTmpDir, unittest.TestCase):
         thread = threading.Thread(
             target=engine.execute_run,
             args=(reg, rid, "logs", "remote-server", "", ""),
-            kwargs={"runner": _runner}, daemon=True)
+            kwargs={"runner": _runner},
+            daemon=True,
+        )
         steps = [["echo", "one"], ["echo", "two"]]
-        with mock.patch.object(engine, "action_steps",
-                               return_value=(steps, None)):
+        with mock.patch.object(engine, "action_steps", return_value=(steps, None)):
             thread.start()
             deadline = time.time() + 10
             while not calls and time.time() < deadline:
@@ -1655,8 +1734,7 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
         self.fake_python = os.path.join(venv_bin, "python")
         with open(self.fake_python, "w") as f:
             f.write("#!/bin/sh\n")
-        self.fake_script = os.path.join(
-            self._agent_tmp.name, "triage_fanout.py")
+        self.fake_script = os.path.join(self._agent_tmp.name, "triage_fanout.py")
         with open(self.fake_script, "w") as f:
             f.write("# fanout\n")
         self._old_agent_dir = os.environ.get("DEEP_AGENT_DIR")
@@ -1689,22 +1767,20 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
 
     def test_argv_shape_repo_substitution_no_prefer(self):
         steps, err = engine.action_steps(
-            "triage-fanout", "boomtick", "arii/boomtick",
-            "/srv/repos/boomtick")
+            "triage-fanout", "boomtick", "arii/boomtick", "/srv/repos/boomtick"
+        )
         self.assertIsNone(err)
-        self.assertEqual(
-            steps, [[self.fake_python, self.fake_script, "arii/boomtick"]])
+        self.assertEqual(steps, [[self.fake_python, self.fake_script, "arii/boomtick"]])
         # --prefer omitted: the script's auto ladder applies.
-        self.assertFalse(
-            any(a.startswith("--prefer") for s in steps for a in s))
+        self.assertFalse(any(a.startswith("--prefer") for s in steps for a in s))
 
     def test_missing_venv_fails_with_clear_message(self):
         import os
 
         os.remove(self.fake_python)
         steps, err = engine.action_steps(
-            "triage-fanout", "boomtick", "arii/boomtick",
-            "/srv/repos/boomtick")
+            "triage-fanout", "boomtick", "arii/boomtick", "/srv/repos/boomtick"
+        )
         self.assertIsNone(steps)
         self.assertIn("DEEP_AGENT_VENV", err)
         self.assertNotIn("/home/", err)
@@ -1714,15 +1790,14 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
 
         os.remove(self.fake_script)
         steps, err = engine.action_steps(
-            "triage-fanout", "boomtick", "arii/boomtick",
-            "/srv/repos/boomtick")
+            "triage-fanout", "boomtick", "arii/boomtick", "/srv/repos/boomtick"
+        )
         self.assertIsNone(steps)
         self.assertIn("triage_fanout.py", err)
 
     def test_timeout_floor_and_inheritance(self):
         # Local runs take 10+ min: the floor is 15 min (900s).
-        self.assertGreaterEqual(
-            engine.step_timeout("triage-fanout"), 900)
+        self.assertGreaterEqual(engine.step_timeout("triage-fanout"), 900)
         self.assertEqual(engine.step_timeout("triage-fanout"), 1200)
         self.assertEqual(engine.step_timeout("logs"), engine.STEP_TIMEOUT)
         self.assertEqual(engine.step_timeout("run-td"), engine.STEP_TIMEOUT)
@@ -1734,19 +1809,30 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
         seen = {}
         real_pipe = engine.run_step_pipe
 
-        def _spy(step, append, runner=None, timeout=None, on_proc=None,
-                 env=None, cwd=None):
+        def _spy(
+            step, append, runner=None, timeout=None, on_proc=None, env=None, cwd=None
+        ):
             seen["timeout"] = timeout
-            return real_pipe(step, append, runner=runner,
-                             timeout=timeout, on_proc=on_proc, env=env,
-                             cwd=cwd)
+            return real_pipe(
+                step,
+                append,
+                runner=runner,
+                timeout=timeout,
+                on_proc=on_proc,
+                env=env,
+                cwd=cwd,
+            )
 
-        with mock.patch.object(engine, "run_step_pipe",
-                               side_effect=_spy):
+        with mock.patch.object(engine, "run_step_pipe", side_effect=_spy):
             engine.execute_run(
-                reg, rid, "triage-fanout", "boomtick", "arii/boomtick",
+                reg,
+                rid,
+                "triage-fanout",
+                "boomtick",
+                "arii/boomtick",
                 "/srv/repos/boomtick",
-                runner=lambda argv: (0, "fanout: done\n"))
+                runner=lambda argv: (0, "fanout: done\n"),
+            )
         self.assertEqual(seen["timeout"], 1200)
         self.assertTrue(reg.runs[rid]["done"])
         self.assertEqual(reg.runs[rid]["exit_code"], 0)
@@ -1754,35 +1840,39 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
     def test_launch_queue_rerun_cancel(self):
         import backend.api.routers.jobs as jobs_router
 
-        with mock.patch.object(jobs_router, "_launch"), mock.patch(
-            "backend.core.git_helpers.get_repo_status",
-            return_value={"repo": "boomtick"},
+        with (
+            mock.patch.object(jobs_router, "_launch"),
+            mock.patch(
+                "backend.core.git_helpers.get_repo_status",
+                return_value={"repo": "boomtick"},
+            ),
         ):
             resp = self.client.post(
-                "/api/jobs/run",
-                json={"action": "triage-fanout", "repo": "boomtick"})
+                "/api/jobs/run", json={"action": "triage-fanout", "repo": "boomtick"}
+            )
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
             self.assertFalse(resp.json()["queued"])
             # Queue (#1025): repeat launches take the second slot,
             # then wait queued — no conflict while active.
             resp2 = self.client.post(
-                "/api/jobs/run",
-                json={"action": "triage-fanout", "repo": "boomtick"})
+                "/api/jobs/run", json={"action": "triage-fanout", "repo": "boomtick"}
+            )
             self.assertEqual(resp2.status_code, 200)
             self.assertFalse(resp2.json()["queued"])
             rid2 = resp2.json()["id"]
             resp3 = self.client.post(
-                "/api/jobs/run",
-                json={"action": "triage-fanout", "repo": "boomtick"})
+                "/api/jobs/run", json={"action": "triage-fanout", "repo": "boomtick"}
+            )
             self.assertEqual(resp3.status_code, 200)
             body3 = resp3.json()
             self.assertTrue(body3["queued"])
             self.assertEqual(body3["position"], 1)
             # History rows carry the action + repo.
             ids = {rid, rid2, body3["id"]}
-            rows = [j for j in self.client.get("/api/jobs").json()["jobs"]
-                    if j["id"] in ids]
+            rows = [
+                j for j in self.client.get("/api/jobs").json()["jobs"] if j["id"] in ids
+            ]
             self.assertEqual(len(rows), 3)
             for row in rows:
                 self.assertEqual(row["kind"], "triage-fanout")
@@ -1793,8 +1883,8 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
             jobs_router.registry.finish_run(rid, 130)
             # Re-run replays action+repo like any plain action.
             resp4 = self.client.post(
-                "/api/jobs/run",
-                json={"action": "triage-fanout", "repo": "boomtick"})
+                "/api/jobs/run", json={"action": "triage-fanout", "repo": "boomtick"}
+            )
             self.assertEqual(resp4.status_code, 200)
             jobs_router.registry.finish_run(rid2, 0)
             jobs_router.registry.finish_run(body3["id"], 0)
@@ -1802,8 +1892,8 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
 
     def test_unknown_repo_rejected(self):
         resp = self.client.post(
-            "/api/jobs/run",
-            json={"action": "triage-fanout", "repo": "no-such-repo"})
+            "/api/jobs/run", json={"action": "triage-fanout", "repo": "no-such-repo"}
+        )
         self.assertEqual(resp.status_code, 400)
 
     def test_schedulable_through_action_schedules(self):
@@ -1815,22 +1905,26 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
             old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
             os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = path
             try:
-                with mock.patch(
-                    "backend.api.routers.issues._ensure_schedule_ticker"
-                ), mock.patch(
-                    "backend.core.git_helpers.get_repo_status",
-                    return_value={"repo": "boomtick"},
+                with (
+                    mock.patch("backend.api.routers.issues._ensure_schedule_ticker"),
+                    mock.patch(
+                        "backend.core.git_helpers.get_repo_status",
+                        return_value={"repo": "boomtick"},
+                    ),
                 ):
                     resp = self.client.post(
                         "/api/jobs/schedule",
-                        json={"action": "triage-fanout",
-                              "repo": "boomtick", "cadence": "daily"})
+                        json={
+                            "action": "triage-fanout",
+                            "repo": "boomtick",
+                            "cadence": "daily",
+                        },
+                    )
                     self.assertEqual(resp.status_code, 200)
                     sched = resp.json()["schedule"]
                     self.assertEqual(sched["action"], "triage-fanout")
                     self.assertEqual(sched["repo"], "boomtick")
-                    listed = self.client.get(
-                        "/api/jobs/schedule").json()["schedules"]
+                    listed = self.client.get("/api/jobs/schedule").json()["schedules"]
                     self.assertEqual(len(listed), 1)
             finally:
                 if old is None:
@@ -1847,26 +1941,35 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
             old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
             os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = path
             try:
-                with mock.patch(
-                    "backend.api.routers.issues._ensure_schedule_ticker"
-                ), mock.patch(
-                    "backend.core.git_helpers.get_repo_status",
-                    return_value={"repo": "boomtick"},
+                with (
+                    mock.patch("backend.api.routers.issues._ensure_schedule_ticker"),
+                    mock.patch(
+                        "backend.core.git_helpers.get_repo_status",
+                        return_value={"repo": "boomtick"},
+                    ),
                 ):
                     resp = self.client.post(
                         "/api/jobs/schedule",
-                        json={"action": "merge-approved-gated",
-                              "repo": "boomtick", "cadence": "daily"})
+                        json={
+                            "action": "merge-approved-gated",
+                            "repo": "boomtick",
+                            "cadence": "daily",
+                        },
+                    )
                     self.assertEqual(resp.status_code, 200)
                     self.assertEqual(
-                        resp.json()["schedule"]["action"],
-                        "merge-approved-gated")
+                        resp.json()["schedule"]["action"], "merge-approved-gated"
+                    )
                     # Manual merge-approved keeps its confirm lock:
                     # still unschedulable.
                     resp = self.client.post(
                         "/api/jobs/schedule",
-                        json={"action": "merge-approved",
-                              "repo": "boomtick", "cadence": "daily"})
+                        json={
+                            "action": "merge-approved",
+                            "repo": "boomtick",
+                            "cadence": "daily",
+                        },
+                    )
                     self.assertEqual(resp.status_code, 400)
             finally:
                 if old is None:
@@ -1900,8 +2003,7 @@ class RunStorePersistenceTest(unittest.TestCase):
         self.assertIsNone(err)
         reg.append(first, "$ echo hi\nhi\n")
         reg.finish_run(first, 0)
-        second, err = reg.start_run(
-            "run-td", "boomtick", td_argv=["td", "doctor"])
+        second, err = reg.start_run("run-td", "boomtick", td_argv=["td", "doctor"])
         self.assertIsNone(err)
         reg.append(second, "diag output\n")
         reg.finish_run(second, 1)
@@ -1909,8 +2011,7 @@ class RunStorePersistenceTest(unittest.TestCase):
         boot = RunRegistry(store_path=self.path)
         self.assertEqual(boot.active_ids, set())
         self.assertEqual(set(boot.runs), {first, second})
-        for rid, exit_code, tail in ((first, 0, "hi\n"),
-                                     (second, 1, "diag output\n")):
+        for rid, exit_code, tail in ((first, 0, "hi\n"), (second, 1, "diag output\n")):
             run = boot.runs[rid]
             self.assertTrue(run["done"])
             self.assertEqual(run["exit_code"], exit_code)
@@ -1951,14 +2052,11 @@ class RunStorePersistenceTest(unittest.TestCase):
         self.assertIsNone(err)
         reg._last_save = 0.0
         reg.append(rid, "first\n")
-        self.assertIn("first",
-                      self._read_store()["runs"][0]["output"])
+        self.assertIn("first", self._read_store()["runs"][0]["output"])
         reg.append(rid, "second\n")
-        self.assertNotIn("second",
-                         self._read_store()["runs"][0]["output"])
+        self.assertNotIn("second", self._read_store()["runs"][0]["output"])
         reg.finish_run(rid, 0)
-        self.assertIn("second",
-                      self._read_store()["runs"][0]["output"])
+        self.assertIn("second", self._read_store()["runs"][0]["output"])
 
     def test_clear_persists_across_restart(self):
         reg = RunRegistry(store_path=self.path)
@@ -2004,8 +2102,7 @@ class RunStorePersistenceTest(unittest.TestCase):
                 os.environ.pop("BUTTONS_JOBS_RUNS_PATH", None)
             else:
                 os.environ["BUTTONS_JOBS_RUNS_PATH"] = old
-        self.assertEqual(engine.runs_store_path(),
-                         engine.DEFAULT_RUNS_PATH)
+        self.assertEqual(engine.runs_store_path(), engine.DEFAULT_RUNS_PATH)
 
     def test_jobs_view_survives_restart(self):
         import backend.api.routers.jobs as jobs_router
@@ -2049,12 +2146,11 @@ class JobsClearFailedAcceptanceTest(unittest.TestCase):
             jobs_router.registry.append(rid, "boom\n")
             jobs_router.registry.finish_run(rid, 1)
             resp = self.client.post(
-                "/api/jobs/clear",
-                json={"intent": "jobs-clear", "confirmed": True})
+                "/api/jobs/clear", json={"intent": "jobs-clear", "confirmed": True}
+            )
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json(), {"ok": True, "cleared": 1})
-            self.assertEqual(
-                self.client.get("/api/jobs").json(), {"jobs": []})
+            self.assertEqual(self.client.get("/api/jobs").json(), {"jobs": []})
         finally:
             jobs_router.registry = RunRegistry()
 
@@ -2070,8 +2166,7 @@ class ListJobsRunsTest(unittest.TestCase):
         first, err = reg.start_run("logs")
         self.assertIsNone(err)
         reg.finish_run(first, 0)
-        second, err = reg.start_run("run-td", "boomtick",
-                                    td_argv=["td", "doctor"])
+        second, err = reg.start_run("run-td", "boomtick", td_argv=["td", "doctor"])
         self.assertIsNone(err)
         rows = reg.list_jobs()
         self.assertEqual([r["id"] for r in rows], [second, first])
@@ -2080,8 +2175,7 @@ class ListJobsRunsTest(unittest.TestCase):
         self.assertEqual(row["repo"], "remote-server")
         self.assertTrue(row["done"])
         self.assertEqual(row["exit_code"], 0)
-        self.assertEqual(row["created_at"],
-                         reg.runs[first]["started_at"])
+        self.assertEqual(row["created_at"], reg.runs[first]["started_at"])
         self.assertEqual(row["error"], "")
         self.assertEqual(rows[0]["td_argv"], ["td", "doctor"])
 
@@ -2161,8 +2255,7 @@ class CompletedRunEvictionTest(unittest.TestCase):
         rid, err = reg.start_run("logs")
         self.assertIsNone(err)
         with reg._lock:
-            reg.runs[rid]["started_at"] = \
-                time.time() - 10 * engine.COMPLETED_RUN_TTL
+            reg.runs[rid]["started_at"] = time.time() - 10 * engine.COMPLETED_RUN_TTL
         self.assertEqual(reg.evict_completed(), 0)
         self.assertIn(rid, reg.runs)
 
@@ -2180,8 +2273,7 @@ class CompletedRunEvictionTest(unittest.TestCase):
         rid = self._finish_aged(reg, 0)
         with reg._lock:
             reg.runs[rid]["finished_at"] = None
-            reg.runs[rid]["started_at"] = \
-                time.time() - engine.COMPLETED_RUN_TTL - 10
+            reg.runs[rid]["started_at"] = time.time() - engine.COMPLETED_RUN_TTL - 10
         self.assertEqual(reg.evict_completed(), 1)
         self.assertNotIn(rid, reg.runs)
 
@@ -2211,8 +2303,7 @@ class CompletedRunEvictionTest(unittest.TestCase):
         # Age past TTL after the start sweep ran: only the finish
         # sweep can catch it.
         with reg._lock:
-            reg.runs[old]["finished_at"] = \
-                time.time() - engine.COMPLETED_RUN_TTL - 10
+            reg.runs[old]["finished_at"] = time.time() - engine.COMPLETED_RUN_TTL - 10
         reg.finish_run(rid, 0)
         self.assertNotIn(old, reg.runs)
         self.assertIn(rid, reg.runs)
@@ -2254,23 +2345,32 @@ class CheckNotificationsActionTest(unittest.TestCase):
     def test_registered_repo_scoped_and_schedulable(self):
         self.assertIn("check-notifications", engine.ALLOWED_ACTIONS)
         self.assertIn("check-notifications", engine.REPO_SCOPED_ACTIONS)
-        self.assertNotIn("check-notifications",
-                         engine.DESTRUCTIVE_ACTIONS)
+        self.assertNotIn("check-notifications", engine.DESTRUCTIVE_ACTIONS)
 
     def test_step_invokes_notify_check_module(self):
         import sys
 
         steps, err = engine.action_steps(
-            "check-notifications", "boomtick", "arii/boomtick",
-            "/srv/repos/boomtick")
+            "check-notifications", "boomtick", "arii/boomtick", "/srv/repos/boomtick"
+        )
         self.assertIsNone(err)
         self.assertEqual(
-            steps, [[sys.executable, "-m", "backend.notify_check",
-                     "--repo", "boomtick", "--gh", "arii/boomtick"]])
+            steps,
+            [
+                [
+                    sys.executable,
+                    "-m",
+                    "backend.notify_check",
+                    "--repo",
+                    "boomtick",
+                    "--gh",
+                    "arii/boomtick",
+                ]
+            ],
+        )
 
     def test_step_needs_a_repo(self):
-        steps, err = engine.action_steps(
-            "check-notifications", "boomtick", "", "")
+        steps, err = engine.action_steps("check-notifications", "boomtick", "", "")
         self.assertIsNone(steps)
         self.assertIn("needs a repo", err)
 
@@ -2287,25 +2387,33 @@ class GatedMergeActionTest(unittest.TestCase):
 
     def test_registered_repo_scoped_and_schedulable(self):
         self.assertIn("merge-approved-gated", engine.ALLOWED_ACTIONS)
-        self.assertIn("merge-approved-gated",
-                      engine.REPO_SCOPED_ACTIONS)
-        self.assertNotIn("merge-approved-gated",
-                         engine.DESTRUCTIVE_ACTIONS)
+        self.assertIn("merge-approved-gated", engine.REPO_SCOPED_ACTIONS)
+        self.assertNotIn("merge-approved-gated", engine.DESTRUCTIVE_ACTIONS)
 
     def test_step_invokes_merge_gated_module(self):
         import sys
 
         steps, err = engine.action_steps(
-            "merge-approved-gated", "boomtick", "arii/boomtick",
-            "/srv/repos/boomtick")
+            "merge-approved-gated", "boomtick", "arii/boomtick", "/srv/repos/boomtick"
+        )
         self.assertIsNone(err)
         self.assertEqual(
-            steps, [[sys.executable, "-m", "backend.merge_gated",
-                     "--repo", "boomtick", "--gh", "arii/boomtick"]])
+            steps,
+            [
+                [
+                    sys.executable,
+                    "-m",
+                    "backend.merge_gated",
+                    "--repo",
+                    "boomtick",
+                    "--gh",
+                    "arii/boomtick",
+                ]
+            ],
+        )
 
     def test_step_needs_a_repo(self):
-        steps, err = engine.action_steps(
-            "merge-approved-gated", "boomtick", "", "")
+        steps, err = engine.action_steps("merge-approved-gated", "boomtick", "", "")
         self.assertIsNone(steps)
         self.assertIn("needs a repo", err)
 
@@ -2323,14 +2431,16 @@ class StepEnvTest(unittest.TestCase):
         # `python -m backend.*` must resolve from this backend's own
         # tree or fail with No module named (live 2026-11-04).
         steps, err = engine.action_steps(
-            "check-notifications", "boomtick", "arii/boomtick", "")
+            "check-notifications", "boomtick", "arii/boomtick", ""
+        )
         self.assertIsNone(err)
         env = engine.step_env(steps)
         # ENGINE_ROOT must lead (ambient PYTHONPATH entries, e.g. the
         # ./deep-agent test prefix, stay behind it per check_env).
-        self.assertTrue(env["PYTHONPATH"] == engine.ENGINE_ROOT
-                        or env["PYTHONPATH"].startswith(
-                            engine.ENGINE_ROOT + os.pathsep))
+        self.assertTrue(
+            env["PYTHONPATH"] == engine.ENGINE_ROOT
+            or env["PYTHONPATH"].startswith(engine.ENGINE_ROOT + os.pathsep)
+        )
 
     def test_non_python_dash_m_is_untouched(self):
         # `free -m` (megabytes) must not match the python -m rule.
@@ -2340,9 +2450,10 @@ class StepEnvTest(unittest.TestCase):
     def test_run_step_pipe_merges_env_into_child(self):
         out = []
         code = engine.run_step_pipe(
-            [sys.executable, "-c",
-             "import os; print(os.environ.get('LANE_PROBE'))"],
-            out.append, env={"LANE_PROBE": "yes"})
+            [sys.executable, "-c", "import os; print(os.environ.get('LANE_PROBE'))"],
+            out.append,
+            env={"LANE_PROBE": "yes"},
+        )
         self.assertEqual(code, 0)
         self.assertIn("yes", "".join(out))
 
@@ -2351,7 +2462,8 @@ class StepEnvTest(unittest.TestCase):
         # stack_dir()/backend (stale tree) wins over /app, so
         # -m steps must execute FROM the deployed tree, not just see it.
         steps, err = engine.action_steps(
-            "check-notifications", "boomtick", "arii/boomtick", "")
+            "check-notifications", "boomtick", "arii/boomtick", ""
+        )
         self.assertIsNone(err)
         self.assertEqual(engine.step_cwd(steps), engine.ENGINE_ROOT)
         self.assertIsNone(engine.step_cwd([["free", "-m"]]))
@@ -2361,7 +2473,9 @@ class StepEnvTest(unittest.TestCase):
         out = []
         code = engine.run_step_pipe(
             [sys.executable, "-c", "import os; print(os.getcwd())"],
-            out.append, cwd="/tmp")
+            out.append,
+            cwd="/tmp",
+        )
         self.assertEqual(code, 0)
         self.assertIn("/tmp", "".join(out).strip().splitlines()[-1])
 
@@ -2387,17 +2501,14 @@ class UxAuditActionTest(_LedgerTmpDir, unittest.TestCase):
         # venv resolution stays hermetic.
         self._agent_tmp = tempfile.TemporaryDirectory()
         real = os.path.join(engine.ENGINE_ROOT, "deep-agent")
-        for name in ("ux_audit.py", "cli.py", "impact.py",
-                     "s5tools.py"):
-            shutil.copy(os.path.join(real, name),
-                        self._agent_tmp.name)
+        for name in ("ux_audit.py", "impact.py"):
+            shutil.copy(os.path.join(real, name), self._agent_tmp.name)
         venv_bin = os.path.join(self._agent_tmp.name, ".venv", "bin")
         os.makedirs(venv_bin)
         self.fake_python = os.path.join(venv_bin, "python")
         with open(self.fake_python, "w") as f:
             f.write("#!/bin/sh\n")
-        self.fake_script = os.path.join(
-            self._agent_tmp.name, "ux_audit.py")
+        self.fake_script = os.path.join(self._agent_tmp.name, "ux_audit.py")
         self._old_agent_dir = os.environ.get("DEEP_AGENT_DIR")
         self._old_agent_venv = os.environ.get("DEEP_AGENT_VENV")
         os.environ["DEEP_AGENT_DIR"] = self._agent_tmp.name
@@ -2435,51 +2546,71 @@ class UxAuditActionTest(_LedgerTmpDir, unittest.TestCase):
         self.assertEqual(engine.step_timeout("ux-audit"), 1200)
 
     def test_argv_validation(self):
-        self.assertTrue(engine.validate_ux_audit_argv(
-            ["ux-audit", "boomtick.blog"]))
-        self.assertTrue(engine.validate_ux_audit_argv(
-            ["ux-audit", "arii.github.io", "--max-pages", "10"]))
-        self.assertFalse(engine.validate_ux_audit_argv(
-            ["ux-audit", "boomtick.blog", "--max-pages", "0"]))
-        self.assertFalse(engine.validate_ux_audit_argv(
-            ["ux-audit", "boomtick.blog", "--max-pages", "201"]))
-        self.assertFalse(engine.validate_ux_audit_argv(
-            ["ux-audit", "boomtick.blog; rm -rf /"]))
-        self.assertFalse(engine.validate_ux_audit_argv(
-            ["ux-audit"]))
-        self.assertFalse(engine.validate_ux_audit_argv(
-            ["run-td", "boomtick.blog"]))
+        self.assertTrue(engine.validate_ux_audit_argv(["ux-audit", "boomtick.blog"]))
+        self.assertTrue(
+            engine.validate_ux_audit_argv(
+                ["ux-audit", "arii.github.io", "--max-pages", "10"]
+            )
+        )
+        self.assertFalse(
+            engine.validate_ux_audit_argv(
+                ["ux-audit", "boomtick.blog", "--max-pages", "0"]
+            )
+        )
+        self.assertFalse(
+            engine.validate_ux_audit_argv(
+                ["ux-audit", "boomtick.blog", "--max-pages", "201"]
+            )
+        )
+        self.assertFalse(
+            engine.validate_ux_audit_argv(["ux-audit", "boomtick.blog; rm -rf /"])
+        )
+        self.assertFalse(engine.validate_ux_audit_argv(["ux-audit"]))
+        self.assertFalse(engine.validate_ux_audit_argv(["run-td", "boomtick.blog"]))
 
     def test_steps_build_file_run(self):
         steps, err = engine.action_steps(
-            "ux-audit", "remote-server", "", "",
-            ["ux-audit", "boomtick.blog", "--max-pages", "10"])
+            "ux-audit",
+            "remote-server",
+            "",
+            "",
+            ["ux-audit", "boomtick.blog", "--max-pages", "10"],
+        )
         self.assertIsNone(err)
         self.assertEqual(
-            steps, [[self.fake_python, self.fake_script, "audit",
-                     "boomtick.blog", "--max-pages", "10",
-                     "--file"]])
+            steps,
+            [
+                [
+                    self.fake_python,
+                    self.fake_script,
+                    "audit",
+                    "boomtick.blog",
+                    "--max-pages",
+                    "10",
+                    "--file",
+                ]
+            ],
+        )
 
     def test_steps_reject_unvalidated_argv(self):
-        steps, err = engine.action_steps(
-            "ux-audit", "remote-server", "", "", None)
+        steps, err = engine.action_steps("ux-audit", "remote-server", "", "", None)
         self.assertIsNone(steps)
         self.assertIn("ux-audit", err)
         steps, err = engine.action_steps(
-            "ux-audit", "remote-server", "", "",
-            ["ux-audit", "x;evil"])
+            "ux-audit", "remote-server", "", "", ["ux-audit", "x;evil"]
+        )
         self.assertIsNone(steps)
 
     def test_dispatch_unknown_site_400(self):
         resp = self.client.post(
-            "/api/jobs/run-ux-audit",
-            json={"site": "evil.example", "max_pages": 5})
+            "/api/jobs/run-ux-audit", json={"site": "evil.example", "max_pages": 5}
+        )
         self.assertEqual(resp.status_code, 400)
 
     def test_dispatch_bad_cap_400(self):
         resp = self.client.post(
-            "/api/jobs/run-ux-audit",
-            json={"site": "boomtick.blog", "max_pages": 999})
+            "/api/jobs/run-ux-audit", json={"site": "boomtick.blog", "max_pages": 999}
+        )
         self.assertEqual(resp.status_code, 400)
 
     def test_dispatch_starts_first_class_run(self):
@@ -2487,21 +2618,22 @@ class UxAuditActionTest(_LedgerTmpDir, unittest.TestCase):
 
         with mock.patch.object(jobs_router, "_launch"):
             resp = self.client.post(
-                "/api/jobs/run-ux-audit",
-                json={"site": "boomtick.blog", "max_pages": 5})
+                "/api/jobs/run-ux-audit", json={"site": "boomtick.blog", "max_pages": 5}
+            )
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
             # Queue (#1025): a second dispatch takes the free slot
             # and a third waits queued — neither conflicts.
             resp2 = self.client.post(
                 "/api/jobs/run-ux-audit",
-                json={"site": "arii.github.io", "max_pages": 5})
+                json={"site": "arii.github.io", "max_pages": 5},
+            )
             self.assertEqual(resp2.status_code, 200)
             self.assertFalse(resp2.json()["queued"])
             rid2 = resp2.json()["id"]
             resp3 = self.client.post(
-                "/api/jobs/run-ux-audit",
-                json={"site": "boomtick.blog", "max_pages": 2})
+                "/api/jobs/run-ux-audit", json={"site": "boomtick.blog", "max_pages": 2}
+            )
             self.assertEqual(resp3.status_code, 200)
             body3 = resp3.json()
             self.assertTrue(body3["queued"])
@@ -2511,72 +2643,88 @@ class UxAuditActionTest(_LedgerTmpDir, unittest.TestCase):
             row = next(j for j in listed if j["id"] == rid)
             self.assertEqual(row["kind"], "ux-audit")
             self.assertEqual(
-                row["td_argv"],
-                ["ux-audit", "boomtick.blog", "--max-pages", "5"])
+                row["td_argv"], ["ux-audit", "boomtick.blog", "--max-pages", "5"]
+            )
             for done_id in (rid, rid2, body3["id"]):
                 jobs_router.registry.finish_run(done_id, 0)
 
     def test_groups_404_until_first_report(self):
-        resp = self.client.get(
-            "/api/jobs/ux-audit/groups?site=boomtick.blog")
+        resp = self.client.get("/api/jobs/ux-audit/groups?site=boomtick.blog")
         self.assertEqual(resp.status_code, 404)
-        resp = self.client.get(
-            "/api/jobs/ux-audit/groups?site=evil.example")
+        resp = self.client.get("/api/jobs/ux-audit/groups?site=evil.example")
         self.assertEqual(resp.status_code, 400)
 
     def test_schedule_accepts_valid_audit_argv(self):
         import backend.api.routers.jobs as jobs_router
         import backend.api.routers.issues as issues_router
 
-        with mock.patch.object(
-                jobs_router, "load_action_schedules",
-                return_value={}), \
-                mock.patch.object(jobs_router,
-                                  "save_action_schedules"), \
-                mock.patch.object(issues_router,
-                                  "_ensure_schedule_ticker"):
+        with (
+            mock.patch.object(jobs_router, "load_action_schedules", return_value={}),
+            mock.patch.object(jobs_router, "save_action_schedules"),
+            mock.patch.object(issues_router, "_ensure_schedule_ticker"),
+        ):
             resp = self.client.post(
                 "/api/jobs/schedule",
-                json={"action": "ux-audit", "repo": "remote-server",
-                      "cadence": "weekly",
-                      "td_argv": ["ux-audit", "boomtick.blog",
-                                  "--max-pages", "5"]})
+                json={
+                    "action": "ux-audit",
+                    "repo": "remote-server",
+                    "cadence": "weekly",
+                    "td_argv": ["ux-audit", "boomtick.blog", "--max-pages", "5"],
+                },
+            )
             self.assertEqual(resp.status_code, 200)
             bad = self.client.post(
                 "/api/jobs/schedule",
-                json={"action": "ux-audit", "repo": "remote-server",
-                      "cadence": "weekly",
-                      "td_argv": ["ux-audit", "x;evil"]})
+                json={
+                    "action": "ux-audit",
+                    "repo": "remote-server",
+                    "cadence": "weekly",
+                    "td_argv": ["ux-audit", "x;evil"],
+                },
+            )
             self.assertEqual(bad.status_code, 400)
             missing = self.client.post(
                 "/api/jobs/schedule",
-                json={"action": "ux-audit", "repo": "remote-server",
-                      "cadence": "weekly"})
+                json={
+                    "action": "ux-audit",
+                    "repo": "remote-server",
+                    "cadence": "weekly",
+                },
+            )
             self.assertEqual(missing.status_code, 400)
 
     def test_groups_serve_report_payloads(self):
         import json as json_lib
 
         report = {
-            "site": "boomtick.blog", "repo": "arii/boomtick",
+            "site": "boomtick.blog",
+            "repo": "arii/boomtick",
             "at": "2026-11-04T00:00:00Z",
-            "filing": {"number": 12, "url": "https://u",
-                       "repo": "arii/boomtick"},
-            "groups": [{
-                "category": "Accessibility",
-                "title": "Accessibility (1 finding(s), worst: high)",
-                "findings": [{
-                    "severity": "high",
-                    "title": "[P1] image without alt text",
-                    "route": "/", "viewport": "static",
-                    "evidence": "src=x.png",
-                    "category": "Accessibility"}]}]}
-        with open(os.path.join(self._state_tmp.name,
-                               "boomtick.blog.json"),
-                  "w", encoding="utf-8") as f:
+            "filing": {"number": 12, "url": "https://u", "repo": "arii/boomtick"},
+            "groups": [
+                {
+                    "category": "Accessibility",
+                    "title": "Accessibility (1 finding(s), worst: high)",
+                    "findings": [
+                        {
+                            "severity": "high",
+                            "title": "[P1] image without alt text",
+                            "route": "/",
+                            "viewport": "static",
+                            "evidence": "src=x.png",
+                            "category": "Accessibility",
+                        }
+                    ],
+                }
+            ],
+        }
+        with open(
+            os.path.join(self._state_tmp.name, "boomtick.blog.json"),
+            "w",
+            encoding="utf-8",
+        ) as f:
             json_lib.dump(report, f)
-        resp = self.client.get(
-            "/api/jobs/ux-audit/groups?site=boomtick.blog")
+        resp = self.client.get("/api/jobs/ux-audit/groups?site=boomtick.blog")
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
         self.assertEqual(payload["site"], "boomtick.blog")
@@ -2615,11 +2763,9 @@ class ImpactPassActionTest(_LedgerTmpDir, unittest.TestCase):
         self.assertEqual(engine.step_timeout("impact-pass"), 1200)
 
     def test_steps_run_local_runner(self):
-        steps, err = engine.action_steps(
-            "impact-pass", "remote-server", "", "")
+        steps, err = engine.action_steps("impact-pass", "remote-server", "", "")
         self.assertIsNone(err)
-        self.assertEqual(
-            steps, [[sys.executable, "-m", "backend.impact_pass"]])
+        self.assertEqual(steps, [[sys.executable, "-m", "backend.impact_pass"]])
         # -m steps execute FROM the deployed tree (step_cwd), so the
         # pass reads/writes the same state the API serves.
         self.assertEqual(engine.step_cwd(steps), engine.ENGINE_ROOT)
@@ -2633,13 +2779,11 @@ class ImpactPassActionTest(_LedgerTmpDir, unittest.TestCase):
             old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
             os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = path
             try:
-                with mock.patch(
-                    "backend.api.routers.issues._ensure_schedule_ticker"
-                ):
+                with mock.patch("backend.api.routers.issues._ensure_schedule_ticker"):
                     resp = self.client.post(
                         "/api/jobs/schedule",
-                        json={"action": "impact-pass",
-                              "cadence": "daily"})
+                        json={"action": "impact-pass", "cadence": "daily"},
+                    )
                     self.assertEqual(resp.status_code, 200)
                     sched = resp.json()["schedule"]
                     self.assertEqual(sched["action"], "impact-pass")
@@ -2682,23 +2826,27 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         self.runner = impact_pass
         self._json = json
         self._io = io
-        self.fixture_doc = {"route": "/", "viewport": "desktop",
-                            "overflow": [],
-                            "accessibility": {"violations": []},
-                            "images": [], "tapTargets": []}
-        self.fixture_png = impact.png_encode_rgb(
-            2, 2, [bytes(6), bytes(6)])
+        self.fixture_doc = {
+            "route": "/",
+            "viewport": "desktop",
+            "overflow": [],
+            "accessibility": {"violations": []},
+            "images": [],
+            "tapTargets": [],
+        }
+        self.fixture_png = impact.png_encode_rgb(2, 2, [bytes(6), bytes(6)])
         self.capture_ok = True
-        self._run_patch = mock.patch("subprocess.run",
-                                     side_effect=self._fake_td)
+        self._run_patch = mock.patch("subprocess.run", side_effect=self._fake_td)
         self._run_patch.start()
 
     def tearDown(self):
         self._run_patch.stop()
-        for key, old in (("IMPACT_PASS_STATE_DIR", self._old_state),
-                         ("IMPACT_PASS_CHECKOUT", self._old_checkout),
-                         ("IMPACT_PASS_ROUTES", self._old_routes),
-                         ("PLAYWRIGHT_BROWSERS_PATH", self._old_browsers)):
+        for key, old in (
+            ("IMPACT_PASS_STATE_DIR", self._old_state),
+            ("IMPACT_PASS_CHECKOUT", self._old_checkout),
+            ("IMPACT_PASS_ROUTES", self._old_routes),
+            ("PLAYWRIGHT_BROWSERS_PATH", self._old_browsers),
+        ):
             if old is None:
                 os.environ.pop(key, None)
             else:
@@ -2741,8 +2889,7 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
                 f.write("#!/bin/sh\nexit 0\n")
             os.chmod(stub, 0o755)
         browsers = os.path.join(self._tmp.name, "ms-playwright")
-        chrome = os.path.join(browsers, "chromium-9999",
-                              "chrome-linux64", "chrome")
+        chrome = os.path.join(browsers, "chromium-9999", "chrome-linux64", "chrome")
         os.makedirs(os.path.dirname(chrome), exist_ok=True)
         with open(chrome, "w", encoding="utf-8") as f:
             f.write("fixture\n")
@@ -2760,15 +2907,13 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         shots = os.path.join(base, "screenshots")
         os.makedirs(results, exist_ok=True)
         os.makedirs(shots, exist_ok=True)
-        with open(os.path.join(results, "root-desktop.json"),
-                  "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(results, "root-desktop.json"), "w", encoding="utf-8"
+        ) as f:
             self._json.dump(self.fixture_doc, f)
-        with open(os.path.join(shots, "root-desktop.png"),
-                  "wb") as f:
+        with open(os.path.join(shots, "root-desktop.png"), "wb") as f:
             f.write(self.fixture_png)
-        return FakeProc(
-            0, self._json.dumps({"status": "success", "results": []}),
-            "")
+        return FakeProc(0, self._json.dumps({"status": "success", "results": []}), "")
 
     def _run_main(self):
         buf = self._io.StringIO()
@@ -2783,9 +2928,9 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         code, out = self._run_main()
         self.assertEqual(code, 0)
         self.assertIn("seeded", out)
-        baseline = os.path.join(self.state_root, "root-desktop",
-                                "baseline", "results",
-                                "root-desktop.json")
+        baseline = os.path.join(
+            self.state_root, "root-desktop", "baseline", "results", "root-desktop.json"
+        )
         self.assertTrue(os.path.isfile(baseline))
         self.assertEqual(self._ux_rows(), [])
 
@@ -2800,9 +2945,17 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
     def test_changed_route_ledgers_findings_with_severity(self):
         code, _ = self._run_main()
         self.assertEqual(code, 0)
-        self.fixture_doc = {**self.fixture_doc, "overflow": [
-            {"tagName": "div", "id": "hero", "className": "wide",
-             "rect": {"left": 0, "right": 2000, "width": 2000}}]}
+        self.fixture_doc = {
+            **self.fixture_doc,
+            "overflow": [
+                {
+                    "tagName": "div",
+                    "id": "hero",
+                    "className": "wide",
+                    "rect": {"left": 0, "right": 2000, "width": 2000},
+                }
+            ],
+        }
         code, out = self._run_main()
         self.assertEqual(code, 0)
         self.assertIn("findings=1", out)
@@ -2812,8 +2965,7 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         self.assertEqual(hit["kind"], "ux-finding")
         self.assertEqual(hit["source"], "impact-pass")
         self.assertEqual(hit["severity"], "high")
-        self.assertEqual(hit["title"],
-                         "1 new layout-overflow issue(s)")
+        self.assertEqual(hit["title"], "1 new layout-overflow issue(s)")
         self.assertEqual(hit["route"], "/")
         self.assertEqual(hit["viewport"], "desktop")
         self.assertIn("<div>", hit["evidence"])
@@ -2868,22 +3020,21 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         self.assertIn("MISSING pnpm", out)
 
     def test_missing_scripts_fail_the_run(self):
-        os.remove(os.path.join(
-            self.checkout, "scripts", "ux-audit-runner.ts"))
+        os.remove(os.path.join(self.checkout, "scripts", "ux-audit-runner.ts"))
         code, out = self._run_main()
         self.assertEqual(code, 1)
         self.assertIn("ux-audit-runner.ts", out)
 
     def test_missing_ux_bins_fail_the_run(self):
-        os.remove(os.path.join(
-            self.checkout, "node_modules", ".bin", "tsx"))
+        os.remove(os.path.join(self.checkout, "node_modules", ".bin", "tsx"))
         code, out = self._run_main()
         self.assertEqual(code, 1)
         self.assertIn("tsx", out)
 
     def test_missing_browser_fails_the_run(self):
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(
-            self._tmp.name, "no-browsers-here")
+            self._tmp.name, "no-browsers-here"
+        )
         code, out = self._run_main()
         self.assertEqual(code, 1)
         self.assertIn("chromium", out)
@@ -2897,37 +3048,42 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         def bare(argv, **kwargs):
             if not self.capture_ok:
                 return real_fake(argv, **kwargs)
-            base = os.path.join(kwargs.get("cwd", ""), "artifacts",
-                                "ux-audit")
+            base = os.path.join(kwargs.get("cwd", ""), "artifacts", "ux-audit")
             os.makedirs(base, exist_ok=True)
-            with open(os.path.join(base, "routes.json"), "w",
-                      encoding="utf-8") as f:
+            with open(os.path.join(base, "routes.json"), "w", encoding="utf-8") as f:
                 self._json.dump({"routes": ["/"]}, f)
             return FakeProc(
-                0, self._json.dumps({"status": "success",
-                                     "results": []}), "")
+                0, self._json.dumps({"status": "success", "results": []}), ""
+            )
+
         # Seed first: the bare capture must fail even with a
         # previous fire's artifacts sitting in the checkout (td
         # never cleans them; the pass must not trust stale files).
         code, _ = self._run_main()
         self.assertEqual(code, 0)
         self._run_patch.stop()
-        self._run_patch = mock.patch("subprocess.run",
-                                     side_effect=bare)
+        self._run_patch = mock.patch("subprocess.run", side_effect=bare)
         self._run_patch.start()
         try:
             code, out = self._run_main()
         finally:
             self._run_patch.stop()
-            self._run_patch = mock.patch(
-                "subprocess.run", side_effect=self._fake_td)
+            self._run_patch = mock.patch("subprocess.run", side_effect=self._fake_td)
             self._run_patch.start()
         self.assertEqual(code, 1)
         self.assertIn("no results", out)
         # The failed fire leaves the seeded baseline untouched.
-        self.assertTrue(os.path.isfile(os.path.join(
-            self.state_root, "root-desktop", "baseline",
-            "results", "root-desktop.json")))
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(
+                    self.state_root,
+                    "root-desktop",
+                    "baseline",
+                    "results",
+                    "root-desktop.json",
+                )
+            )
+        )
 
 
 class ReviewPrActionTest(_LedgerTmpDir, unittest.TestCase):
@@ -2956,83 +3112,109 @@ class ReviewPrActionTest(_LedgerTmpDir, unittest.TestCase):
         self.assertEqual(engine.step_timeout("review-pr"), 1200)
 
     def test_argv_validation(self):
-        self.assertTrue(engine.validate_review_pr_argv(
-            ["review-pr", "12"]))
-        self.assertTrue(engine.validate_review_pr_argv(
-            ["review-pr", "12", "--post"]))
-        self.assertFalse(engine.validate_review_pr_argv(
-            ["review-pr"]))
-        self.assertFalse(engine.validate_review_pr_argv(
-            ["review-pr", "0"]))
-        self.assertFalse(engine.validate_review_pr_argv(
-            ["review-pr", "-3"]))
-        self.assertFalse(engine.validate_review_pr_argv(
-            ["review-pr", "12", "--dry-run"]))
-        self.assertFalse(engine.validate_review_pr_argv(
-            ["review-pr", "12; rm -rf /"]))
-        self.assertFalse(engine.validate_review_pr_argv(
-            ["run-td", "12"]))
+        self.assertTrue(engine.validate_review_pr_argv(["review-pr", "12"]))
+        self.assertTrue(engine.validate_review_pr_argv(["review-pr", "12", "--post"]))
+        self.assertFalse(engine.validate_review_pr_argv(["review-pr"]))
+        self.assertFalse(engine.validate_review_pr_argv(["review-pr", "0"]))
+        self.assertFalse(engine.validate_review_pr_argv(["review-pr", "-3"]))
+        self.assertFalse(
+            engine.validate_review_pr_argv(["review-pr", "12", "--dry-run"])
+        )
+        self.assertFalse(engine.validate_review_pr_argv(["review-pr", "12; rm -rf /"]))
+        self.assertFalse(engine.validate_review_pr_argv(["run-td", "12"]))
 
     def test_steps_dry_run_by_default(self):
         steps, err = engine.action_steps(
-            "review-pr", "remote-server", "arii/remote-server",
-            "/srv/remote-server", ["review-pr", "12"])
+            "review-pr",
+            "remote-server",
+            "arii/remote-server",
+            "/srv/remote-server",
+            ["review-pr", "12"],
+        )
         self.assertIsNone(err)
         self.assertEqual(
-            steps, [[sys.executable, "-m", "backend.review",
-                     "--repo", "arii/remote-server", "--pr", "12",
-                     "--dry-run"]])
+            steps,
+            [
+                [
+                    sys.executable,
+                    "-m",
+                    "backend.review",
+                    "--repo",
+                    "arii/remote-server",
+                    "--pr",
+                    "12",
+                    "--dry-run",
+                ]
+            ],
+        )
         # -m steps execute FROM the deployed tree (step_cwd).
         self.assertEqual(engine.step_cwd(steps), engine.ENGINE_ROOT)
 
     def test_steps_post_only_when_explicit(self):
         steps, err = engine.action_steps(
-            "review-pr", "remote-server", "arii/remote-server",
-            "/srv/remote-server", ["review-pr", "12", "--post"])
+            "review-pr",
+            "remote-server",
+            "arii/remote-server",
+            "/srv/remote-server",
+            ["review-pr", "12", "--post"],
+        )
         self.assertIsNone(err)
         self.assertEqual(steps[0][-1], "--post")
         self.assertNotIn("--dry-run", steps[0])
 
     def test_steps_reject_missing_repo_and_argv(self):
         steps, err = engine.action_steps(
-            "review-pr", "remote-server", "", "", ["review-pr", "12"])
+            "review-pr", "remote-server", "", "", ["review-pr", "12"]
+        )
         self.assertIsNone(steps)
         self.assertIn("needs a repo", err)
         steps, err = engine.action_steps(
-            "review-pr", "remote-server", "arii/remote-server",
-            "/srv/remote-server", None)
+            "review-pr",
+            "remote-server",
+            "arii/remote-server",
+            "/srv/remote-server",
+            None,
+        )
         self.assertIsNone(steps)
         self.assertIn("review-pr", err)
         steps, err = engine.action_steps(
-            "review-pr", "remote-server", "arii/remote-server",
-            "/srv/remote-server", ["review-pr", "x;evil"])
+            "review-pr",
+            "remote-server",
+            "arii/remote-server",
+            "/srv/remote-server",
+            ["review-pr", "x;evil"],
+        )
         self.assertIsNone(steps)
 
     def test_dispatch_dry_runs_by_default(self):
         import backend.api.routers.jobs as jobs_router
 
-        with mock.patch.object(jobs_router, "_launch") as launched, \
-                mock.patch("backend.core.git_helpers.get_repo_status",
-                           return_value={"repo": "remote-server"}):
+        with (
+            mock.patch.object(jobs_router, "_launch") as launched,
+            mock.patch(
+                "backend.core.git_helpers.get_repo_status",
+                return_value={"repo": "remote-server"},
+            ),
+        ):
             resp = self.client.post(
-                "/api/jobs/run-review",
-                json={"repo": "remote-server", "pr": 12})
+                "/api/jobs/run-review", json={"repo": "remote-server", "pr": 12}
+            )
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
             launched.assert_called_once_with(
-                rid, "review-pr", "remote-server",
-                td_argv=["review-pr", "12"])
+                rid, "review-pr", "remote-server", td_argv=["review-pr", "12"]
+            )
             # Queue (#1025): a second dispatch takes the free
             # slot instead of conflicting.
             resp2 = self.client.post(
-                "/api/jobs/run-review",
-                json={"repo": "remote-server", "pr": 13})
+                "/api/jobs/run-review", json={"repo": "remote-server", "pr": 13}
+            )
             self.assertEqual(resp2.status_code, 200)
             self.assertFalse(resp2.json()["queued"])
             rid2 = resp2.json()["id"]
-            row = next(j for j in
-                       self.client.get("/api/jobs").json()["jobs"]
-                       if j["id"] == rid)
+            row = next(
+                j for j in self.client.get("/api/jobs").json()["jobs"] if j["id"] == rid
+            )
             self.assertEqual(row["kind"], "review-pr")
             self.assertEqual(row["td_argv"], ["review-pr", "12"])
         jobs_router.registry.finish_run(rid, 0)
@@ -3041,41 +3223,53 @@ class ReviewPrActionTest(_LedgerTmpDir, unittest.TestCase):
     def test_dispatch_post_rides_explicit_flag(self):
         import backend.api.routers.jobs as jobs_router
 
-        with mock.patch.object(jobs_router, "_launch") as launched, \
-                mock.patch("backend.core.git_helpers.get_repo_status",
-                           return_value={"repo": "remote-server"}):
+        with (
+            mock.patch.object(jobs_router, "_launch") as launched,
+            mock.patch(
+                "backend.core.git_helpers.get_repo_status",
+                return_value={"repo": "remote-server"},
+            ),
+        ):
             resp = self.client.post(
                 "/api/jobs/run-review",
-                json={"repo": "remote-server", "pr": 12,
-                      "post": True})
+                json={"repo": "remote-server", "pr": 12, "post": True},
+            )
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
             launched.assert_called_once_with(
-                rid, "review-pr", "remote-server",
-                td_argv=["review-pr", "12", "--post"])
+                rid, "review-pr", "remote-server", td_argv=["review-pr", "12", "--post"]
+            )
         jobs_router.registry.finish_run(rid, 0)
 
     def test_dispatch_rejects_bad_repo_and_pr(self):
         import backend.api.routers.jobs as jobs_router
 
-        with mock.patch.object(jobs_router, "_launch"), \
-                mock.patch("backend.core.git_helpers.get_repo_status",
-                           side_effect=ValueError("nope")):
+        with (
+            mock.patch.object(jobs_router, "_launch"),
+            mock.patch(
+                "backend.core.git_helpers.get_repo_status",
+                side_effect=ValueError("nope"),
+            ),
+        ):
             resp = self.client.post(
-                "/api/jobs/run-review",
-                json={"repo": "ghost", "pr": 12})
+                "/api/jobs/run-review", json={"repo": "ghost", "pr": 12}
+            )
             self.assertEqual(resp.status_code, 400)
-        with mock.patch.object(jobs_router, "_launch"), \
-                mock.patch("backend.core.git_helpers.get_repo_status",
-                           return_value={"repo": "remote-server"}):
+        with (
+            mock.patch.object(jobs_router, "_launch"),
+            mock.patch(
+                "backend.core.git_helpers.get_repo_status",
+                return_value={"repo": "remote-server"},
+            ),
+        ):
             for pr in (0, -3):
                 resp = self.client.post(
-                    "/api/jobs/run-review",
-                    json={"repo": "remote-server", "pr": pr})
+                    "/api/jobs/run-review", json={"repo": "remote-server", "pr": pr}
+                )
                 self.assertEqual(resp.status_code, 400, msg=pr)
             missing = self.client.post(
-                "/api/jobs/run-review",
-                json={"repo": "remote-server"})
+                "/api/jobs/run-review", json={"repo": "remote-server"}
+            )
             self.assertEqual(missing.status_code, 400)
 
 
@@ -3102,8 +3296,7 @@ class SuperviseActionTest(_LedgerTmpDir, unittest.TestCase):
         self.fake_python = os.path.join(venv_bin, "python")
         with open(self.fake_python, "w") as f:
             f.write("#!/bin/sh\n")
-        self.fake_script = os.path.join(
-            self._agent_tmp.name, "deep_chat.py")
+        self.fake_script = os.path.join(self._agent_tmp.name, "deep_chat.py")
         with open(self.fake_script, "w") as f:
             f.write("# fake\n")
         self._old_agent_dir = os.environ.get("DEEP_AGENT_DIR")
@@ -3133,39 +3326,43 @@ class SuperviseActionTest(_LedgerTmpDir, unittest.TestCase):
 
     def test_steps_run_supervise_mode(self):
         steps, err = engine.action_steps(
-            "supervise", "remote-server", "arii/remote-server",
-            "/srv/remote-server")
+            "supervise", "remote-server", "arii/remote-server", "/srv/remote-server"
+        )
         self.assertIsNone(err)
         self.assertEqual(
-            steps, [[self.fake_python, self.fake_script,
-                     "arii/remote-server", "--supervise"]])
+            steps,
+            [[self.fake_python, self.fake_script, "arii/remote-server", "--supervise"]],
+        )
 
     def test_steps_need_repo_venv_and_script(self):
-        steps, err = engine.action_steps(
-            "supervise", "remote-server", "", "")
+        steps, err = engine.action_steps("supervise", "remote-server", "", "")
         self.assertIsNone(steps)
         self.assertIn("needs a repo", err)
         os.remove(self.fake_python)
         steps, err = engine.action_steps(
-            "supervise", "remote-server", "arii/remote-server",
-            "/srv/remote-server")
+            "supervise", "remote-server", "arii/remote-server", "/srv/remote-server"
+        )
         self.assertIsNone(steps)
         self.assertIn("venv python", err)
 
     def test_dispatchable_from_jobs_run(self):
         import backend.api.routers.jobs as jobs_router
 
-        with mock.patch.object(jobs_router, "_launch") as launched, \
-                mock.patch("backend.core.git_helpers.get_repo_status",
-                           return_value={"repo": "remote-server"}):
+        with (
+            mock.patch.object(jobs_router, "_launch") as launched,
+            mock.patch(
+                "backend.core.git_helpers.get_repo_status",
+                return_value={"repo": "remote-server"},
+            ),
+        ):
             resp = self.client.post(
-                "/api/jobs/run",
-                json={"action": "supervise",
-                      "repo": "remote-server"})
+                "/api/jobs/run", json={"action": "supervise", "repo": "remote-server"}
+            )
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
             launched.assert_called_once_with(
-                rid, "supervise", "remote-server", td_argv=None)
+                rid, "supervise", "remote-server", td_argv=None
+            )
         jobs_router.registry.finish_run(rid, 0)
 
 

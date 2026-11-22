@@ -5,10 +5,13 @@ Rule: no first-party module may mutate sys.path at import time, and no
 module may climb from __file__ to the repo root, except the canonical
 places that own those jobs:
 
-- deep-agent/cli.py::bootstrap() — adds deep-agent/ for frozen consumers
-  (coder.py is Issue-7 frozen) + pinned by tests/test_cli.py::TestBootstrap.
-- deep-agent/cli.py::repo_root() — the one checkout-root derivation (#540
-  per-checkout hermeticity: .env, chroma_db).
+- backend/shared/cli.py::bootstrap() — adds deep-agent/ for its flat
+  sibling modules (coder.py is Issue-7 frozen) + pinned by
+  tests/test_cli.py::TestBootstrap.
+- backend/shared/cli.py::repo_root() — the one checkout-root derivation
+  (#540 per-checkout hermeticity: .env, chroma_db).
+- backend/shared/cli.py::deep_agent_dir() — the deep-agent/ source dir
+  (run-ledger default state dir, bootstrap target), same location rule.
 - backend/api/routers/chat.py::_repo_root() — spawn paths for the
   deep_chat child (env-overridable via DEEP_AGENT_DIR).
 - tests/test_deep_agent_paths.py::derived_root() — the test oracle that
@@ -27,7 +30,7 @@ Exit 1 listing file:line on any violation. stdlib only.
 Split-statement climbing is also banned: a local assigned a
 __file__-derived value (here = abspath(__file__)) must never be
 climbed later (dirname(here)) — derive the root once via
-deep-agent/cli.py::repo_root instead.
+backend/shared/cli.py::repo_root instead.
 """
 
 import ast
@@ -39,9 +42,10 @@ FIRST_PARTY = ("backend", "deep-agent", "tests", "scripts")
 SYS_PATH_MUTATORS = {"append", "insert", "extend", "remove", "pop", "clear"}
 
 # (relpath, function-or-None) pairs that own the two canonical jobs above.
-ALLOW_PATH_MUTATION = {("deep-agent/cli.py", "bootstrap")}
+ALLOW_PATH_MUTATION = {("backend/shared/cli.py", "bootstrap")}
 ALLOW_ROOT_CLIMB = {
-    ("deep-agent/cli.py", "repo_root"),
+    ("backend/shared/cli.py", "repo_root"),
+    ("backend/shared/cli.py", "deep_agent_dir"),
     ("backend/api/routers/chat.py", "_repo_root"),
     ("tests/test_deep_agent_paths.py", "derived_root"),
 }
@@ -201,7 +205,7 @@ def check_file(rel, tree):
             violations.append(
                 f"{rel}:{node.lineno}: __file__ repo-root climbing "
                 f"(use root-relative literals; root derivation lives in "
-                f"deep-agent/cli.py::repo_root)"
+                f"backend/shared/cli.py::repo_root)"
             )
         # Split-statement climbing: a __file__-derived local climbed
         # later in the same scope (here = abspath(__file__),
@@ -212,7 +216,7 @@ def check_file(rel, tree):
             violations.append(
                 f"{rel}:{node.lineno}: __file__ split-statement climbing "
                 f"(derive the root once via "
-                f"deep-agent/cli.py::repo_root"
+                f"backend/shared/cli.py::repo_root"
             )
 
     def walk(node):

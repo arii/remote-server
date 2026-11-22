@@ -25,8 +25,8 @@ from unittest import mock
 
 import auditor
 import coder
-import ledger
-import s5tools
+from backend.shared import ledger
+from backend.shared import s5tools
 
 
 def _install_fake_langchain(test):

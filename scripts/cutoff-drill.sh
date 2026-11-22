@@ -148,12 +148,14 @@ fi
 
 # --- surface 2: ask pipeline ---
 ASK_STATIC="$(python3 - <<'EOF'
-import sys
-sys.path.insert(0, "deep-agent")
-import model_router
+from backend.shared import model_router
 failures = []
-for mod in ("model_router.py", "ask_investigator.py", "deep_chat.py"):
-    with open(f"deep-agent/{mod}", encoding="utf-8") as fh:
+for mod in (
+    "backend/shared/model_router.py",
+    "deep-agent/ask_investigator.py",
+    "deep-agent/deep_chat.py",
+):
+    with open(mod, encoding="utf-8") as fh:
         for n, line in enumerate(fh, 1):
             low = line.lower()
             # .muse/ is a grep exclusion dir, not a dependency.
@@ -177,9 +179,7 @@ else
 fi
 
 ASK_LIVE="$(OLLAMA_STRICT=1 python3 -c "
-import sys
-sys.path.insert(0, 'deep-agent')
-import model_router
+from backend.shared import model_router
 try:
     spec = model_router.resolve_llm()
     print('resolved:' + spec['provider'] + ':' + spec['model'])
@@ -225,7 +225,7 @@ else
   ok briefing-narrator "muse-free; default $(grep "^default:" <<<"$NARR_STATIC" | cut -d: -f2-); prompt builds offline"
 fi
 
-if python3 -c "import sys, urllib.request; sys.path.insert(0,'deep-agent'); import model_router; sys.exit(0 if model_router.ollama_reachable() else 1)" 2>/dev/null; then
+if python3 -c "import sys; from backend.shared import model_router; sys.exit(0 if model_router.ollama_reachable() else 1)" 2>/dev/null; then
   ok briefing-narrator "ollama backend reachable"
 else
   skip briefing-narrator "ollama unreachable (narrator backend down)"

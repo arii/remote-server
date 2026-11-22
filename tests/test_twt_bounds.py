@@ -11,11 +11,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import ledger
+from backend.shared import ledger
 import coder
 import deep_chat
 import llm_usage
-import model_router
+from backend.shared import model_router
 
 try:
     from langchain_core.messages import (

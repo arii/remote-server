@@ -67,10 +67,10 @@ except ImportError:
             validate_verify_command,
         )
 
-# Parity with deep-agent/model_router.py DEFAULT_OLLAMA_URL: the stack's Ollama
-# host. Replicated instead of imported — model_router pulls deep-agent-only
-# modules (pricing, runs, cli, ledger) that are not on backend's sys.path,
-# while repair_worker stays stdlib-only and self-contained. Never bake the
+# Parity with backend/shared/model_router.py DEFAULT_OLLAMA_URL: the stack's
+# Ollama host. Replicated instead of imported so repair_worker stays
+# stdlib-only and self-contained (model_router pulls pricing, runs, ledger
+# and the spend-cap machinery). Never bake the
 # /api/generate path into the default; endpoints are built by the helpers below.
 DEFAULT_OLLAMA_HOST = "http://ollama:11434"
 OLLAMA_GENERATE_PATH = "/api/generate"
@@ -135,7 +135,7 @@ class AgentState(TypedDict):
 
 
 def _env(name: str, default: str = "") -> str:
-    """Blank-tolerant env lookup (mirrors deep-agent/model_router._env)."""
+    """Blank-tolerant env lookup (mirrors backend/shared/model_router._env)."""
     val = os.environ.get(name, default)
     if not isinstance(val, str) or not val.strip():
         return default

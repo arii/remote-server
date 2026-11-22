@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from cli import repo_root
+from backend.shared.cli import repo_root
 
 
 def _repo_path(value: str | Path) -> Path:

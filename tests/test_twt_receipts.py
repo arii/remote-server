@@ -8,10 +8,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 import coder
-import ledger
+from backend.shared import ledger
 import observe
-import runs
-import twt_receipts as receipts
+from backend.shared import runs
+from backend.shared import twt_receipts as receipts
 
 
 class ReceiptTests(unittest.TestCase):
@@ -60,7 +60,7 @@ class ReceiptTests(unittest.TestCase):
         }
 
     def test_nebius_529_bound_is_reserved_and_enforces_spend_cap(self):
-        import model_router
+        from backend.shared import model_router
 
         scope = receipts.ReceiptRun("nebius-529")
         trace_id = scope.request()
@@ -681,7 +681,7 @@ class ReceiptTests(unittest.TestCase):
     def test_real_sync_and_async_model_hooks_tag_hosted_and_native_requests(self):
         import asyncio
         import httpx
-        import model_router
+        from backend.shared import model_router
 
         scope = receipts.ReceiptRun("sdk")
         token = receipts.current.set(scope)

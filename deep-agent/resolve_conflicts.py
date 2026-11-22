@@ -20,9 +20,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 
-import cli
-import ledger
-import model_router
+from backend.shared import cli
+from backend.shared import ledger
+from backend.shared import model_router
 import observe
 
 ChatOpenAI = None

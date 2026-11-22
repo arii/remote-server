@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import model_router
-import twt_receipts
-import twt_transport
+from backend.shared import model_router
+from backend.shared import twt_receipts
+from backend.shared import twt_transport
 
 try:
     import twt_service

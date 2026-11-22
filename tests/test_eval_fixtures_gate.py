@@ -19,7 +19,7 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 import eval_pipeline
-from cli import repo_root
+from backend.shared.cli import repo_root
 
 ROOT = repo_root()
 CI_YML = os.path.join(ROOT, ".github", "workflows", "ci.yml")

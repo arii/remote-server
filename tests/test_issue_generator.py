@@ -164,7 +164,9 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
         os.environ["NEBIUS_API_KEY"] = "test-key"
         os.environ["OLLAMA_URL"] = "http://127.0.0.1:1"
         try:
-            with mock.patch("model_router.resolve_llm", side_effect=fake_resolve):
+            with mock.patch(
+                "backend.shared.model_router.resolve_llm", side_effect=fake_resolve
+            ):
                 gen = issue_generator.IssueGeneratorGraph(
                     repo_root=tempfile.gettempdir()
                 )
@@ -194,7 +196,9 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
         os.environ["S5_ISSUE_PROVIDER"] = "nebius"
         os.environ.pop("NEBIUS_API_KEY", None)
         try:
-            with mock.patch("model_router.resolve_llm", side_effect=fake_resolve):
+            with mock.patch(
+                "backend.shared.model_router.resolve_llm", side_effect=fake_resolve
+            ):
                 gen = issue_generator.IssueGeneratorGraph(
                     repo_root=tempfile.gettempdir()
                 )
@@ -232,8 +236,13 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
         os.environ["S5_ISSUE_PROVIDER"] = "ollama"
         try:
             with (
-                mock.patch("model_router.resolve_llm", side_effect=fake_resolve),
-                mock.patch("model_router.build_chat_model", side_effect=fake_build),
+                mock.patch(
+                    "backend.shared.model_router.resolve_llm", side_effect=fake_resolve
+                ),
+                mock.patch(
+                    "backend.shared.model_router.build_chat_model",
+                    side_effect=fake_build,
+                ),
             ):
                 gen = issue_generator.IssueGeneratorGraph(
                     repo_root=tempfile.gettempdir()
@@ -365,7 +374,7 @@ class TestGraphLoop(unittest.TestCase):
         )
 
     def test_interrupt_resume_validates_and_persists(self):
-        import ledger
+        from backend.shared import ledger
 
         with tempfile.TemporaryDirectory() as tmp:
             ledger_path = os.path.join(tmp, "ledger.jsonl")

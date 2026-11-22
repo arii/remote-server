@@ -8,9 +8,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import ledger
-import model_router
-import runs
+from backend.shared import ledger
+from backend.shared import model_router
+from backend.shared import runs
 
 
 class GatewayFallbackVisibilityTest(unittest.TestCase):

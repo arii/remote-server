@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-import model_router
-import runs
+from backend.shared import model_router
+from backend.shared import runs
 
 
 def env(**kwargs):
@@ -56,7 +56,9 @@ class TestModelRouter(unittest.TestCase):
             with mock.patch.object(
                 model_router, "ollama_reachable", return_value=False
             ):
-                with self.assertLogs("model_router", level="WARNING") as logs:
+                with self.assertLogs(
+                    "backend.shared.model_router", level="WARNING"
+                ) as logs:
                     err = io.StringIO()
                     with contextlib.redirect_stderr(err):
                         with mock.patch.object(model_router.ledger, "record"):
@@ -148,13 +150,13 @@ class TestModelRouter(unittest.TestCase):
         # #885: the effective cap is visible in logs whenever the
         # metered path initializes (explicit set wins here).
         with env(NEBIUS_API_KEY="k", NEBIUS_SPEND_CAP_USD="7.50"):
-            with self.assertLogs("model_router", level="INFO") as logs:
+            with self.assertLogs("backend.shared.model_router", level="INFO") as logs:
                 model_router.resolve_llm(prefer="nebius")
         self.assertTrue(any("7.50" in line for line in logs.output))
 
     def test_default_cap_logged_when_unset(self):
         with env(NEBIUS_API_KEY="k"):
-            with self.assertLogs("model_router", level="INFO") as logs:
+            with self.assertLogs("backend.shared.model_router", level="INFO") as logs:
                 model_router.resolve_llm(prefer="nebius")
         self.assertTrue(any("5.00" in line for line in logs.output))
 

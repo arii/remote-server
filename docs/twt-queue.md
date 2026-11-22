@@ -1,7 +1,7 @@
 # Durable TwT issue queue
 
 `scripts/queue_runner.py` supervises the existing
-`deep-agent/cli.py run-pipeline --submit-pr --keep-worktree` path, one issue at a
+`python3 -m backend.shared.cli run-pipeline --submit-pr --keep-worktree` path, one issue at a
 time. It requires the merged bounded-receipt contract in `twt_receipts.py` and a
 TwT gateway that emits `cost_basis: upper_bound`. The supervisor uses Python's
 standard library and `gh`; the worker needs the normal deep-agent dependencies,

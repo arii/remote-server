@@ -43,7 +43,7 @@ from backend.core.validation import validate_repo_name
 
 logger = logging.getLogger(__name__)
 
-import model_router  # noqa: E402
+from backend.shared import model_router  # noqa: E402
 
 router = APIRouter(prefix="/api", tags=["attention"])
 

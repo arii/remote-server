@@ -51,7 +51,7 @@ import tempfile
 import time
 import urllib.parse
 
-import cli
+from backend.shared import cli
 
 cli.bootstrap()
 
@@ -73,7 +73,7 @@ except ImportError:  # pragma: no cover - hermetic fallback
 
 
 try:
-    from s5tools import fetch_url
+    from backend.shared.s5tools import fetch_url
 except ImportError:  # pragma: no cover - hermetic fallback
 
     def fetch_url(url, timeout=20, max_bytes=262144):

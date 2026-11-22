@@ -17,8 +17,8 @@ import os
 import subprocess
 import time
 
-import s5tools
-import twt_receipts
+from backend.shared import s5tools
+from backend.shared import twt_receipts
 
 UNVERIFIED_CODER = "pipeline coder did not pass verification"
 MAX_AUDIT_CYCLES_DEFAULT = 2
@@ -299,7 +299,7 @@ class Pipeline:
             and os.environ.get("TWT_PREFLIGHT_REQUIRED") == "1"
         ):
             try:
-                import model_router
+                from backend.shared import model_router
 
                 if hasattr(model_router, "preflight_gateway"):
                     model_router.preflight_gateway(stage="coder")
@@ -412,7 +412,7 @@ class Pipeline:
             )
             provider, _, model = label.partition(":")
             graph.last_model_spec = {"provider": provider, "model": model}
-            import ledger
+            from backend.shared import ledger
 
             ledger.record(
                 "pipeline.py",

@@ -13,6 +13,15 @@ import os
 import unittest
 
 DEEP_AGENT = "deep-agent"
+SHARED = os.path.join("backend", "shared")
+
+
+def _source_files():
+    """Every module that could build a model: deep-agent/ and backend/shared/."""
+    return sorted(
+        glob.glob(os.path.join(DEEP_AGENT, "*.py"))
+        + glob.glob(os.path.join(SHARED, "*.py"))
+    )
 
 
 def _chat_constructions(path):
@@ -39,7 +48,7 @@ def _chat_constructions(path):
 class TestNebiusChoke(unittest.TestCase):
     def test_no_direct_nebius_construction(self):
         violators = {}
-        for path in sorted(glob.glob(os.path.join(DEEP_AGENT, "*.py"))):
+        for path in _source_files():
             model_kw, _, _ = _chat_constructions(path)
             if model_kw:
                 violators[os.path.basename(path)] = model_kw
@@ -47,7 +56,7 @@ class TestNebiusChoke(unittest.TestCase):
 
     def test_no_direct_chat_construction_outside_model_router(self):
         violators = {}
-        for path in sorted(glob.glob(os.path.join(DEEP_AGENT, "*.py"))):
+        for path in _source_files():
             base = os.path.basename(path)
             if base == "model_router.py":
                 continue

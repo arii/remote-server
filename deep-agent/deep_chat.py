@@ -57,15 +57,15 @@ import re
 import sys
 import time
 
-import cli
+from backend.shared import cli
 
 cli.bootstrap()
 
-import s5tools  # noqa: E402
-import model_router  # noqa: E402
-import ledger  # noqa: E402
+from backend.shared import s5tools  # noqa: E402
+from backend.shared import model_router  # noqa: E402
+from backend.shared import ledger  # noqa: E402
 import observe  # noqa: E402
-import runs  # noqa: E402
+from backend.shared import runs  # noqa: E402
 import tracing  # noqa: E402
 import intent  # noqa: E402
 import skills_registry  # noqa: E402
@@ -1489,7 +1489,7 @@ def _cmd_review_pr(repo, number, prefer=None):
     """
     from pydantic import BaseModel  # noqa: E402
 
-    import ledger  # noqa: E402
+    from backend.shared import ledger  # noqa: E402
     import observe  # noqa: E402
 
     if s5tools.valid_number(number) is None:

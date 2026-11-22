@@ -8,6 +8,8 @@ from backend.notify.prefs_state import load_notifier_state
 from backend.notify.prefs_state import notifier_lock
 from backend.notify.prefs_state import save_notifier_state
 from backend.notify.prefs_state import send_notification
+from backend.shared import pricing
+from backend.shared import runs
 
 
 # Budget watch (#652). Spend caps fail silently: GET
@@ -24,14 +26,10 @@ BUDGET_BAND_SEVERITY = {"warning": 1, "blocked": 2}
 def _budget_cap_spend():
     """(cap, spent) via the same modules as GET /agents/budget.
 
-    Lazy import: runs.py pulls deep-agent-local modules (cli, ledger,
-    pricing) that need the deep-agent dir on sys.path. Never raises:
-    an unresolvable read reports uncapped (None) so a broken read
+    Never raises: an unresolvable read reports uncapped (None) so a broken read
     stays silent instead of paging anyone.
     """
     try:
-        import pricing
-        import runs
         cap = pricing.spend_cap()
         spent = runs.total_metered_spend()["spent"]
         return cap, spent
@@ -64,8 +62,7 @@ def _budget_send_ok(results) -> bool:
         return False
     if "suppressed" in results:
         return False
-    return any(isinstance(r, dict) and r.get("ok")
-               for r in results.values())
+    return any(isinstance(r, dict) and r.get("ok") for r in results.values())
 
 
 def _usd(value: float) -> str:
@@ -81,8 +78,8 @@ def fire_budget_watch(now: float | None = None, sender=None) -> bool:
     budget-watch failure."""
     try:
         return _fire_budget_watch(
-            time.time() if now is None else now,
-            sender or send_notification)
+            time.time() if now is None else now, sender or send_notification
+        )
     except Exception:
         return False
 
@@ -120,19 +117,25 @@ def _fire_budget_watch(now: float, sender) -> bool:
         message = (
             f"{_usd(spent)} of {_usd(cap)} cap spent. "
             "The next metered call will refuse until the cap is "
-            "raised or spend is cleared.")
+            "raised or spend is cleared."
+        )
         priority = "high"
     else:
         title = "Spend cap 80% used"
         message = (
             f"{_usd(spent)} of {_usd(cap)} cap spent "
             f"({_usd(remaining)} remaining). "
-            "Metered calls will be refused at 100%.")
+            "Metered calls will be refused at 100%."
+        )
         priority = "default"
     try:
-        results = sender(title, message, priority=priority,
-                         tags=["warning", "budget"],
-                         event_type="budget")
+        results = sender(
+            title,
+            message,
+            priority=priority,
+            tags=["warning", "budget"],
+            event_type="budget",
+        )
     except Exception:
         # Failed attempt: no stamp, so the next tick retries (one
         # attempt per tick max). An edge alert is one-shot — losing

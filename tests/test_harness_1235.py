@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 import coder
-import s5tools
+from backend.shared import s5tools
 
 
 class TestLinkWorktreeNodeModules(unittest.TestCase):

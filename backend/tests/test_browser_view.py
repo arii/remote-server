@@ -4,7 +4,7 @@ import asyncio
 import unittest
 from unittest import mock
 
-import cli
+from backend.shared import cli
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 

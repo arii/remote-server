@@ -15,10 +15,10 @@ from pathlib import Path
 from unittest import mock
 
 import auditor
-import cli
+from backend.shared import cli
 import coder
 import issue_generator
-import model_router
+from backend.shared import model_router
 import pipeline
 import skills_registry
 
@@ -118,7 +118,7 @@ class TestSpecOutput(unittest.TestCase):
 
     def test_invalid_spec_does_not_create_output(self):
         """Invalid specs do not leave a deliverable behind."""
-        with mock.patch("ledger.record"):
+        with mock.patch("backend.shared.ledger.record"):
             self.assertNotEqual(self.run_cli({"valid": False, "errors": ["bad"]}), 0)
         self.assertFalse(self.out.exists())
 
@@ -544,7 +544,7 @@ class TestPipelineContracts(unittest.TestCase):
                 mock.patch.object(
                     issue_generator, "IssueGeneratorGraph", side_effect=factory
                 ),
-                mock.patch("ledger.record"),
+                mock.patch("backend.shared.ledger.record"),
             ):
                 ok, state, text = pipe.stage_spec()
         self.assertTrue(ok, state)
@@ -675,7 +675,7 @@ class TestPipelineContracts(unittest.TestCase):
                     "run_coder",
                     return_value=("done", {}, [], 0, "ollama:test", "trace", True, 0),
                 ) as executor,
-                mock.patch("ledger.record"),
+                mock.patch("backend.shared.ledger.record"),
             ):
                 graph.implement_fn(
                     "task", "1. Fix [files: b.py]", root, ["scope failed"]

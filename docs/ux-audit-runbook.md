@@ -38,26 +38,26 @@ from `arii/portfolio`, and `boomtick.blog` is served from
 
 ## The flow (CLI)
 
-From the repo root (`python3` + `deep-agent/` on the path; `--file`
+From the repo root (`python3` with the repo root as `PYTHONPATH`; `--file`
 needs `gh` authed for the site repos):
 
 ```sh
 # Registry + dry crawl (no filing).
-python3 deep-agent/ux_audit.py sites
-python3 deep-agent/ux_audit.py audit arii.github.io --max-pages 10 \
+PYTHONPATH=. python3 deep-agent/ux_audit.py sites
+PYTHONPATH=. python3 deep-agent/ux_audit.py audit arii.github.io --max-pages 10 \
   --state-dir /tmp/ux-audit --out /tmp/ux-audit/report.json
 
 # Full one-tap equivalent: audit + file ONE issue.
-python3 deep-agent/ux_audit.py audit boomtick.blog --file \
+PYTHONPATH=. python3 deep-agent/ux_audit.py audit boomtick.blog --file \
   --state-dir /tmp/ux-audit
 
 # Assign payloads from the latest report.
-python3 deep-agent/ux_audit.py groups boomtick.blog \
+PYTHONPATH=. python3 deep-agent/ux_audit.py groups boomtick.blog \
   --state-dir /tmp/ux-audit
 
 # Model-refined rerun (venv + Ollama/Nebius; deterministic
 # findings stay, the model only adds + re-scores n/a heuristics).
-deep-agent/.venv/bin/python deep-agent/ux_audit.py audit arii.github.io \
+PYTHONPATH=. deep-agent/.venv/bin/python deep-agent/ux_audit.py audit arii.github.io \
   --model --file
 ```
 

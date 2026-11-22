@@ -23,7 +23,7 @@ def client_kwargs(*, asynchronous=False, hook=None, uds=None):
 
 def openai_clients():
     import httpx
-    import twt_receipts
+    from backend.shared import twt_receipts
 
     return {
         "http_client": httpx.Client(**client_kwargs(hook=twt_receipts.capture)),

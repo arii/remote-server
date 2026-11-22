@@ -18,29 +18,29 @@ No Gemini key is needed at any step.
 
 ## The pass (CLI)
 
-From the repo root (`python3` + `deep-agent/` on the path; the
+From the repo root (`python3` with the repo root as `PYTHONPATH`; the
 `ask` step needs `deep-agent/.venv`):
 
 ```sh
 # 1. Capture base (on the base ref).
-python3 deep-agent/impact.py capture /srv/repos/<name> --route / --desktop
-python3 deep-agent/impact.py snapshot /srv/repos/<name> base
+PYTHONPATH=. python3 deep-agent/impact.py capture /srv/repos/<name> --route / --desktop
+PYTHONPATH=. python3 deep-agent/impact.py snapshot /srv/repos/<name> base
 
 # 2. Deploy / check out the head, capture again.
-python3 deep-agent/impact.py capture /srv/repos/<name> --route / --desktop
-python3 deep-agent/impact.py snapshot /srv/repos/<name> head
+PYTHONPATH=. python3 deep-agent/impact.py capture /srv/repos/<name> --route / --desktop
+PYTHONPATH=. python3 deep-agent/impact.py snapshot /srv/repos/<name> head
 
 # 3. Diff: severity-ranked findings + evidence refs.
-python3 deep-agent/impact.py diff \
+PYTHONPATH=. python3 deep-agent/impact.py diff \
   /srv/repos/<name>/artifacts/ux-impact/base \
   /srv/repos/<name>/artifacts/ux-impact/head > /tmp/impact.json
 
 # 4. Question the diff (local model, cropped regions only).
-deep-agent/.venv/bin/python deep-agent/impact.py ask \
+PYTHONPATH=. deep-agent/.venv/bin/python deep-agent/impact.py ask \
   "what visually changed between base and head?" /tmp/impact.json
 
 # 5. Lighthouse side-read (when the capture ran it).
-python3 deep-agent/impact.py lighthouse \
+PYTHONPATH=. python3 deep-agent/impact.py lighthouse \
   /srv/repos/<name>/artifacts/ux-impact/head
 ```
 

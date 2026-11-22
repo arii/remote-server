@@ -10,9 +10,9 @@ from unittest import mock
 
 import auditor
 import coder
-import ledger
+from backend.shared import ledger
 import pipeline
-import s5tools
+from backend.shared import s5tools
 
 
 class TestVerificationIsolation(unittest.TestCase):
@@ -49,7 +49,8 @@ class TestVerificationIsolation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             Path(root, "tests").mkdir()
             Path(root, "tests/test_emit.py").write_text(
-                "import ledger, os, time\n"
+                "from backend.shared import ledger\n"
+                "import os, time\n"
                 "ledger.record('child', 'unrated', 'child', [], time.time())\n"
                 "print(os.environ['EVAL_LEDGER'])\n"
             )
@@ -58,7 +59,7 @@ class TestVerificationIsolation(unittest.TestCase):
             env = {
                 "EVAL_LEDGER": str(live),
                 "DEEP_AGENT_STATE_DIR": root,
-                "PYTHONPATH": str(Path(ledger.__file__).parent),
+                "PYTHONPATH": os.getcwd(),
             }
             with mock.patch.dict(os.environ, env):
                 for runner in runners:

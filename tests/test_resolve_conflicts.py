@@ -94,7 +94,7 @@ finally:
         else:
             sys.modules.pop(_key, None)
 
-import ledger  # noqa: E402 -- after stub dance: stubs must install first
+from backend.shared import ledger  # noqa: E402 -- after stub dance: stubs must install first
 import observe  # noqa: E402 -- after stub dance: stubs must install first
 
 

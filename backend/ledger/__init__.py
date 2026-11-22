@@ -16,6 +16,8 @@ import os
 import threading
 import time
 
+from backend.shared.cli import repo_root
+
 DEFAULT_LEDGER_PATH = "/var/lib/buttons/ledger.jsonl"
 LEDGER_MAX_BYTES = 2_000_000
 LEDGER_PRUNE_LINES = 2000
@@ -139,9 +141,9 @@ def _ts_sort_key(entry: dict) -> tuple:
 
 
 def cli_ledger_path() -> str:
-    """CLI-ledger path, mirroring deep-agent/ledger.py's resolution
+    """CLI-ledger path, mirroring backend/shared/ledger.py's resolution
     (EVAL_LEDGER > DEEP_AGENT_STATE_DIR > module-adjacent default).
-    Root via deep-agent/cli.py's repo_root (pinned to ledger.py's
+    Root via backend/shared/cli.py's repo_root (pinned to ledger.py's
     state_dir by test_cli_path_parity_with_deep_agent)."""
     direct = os.environ.get("EVAL_LEDGER")
     if direct:
@@ -149,10 +151,6 @@ def cli_ledger_path() -> str:
     state = os.environ.get("DEEP_AGENT_STATE_DIR")
     if state:
         return os.path.join(state, "ledger.jsonl")
-    # Local import: deep-agent/ is not on sys.path in every consumer
-    # (cutoff drill job env, #1220), so keep module import light.
-    from cli import repo_root
-
     return os.path.join(repo_root(), "deep-agent", "ledger.jsonl")
 
 

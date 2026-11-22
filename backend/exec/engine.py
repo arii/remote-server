@@ -679,6 +679,15 @@ def _is_python_m_step(step):
     return step[:1] == [sys.executable] and "-m" in step
 
 
+def _is_deep_agent_script_step(step):
+    """True for ``<python> <deep-agent script> ...`` steps.
+
+    Those scripts import ``backend.shared``, so the child needs the
+    repo root (ENGINE_ROOT) on PYTHONPATH.
+    """
+    return len(step) > 1 and step[1].startswith(deep_agent_dir() + os.sep)
+
+
 def step_env(steps):
     """Extra child env for steps that run ``python -m ...``.
 
@@ -687,7 +696,7 @@ def step_env(steps):
     ever bypassed.
     """
     for step in steps:
-        if _is_python_m_step(step):
+        if _is_python_m_step(step) or _is_deep_agent_script_step(step):
             base = os.environ.get("PYTHONPATH", "")
             path = ENGINE_ROOT + (os.pathsep + base if base else "")
             return {"PYTHONPATH": path}

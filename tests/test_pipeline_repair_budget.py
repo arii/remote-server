@@ -120,7 +120,7 @@ class TestRepairBudget(unittest.TestCase):
                     "run_coder",
                     return_value=("DONE", {}, [], 0, "ollama:test", "trace", True, 0),
                 ) as executor,
-                mock.patch("ledger.record"),
+                mock.patch("backend.shared.ledger.record"),
             ):
                 graph.implement_fn("task", "plan", root, [])
             self.assertIn(notes, executor.call_args.args[1])
@@ -138,7 +138,7 @@ class TestRepairBudget(unittest.TestCase):
             gate_errors = ["scope violation: outside.py"]
             with (
                 mock.patch.object(coder, "run_coder", side_effect=empty),
-                mock.patch("ledger.record"),
+                mock.patch("backend.shared.ledger.record"),
             ):
                 with self.assertRaises(RuntimeError) as repaired:
                     graph.implement_fn("task", "plan", root, gate_errors)

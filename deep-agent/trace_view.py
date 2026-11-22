@@ -1,7 +1,8 @@
 """Render a deep-agent run trace as HTML timeline or phone text.
 
 Input: a trace JSONL file (observe.py shapes) or a run_id / thread
-resolvable via runs.py. Stdlib-only: works under system python3.
+resolvable via backend/shared/runs.py. Stdlib-only: works under system python3
+(run from the repo root with PYTHONPATH=. so backend.shared imports).
 
 Usage:
   python3 trace_view.py <tracefile|run-id> [--html out.html] [--text]
@@ -22,11 +23,8 @@ import json
 import os
 import sys
 
-import cli
-
-cli.bootstrap()
-
-import runs  # noqa: E402
+from backend.shared import cli
+from backend.shared import runs
 
 TEXT_WIDTH = 72
 TRUNC = "…"
@@ -35,7 +33,7 @@ TRUNC = "…"
 def _cap(text, width):
     text = str(text).replace("\n", " ").replace("\r", " ")
     if len(text) > width:
-        return text[:max(0, width - 1)] + TRUNC
+        return text[: max(0, width - 1)] + TRUNC
     return text
 
 
@@ -52,8 +50,7 @@ def parse_trace(path):
             except ValueError:
                 malformed += 1
                 continue
-            if not isinstance(obj, dict) or not isinstance(
-                    obj.get("type"), str):
+            if not isinstance(obj, dict) or not isinstance(obj.get("type"), str):
                 malformed += 1
                 continue
             events.append(obj)
@@ -62,10 +59,17 @@ def parse_trace(path):
 
 def summarize(events):
     """Aggregate stats over parsed events. Never raises."""
-    stats = {"n_events": len(events), "models": 0,
-             "tools_ok": 0, "tools_err": 0,
-             "in_tokens": 0, "out_tokens": 0, "tot_tokens": 0,
-             "duration_s": None, "run_ok": None}
+    stats = {
+        "n_events": len(events),
+        "models": 0,
+        "tools_ok": 0,
+        "tools_err": 0,
+        "in_tokens": 0,
+        "out_tokens": 0,
+        "tot_tokens": 0,
+        "duration_s": None,
+        "run_ok": None,
+    }
     try:
         for e in events:
             t = e.get("type")
@@ -86,8 +90,7 @@ def summarize(events):
                 stats["duration_s"] = e.get("duration_s")
                 stats["run_ok"] = e.get("ok")
         if stats["duration_s"] is None:
-            ts = [e.get("ts") for e in events
-                  if isinstance(e.get("ts"), (int, float))]
+            ts = [e.get("ts") for e in events if isinstance(e.get("ts"), (int, float))]
             if len(ts) >= 2:
                 stats["duration_s"] = round(max(ts) - min(ts), 3)
     except (TypeError, ValueError, AttributeError):
@@ -104,53 +107,59 @@ def _offset(e, t0):
 
 def render_text(events, malformed, label):
     """One line per event, every line <= TEXT_WIDTH chars."""
-    t0 = next((e.get("ts") for e in events
-               if isinstance(e.get("ts"), (int, float))), None)
-    lines = [_cap(f"trace {label} ({len(events)} events)",
-                TEXT_WIDTH)]
+    t0 = next(
+        (e.get("ts") for e in events if isinstance(e.get("ts"), (int, float))), None
+    )
+    lines = [_cap(f"trace {label} ({len(events)} events)", TEXT_WIDTH)]
     for e in events:
         t = e.get("type")
         off = _offset(e, t0)
         if t == "run_start":
-            line = (f"{off} START {e.get('script', '?')} "
-                    f"thread={e.get('thread', '?')} "
-                    f"model={e.get('model', '?')}")
+            line = (
+                f"{off} START {e.get('script', '?')} "
+                f"thread={e.get('thread', '?')} "
+                f"model={e.get('model', '?')}"
+            )
         elif t == "model_request":
             line = f"{off} LLM req n_msgs={e.get('n_messages', '?')}"
         elif t == "model_response":
             u = e.get("usage") or {}
             if not isinstance(u, dict):
                 u = {}
-            line = (f"{off} LLM resp in={u.get('input_tokens', 0)} "
-                    f"out={u.get('output_tokens', 0)} "
-                    f"tot={u.get('total_tokens', 0)}")
+            line = (
+                f"{off} LLM resp in={u.get('input_tokens', 0)} "
+                f"out={u.get('output_tokens', 0)} "
+                f"tot={u.get('total_tokens', 0)}"
+            )
         elif t == "tool_call":
             dur = e.get("duration_s", "?")
             mark = "ok" if e.get("ok") else "ERR"
             args = _cap(e.get("args_preview", ""), 28)
             if e.get("ok"):
                 res = _cap(e.get("result_preview", ""), 28)
-                line = (f"{off} {mark} {e.get('name', '?')} {dur}s "
-                        f"{args} -> {res}")
+                line = f"{off} {mark} {e.get('name', '?')} {dur}s {args} -> {res}"
             else:
                 err = _cap(e.get("error", ""), 30)
-                line = (f"{off} {mark} {e.get('name', '?')} {dur}s "
-                        f"err={err}")
+                line = f"{off} {mark} {e.get('name', '?')} {dur}s err={err}"
         elif t == "run_end":
-            line = (f"{off} END ok={e.get('ok')} "
-                    f"dur={e.get('duration_s', '?')}s")
+            line = f"{off} END ok={e.get('ok')} dur={e.get('duration_s', '?')}s"
         else:
             line = f"{off} ? {t}"
         lines.append(_cap(line, TEXT_WIDTH))
     s = summarize(events)
-    lines.append(_cap(
-        f"tokens in={s['in_tokens']} out={s['out_tokens']} "
-        f"tot={s['tot_tokens']} | tools "
-        f"ok={s['tools_ok']} err={s['tools_err']} | "
-        f"dur={s['duration_s']}s", TEXT_WIDTH))
+    lines.append(
+        _cap(
+            f"tokens in={s['in_tokens']} out={s['out_tokens']} "
+            f"tot={s['tot_tokens']} | tools "
+            f"ok={s['tools_ok']} err={s['tools_err']} | "
+            f"dur={s['duration_s']}s",
+            TEXT_WIDTH,
+        )
+    )
     if malformed:
-        lines.append(f"skipped {malformed} malformed "
-                     f"line{'s' if malformed != 1 else ''}")
+        lines.append(
+            f"skipped {malformed} malformed line{'s' if malformed != 1 else ''}"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -196,8 +205,9 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#fff;
 def _iso(ts):
     if isinstance(ts, (int, float)):
         try:
-            return datetime.datetime.fromtimestamp(
-                ts, datetime.timezone.utc).strftime("%H:%M:%S")
+            return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime(
+                "%H:%M:%S"
+            )
         except (OverflowError, OSError, ValueError):
             return "?"
     return "?"
@@ -206,8 +216,9 @@ def _iso(ts):
 def render_html(events, malformed, label):
     """Single-file HTML timeline: inline CSS, zero JS."""
     s = summarize(events)
-    t0 = next((e.get("ts") for e in events
-               if isinstance(e.get("ts"), (int, float))), None)
+    t0 = next(
+        (e.get("ts") for e in events if isinstance(e.get("ts"), (int, float))), None
+    )
     items = []
     for e in events:
         t = e.get("type")
@@ -215,9 +226,11 @@ def render_html(events, malformed, label):
         when = _iso(e.get("ts"))
         if t == "run_start":
             cls, badge = "bound", "START"
-            body = (f"<span class='name'>{html.escape(str(e.get('script', '?')))}"
-                    f"</span> thread={html.escape(str(e.get('thread', '?')))} "
-                    f"model={html.escape(str(e.get('model', '?')))}")
+            body = (
+                f"<span class='name'>{html.escape(str(e.get('script', '?')))}"
+                f"</span> thread={html.escape(str(e.get('thread', '?')))} "
+                f"model={html.escape(str(e.get('model', '?')))}"
+            )
         elif t == "model_request":
             cls, badge = "model", "LLM req"
             body = f"n_msgs={html.escape(str(e.get('n_messages', '?')))}"
@@ -226,22 +239,28 @@ def render_html(events, malformed, label):
             if not isinstance(u, dict):
                 u = {}
             cls, badge = "model", "LLM resp"
-            body = (f"in={html.escape(str(u.get('input_tokens', 0)))} "
-                    f"out={html.escape(str(u.get('output_tokens', 0)))} "
-                    f"tot={html.escape(str(u.get('total_tokens', 0)))}")
+            body = (
+                f"in={html.escape(str(u.get('input_tokens', 0)))} "
+                f"out={html.escape(str(u.get('output_tokens', 0)))} "
+                f"tot={html.escape(str(u.get('total_tokens', 0)))}"
+            )
         elif t == "tool_call":
             ok = bool(e.get("ok"))
             cls = "tool-ok" if ok else "tool-err"
             badge = "ok" if ok else "ERR"
             det = _preview_block(e, ok)
-            body = (f"<span class='name'>{html.escape(str(e.get('name', '?')))}"
-                    f"</span> <span class='dur'>"
-                    f"{html.escape(str(e.get('duration_s', '?')))}s"
-                    f"</span>{det}")
+            body = (
+                f"<span class='name'>{html.escape(str(e.get('name', '?')))}"
+                f"</span> <span class='dur'>"
+                f"{html.escape(str(e.get('duration_s', '?')))}s"
+                f"</span>{det}"
+            )
         elif t == "run_end":
             cls, badge = "bound", "END"
-            body = (f"ok={html.escape(str(e.get('ok')))} "
-                    f"dur={html.escape(str(e.get('duration_s', '?')))}s")
+            body = (
+                f"ok={html.escape(str(e.get('ok')))} "
+                f"dur={html.escape(str(e.get('duration_s', '?')))}s"
+            )
         else:
             cls, badge = "", "?"
             body = html.escape(str(t))
@@ -249,24 +268,22 @@ def render_html(events, malformed, label):
             f"<li class='{cls}'><div class='row1'>"
             f"<span class='t'>{off} ({when})</span>"
             f"<span class='badge'>{badge}</span><span>{body}</span>"
-            f"</div></li>")
+            f"</div></li>"
+        )
     chips = [
         f"{s['n_events']} events",
         f"dur={s['duration_s']}s",
-        f"tok in={s['in_tokens']} out={s['out_tokens']} "
-        f"tot={s['tot_tokens']}",
+        f"tok in={s['in_tokens']} out={s['out_tokens']} tot={s['tot_tokens']}",
         f"models={s['models']}",
         f"tools ok={s['tools_ok']} err={s['tools_err']}",
     ]
-    chips_html = "".join(f"<span class='chip'>{html.escape(c)}</span>"
-                         for c in chips)
+    chips_html = "".join(f"<span class='chip'>{html.escape(c)}</span>" for c in chips)
     if s["tools_err"]:
         chips_html += "<span class='chip bad'>has errors</span>"
     skip = ""
     if malformed:
         plural = "s" if malformed != 1 else ""
-        skip = (f"<div class='skip'>skipped {malformed} malformed "
-                f"line{plural}</div>")
+        skip = f"<div class='skip'>skipped {malformed} malformed line{plural}</div>"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -293,22 +310,22 @@ def _preview_block(e, ok):
     args = _cap(e.get("args_preview", ""), 2000)
     if ok:
         res = _cap(e.get("result_preview", ""), 2000)
-        inner = (f"args: {html.escape(args)}\n"
-                 f"result: {html.escape(res)}")
+        inner = f"args: {html.escape(args)}\nresult: {html.escape(res)}"
     else:
-        inner = (f"args: {html.escape(args)}\n"
-                 f"error: {html.escape(str(e.get('error', ''))[:500])}")
+        inner = (
+            f"args: {html.escape(args)}\n"
+            f"error: {html.escape(str(e.get('error', ''))[:500])}"
+        )
     return f"<details><summary>detail</summary><pre>{inner}</pre></details>"
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Render a deep-agent run trace.")
+    parser = argparse.ArgumentParser(description="Render a deep-agent run trace.")
     parser.add_argument("ref", help="trace JSONL file, run_id, or thread")
-    parser.add_argument("--html", metavar="OUT",
-                        help="write self-contained HTML timeline to OUT")
-    parser.add_argument("--text", action="store_true",
-                        help="print plain-text summary")
+    parser.add_argument(
+        "--html", metavar="OUT", help="write self-contained HTML timeline to OUT"
+    )
+    parser.add_argument("--text", action="store_true", help="print plain-text summary")
     args = parser.parse_args(argv)
     path = runs.resolve_run(args.ref)
     if path is None or not os.path.isfile(path):
@@ -321,7 +338,7 @@ def main(argv=None) -> int:
         return cli.sorry(f"Sorry, cannot read trace {path}: {exc}.")
     label = os.path.basename(path)
     if label.endswith(".jsonl"):
-        label = label[:-len(".jsonl")]
+        label = label[: -len(".jsonl")]
     if args.html:
         try:
             with open(args.html, "w", encoding="utf-8") as f:
