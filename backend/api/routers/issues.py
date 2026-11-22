@@ -549,6 +549,14 @@ def _schedule_tick_loop() -> None:
             fire_due_action_schedules()
         except Exception as exc:
             logger.warning("schedule tick: fire_due_action_schedules failed: %s", exc)
+        # Fifth job on the shared tick (#1514): container restart
+        # counts become History rows and feed the attention queue.
+        try:
+            from backend.core.container_restarts import record_container_restarts
+
+            record_container_restarts()
+        except Exception as exc:
+            logger.warning("schedule tick: record_container_restarts failed: %s", exc)
 
 
 def _ensure_schedule_ticker() -> None:

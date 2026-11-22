@@ -441,6 +441,14 @@ def _schedule_failure_detail(sched: dict) -> str:
     return f"{kind} Last error: {err}. Schedule is {state}; nothing was auto-paused."
 
 
+def list_container_restart_loops() -> list:
+    """Injectable seam: stack containers that restarted at least
+    three times in the last hour (#1514). Read only."""
+    from backend.core import container_restarts
+
+    return container_restarts.list_loops()
+
+
 def orphan_repo_names(known) -> list:
     """Repo names with failing schedules or failed runs that are not
     a discovered checkout. The per-repo fan-out never queries them,
@@ -614,6 +622,37 @@ def _assemble_items(name: str, now: float) -> list[dict]:
                     "intent": "",
                 },
                 "created_at": float(res.get("at", now) or now),
+            }
+        )
+    # Docker restarts a crashing container silently; the fix is on
+    # the host, so the only action is reading the container's logs.
+    try:
+        loops = list_container_restart_loops()
+    except Exception as exc:
+        logger.warning("attention: container restart read failed: %s", exc)
+        loops = []
+    for loop in loops:
+        items.append(
+            {
+                "id": f"container-restarts-{loop['name']}",
+                "kind": "container-restart-loop",
+                "title": f"{loop['name']} keeps restarting",
+                "detail": (
+                    f"{loop['name']} restarted {loop['restarts']} times in "
+                    "the last hour. Docker restarts it automatically, so "
+                    "nothing was changed. The cause is on the host or in "
+                    "the container's logs."
+                ),
+                "repo": name,
+                "severity": "warn",
+                "action": {
+                    "label": "View logs",
+                    "method": "GET",
+                    "href": f"api/system/containers/{loop['service']}/logs",
+                    "destructive": False,
+                    "intent": "",
+                },
+                "created_at": float(loop["since"]),
             }
         )
     # One row per terminal dispatch (done info, failed warn): the
