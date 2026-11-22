@@ -28,9 +28,12 @@ Nothing here has been deleted. Any removal from `main` happens only after the ex
 - **Archived at:** [`archive/pre-cleanup`](https://github.com/arii/remote-server/tree/archive/pre-cleanup) ([`7f3a2cc`](https://github.com/arii/remote-server/commit/7f3a2cc9db42156a9549145839ff99819cacce78)).
 - **Depends on:** idea 11.
 
-## Marked "Don't want" (for the record)
+## 9. LocalForm AI (`chrome-extension/`): Want
 
-These are not ideas to revisit. They are candidates for removal, subject to PR review.
+- **What:** the LocalForm AI form export/import extension. It is the hybrid AI form and job-application filling workflow.
+- **Decision:** keep in `main` and build on it. Not a removal candidate.
 
-- **9. LocalForm AI form export/import extension (`chrome-extension/`):** a standalone, on-device Chrome extension unrelated to S5 host operations. Extract it to its own repository or archive it.
-- **10. Google Docs access spike (`gdocs-access/`):** an unfinished spike with a hardcoded personal doc ID. Archive it and remove it from `main`.
+## 10. Google Docs access (`gdocs-access/`): Reconfigure
+
+- **What:** a Google Docs access spike that currently hardcodes a personal doc ID.
+- **Decision:** keep. Replace the hardcoded doc ID with proper config and OAuth, then use it for the agent ledger and webhook plans. Not a removal candidate.
