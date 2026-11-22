@@ -5,7 +5,7 @@ lock-up offline: no unit test proves the zero-token lock-up is gone.
 This script is that proof — run it on the box, against the real
 Ollama service, before the rebuild PRs merge:
 
-    deep-agent/.venv/bin/python deep-agent/live_turn_smoke.py owner/repo
+    PYTHONPATH=. deep-agent/.venv/bin/python deep-agent/live_turn_smoke.py owner/repo
 
 What it asserts (exit 0 = pass, 1 = fail, 2 = usage):
   1. the turn stays on the local model (prefer=ollama);

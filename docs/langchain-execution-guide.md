@@ -11,7 +11,7 @@ what, why, status) alongside this file (how, gates, verification).
 - Terminal dispatch uses `/opt/venvs/td/bin/python`. The terminal image
   installs `terminal/requirements.txt`, which includes the canonical
   `deep-agent/requirements.txt` pins. Dispatch the coder with
-  `/opt/venvs/td/bin/python deep-agent/coder.py ...` from the worktree.
+  `PYTHONPATH=<repo root> /opt/venvs/td/bin/python deep-agent/coder.py ...` from the worktree.
   When requirements change, use the updated terminal image before dispatch;
   dispatch performs no package installs. Image build and publication run in
   `.github/workflows/ci.yml`.
