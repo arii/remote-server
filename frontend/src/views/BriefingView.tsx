@@ -876,7 +876,7 @@ export function PlanStepsView({ steps, limit = 20 }: { steps: PlanStep[]; limit?
   );
 }
 
-function PlanRow({
+export function PlanRow({
   repo,
   plan,
   onAskAgent,
@@ -920,6 +920,9 @@ function PlanRow({
         >
           Execute
         </button>
+        <span className="row-meta" data-testid="briefing-plan-execute-hint">
+          Fills the Now prompt. Nothing runs until you send it.
+        </span>
       </div>
       <details
         onToggle={(e) => {

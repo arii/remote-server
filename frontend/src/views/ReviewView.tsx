@@ -1039,6 +1039,11 @@ export function IssueRowLabels({
   );
 }
 
+// Wording for the More menu (#1491 finding 18): Repair, Feedback and
+// Rebase only seed the Now prompt; the user still sends it.
+export const ISSUE_AGENT_ACTIONS_HINT =
+  'Repair, Feedback and Rebase fill the Now prompt. Nothing runs until you send it.';
+
 // Issue row actions (issue #1468): Open stays one-tap primary;
 // secondary actions (Defer, Repair, Feedback, Rebase) consolidate into
 // a 44px overflow menu so row actions don't crowd mobile viewports.
@@ -1063,6 +1068,9 @@ export function IssueRowActions({
       <details className="row-overflow" data-testid={`issue-more-${iss.number}`}>
         <summary aria-label={`More actions for issue #${iss.number}`}>More</summary>
         <div className="actions">
+          <p className="row-meta" data-testid={`issue-more-hint-${iss.number}`}>
+            {ISSUE_AGENT_ACTIONS_HINT}
+          </p>
           <RowActionButton action="Defer" kind="issue" num={iss.number} testid={`defer-issue-${iss.number}`} onClick={onDefer} />
           <button
             type="button"
@@ -2304,7 +2312,7 @@ export default function ReviewView({
                 aria-pressed={issueTab === t.id}
                 onClick={() => setIssueTab(t.id)}
               >
-                {t.label} ({issueTabCounts.filter((i) => issueInTab(i, t.id)).length})
+                {issues ? `${t.label} (${issueTabCounts.filter((i) => issueInTab(i, t.id)).length})` : t.label}
               </button>
             ))}
             <span className="row-meta" data-testid="issue-triage-hint">
