@@ -21,7 +21,7 @@ from backend.shared import cli
 import retrieval
 
 DEEP_AGENT = os.path.dirname(os.path.abspath(retrieval.__file__))
-SHARED = os.path.join(os.path.dirname(DEEP_AGENT), "backend", "shared")
+SHARED = os.path.join("backend", "shared")
 FORBIDDEN = "/srv/remote-server"
 # s5tools.CHECKOUTS is a repo->path mapping default, explicitly out of
 # scope for #540 (Non-Goals); every other deep-agent module must be

@@ -8,7 +8,7 @@ No Pi data, no backwards compat. Stdlib-only (system-python tests).
 Ids are `run-<ledger-line-number>`; the ledger is append-only so ids
 are stable. Corrupt lines are skipped, never fatal.
 
-Reader CLI: `python3 runs.py [n|ref]`
+Reader CLI: `python3 -m backend.shared.runs [n|ref]`
   no arg  -> last 10 ledger runs, compact, newest first.
   integer -> last n ledger runs.
   other   -> resolve one run id / path / stem / thread and print

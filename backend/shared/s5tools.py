@@ -7,7 +7,7 @@ cannot escape their checkout.
 
 New slices: import these instead of re-implementing gh/td/file access.
 Do NOT import langchain here (keeps system-python tests working).
-Do NOT put secrets in here; the model router (`model_router.py`) and the
+Do NOT put secrets in here; the model router (`model_router.py`, same package) and the
 ledger (`ledger.py`) own their own concerns.
 """
 

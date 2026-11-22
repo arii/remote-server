@@ -40,7 +40,7 @@ curl -s -m 120 -X POST http://ollama:11434/api/generate \
   -d '{"model":"qwen3:8b","prompt":"ok","stream":false}' 2>/dev/null | grep -q '"response"'
 report "$?" "ollama generate returns a response"
 
-python3 -c "import sys; sys.path.insert(0, 'deep-agent'); from model_router import resolve_llm; print(resolve_llm(prefer='nebius'))" >/dev/null 2>&1
+python3 -c "from backend.shared.model_router import resolve_llm; print(resolve_llm(prefer='nebius'))" >/dev/null 2>&1
 report "$?" "nebius fallback resolves via resolve_llm(prefer=nebius)"
 
 echo "---"

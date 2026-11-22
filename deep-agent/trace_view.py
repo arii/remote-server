@@ -1,7 +1,8 @@
 """Render a deep-agent run trace as HTML timeline or phone text.
 
 Input: a trace JSONL file (observe.py shapes) or a run_id / thread
-resolvable via runs.py. Stdlib-only: works under system python3.
+resolvable via backend/shared/runs.py. Stdlib-only: works under system python3
+(run from the repo root with PYTHONPATH=. so backend.shared imports).
 
 Usage:
   python3 trace_view.py <tracefile|run-id> [--html out.html] [--text]
@@ -23,10 +24,7 @@ import os
 import sys
 
 from backend.shared import cli
-
-cli.bootstrap()
-
-from backend.shared import runs  # noqa: E402
+from backend.shared import runs
 
 TEXT_WIDTH = 72
 TRUNC = "…"

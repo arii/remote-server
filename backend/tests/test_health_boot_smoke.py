@@ -1,9 +1,11 @@
 """Boot smoke test (#1508): uvicorn serves backend.server:app and /health is ok.
 
-Runs the same module path as the image entrypoint with the same
-PYTHONPATH contract as the Dockerfile (repo root + deep-agent/, which
-backend imports directly: runs, pricing, model_router, s5tools). The
-server runs in a subprocess on a free port and is always terminated.
+Runs the same module path as the image entrypoint with only the repo
+root on PYTHONPATH: the backend must boot without deep-agent/ (the
+modules it imports live in backend/shared). The Dockerfile's wider
+PYTHONPATH (root + deep-agent/) is a superset, so it needs no separate
+case. The server runs in a subprocess on a free port and is always
+terminated.
 """
 
 import json
@@ -31,9 +33,7 @@ class HealthBootSmokeTest(unittest.TestCase):
     def test_uvicorn_boots_and_health_is_ok(self):
         port = _free_port()
         env = dict(os.environ)
-        env["PYTHONPATH"] = os.pathsep.join(
-            [REPO_ROOT, os.path.join(REPO_ROOT, "deep-agent")]
-        )
+        env["PYTHONPATH"] = REPO_ROOT
         proc = subprocess.Popen(
             [
                 sys.executable,
