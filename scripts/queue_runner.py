@@ -496,6 +496,90 @@ def worker_command(config, mode, directory):
     ]
 
 
+def reconcile_job(config, source, directory, runtime_directory):
+    recovery = directory / "recovery.json"
+    recovery.unlink(missing_ok=True)
+    with (directory / "recovery.log").open("a") as log:
+        process = subprocess.Popen(
+            worker_command(config, "--reconcile", runtime_directory),
+            stdin=subprocess.PIPE,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        process.communicate(source)
+    if process.returncode != 0 or read_json(recovery).get("reconciled") is not True:
+        raise SafetyStop("startup receipt reconciliation failed")
+    return read_json(recovery)
+
+
+def retry_issue(config_path, key):
+    repo, number = key.rsplit("#", 1)
+    issue = {"repo": repo, "number": int(number)}
+    ordered_issues([issue])
+    config = read_json(config_path)
+    cap = checked_cap(config.get("cap_usd", 0.5))
+    issues = read_json(config["issues_file"])
+    matches = [i for i in issues if (i["repo"], i["number"]) == (repo, issue["number"])]
+    if len(matches) != 1 or skip_reason(matches[0]):
+        raise SafetyStop("retry requires one eligible issue in the manifest")
+    root = Path(config["state_dir"]).resolve()
+    name = repo.replace("/", "_") + "-" + str(issue["number"])
+    directory = root / name
+    with (root / "queue.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        status_path = root / "status.json"
+        status = read_json(status_path)
+        if status.get("current") or status.get("retry"):
+            raise SafetyStop("resolve the current or pending retry before retrying")
+        saved = read_json(directory / "job.json")["issue"]
+        if (saved["repo"], saved["number"]) != (repo, issue["number"]):
+            raise SafetyStop("retry issue differs from saved job")
+        summary = read_json(directory / "summary.json")
+        if (
+            key not in status.get("completed", [])
+            or type(summary.get("exit_code")) is not int
+            or summary["exit_code"] == 0
+            or summary.get("halt_queue") is not False
+        ):
+            raise SafetyStop(
+                "retry requires a finished failed run without a saved halt"
+            )
+        runtime = Path(config["runtime_state_dir"])
+        if not runtime.is_absolute():
+            raise ValueError("runtime_state_dir must be absolute")
+        recovery = reconcile_job(
+            config, Path(__file__).read_text(), directory, runtime / name
+        )
+        prior = status.get("retry_spend", {}).get(key, 0)
+        cost = recovery.get("cost_usd")
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+            for value in (prior, cost)
+        ):
+            raise SafetyStop("retry requires known nonnegative prior spend")
+        spent = prior + cost
+        if spent >= cap:
+            raise BudgetStop("issue budget exhausted; retry refused")
+        archive_root = root / "archive"
+        archive_root.mkdir(mode=0o700, exist_ok=True)
+        archive = archive_root / f"{name}-{time.time_ns()}"
+        directory.rename(archive)
+        status["completed"] = [item for item in status["completed"] if item != key]
+        status.get("skipped", {}).pop(key, None)
+        status.update(retry=key, done=False)
+        status.setdefault("retry_spend", {})[key] = spent
+        status.setdefault("retry_archives", []).append(
+            {"issue": key, "directory": str(archive), "cost_usd": cost}
+        )
+        write_json(status_path, status)
+        print(f"REQUEUED {key} archive={archive} prior_spend_usd={spent:.8f}")
+    return 0
+
+
 def supervise(config_path, *, clear_halt=False):
     config = read_json(config_path)
     cap = checked_cap(config.get("cap_usd", 0.5))
@@ -526,22 +610,7 @@ def supervise(config_path, *, clear_halt=False):
                 saved = read_json(directory / "job.json")["issue"]
                 if (saved["repo"], saved["number"]) != (repo, issue["number"]):
                     raise SafetyStop("current issue differs from saved job")
-                recovery = directory / "recovery.json"
-                recovery.unlink(missing_ok=True)
-                with (directory / "recovery.log").open("a") as log:
-                    process = subprocess.Popen(
-                        worker_command(config, "--reconcile", runtime_root / name),
-                        stdin=subprocess.PIPE,
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                    )
-                    process.communicate(source)
-                if (
-                    process.returncode != 0
-                    or read_json(recovery).get("reconciled") is not True
-                ):
-                    raise SafetyStop("startup receipt reconciliation failed")
+                recovery = reconcile_job(config, source, directory, runtime_root / name)
                 summary_path = directory / "summary.json"
                 summary = read_json(summary_path) if summary_path.exists() else {}
                 if summary.get("halt_queue") is True:
@@ -562,7 +631,7 @@ def supervise(config_path, *, clear_halt=False):
                     write_json(summary_path, summary)
                 if current not in status["completed"]:
                     status["completed"].append(current)
-                status.update(current=None, last_recovery=read_json(recovery))
+                status.update(current=None, last_recovery=recovery)
                 write_json(status_path, status)
             except Exception as error:
                 status.update(halted=True, reason=f"startup reconciliation: {error}")
@@ -584,7 +653,13 @@ def supervise(config_path, *, clear_halt=False):
 
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
-        for issue in ordered_issues(read_json(config["issues_file"])):
+        issues = ordered_issues(read_json(config["issues_file"]))
+        issues.sort(
+            key=lambda issue: (
+                f"{issue['repo']}#{issue['number']}" != status.get("retry")
+            )
+        )
+        for issue in issues:
             if stopping or (root / "STOP").exists():
                 status.update(stopped=True, current=None)
                 write_json(status_path, status)
@@ -595,6 +670,8 @@ def supervise(config_path, *, clear_halt=False):
             reason = skip_reason(issue)
             if reason:
                 status.setdefault("skipped", {})[key] = reason
+                if status.get("retry") == key:
+                    status.pop("retry")
                 write_json(status_path, status)
                 continue
             if issue["repo"] not in config["repo_paths"]:
@@ -608,6 +685,8 @@ def supervise(config_path, *, clear_halt=False):
             )
             if fresh["state"] != "open":
                 status["completed"].append(key)
+                if status.get("retry") == key:
+                    status.pop("retry")
                 write_json(status_path, status)
                 continue
             name = issue["repo"].replace("/", "_") + "-" + str(issue["number"])
@@ -629,13 +708,15 @@ def supervise(config_path, *, clear_halt=False):
                     "title": fresh["title"],
                     "body": fresh.get("body") or "",
                 },
-                "cap_usd": cap,
+                "cap_usd": checked_cap(cap - status.get("retry_spend", {}).get(key, 0)),
                 "checkout": config["repo_paths"][issue["repo"]],
                 "pipeline_checkout": config["pipeline_checkout"],
                 "environment": config.get("environment", {}),
             }
             write_json(directory / "job.json", job)
             status.update(current=key, started_at=time.time())
+            if status.get("retry") == key:
+                status.pop("retry")
             write_json(status_path, status)
             print("START " + key, flush=True)
             with (directory / "run.log").open("w") as log:
@@ -712,11 +793,22 @@ def main():
     group.add_argument("--worker", type=Path)
     group.add_argument("--reconcile", type=Path)
     parser.add_argument(
+        "--retry",
+        metavar="REPO#ISSUE",
+        help="archive a reconciled failed run and prioritize one retry; queue must be idle",
+    )
+    parser.add_argument(
         "--clear-halt",
         action="store_true",
         help="acknowledge saved halts after successful reconciliation and resume",
     )
     args = parser.parse_args()
+    if args.retry:
+        if args.worker or args.reconcile or args.clear_halt:
+            parser.error(
+                "--retry requires supervisor configuration without --clear-halt"
+            )
+        return retry_issue(args.config, args.retry)
     directory = args.worker or args.reconcile
     if directory:
         if args.clear_halt:

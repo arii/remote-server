@@ -160,6 +160,260 @@ class RunnerTests(unittest.TestCase):
         runner.write_json(root / "config.json", config)
         return root / "config.json", root / "state"
 
+    def failed_run(self, root):
+        config, state = self.fixture(root)
+        directory = state / "owner_repo-7"
+        directory.mkdir(parents=True)
+        runner.write_json(
+            directory / "job.json", {"issue": {"repo": "owner/repo", "number": 7}}
+        )
+        runner.write_json(
+            directory / "summary.json", {"exit_code": 1, "halt_queue": False}
+        )
+        (directory / "ledger.jsonl").write_text("original ledger evidence\n")
+        runner.write_json(
+            state / "status.json",
+            {"completed": ["owner/repo#7", "owner/repo#9"], "done": True},
+        )
+        return config, state, directory
+
+    def retry_process(self, directory, cost=0.1, reconciled=True):
+        process = mock.Mock(returncode=0 if reconciled else 2)
+        process.communicate.side_effect = lambda _: runner.write_json(
+            directory / "recovery.json",
+            {"reconciled": reconciled, "cost_usd": cost},
+        )
+        return process
+
+    def test_retry_archives_evidence_and_preserves_halts_stop_and_other_issues(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, state, directory = self.failed_run(root)
+            status = runner.read_json(state / "status.json")
+            status.update(halted=True, reason="operator hold")
+            runner.write_json(state / "status.json", status)
+            (state / "STOP").touch()
+            with mock.patch.object(
+                runner.subprocess,
+                "Popen",
+                return_value=self.retry_process(directory),
+            ) as spawn:
+                self.assertEqual(runner.retry_issue(config, "owner/repo#7"), 0)
+            self.assertIn("--reconcile", spawn.call_args.args[0])
+            self.assertFalse(directory.exists())
+            status = runner.read_json(state / "status.json")
+            archive = Path(status["retry_archives"][0]["directory"])
+            self.assertEqual(
+                (archive / "ledger.jsonl").read_text(), "original ledger evidence\n"
+            )
+            self.assertTrue((archive / "summary.json").exists())
+            self.assertTrue(runner.read_json(archive / "recovery.json")["reconciled"])
+            self.assertEqual(status["completed"], ["owner/repo#9"])
+            self.assertEqual(status["retry"], "owner/repo#7")
+            self.assertEqual(status["retry_spend"], {"owner/repo#7": 0.1})
+            self.assertFalse(status["done"])
+            self.assertTrue(status["halted"])
+            self.assertEqual(status["reason"], "operator hold")
+            self.assertTrue((state / "STOP").exists())
+            with self.assertRaises(runner.SafetyStop):
+                runner.retry_issue(config, "owner/repo#7")
+
+    def test_retry_refuses_active_supervisor(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, state, directory = self.failed_run(root)
+            with (state / "queue.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with mock.patch.object(runner.subprocess, "Popen") as spawn:
+                    with self.assertRaises(BlockingIOError):
+                        runner.retry_issue(config, "owner/repo#7")
+                    spawn.assert_not_called()
+            self.assertTrue(directory.exists())
+
+    def test_retry_rejects_missing_held_successful_or_unfinished_runs(self):
+        for case in ("missing", "held", "success", "unfinished", "halt", "identity"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as root:
+                config, state, directory = self.failed_run(root)
+                if case in ("missing", "held"):
+                    runner.write_json(
+                        Path(root) / "issues.json",
+                        []
+                        if case == "missing"
+                        else [
+                            {"repo": "owner/repo", "number": 7, "requires_human": True}
+                        ],
+                    )
+                elif case == "identity":
+                    runner.write_json(
+                        directory / "job.json",
+                        {"issue": {"repo": "foreign/repo", "number": 7}},
+                    )
+                elif case == "unfinished":
+                    runner.write_json(
+                        state / "status.json",
+                        {"current": "owner/repo#7", "completed": []},
+                    )
+                else:
+                    runner.write_json(
+                        directory / "summary.json",
+                        {
+                            "exit_code": 0 if case == "success" else 1,
+                            "halt_queue": case == "halt",
+                        },
+                    )
+                with mock.patch.object(runner.subprocess, "Popen") as spawn:
+                    with self.assertRaises(runner.SafetyStop):
+                        runner.retry_issue(config, "owner/repo#7")
+                    spawn.assert_not_called()
+                self.assertTrue(directory.exists())
+
+    def test_retry_failed_reconciliation_or_invalid_spend_never_archives(self):
+        for cost, reconciled in (
+            (0, False),
+            (None, True),
+            (-1, True),
+            (float("nan"), True),
+            (True, True),
+            (0.5, True),
+        ):
+            with (
+                self.subTest(cost=cost, reconciled=reconciled),
+                tempfile.TemporaryDirectory() as root,
+            ):
+                config, state, directory = self.failed_run(root)
+                before = runner.read_json(state / "status.json")
+                process = self.retry_process(directory, cost, reconciled)
+                if isinstance(cost, float) and not runner.math.isfinite(cost):
+                    process.communicate.side_effect = lambda _, directory=directory: (
+                        directory / "recovery.json"
+                    ).write_text('{"reconciled": true, "cost_usd": NaN}')
+                with (
+                    mock.patch.object(runner.subprocess, "Popen", return_value=process),
+                    self.assertRaises((runner.SafetyStop, runner.BudgetStop)),
+                ):
+                    runner.retry_issue(config, "owner/repo#7")
+                self.assertTrue(directory.exists())
+                self.assertEqual(runner.read_json(state / "status.json"), before)
+
+    @mock.patch.object(runner.signal, "signal")
+    @mock.patch.object(
+        runner.subprocess,
+        "check_output",
+        return_value=json.dumps({"state": "open", "title": "Fix", "body": "scope"}),
+    )
+    def test_retried_issue_dispatches_first_with_remaining_budget_once(
+        self, _read, _signal
+    ):
+        with tempfile.TemporaryDirectory() as root:
+            config, state, directory = self.failed_run(root)
+            runner.write_json(
+                Path(root) / "issues.json",
+                [
+                    {"repo": "owner/repo", "number": 8, "group": "code-reaper"},
+                    {"repo": "owner/repo", "number": 7},
+                ],
+            )
+            with mock.patch.object(
+                runner.subprocess, "Popen", return_value=self.retry_process(directory)
+            ):
+                runner.retry_issue(config, "owner/repo#7")
+            dispatched = []
+
+            def spawn(command, **_kwargs):
+                name = Path(command[-1]).name
+                dispatched.append(name)
+                job = runner.read_json(state / name / "job.json")
+                self.assertAlmostEqual(
+                    job["cap_usd"], 0.4 if name.endswith("-7") else 0.5
+                )
+                process = mock.Mock(returncode=0)
+                process.communicate.side_effect = lambda _: runner.write_json(
+                    state / name / "summary.json",
+                    {
+                        "halt_queue": False,
+                        "reconciliation": {"reconciled": True},
+                        "result": {"status": "DONE"},
+                        "exit_code": 0,
+                    },
+                )
+                return process
+
+            with mock.patch.object(runner.subprocess, "Popen", side_effect=spawn):
+                self.assertEqual(runner.supervise(config), 0)
+                self.assertEqual(runner.supervise(config), 0)
+            self.assertEqual(dispatched, ["owner_repo-7", "owner_repo-8"])
+            self.assertNotIn("retry", runner.read_json(state / "status.json"))
+
+    def test_retry_cli_and_worker_mode_conflicts(self):
+        with (
+            mock.patch(
+                "sys.argv",
+                [
+                    "queue_runner.py",
+                    "--config",
+                    "/config.json",
+                    "--retry",
+                    "owner/repo#7",
+                ],
+            ),
+            mock.patch.object(runner, "retry_issue", return_value=0) as retry,
+        ):
+            self.assertEqual(runner.main(), 0)
+            retry.assert_called_once_with(Path("/config.json"), "owner/repo#7")
+        with (
+            mock.patch(
+                "sys.argv",
+                ["queue_runner.py", "--worker", "/job", "--retry", "owner/repo#7"],
+            ),
+            self.assertRaises(SystemExit),
+        ):
+            runner.main()
+
+    def test_retry_empty_state_and_invalid_keys_do_not_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, _state = self.fixture(root)
+            with mock.patch.object(runner.subprocess, "Popen") as spawn:
+                for key in ("bad", "owner/repo#not-a-number", "../escape/repo#7"):
+                    with self.subTest(key=key), self.assertRaises(ValueError):
+                        runner.retry_issue(config, key)
+                with self.assertRaises(FileNotFoundError):
+                    runner.retry_issue(config, "owner/repo#7")
+                spawn.assert_not_called()
+
+    def test_retry_counts_all_previous_attempt_spend(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, state, directory = self.failed_run(root)
+            status = runner.read_json(state / "status.json")
+            status["retry_spend"] = {"owner/repo#7": 0.3}
+            runner.write_json(state / "status.json", status)
+            with (
+                mock.patch.object(
+                    runner.subprocess,
+                    "Popen",
+                    return_value=self.retry_process(directory, cost=0.2),
+                ),
+                self.assertRaises(runner.BudgetStop),
+            ):
+                runner.retry_issue(config, "owner/repo#7")
+            self.assertTrue(directory.exists())
+            self.assertEqual(runner.read_json(state / "status.json"), status)
+
+    @mock.patch.object(runner.signal, "signal")
+    @mock.patch.object(
+        runner.subprocess, "check_output", return_value=json.dumps({"state": "closed"})
+    )
+    def test_retry_of_now_closed_issue_clears_pending_without_dispatch(
+        self, _read, _signal
+    ):
+        with tempfile.TemporaryDirectory() as root:
+            config, state, directory = self.failed_run(root)
+            with mock.patch.object(
+                runner.subprocess, "Popen", return_value=self.retry_process(directory)
+            ):
+                runner.retry_issue(config, "owner/repo#7")
+            with mock.patch.object(runner.subprocess, "Popen") as spawn:
+                self.assertEqual(runner.supervise(config), 0)
+                spawn.assert_not_called()
+            self.assertNotIn("retry", runner.read_json(state / "status.json"))
+
     @mock.patch.object(runner.signal, "signal")
     @mock.patch.object(
         runner.subprocess, "check_output", return_value=json.dumps({"state": "closed"})
