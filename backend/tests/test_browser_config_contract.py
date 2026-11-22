@@ -10,7 +10,7 @@ import tempfile
 import textwrap
 import unittest
 
-from cli import repo_root
+from backend.shared.cli import repo_root
 
 
 ROOT = Path(repo_root()).resolve()

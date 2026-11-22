@@ -1,4 +1,4 @@
-"""deep-agent/cli.py helper tests + CLI contract pins for entrypoints.
+"""backend/shared/cli.py helper tests + CLI contract pins for entrypoints.
 
 Proves the cli.py rewire changed no behavior: exact stdout/stderr/exit
 codes for every argv-error and Sorry path, helper unit tests, and the
@@ -19,7 +19,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-import cli
+from backend.shared import cli
 import deep_chat
 import eval_ask
 import eval_chat
@@ -40,6 +40,24 @@ def b64(text):
     return base64.b64encode(text.encode()).decode()
 
 
+def run_module(name, *args):
+    return subprocess.run(
+        [sys.executable, "-m", f"backend.shared.{name}", *args],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def with_repo_root(env=None):
+    """Env whose PYTHONPATH leads with the repo root, as the Dockerfile
+    declares it: deep-agent scripts import backend.shared."""
+    env = dict(os.environ if env is None else env)
+    path = [os.getcwd(), *filter(None, [env.get("PYTHONPATH")])]
+    env["PYTHONPATH"] = os.pathsep.join(path)
+    return env
+
+
 def run_script(name, *args, env=None):
     script = os.path.join(DEEP_AGENT, name)
     return subprocess.run(
@@ -47,13 +65,13 @@ def run_script(name, *args, env=None):
         capture_output=True,
         text=True,
         timeout=120,
-        env=env,
+        env=with_repo_root(env),
     )
 
 
 class TestBootstrap(unittest.TestCase):
     def test_adds_own_dir_once(self):
-        want = os.path.dirname(os.path.abspath(cli.__file__))
+        want = os.path.abspath(DEEP_AGENT)
         # Full-suite isolation: other modules (e.g. build_index)
         # insert the same entry at import time depending on
         # listdir order, so start from a clean slate.
@@ -69,9 +87,10 @@ class TestBootstrap(unittest.TestCase):
         self.assertEqual(sys.path.count(want), 1)
 
     def test_own_dir_is_deep_agent(self):
-        want = os.path.dirname(os.path.abspath(cli.__file__))
-        self.assertTrue(os.path.isfile(os.path.join(want, "s5tools.py")))
-        self.assertTrue(os.path.isfile(os.path.join(want, "ledger.py")))
+        self.assertEqual(cli.deep_agent_dir(), os.path.abspath(DEEP_AGENT))
+        self.assertTrue(
+            os.path.isfile(os.path.join(cli.deep_agent_dir(), "pipeline.py"))
+        )
 
 
 class TestUsageError(unittest.TestCase):
@@ -154,6 +173,7 @@ class TestCliAgentSuggest(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=120,
+            env=with_repo_root(),
         )
         self.assertEqual(proc.returncode, 1)
         self.assertIn("Sorry, empty brief", proc.stdout)
@@ -161,7 +181,7 @@ class TestCliAgentSuggest(unittest.TestCase):
 
 class TestLedgerArgv(unittest.TestCase):
     def test_bad_n(self):
-        p = run_script("ledger.py", "abc")
+        p = run_module("ledger", "abc")
         self.assertEqual(p.returncode, 2)
         self.assertEqual(p.stderr, "n must be an integer\n")
         self.assertEqual(p.stdout, "")
@@ -169,7 +189,7 @@ class TestLedgerArgv(unittest.TestCase):
 
 class TestRunsArgv(unittest.TestCase):
     def test_unknown_ref_sorry(self):
-        p = run_script("runs.py", "definitely-no-such-run-xyz")
+        p = run_module("runs", "definitely-no-such-run-xyz")
         self.assertEqual(p.returncode, 1)
         self.assertEqual(
             p.stdout, "Sorry, no run found for 'definitely-no-such-run-xyz'.\n"

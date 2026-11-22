@@ -27,7 +27,7 @@ import json
 import sys
 import time
 
-import cli
+from backend.shared import cli
 
 cli.bootstrap()
 

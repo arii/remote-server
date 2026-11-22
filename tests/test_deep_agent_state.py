@@ -5,14 +5,15 @@ is the source dir (dev). Writer (ledger.record), reader (runs.list_runs),
 and trace paths (observe.default_trace_path) must agree.
 Run: python -m unittest tests.test_deep_agent_state
 """
+
 import importlib
 import os
 import tempfile
 import unittest
 
-import ledger
+from backend.shared import ledger
 import observe
-import runs
+from backend.shared import runs
 
 
 class StateDirTest(unittest.TestCase):
@@ -41,10 +42,10 @@ class StateDirTest(unittest.TestCase):
 
     def test_default_is_source_dir(self):
         led, rns, _ = self._reload({})
-        here = os.path.join(os.path.dirname(ledger.__file__))
-        self.assertEqual(led.state_dir(), os.path.abspath(here))
-        self.assertTrue(rns.LEDGER.startswith(os.path.abspath(here)))
-        self.assertTrue(rns.TRACES.startswith(os.path.abspath(here)))
+        here = os.path.abspath("deep-agent")
+        self.assertEqual(led.state_dir(), here)
+        self.assertTrue(rns.LEDGER.startswith(here))
+        self.assertTrue(rns.TRACES.startswith(here))
 
     def test_override_relocates_writer_reader_traces(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -54,14 +55,20 @@ class StateDirTest(unittest.TestCase):
             self.assertEqual(rns.TRACES, os.path.join(tmp, "traces"))
             self.assertTrue(
                 obs.default_trace_path("s.py", "t1").startswith(
-                    os.path.join(tmp, "traces")))
+                    os.path.join(tmp, "traces")
+                )
+            )
 
     def test_record_then_list_roundtrip_in_state_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             led, rns, _ = self._reload({"DEEP_AGENT_STATE_DIR": tmp})
-            entry = led.record("deep_chat.py", "ollama:qwen3:8b",
-                               "thread-9", [{"content": "hi there"}],
-                               started=1000.0)
+            entry = led.record(
+                "deep_chat.py",
+                "ollama:qwen3:8b",
+                "thread-9",
+                [{"content": "hi there"}],
+                started=1000.0,
+            )
             self.assertEqual(entry["thread_id"], "thread-9")
             found = rns.list_runs()
             self.assertEqual(len(found), 1)
@@ -76,8 +83,7 @@ class StateDirTest(unittest.TestCase):
     def test_eval_ledger_still_wins(self):
         with tempfile.TemporaryDirectory() as tmp:
             ev = os.path.join(tmp, "eval.jsonl")
-            led, rns, _ = self._reload({"DEEP_AGENT_STATE_DIR": tmp,
-                                        "EVAL_LEDGER": ev})
+            led, rns, _ = self._reload({"DEEP_AGENT_STATE_DIR": tmp, "EVAL_LEDGER": ev})
             self.assertEqual(led.LEDGER, ev)
             self.assertEqual(rns.LEDGER, ev)
 

@@ -43,7 +43,7 @@ import sys
 import tempfile
 import zlib
 
-import cli
+from backend.shared import cli
 
 cli.bootstrap()
 
@@ -69,8 +69,12 @@ PNG_MAX_PIXELS = 64_000_000
 ASK_MAX_DIM = 800
 
 # Axe impact -> finding severity.
-AXE_SEVERITY = {"critical": "high", "serious": "high",
-                "moderate": "medium", "minor": "low"}
+AXE_SEVERITY = {
+    "critical": "high",
+    "serious": "high",
+    "moderate": "medium",
+    "minor": "low",
+}
 # Lighthouse score drops worth flagging (0..1 scale).
 LIGHTHOUSE_DROP_MEDIUM = 0.10
 LIGHTHOUSE_DROP_HIGH = 0.25
@@ -78,26 +82,35 @@ LIGHTHOUSE_DROP_HIGH = 0.25
 
 def valid_route(route):
     """True for a td ux --route value safe to pass through."""
-    return (isinstance(route, str)
-            and 1 <= len(route) <= MAX_ROUTE
-            and bool(ROUTE_RE.match(route))
-            and ".." not in route
-            and "\\" not in route)
+    return (
+        isinstance(route, str)
+        and 1 <= len(route) <= MAX_ROUTE
+        and bool(ROUTE_RE.match(route))
+        and ".." not in route
+        and "\\" not in route
+    )
 
 
 def capture_paths(checkout):
     """Artifact dirs for a checkout's td ux output."""
     base = os.path.join(checkout, UX_DIR)
-    return {"base": base,
-            "results": os.path.join(base, RESULTS_DIR),
-            "screenshots": os.path.join(base, SHOTS_DIR),
-            "lighthouse": os.path.join(base, LIGHTHOUSE_DIR)}
+    return {
+        "base": base,
+        "results": os.path.join(base, RESULTS_DIR),
+        "screenshots": os.path.join(base, SHOTS_DIR),
+        "lighthouse": os.path.join(base, LIGHTHOUSE_DIR),
+    }
 
 
-def run_ux_capture(checkout, route="", all_routes=False,
-                   desktop=False, mobile=False,
-                   screenshots_only=False,
-                   timeout=CAPTURE_TIMEOUT):
+def run_ux_capture(
+    checkout,
+    route="",
+    all_routes=False,
+    desktop=False,
+    mobile=False,
+    screenshots_only=False,
+    timeout=CAPTURE_TIMEOUT,
+):
     """Run td ux capture in a checkout. Never raises on td failure.
 
     Returns {"ok": True, "status": ..., "results": [...],
@@ -116,8 +129,7 @@ def run_ux_capture(checkout, route="", all_routes=False,
         raise ValueError("route and all_routes are exclusive")
     if desktop and mobile:
         raise ValueError("desktop and mobile are exclusive")
-    argv = ["td", "--json", "ux",
-           "screenshots" if screenshots_only else "audit"]
+    argv = ["td", "--json", "ux", "screenshots" if screenshots_only else "audit"]
     if route:
         argv += ["--route", route]
     if all_routes and not screenshots_only:
@@ -128,30 +140,30 @@ def run_ux_capture(checkout, route="", all_routes=False,
         argv.append("--mobile")
     try:
         proc = subprocess.run(
-            argv, cwd=checkout, capture_output=True, text=True,
-            timeout=timeout)
+            argv, cwd=checkout, capture_output=True, text=True, timeout=timeout
+        )
     except subprocess.TimeoutExpired:
-        return {"ok": False,
-                "error": f"TIMEOUT after {timeout}s: {' '.join(argv)}"}
+        return {"ok": False, "error": f"TIMEOUT after {timeout}s: {' '.join(argv)}"}
     except OSError as exc:
         return {"ok": False, "error": f"exec failed: {exc}"}
     try:
         payload = json.loads(proc.stdout or "")
     except (json.JSONDecodeError, ValueError):
         tail = ((proc.stdout or "") + (proc.stderr or "")).strip()[-300:]
-        return {"ok": False,
-                "error": f"td ux bad json (rc={proc.returncode}): {tail}"}
+        return {"ok": False, "error": f"td ux bad json (rc={proc.returncode}): {tail}"}
     if not isinstance(payload, dict) or payload.get("status") != "success":
         msg = ""
         if isinstance(payload, dict):
             msg = str(payload.get("message", ""))[:300]
         if not msg:
-            msg = ((proc.stderr or "").strip()[:300]
-                   or f"rc={proc.returncode}")
+            msg = (proc.stderr or "").strip()[:300] or f"rc={proc.returncode}"
         return {"ok": False, "error": f"td ux error: {msg}"}
-    return {"ok": True, "status": "success",
-            "results": payload.get("results", []),
-            "artifacts": capture_paths(checkout)}
+    return {
+        "ok": True,
+        "status": "success",
+        "results": payload.get("results", []),
+        "artifacts": capture_paths(checkout),
+    }
 
 
 def collect_capture(capture_dir):
@@ -172,8 +184,7 @@ def collect_capture(capture_dir):
             if not name.endswith(".json"):
                 continue
             try:
-                with open(os.path.join(results, name),
-                          encoding="utf-8") as f:
+                with open(os.path.join(results, name), encoding="utf-8") as f:
                     snap["results"][name[:-5]] = json.load(f)
             except (OSError, ValueError):
                 continue
@@ -188,8 +199,7 @@ def collect_capture(capture_dir):
             if not name.endswith(".json"):
                 continue
             try:
-                with open(os.path.join(light, name),
-                          encoding="utf-8") as f:
+                with open(os.path.join(light, name), encoding="utf-8") as f:
                     snap["lighthouse"][name[:-5]] = json.load(f)
             except (OSError, ValueError):
                 continue
@@ -207,9 +217,14 @@ def snapshot_capture(checkout, label):
     """
     if not isinstance(checkout, str) or not os.path.isdir(checkout):
         raise ValueError(f"bad checkout: {checkout!r}")
-    if (not isinstance(label, str) or not label
-            or len(label) > 64 or "/" in label or label in (".", "..")
-            or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", label)):
+    if (
+        not isinstance(label, str)
+        or not label
+        or len(label) > 64
+        or "/" in label
+        or label in (".", "..")
+        or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", label)
+    ):
         raise ValueError(f"bad label: {label!r}")
     src = os.path.join(checkout, UX_DIR)
     if not os.path.isdir(src):
@@ -222,15 +237,25 @@ def snapshot_capture(checkout, label):
 
 
 def _finding(severity, title, route, viewport, evidence):
-    return {"severity": severity, "title": title, "route": route,
-            "viewport": viewport, "evidence": evidence}
+    return {
+        "severity": severity,
+        "title": title,
+        "route": route,
+        "viewport": viewport,
+        "evidence": evidence,
+    }
 
 
 def rank_findings(findings):
     """Severity-ranked findings (critical first), stable by route."""
-    return sorted(findings,
-                  key=lambda f: (_SEV_RANK.get(f.get("severity"), 99),
-                                 f.get("route", ""), f.get("title", "")))
+    return sorted(
+        findings,
+        key=lambda f: (
+            _SEV_RANK.get(f.get("severity"), 99),
+            f.get("route", ""),
+            f.get("title", ""),
+        ),
+    )
 
 
 def _route_of(key, doc):
@@ -253,10 +278,11 @@ def _overflow_key(item):
     if not isinstance(item, dict):
         return repr(item)[:120]
     rect = item.get("rect") if isinstance(item.get("rect"), dict) else {}
-    return "|".join(str(item.get(k, ""))[:60] for k in
-                    ("tagName", "id", "className")) + "|" + "|".join(
-                        str(rect.get(k, ""))[:20] for k in
-                        ("left", "right", "width"))
+    return (
+        "|".join(str(item.get(k, ""))[:60] for k in ("tagName", "id", "className"))
+        + "|"
+        + "|".join(str(rect.get(k, ""))[:20] for k in ("left", "right", "width"))
+    )
 
 
 def _axe_violations(doc):
@@ -279,9 +305,11 @@ def _axe_violations(doc):
                 example = ", ".join(str(t)[:60] for t in target[:2])
             elif isinstance(target, str):
                 example = target[:120]
-        found[vid] = {"impact": viol.get("impact", "minor"),
-                      "count": len(nodes),
-                      "example": example}
+        found[vid] = {
+            "impact": viol.get("impact", "minor"),
+            "count": len(nodes),
+            "example": example,
+        }
     return found
 
 
@@ -294,8 +322,9 @@ def _img_key(img):
 def _tap_key(tap):
     if not isinstance(tap, dict):
         return repr(tap)[:120]
-    return "|".join(str(tap.get(k, ""))[:40] for k in
-                    ("tagName", "text", "width", "height"))
+    return "|".join(
+        str(tap.get(k, ""))[:40] for k in ("tagName", "text", "width", "height")
+    )
 
 
 def _diff_result_json(key, before_doc, after_doc):
@@ -305,74 +334,118 @@ def _diff_result_json(key, before_doc, after_doc):
     route = _route_of(key, after_doc) or _route_of(key, before_doc)
     viewport = _viewport_of(key, after_doc) or _viewport_of(key, before_doc)
     out = []
-    before_over = {_overflow_key(i) for i in _as_list(
-        before_doc.get("overflow"))}
-    new_over = [i for i in _as_list(after_doc.get("overflow"))
-                if _overflow_key(i) not in before_over]
+    before_over = {_overflow_key(i) for i in _as_list(before_doc.get("overflow"))}
+    new_over = [
+        i
+        for i in _as_list(after_doc.get("overflow"))
+        if _overflow_key(i) not in before_over
+    ]
     if new_over:
         first = new_over[0] if isinstance(new_over[0], dict) else {}
-        out.append(_finding(
-            "high", f"{len(new_over)} new layout-overflow issue(s)",
-            route, viewport,
-            f"e.g. <{first.get('tagName', '?')}> id="
-            f"{first.get('id', '')!r} class="
-            f"{str(first.get('className', ''))[:80]!r}"))
+        out.append(
+            _finding(
+                "high",
+                f"{len(new_over)} new layout-overflow issue(s)",
+                route,
+                viewport,
+                f"e.g. <{first.get('tagName', '?')}> id="
+                f"{first.get('id', '')!r} class="
+                f"{str(first.get('className', ''))[:80]!r}",
+            )
+        )
     before_axe = _axe_violations(before_doc)
     for vid, cur in sorted(_axe_violations(after_doc).items()):
         prev = before_axe.get(vid)
         if prev is None:
-            out.append(_finding(
-                AXE_SEVERITY.get(cur["impact"], "low"),
-                f"new a11y violation: {vid}", route, viewport,
-                f"impact={cur['impact']} nodes={cur['count']}"
-                + (f" e.g. {cur['example']}" if cur["example"]
-                   else "")))
+            out.append(
+                _finding(
+                    AXE_SEVERITY.get(cur["impact"], "low"),
+                    f"new a11y violation: {vid}",
+                    route,
+                    viewport,
+                    f"impact={cur['impact']} nodes={cur['count']}"
+                    + (f" e.g. {cur['example']}" if cur["example"] else ""),
+                )
+            )
         elif cur["count"] > prev["count"]:
-            out.append(_finding(
-                AXE_SEVERITY.get(cur["impact"], "low"),
-                f"a11y violation grew: {vid}", route, viewport,
-                f"{prev['count']} -> {cur['count']} nodes"))
+            out.append(
+                _finding(
+                    AXE_SEVERITY.get(cur["impact"], "low"),
+                    f"a11y violation grew: {vid}",
+                    route,
+                    viewport,
+                    f"{prev['count']} -> {cur['count']} nodes",
+                )
+            )
     before_imgs = {_img_key(i) for i in _as_list(before_doc.get("images"))}
     for img in _as_list(after_doc.get("images")):
         if not isinstance(img, dict) or _img_key(img) in before_imgs:
             continue
         if not img.get("alt"):
-            out.append(_finding(
-                "medium", "new image without alt text", route,
-                viewport, f"src={str(img.get('src', ''))[:160]}"))
+            out.append(
+                _finding(
+                    "medium",
+                    "new image without alt text",
+                    route,
+                    viewport,
+                    f"src={str(img.get('src', ''))[:160]}",
+                )
+            )
         try:
             nat = float(img.get("naturalWidth") or 0)
             rend = float(img.get("renderedWidth") or 0)
             if nat > 0 and rend > 0 and nat >= 2 * rend and rend >= 1:
-                out.append(_finding(
-                    "low", "new oversized image", route, viewport,
-                    f"src={str(img.get('src', ''))[:160]} "
-                    f"natural={nat:g} rendered={rend:g}"))
+                out.append(
+                    _finding(
+                        "low",
+                        "new oversized image",
+                        route,
+                        viewport,
+                        f"src={str(img.get('src', ''))[:160]} "
+                        f"natural={nat:g} rendered={rend:g}",
+                    )
+                )
         except (TypeError, ValueError):
             pass
-    before_taps = {_tap_key(t) for t in _as_list(
-        before_doc.get("tapTargets"))}
-    new_taps = [t for t in _as_list(after_doc.get("tapTargets"))
-                if _tap_key(t) not in before_taps]
+    before_taps = {_tap_key(t) for t in _as_list(before_doc.get("tapTargets"))}
+    new_taps = [
+        t
+        for t in _as_list(after_doc.get("tapTargets"))
+        if _tap_key(t) not in before_taps
+    ]
     if new_taps:
-        out.append(_finding(
-            "medium", f"{len(new_taps)} new small tap target(s)",
-            route, viewport,
-            ", ".join(str(t.get("text", t.get("tagName", "?")))[:30]
-                      for t in new_taps[:3] if isinstance(t, dict))
-            or f"{len(new_taps)} targets under 44px"))
+        out.append(
+            _finding(
+                "medium",
+                f"{len(new_taps)} new small tap target(s)",
+                route,
+                viewport,
+                ", ".join(
+                    str(t.get("text", t.get("tagName", "?")))[:30]
+                    for t in new_taps[:3]
+                    if isinstance(t, dict)
+                )
+                or f"{len(new_taps)} targets under 44px",
+            )
+        )
     before_fold = before_doc.get("aboveTheFold")
     after_fold = after_doc.get("aboveTheFold")
-    if (isinstance(before_fold, dict) and isinstance(after_fold, dict)
-            and before_fold != after_fold):
-        for fld in ("hasPrimaryCTA", "visibleCTACount",
-                    "heroViewportPercentage"):
+    if (
+        isinstance(before_fold, dict)
+        and isinstance(after_fold, dict)
+        and before_fold != after_fold
+    ):
+        for fld in ("hasPrimaryCTA", "visibleCTACount", "heroViewportPercentage"):
             if before_fold.get(fld) != after_fold.get(fld):
-                out.append(_finding(
-                    "low", f"above-the-fold changed: {fld}", route,
-                    viewport,
-                    f"{before_fold.get(fld)!r} -> "
-                    f"{after_fold.get(fld)!r}"))
+                out.append(
+                    _finding(
+                        "low",
+                        f"above-the-fold changed: {fld}",
+                        route,
+                        viewport,
+                        f"{before_fold.get(fld)!r} -> {after_fold.get(fld)!r}",
+                    )
+                )
                 break
     return out
 
@@ -389,15 +462,14 @@ _PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
 def _png_chunks(data):
     """(type, body) chunks; raises ValueError on a corrupt file."""
-    if not isinstance(data, (bytes, bytearray)) \
-            or bytes(data[:8]) != _PNG_SIG:
+    if not isinstance(data, (bytes, bytearray)) or bytes(data[:8]) != _PNG_SIG:
         raise ValueError("not a PNG")
     out = []
     pos = 8
     while pos + 8 <= len(data):
-        (length,) = struct.unpack(">I", data[pos:pos + 4])
-        ctype = bytes(data[pos + 4:pos + 8])
-        body = bytes(data[pos + 8:pos + 8 + length])
+        (length,) = struct.unpack(">I", data[pos : pos + 4])
+        ctype = bytes(data[pos + 4 : pos + 8])
+        body = bytes(data[pos + 8 : pos + 8 + length])
         if len(body) != length or pos + 12 + length > len(data):
             raise ValueError("truncated PNG chunk")
         out.append((ctype, body))
@@ -433,10 +505,8 @@ def png_decode_rgb(data):
     header = next((b for t, b in chunks if t == b"IHDR"), None)
     if header is None or len(header) < 13:
         return None
-    w, h, depth, ctype, comp, filt, inter = struct.unpack(
-        ">IIBBBBB", header[:13])
-    if depth != 8 or ctype not in (2, 6) or comp != 0 \
-            or filt != 0 or inter != 0:
+    w, h, depth, ctype, comp, filt, inter = struct.unpack(">IIBBBBB", header[:13])
+    if depth != 8 or ctype not in (2, 6) or comp != 0 or filt != 0 or inter != 0:
         return None
     if w <= 0 or h <= 0 or w * h > PNG_MAX_PIXELS:
         raise ValueError(f"absurd PNG dimensions: {w}x{h}")
@@ -455,7 +525,7 @@ def png_decode_rgb(data):
     for _ in range(h):
         ftype = flat[pos]
         pos += 1
-        scan = bytearray(flat[pos:pos + stride])
+        scan = bytearray(flat[pos : pos + stride])
         pos += stride
         if ftype == 1:  # Sub
             for i in range(ch, stride):
@@ -479,16 +549,14 @@ def png_decode_rgb(data):
         prev = scan  # next row's Up/Average/Paeth needs the full
         # stride (alpha included); the RGB output strips below.
         if ch == 4:
-            scan = bytearray(b for i, b in enumerate(scan)
-                             if i % 4 != 3)
+            scan = bytearray(b for i, b in enumerate(scan) if i % 4 != 3)
         rows.append(bytes(scan))
     return (w, h, rows)
 
 
 def _paeth(left, up, up_left):
     cand = up + left - up_left
-    pa, pb, pc = abs(cand - left), abs(cand - up), \
-        abs(cand - up_left)
+    pa, pb, pc = abs(cand - left), abs(cand - up), abs(cand - up_left)
     if pa <= pb and pa <= pc:
         return left
     return up if pb <= pc else up_left
@@ -498,15 +566,15 @@ def png_encode_rgb(width, height, rows):
     """Encode w*h RGB rows (filter-0) into minimal PNG bytes."""
     if width <= 0 or height <= 0 or len(rows) != height:
         raise ValueError("bad rows for PNG encode")
-    flat = b"".join(b"\x00" + bytes(r[:width * 3]).ljust(
-        width * 3, b"\x00") for r in rows)
+    flat = b"".join(
+        b"\x00" + bytes(r[: width * 3]).ljust(width * 3, b"\x00") for r in rows
+    )
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     idat = zlib.compress(flat, 6)
     out = bytearray(_PNG_SIG)
     for ctype, body in ((b"IHDR", ihdr), (b"IDAT", idat)):
         out += struct.pack(">I", len(body)) + ctype + body
-        out += struct.pack(">I", binascii.crc32(ctype + body)
-                           & 0xFFFFFFFF)
+        out += struct.pack(">I", binascii.crc32(ctype + body) & 0xFFFFFFFF)
     out += struct.pack(">I", 0) + b"IEND"
     out += struct.pack(">I", binascii.crc32(b"IEND") & 0xFFFFFFFF)
     return bytes(out)
@@ -522,21 +590,35 @@ def diff_regions(before_png, after_png, cell=32):
     """
     if before_png == after_png:
         size = png_size(before_png) or (0, 0)
-        return {"changed": False, "cells": [], "changed_ratio": 0.0,
-                "exact": True, "size": size}
+        return {
+            "changed": False,
+            "cells": [],
+            "changed_ratio": 0.0,
+            "exact": True,
+            "size": size,
+        }
     try:
         before = png_decode_rgb(before_png)
         after = png_decode_rgb(after_png)
     except ValueError:
         before = after = None
     if before is None or after is None:
-        return {"changed": True, "cells": [], "changed_ratio": 1.0,
-                "exact": False, "size": png_size(after_png)}
+        return {
+            "changed": True,
+            "cells": [],
+            "changed_ratio": 1.0,
+            "exact": False,
+            "size": png_size(after_png),
+        }
     (bw, bh, brows), (aw, ah, arows) = before, after
     if (bw, bh) != (aw, ah):
-        return {"changed": True, "cells": [(0, 0, aw, ah)],
-                "changed_ratio": 1.0, "exact": True,
-                "size": (aw, ah)}
+        return {
+            "changed": True,
+            "cells": [(0, 0, aw, ah)],
+            "changed_ratio": 1.0,
+            "exact": True,
+            "size": (aw, ah),
+        }
     cells = []
     total = 0
     for top in range(0, ah, cell):
@@ -545,16 +627,21 @@ def diff_regions(before_png, after_png, cell=32):
             w = min(cell, aw - left)
             changed = False
             for y in range(top, min(top + cell, ah)):
-                if brows[y][left * 3:(left + w) * 3] != \
-                        arows[y][left * 3:(left + w) * 3]:
+                if (
+                    brows[y][left * 3 : (left + w) * 3]
+                    != arows[y][left * 3 : (left + w) * 3]
+                ):
                     changed = True
                     break
             if changed:
-                cells.append((left, top, w,
-                              min(cell, ah - top)))
-    return {"changed": True, "cells": cells,
-            "changed_ratio": (len(cells) / total) if total else 1.0,
-            "exact": True, "size": (aw, ah)}
+                cells.append((left, top, w, min(cell, ah - top)))
+    return {
+        "changed": True,
+        "cells": cells,
+        "changed_ratio": (len(cells) / total) if total else 1.0,
+        "exact": True,
+        "size": (aw, ah),
+    }
 
 
 def downscale_png(data, max_dim=ASK_MAX_DIM):
@@ -580,7 +667,7 @@ def downscale_png(data, max_dim=ASK_MAX_DIM):
         row = bytearray()
         for x in range(nw):
             off = min(w - 1, int(x / scale)) * 3
-            row += src[off:off + 3]
+            row += src[off : off + 3]
         out.append(bytes(row))
     return png_encode_rgb(nw, nh, out)
 
@@ -602,49 +689,61 @@ def crop_png(data, box):
     cw, chh = min(cw, w - x), min(chh, h - y)
     if cw < 1 or chh < 1 or x >= w or y >= h:
         return data
-    out = [r[x * 3:(x + cw) * 3] for r in rows[y:y + chh]]
+    out = [r[x * 3 : (x + cw) * 3] for r in rows[y : y + chh]]
     return png_encode_rgb(cw, chh, out)
 
 
-def _shot_pair_finding(key, before_doc, after_doc, before_path,
-                       after_path):
+def _shot_pair_finding(key, before_doc, after_doc, before_path, after_path):
     """Screenshot-pair finding, or None when pixels are identical."""
     route = _route_of(key, after_doc) or _route_of(key, before_doc)
-    viewport = _viewport_of(key, after_doc) or _viewport_of(
-        key, before_doc)
+    viewport = _viewport_of(key, after_doc) or _viewport_of(key, before_doc)
     try:
         with open(before_path, "rb") as f:
             before_bytes = f.read()
         with open(after_path, "rb") as f:
             after_bytes = f.read()
     except OSError as exc:
-        return _finding("info", "screenshot unreadable", route,
-                        viewport, f"{exc}".strip()[:160])
+        return _finding(
+            "info", "screenshot unreadable", route, viewport, f"{exc}".strip()[:160]
+        )
     regions = diff_regions(before_bytes, after_bytes)
     if not regions["changed"]:
         return None
     before_size = png_size(before_bytes)
-    if before_size is not None and regions.get("size") is not None \
-            and before_size != regions["size"]:
+    if (
+        before_size is not None
+        and regions.get("size") is not None
+        and before_size != regions["size"]
+    ):
         return _finding(
-            "medium", "screenshot dimensions changed", route,
+            "medium",
+            "screenshot dimensions changed",
+            route,
             viewport,
             f"{before_size[0]}x{before_size[1]} -> "
-            f"{regions['size'][0]}x{regions['size'][1]}")
+            f"{regions['size'][0]}x{regions['size'][1]}",
+        )
     cells = regions.get("cells") or []
     if not regions.get("exact"):
         return _finding(
-            "low", "screenshot changed (undecodable PNG)", route,
-            viewport, f"before={before_path} after={after_path}")
-    shown = ", ".join(f"({x},{y} {w}x{h})"
-                      for x, y, w, h in cells[:8])
+            "low",
+            "screenshot changed (undecodable PNG)",
+            route,
+            viewport,
+            f"before={before_path} after={after_path}",
+        )
+    shown = ", ".join(f"({x},{y} {w}x{h})" for x, y, w, h in cells[:8])
     if len(cells) > 8:
         shown += f" +{len(cells) - 8} more"
     return _finding(
-        "low", "visual change in screenshot", route, viewport,
+        "low",
+        "visual change in screenshot",
+        route,
+        viewport,
         f"{len(cells)} region(s), "
         f"{regions['changed_ratio'] * 100:.1f}% of frame"
-        + (f": {shown}" if shown else ""))
+        + (f": {shown}" if shown else ""),
+    )
 
 
 def diff_versions(before, after):
@@ -668,39 +767,57 @@ def diff_versions(before, after):
     for key in sorted(set(before_res) | set(after_res)):
         if key not in before_res:
             route = _route_of(key, after_res[key])
-            findings.append(_finding(
-                "info", "route captured only in after", route,
-                _viewport_of(key, after_res[key]),
-                f"key={key}"))
+            findings.append(
+                _finding(
+                    "info",
+                    "route captured only in after",
+                    route,
+                    _viewport_of(key, after_res[key]),
+                    f"key={key}",
+                )
+            )
             continue
         if key not in after_res:
             route = _route_of(key, before_res[key])
-            findings.append(_finding(
-                "medium", "route missing from after capture", route,
-                _viewport_of(key, before_res[key]),
-                f"key={key}"))
+            findings.append(
+                _finding(
+                    "medium",
+                    "route missing from after capture",
+                    route,
+                    _viewport_of(key, before_res[key]),
+                    f"key={key}",
+                )
+            )
             continue
         compared += 1
-        findings.extend(_diff_result_json(
-            key, before_res[key], after_res[key]))
+        findings.extend(_diff_result_json(key, before_res[key], after_res[key]))
         if key in before_shots and key in after_shots:
             hit = _shot_pair_finding(
-                key, before_res[key], after_res[key],
-                before_shots[key], after_shots[key])
+                key,
+                before_res[key],
+                after_res[key],
+                before_shots[key],
+                after_shots[key],
+            )
             if hit is not None:
                 findings.append(hit)
     lighthouse_hits = lighthouse_diff(
-        before.get("lighthouse", {}), after.get("lighthouse", {}))
+        before.get("lighthouse", {}), after.get("lighthouse", {})
+    )
     findings.extend(lighthouse_hits)
     ranked = rank_findings(findings)
     summary = {sev: 0 for sev in SEVERITIES}
     for hit in ranked:
-        summary[hit.get("severity", "info")] = \
+        summary[hit.get("severity", "info")] = (
             summary.get(hit.get("severity", "info"), 0) + 1
-    return {"findings": ranked, "summary": summary,
-            "compared": compared,
-            "added": sorted(set(after_res) - set(before_res)),
-            "removed": sorted(set(before_res) - set(after_res))}
+        )
+    return {
+        "findings": ranked,
+        "summary": summary,
+        "compared": compared,
+        "added": sorted(set(after_res) - set(before_res)),
+        "removed": sorted(set(before_res) - set(after_res)),
+    }
 
 
 def lighthouse_scores(capture_dir):
@@ -715,24 +832,24 @@ def lighthouse_scores(capture_dir):
     else:
         if not isinstance(capture_dir, str):
             raise ValueError(f"bad capture dir: {capture_dir!r}")
-        light = os.path.join(capture_dir, LIGHTHOUSE_DIR) \
-            if os.path.isdir(os.path.join(
-                capture_dir, LIGHTHOUSE_DIR)) else capture_dir
+        light = (
+            os.path.join(capture_dir, LIGHTHOUSE_DIR)
+            if os.path.isdir(os.path.join(capture_dir, LIGHTHOUSE_DIR))
+            else capture_dir
+        )
         docs = {}
         if os.path.isdir(light):
             for name in sorted(os.listdir(light)):
                 if not name.endswith(".json"):
                     continue
                 try:
-                    with open(os.path.join(light, name),
-                              encoding="utf-8") as f:
+                    with open(os.path.join(light, name), encoding="utf-8") as f:
                         docs[name[:-5]] = json.load(f)
                 except (OSError, ValueError):
                     continue
     scores = {}
     for name, doc in docs.items():
-        cats = doc.get("categories") if isinstance(doc, dict) \
-            else None
+        cats = doc.get("categories") if isinstance(doc, dict) else None
         if not isinstance(cats, dict):
             continue
         row = {}
@@ -753,15 +870,14 @@ def lighthouse_read(capture_dir):
     """Human-readable lighthouse summary for one capture dir."""
     scores = lighthouse_scores(capture_dir)
     if not scores:
-        return {"scores": {}, "text": "no lighthouse artifacts",
-                "findings": []}
+        return {"scores": {}, "text": "no lighthouse artifacts", "findings": []}
     lines = []
     for name in sorted(scores):
-        cells = " ".join(f"{cat}={val:.2f}" for cat, val in
-                         sorted(scores[name].items()))
+        cells = " ".join(
+            f"{cat}={val:.2f}" for cat, val in sorted(scores[name].items())
+        )
         lines.append(f"{name}: {cells}")
-    return {"scores": scores, "text": "\n".join(lines),
-            "findings": []}
+    return {"scores": scores, "text": "\n".join(lines), "findings": []}
 
 
 def lighthouse_diff(before, after):
@@ -775,8 +891,7 @@ def lighthouse_diff(before, after):
     after_scores = lighthouse_scores(after)
     out = []
     for name in sorted(set(before_scores) & set(after_scores)):
-        for cat in sorted(set(before_scores[name])
-                          & set(after_scores[name])):
+        for cat in sorted(set(before_scores[name]) & set(after_scores[name])):
             delta = after_scores[name][cat] - before_scores[name][cat]
             if delta <= -LIGHTHOUSE_DROP_HIGH:
                 sev = "high"
@@ -784,11 +899,15 @@ def lighthouse_diff(before, after):
                 sev = "medium"
             else:
                 continue
-            out.append(_finding(
-                sev, f"lighthouse {cat} dropped {delta:+.2f}",
-                name, "",
-                f"{before_scores[name][cat]:.2f} -> "
-                f"{after_scores[name][cat]:.2f}"))
+            out.append(
+                _finding(
+                    sev,
+                    f"lighthouse {cat} dropped {delta:+.2f}",
+                    name,
+                    "",
+                    f"{before_scores[name][cat]:.2f} -> {after_scores[name][cat]:.2f}",
+                )
+            )
     return out
 
 
@@ -796,18 +915,21 @@ def format_evidence_for_model(question, diff_result, limit=6000):
     """Render a diff result as capped text evidence for ask_diff."""
     findings = diff_result.get("findings", [])
     summary = diff_result.get("summary", {})
-    lines = [f"question: {question}",
-             f"compared {diff_result.get('compared', 0)} "
-             f"route+viewport pair(s); "
-             + ", ".join(f"{sev}={summary.get(sev, 0)}"
-                         for sev in SEVERITIES)]
+    lines = [
+        f"question: {question}",
+        f"compared {diff_result.get('compared', 0)} "
+        f"route+viewport pair(s); "
+        + ", ".join(f"{sev}={summary.get(sev, 0)}" for sev in SEVERITIES),
+    ]
     for hit in findings[:40]:
         where = hit.get("route", "")
         if hit.get("viewport"):
             where += f" [{hit['viewport']}]"
-        lines.append(f"- [{hit.get('severity')}] "
-                     f"{hit.get('title')} ({where}): "
-                     f"{hit.get('evidence', '')}"[:400])
+        lines.append(
+            f"- [{hit.get('severity')}] "
+            f"{hit.get('title')} ({where}): "
+            f"{hit.get('evidence', '')}"[:400]
+        )
     if len(findings) > 40:
         lines.append(f"... +{len(findings) - 40} more findings")
     text = "\n".join(lines)
@@ -830,17 +952,21 @@ def build_diff_content(question, evidence_text, images=None):
         raise ValueError("question must be a non-empty string")
     if not isinstance(evidence_text, str) or not evidence_text.strip():
         raise ValueError("evidence_text must be a non-empty string")
-    parts = [{"type": "text",
-              "text": f"{evidence_text}\n\nquestion: "
-                      f"{question.strip()}"}]
+    parts = [
+        {"type": "text", "text": f"{evidence_text}\n\nquestion: {question.strip()}"}
+    ]
     for png in images:
         if not isinstance(png, (bytes, bytearray)) or not png:
             continue
-        parts.append({
-            "type": "image_url",
-            "image_url": {
-                "url": "data:image/png;base64,"
-                       + base64.b64encode(bytes(png)).decode()}})
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,"
+                    + base64.b64encode(bytes(png)).decode()
+                },
+            }
+        )
     return parts
 
 
@@ -853,8 +979,7 @@ ASK_SYSTEM = (
 )
 
 
-def ask_diff(question, evidence_text, images=None, prefer=None,
-             _model=None):
+def ask_diff(question, evidence_text, images=None, prefer=None, _model=None):
     """Interrogate diff evidence with a local model. Venv-only path.
 
     Model comes from deep_chat.build_model (Ollama first, Nebius
@@ -864,8 +989,7 @@ def ask_diff(question, evidence_text, images=None, prefer=None,
     or "ASK_ERROR: ..." when no model is available. Raises
     ValueError on bad question/evidence.
     """
-    content = build_diff_content(question, evidence_text,
-                                 images=images)
+    content = build_diff_content(question, evidence_text, images=images)
     if _model is None:
         try:
             import deep_chat  # noqa: E402
@@ -877,14 +1001,14 @@ def ask_diff(question, evidence_text, images=None, prefer=None,
             return f"ASK_ERROR: no model available: {exc}"
         try:
             from langchain_core.messages import (  # noqa: E402
-                HumanMessage, SystemMessage)
+                HumanMessage,
+                SystemMessage,
+            )
         except ImportError as exc:
             return f"ASK_ERROR: chat backend not installed: {exc}"
-        messages = [SystemMessage(content=ASK_SYSTEM),
-                    HumanMessage(content=content)]
+        messages = [SystemMessage(content=ASK_SYSTEM), HumanMessage(content=content)]
         try:
-            answer = deep_chat._invoke_with_failover(
-                model, spec, messages)[0]
+            answer = deep_chat._invoke_with_failover(model, spec, messages)[0]
         except Exception as exc:
             return f"ASK_ERROR: model call failed: {exc}"[:400]
     else:
@@ -895,8 +1019,9 @@ def ask_diff(question, evidence_text, images=None, prefer=None,
             return f"ASK_ERROR: model call failed: {exc}"[:400]
     text = getattr(answer, "content", answer)
     if isinstance(text, list):
-        text = " ".join(str(p.get("text", "")) if isinstance(p, dict)
-                        else str(p) for p in text)
+        text = " ".join(
+            str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in text
+        )
     text = str(text or "").strip()
     return text or "ASK_ERROR: empty answer"
 
@@ -905,9 +1030,9 @@ def format_diff_text(diff_result, limit=3000):
     """Render a diff result as capped text for tool replies."""
     findings = diff_result.get("findings", [])
     summary = diff_result.get("summary", {})
-    head = (f"compared {diff_result.get('compared', 0)} pair(s): "
-            + ", ".join(f"{sev}={summary.get(sev, 0)}"
-                        for sev in SEVERITIES))
+    head = f"compared {diff_result.get('compared', 0)} pair(s): " + ", ".join(
+        f"{sev}={summary.get(sev, 0)}" for sev in SEVERITIES
+    )
     if not findings:
         return head + "\nno findings"
     lines = [head]
@@ -915,16 +1040,17 @@ def format_diff_text(diff_result, limit=3000):
         where = hit.get("route", "")
         if hit.get("viewport"):
             where += f" [{hit['viewport']}]"
-        lines.append(f"[{hit.get('severity')}] {hit.get('title')} "
-                     f"({where}): {hit.get('evidence', '')}"[:300])
+        lines.append(
+            f"[{hit.get('severity')}] {hit.get('title')} "
+            f"({where}): {hit.get('evidence', '')}"[:300]
+        )
     text = "\n".join(lines)
     if len(text) > limit:
         text = text[:limit] + "\n[truncated]"
     return text
 
 
-def changed_crops(before_snap, after_snap, max_images=2,
-                max_dim=ASK_MAX_DIM):
+def changed_crops(before_snap, after_snap, max_images=2, max_dim=ASK_MAX_DIM):
     """Downscaled crops of changed screenshot regions for ask_diff.
 
     One crop per changed pair (first changed cell, padded), newest
@@ -955,15 +1081,12 @@ def changed_crops(before_snap, after_snap, max_images=2,
             regions = diff_regions(before_bytes, after_bytes)
         except ValueError:
             continue
-        cells = regions.get("cells") if regions.get("changed") \
-            else []
+        cells = regions.get("cells") if regions.get("changed") else []
         if not cells:
             continue
         x, y, w, h = cells[0]
         pad = 16
-        crop = crop_png(after_bytes,
-                        (x - pad, y - pad, w + 2 * pad,
-                         h + 2 * pad))
+        crop = crop_png(after_bytes, (x - pad, y - pad, w + 2 * pad, h + 2 * pad))
         out.append(downscale_png(crop, max_dim))
     return out
 
@@ -976,8 +1099,7 @@ def resolve_capture_dir(checkout, path):
     """
     if not isinstance(path, str) or not path:
         return None
-    roots = [os.path.realpath(checkout),
-             os.path.realpath(tempfile.gettempdir())]
+    roots = [os.path.realpath(checkout), os.path.realpath(tempfile.gettempdir())]
     full = os.path.realpath(os.path.join(checkout, path))
     if not os.path.isdir(full):
         return None
@@ -990,15 +1112,15 @@ def resolve_capture_dir(checkout, path):
 def main(argv=None):
     """Thin CLI for runbook-driven impact passes. Returns exit code."""
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or argv[0] not in (
-            "capture", "snapshot", "diff", "ask", "lighthouse"):
+    if not argv or argv[0] not in ("capture", "snapshot", "diff", "ask", "lighthouse"):
         return cli.usage_error(
             "usage: impact.py capture <checkout> [--route R|--all-routes]"
             " [--desktop|--mobile] [--screenshots-only]",
             "       impact.py snapshot <checkout> <label>",
             "       impact.py diff <before-dir> <after-dir>",
             "       impact.py ask <question> <diff-json>",
-            "       impact.py lighthouse <capture-dir>")
+            "       impact.py lighthouse <capture-dir>",
+        )
     verb = argv[0]
     try:
         if verb == "capture":
@@ -1011,17 +1133,18 @@ def main(argv=None):
                     return cli.usage_error("capture: --route needs a value")
                 route = flags[idx + 1]
             result = run_ux_capture(
-                argv[1], route=route,
+                argv[1],
+                route=route,
                 all_routes="--all-routes" in flags,
                 desktop="--desktop" in flags,
                 mobile="--mobile" in flags,
-                screenshots_only="--screenshots-only" in flags)
+                screenshots_only="--screenshots-only" in flags,
+            )
             print(json.dumps(result, indent=2))
             return 0 if result.get("ok") else 1
         if verb == "snapshot":
             if len(argv) != 3:
-                return cli.usage_error(
-                    "snapshot needs a checkout and a label")
+                return cli.usage_error("snapshot needs a checkout and a label")
             print(snapshot_capture(argv[1], argv[2]))
             return 0
         if verb == "diff":
@@ -1031,12 +1154,10 @@ def main(argv=None):
             return 0
         if verb == "ask":
             if len(argv) != 3:
-                return cli.usage_error(
-                    "ask needs a question and a diff-json file")
+                return cli.usage_error("ask needs a question and a diff-json file")
             with open(argv[2], encoding="utf-8") as f:
                 diff_result = json.load(f)
-            print(ask_diff(argv[1], format_evidence_for_model(
-                argv[1], diff_result)))
+            print(ask_diff(argv[1], format_evidence_for_model(argv[1], diff_result)))
             return 0
         if len(argv) != 2:
             return cli.usage_error("lighthouse needs a capture dir")

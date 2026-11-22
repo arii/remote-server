@@ -12,7 +12,7 @@ from unittest import mock
 import coder
 import deep_chat
 import observe
-from cli import repo_root
+from backend.shared.cli import repo_root
 
 try:
     import deepagents  # noqa: F401
@@ -40,7 +40,8 @@ class TestCoderOutcome(unittest.TestCase):
             Path(root, "sitecustomize.py").write_text(
                 textwrap.dedent("""
                 from pathlib import Path
-                import deep_chat, ledger, model_router, observe
+                import deep_chat, observe
+                from backend.shared import ledger, model_router
                 from langchain_core.messages import AIMessage
                 from tests.test_coder_outcome import LocalModel
                 model = LocalModel(responses=[
@@ -139,7 +140,7 @@ class TestCoderOutcome(unittest.TestCase):
                 mock.patch.object(
                     observe, "default_trace_path", return_value=str(trace)
                 ),
-                mock.patch("ledger.record"),
+                mock.patch("backend.shared.ledger.record"),
             ):
                 if cli:
                     result = coder._implement_and_finish(

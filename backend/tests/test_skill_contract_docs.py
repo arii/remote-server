@@ -4,7 +4,7 @@ import re
 import unittest
 from pathlib import Path
 
-from cli import repo_root
+from backend.shared.cli import repo_root
 from jsonschema import Draft202012Validator
 
 from backend.skill_format import SKILL_SCHEMA_PATH, validate_skill

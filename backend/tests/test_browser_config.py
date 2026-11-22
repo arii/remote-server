@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from cli import repo_root
+from backend.shared.cli import repo_root
 from backend.browser_config import data_path, grid_url
 
 

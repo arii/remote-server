@@ -6,7 +6,7 @@ from unittest import mock
 
 import coder
 import issue_generator
-import s5tools
+from backend.shared import s5tools
 
 
 class TestVerificationPolicy(unittest.TestCase):

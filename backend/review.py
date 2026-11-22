@@ -221,7 +221,7 @@ def gather_context(repo, paths, limit=CONTEXT_CAP):
     unavailable — the review still runs on the diff alone.
     """
     try:
-        import s5tools
+        from backend.shared import s5tools
     except Exception as exc:
         print(
             f"review: s5tools unavailable ({_short(exc)}); skipping context reads",

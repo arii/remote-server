@@ -4,8 +4,8 @@ from pathlib import Path
 from unittest import mock
 
 import httpx
-import model_router
-from twt_provenance import (
+from backend.shared import model_router
+from backend.shared.twt_provenance import (
     TwTPreflightError,
     TwTVCSMismatchError,
     get_installed_provenance,
@@ -326,7 +326,9 @@ class TestModelRouterPreflightIntegration(unittest.TestCase):
     def test_model_router_preflight_checks_capabilities(self):
         with (
             mock.patch.dict("os.environ", {"TWT_UDS": ""}),
-            mock.patch("twt_provenance.verify_gateway_capabilities") as mock_verify,
+            mock.patch(
+                "backend.shared.twt_provenance.verify_gateway_capabilities"
+            ) as mock_verify,
         ):
             spec = {
                 "provider": "twt",

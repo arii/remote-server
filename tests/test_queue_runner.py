@@ -7,10 +7,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import ledger
-import model_router
-import runs
-import twt_receipts
+from backend.shared import ledger
+from backend.shared import model_router
+from backend.shared import runs
+from backend.shared import twt_receipts
 from scripts import queue_runner as runner
 
 
@@ -448,8 +448,12 @@ class RunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             config_path, state = self.fixture(root)
             checkout = Path(root) / "checkout"
-            modules = checkout / "deep-agent"
+            agent = checkout / "deep-agent"
+            agent.mkdir(parents=True)
+            modules = checkout / "backend" / "shared"
             modules.mkdir(parents=True)
+            (checkout / "backend" / "__init__.py").write_text("")
+            (modules / "__init__.py").write_text("")
             (modules / "model_router.py").write_text(
                 "class _BoundedHistory:\n    def _bounded_kwargs(self, kwargs):\n        return kwargs\n"
                 "def _remote_spec(*args): return {}\n"
@@ -465,7 +469,7 @@ class RunnerTests(unittest.TestCase):
                 "def _settled_trace_ids(): return set()\n"
                 "def ledger_receipts(ids, receipts): return receipts\n"
             )
-            (modules / "pipeline.py").write_text(
+            (agent / "pipeline.py").write_text(
                 "class Pipeline:\n"
                 "    def stage_init(self): return True, {}\n"
                 "    stage_spec = stage_code = stage_audit = stage_submit = stage_cleanup = stage_init\n"

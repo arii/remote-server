@@ -9,7 +9,7 @@ Run: python3 -m pytest tests/test_harness_1230.py
 
 import unittest
 
-import s5tools
+from backend.shared import s5tools
 
 
 class TestPnpmInstallAllowance(unittest.TestCase):

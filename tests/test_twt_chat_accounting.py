@@ -9,8 +9,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 import deep_chat
-import ledger
-import model_router
+from backend.shared import ledger
+from backend.shared import model_router
 
 
 @unittest.skipUnless(importlib.util.find_spec("langchain_core"), "deep-agent venv")

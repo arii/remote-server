@@ -946,7 +946,7 @@ class TestToolSurface(unittest.TestCase):
     def test_search_web_tool(self):
         from unittest import mock
 
-        import s5tools
+        from backend.shared import s5tools
 
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
         tool = by_name["search_web"]
@@ -1097,7 +1097,7 @@ class TestAgentMechanics(unittest.TestCase):
 
         from langchain_core.messages import AIMessage
 
-        import s5tools
+        from backend.shared import s5tools
 
         call = AIMessage(
             content="",

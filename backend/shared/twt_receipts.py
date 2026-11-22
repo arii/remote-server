@@ -15,8 +15,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import ledger
-import twt_transport
+from backend.shared import ledger
+from backend.shared import twt_transport
 
 current = contextvars.ContextVar("twt_run", default=None)
 latest = contextvars.ContextVar("twt_request", default=None)

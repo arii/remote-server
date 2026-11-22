@@ -379,7 +379,7 @@ class ModelNameSingleSourceTests(unittest.TestCase):
         self.assertEqual(turn_engine.DEFAULT_MODEL, "qwen3:8b")
 
     def test_ask_model_default_comes_from_turn_engine(self):
-        import model_router
+        from backend.shared import model_router
 
         self.assertEqual(
             model_router._default_ollama_model(), turn_engine.DEFAULT_MODEL

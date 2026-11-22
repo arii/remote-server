@@ -7,7 +7,7 @@ from unittest import mock
 
 import coder
 import deep_chat
-import ledger
+from backend.shared import ledger
 import observe
 
 try:

@@ -10,7 +10,7 @@ from unittest import mock
 
 import coder  # noqa: E402
 import pipeline  # noqa: E402
-import s5tools  # noqa: E402
+from backend.shared import s5tools  # noqa: E402
 
 PORTFOLIO = "arii/portfolio"
 
@@ -86,7 +86,7 @@ class TestProfilePropagation(unittest.TestCase):
                     "run_coder",
                     return_value=("d", {}, [], 0, "o:m", "trace", True, 0),
                 ) as run,
-                mock.patch("ledger.record"),
+                mock.patch("backend.shared.ledger.record"),
             ):
                 pipeline.Pipeline(repo, "x").make_coder("spec").implement_fn(
                     "t", "p", repo, []

@@ -28,7 +28,7 @@ from threading import Lock
 import skills_registry
 import literal_checks
 from coder import DEFAULT_TOOL_OUTPUT_LIMIT, _truncate_tool_output
-from s5tools import verification_guidance
+from backend.shared.s5tools import verification_guidance
 
 REQUIRED_SECTIONS = (
     "Problem Statement",
@@ -244,7 +244,7 @@ def _env_positive_int(name, default):
 def _ollama_base_url():
     """Resolve the sanctioned Ollama endpoint (issue #1085)."""
     try:
-        import model_router
+        from backend.shared import model_router
 
         default = model_router.DEFAULT_OLLAMA_URL
     except Exception:
@@ -512,7 +512,7 @@ class IssueGeneratorGraph:
     def _model(self):
         if self.model_fn is not None:
             return self.model_fn()
-        import model_router
+        from backend.shared import model_router
 
         prefer = os.environ.get("S5_ISSUE_PROVIDER", "").strip() or None
         spec = model_router.resolve_llm(prefer=prefer)
@@ -538,7 +538,7 @@ class IssueGeneratorGraph:
         """
         if self.model_fn is not None:
             return True, "injected model (probe skipped)"
-        import model_router
+        from backend.shared import model_router
 
         prefer = os.environ.get("S5_ISSUE_PROVIDER", "").strip() or None
         try:
@@ -850,7 +850,7 @@ class IssueGeneratorGraph:
 
         def persist_decision_node(state):
             import decisions
-            import ledger
+            from backend.shared import ledger
 
             calls = [
                 {"name": "td init", "args": ""},
@@ -928,7 +928,7 @@ class IssueGeneratorGraph:
 
 def main(argv=None):
     """CLI: --spec-file <path|-> [--out PATH] [--qna-file PATH] [--max-loops N]."""
-    import cli as cli_helpers
+    from backend.shared import cli as cli_helpers
 
     args = list(argv if argv is not None else sys.argv[1:])
     spec_file = None
@@ -1017,7 +1017,7 @@ def main(argv=None):
     for error in state.get("errors", []):
         print(f"Invalid spec: {error}")
     try:
-        import ledger as _ledger
+        from backend.shared import ledger as _ledger
 
         _spec = getattr(gen, "last_spec", None) or {}
         _ledger.record(

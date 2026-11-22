@@ -12,7 +12,7 @@ import this without the deep-agent venv. Do NOT import langchain here.
 
 import subprocess
 
-import s5tools
+from backend.shared import s5tools
 
 valid_repo = s5tools.valid_repo
 

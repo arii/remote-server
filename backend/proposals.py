@@ -38,7 +38,7 @@ from backend.core.validation import validate_repo_name
 from backend.exec.engine import validate_td_command
 from backend.gh import run_gh, validate_gh
 
-import s5tools  # noqa: E402
+from backend.shared import s5tools  # noqa: E402
 
 # Executor prompt template + coder CLI, resolved from the repo root:
 # every entry point runs with cwd=root, so abspath() of the literal

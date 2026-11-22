@@ -18,7 +18,7 @@ import time
 import skills_registry
 import verdicts
 import literal_checks
-from s5tools import verification_env
+from backend.shared.s5tools import verification_env
 
 MAX_AUDIT_LOOPS_DEFAULT = 2
 
@@ -426,7 +426,7 @@ class AuditorGraph:
         )
 
     def bound_verification(self, payload):
-        import model_router
+        from backend.shared import model_router
 
         def fits():
             return (
@@ -565,7 +565,7 @@ class AuditorGraph:
         """LLM audit pass (injected in tests)."""
         if self.audit_fn is not None:
             return self.audit_fn(gate_payload)
-        import model_router
+        from backend.shared import model_router
         import ask_investigator
         from issue_generator import InvestigationTruncated, investigation_tool_guard
         from langgraph.errors import GraphRecursionError
@@ -739,7 +739,7 @@ class AuditorGraph:
     def record_review_usage(self, messages):
         """Keep aggregate usage as verdict metadata; calls are ledgered separately."""
         try:
-            import ledger
+            from backend.shared import ledger
 
             self.last_review_usage = ledger._usage_total(messages)
         except Exception:
@@ -759,7 +759,7 @@ class AuditorGraph:
         measured for ~4 tool calls).
         """
         import ask_investigator
-        import s5tools
+        from backend.shared import s5tools
 
         if not s5tools.valid_repo(repo):
             raise ValueError(f"bad repo: {repo!r}")
@@ -778,7 +778,7 @@ class AuditorGraph:
                 allowed_td="\n".join(allowed_td)
             )
             if agent_factory is None:
-                import model_router
+                from backend.shared import model_router
 
                 try:
                     spec = model_router.resolve_llm()
@@ -905,7 +905,7 @@ class AuditorGraph:
 
         def persist_node(state):
             import decisions
-            import ledger
+            from backend.shared import ledger
 
             verdict = outer.build_verdict(dict(state))
             calls = [
@@ -989,11 +989,11 @@ def main(argv=None) -> int:
     REPORT, FINAL:) so eval_ask's parsers keep working, and records
     one ledger row under script "auditor.py" for tool attribution.
     """
-    import cli
+    from backend.shared import cli
 
     cli.bootstrap()
-    import ledger
-    import s5tools
+    from backend.shared import ledger
+    from backend.shared import s5tools
 
     argv = sys.argv if argv is None else argv
     if len(argv) < 3 or not s5tools.valid_repo(argv[1]):

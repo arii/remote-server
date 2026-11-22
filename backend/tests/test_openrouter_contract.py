@@ -21,10 +21,10 @@ import types
 import unittest
 from unittest import mock
 
-import ledger
-import model_router
-import pricing
-import runs
+from backend.shared import ledger
+from backend.shared import model_router
+from backend.shared import pricing
+from backend.shared import runs
 
 
 FREE_MODEL = "contract/reasoner:free"

@@ -13,9 +13,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import ledger
+from backend.shared import ledger
 import pipeline as pipeline_mod
-import twt_receipts
+from backend.shared import twt_receipts
 from backend.tests.agent_control_case import AgentControlTestCase
 
 try:
@@ -267,17 +267,17 @@ class TestEvals(AgentControlTestCase):
 
 class TestCliCommands(unittest.TestCase):
     def test_no_args_usage(self):
-        import cli
+        from backend.shared import cli
 
         self.assertEqual(cli.main([]), 2)
 
     def test_unknown_command(self):
-        import cli
+        from backend.shared import cli
 
         self.assertEqual(cli.main(["bogus"]), 2)
 
     def test_run_pipeline_missing_args(self):
-        import cli
+        from backend.shared import cli
 
         self.assertEqual(cli.main(["run-pipeline"]), 2)
         self.assertEqual(
@@ -285,7 +285,7 @@ class TestCliCommands(unittest.TestCase):
         )
 
     def test_run_pipeline_bad_issue(self):
-        import cli
+        from backend.shared import cli
 
         self.assertEqual(
             cli.main(

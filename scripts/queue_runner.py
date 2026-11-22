@@ -48,7 +48,7 @@ def write_json(path, value, owner=None):
 
 
 def receipt_total(ids, local_ids, receipts):
-    from twt_receipts import receipt_cost
+    from backend.shared.twt_receipts import receipt_cost
 
     expected = set(ids)
     found = {}
@@ -77,9 +77,9 @@ def receipt_total(ids, local_ids, receipts):
 
 def refresh_spend(scope):
     """Refresh existing owners, reserving unowned live receipts without writing them."""
-    import ledger
-    import runs
-    import twt_receipts
+    from backend.shared import ledger
+    from backend.shared import runs
+    from backend.shared import twt_receipts
 
     unowned_cost = 0.0
     if scope is not None and scope.ids:
@@ -131,8 +131,8 @@ def check_budget(scope, cap):
 
 
 def install_budget_guard(cap, directory, fatal):
-    import model_router
-    import twt_receipts
+    from backend.shared import model_router
+    from backend.shared import twt_receipts
 
     def guard():
         if (directory.parent / "STOP").exists():
@@ -207,9 +207,9 @@ def checked_cap(value):
 
 
 def coverage(state):
-    import ledger
-    import runs
-    import twt_receipts
+    from backend.shared import ledger
+    from backend.shared import runs
+    from backend.shared import twt_receipts
 
     expected, local, receipts = set(), set(), {}
     records, refresh = [], set()
@@ -334,13 +334,13 @@ def worker(job_dir):
         write_json(directory / name, value, owner)
 
     try:
-        import cli
+        from backend.shared import cli
         import pipeline
-        import runs
+        from backend.shared import runs
 
         install_budget_guard(cap, directory, fatal)
         try:
-            import model_router
+            from backend.shared import model_router
 
             preflight = getattr(model_router, "preflight_gateway", None)
         except ImportError:
@@ -442,7 +442,7 @@ def recover(job_dir):
     )
     owner = (directory.stat().st_uid, directory.stat().st_gid)
     try:
-        import twt_receipts
+        from backend.shared import twt_receipts
 
         for journal in (state / "receipts").glob("*.jsonl"):
             entries = [

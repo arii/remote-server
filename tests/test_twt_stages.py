@@ -5,7 +5,7 @@ import os
 import unittest
 from unittest import mock
 
-import model_router
+from backend.shared import model_router
 
 
 class TestTwtStageModels(unittest.TestCase):

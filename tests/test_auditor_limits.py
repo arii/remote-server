@@ -10,8 +10,8 @@ from unittest import mock
 import auditor
 import coder
 import issue_generator
-import ledger
-import model_router
+from backend.shared import ledger
+from backend.shared import model_router
 import observe
 import pipeline
 

@@ -2,6 +2,7 @@
 imports langchain hooks). No model calls: middleware is driven with
 fake requests/handlers/state. Recorder core is stdlib-only.
 Run: deep-agent/.venv/bin/python tests/test_observe.py"""
+
 import json
 import os
 import tempfile
@@ -13,6 +14,7 @@ import observe
 
 try:
     import langchain  # noqa: F401
+
     HAS_LANGCHAIN = True
 except ImportError:
     HAS_LANGCHAIN = False
@@ -26,16 +28,23 @@ class TestRecorder(unittest.TestCase):
             rec.run_start("s.py", "thread-1", "ollama:qwen3:8b")
             rec.model_request(3)
             rec.model_response({"input_tokens": 10})
-            rec.tool_call("grep_repo", {"pattern": "x"}, 0.5, True,
-                          result="hit")
+            rec.tool_call("grep_repo", {"pattern": "x"}, 0.5, True, result="hit")
             rec.tool_call("bad", {}, 0.1, False, error="boom")
             rec.run_end(True)
             rec.close()
             lines = [json.loads(line) for line in open(path)]
             types = [e["type"] for e in lines]
             self.assertEqual(
-                types, ["run_start", "model_request", "model_response",
-                        "tool_call", "tool_call", "run_end"])
+                types,
+                [
+                    "run_start",
+                    "model_request",
+                    "model_response",
+                    "tool_call",
+                    "tool_call",
+                    "run_end",
+                ],
+            )
             self.assertTrue(all("ts" in e for e in lines))
             self.assertEqual(lines[2]["usage"]["input_tokens"], 10)
             self.assertEqual(lines[2]["usage"]["output_tokens"], 0)
@@ -70,30 +79,26 @@ class TestRecorder(unittest.TestCase):
 
 class TestUniqueTracePath(unittest.TestCase):
     def test_same_second_calls_produce_distinct_paths(self):
-        paths = {observe.default_trace_path("ask", "ask-repo")
-                 for _ in range(50)}
+        paths = {observe.default_trace_path("ask", "ask-repo") for _ in range(50)}
         self.assertEqual(len(paths), 50)
 
     def test_suffix_carries_pid_and_random(self):
         path = observe.default_trace_path("ask", "ask-repo")
         name = os.path.basename(path)
         self.assertRegex(
-            name,
-            r"^ask_ask-repo_\d{8}T\d{6}_%d-[0-9a-f]{8}\.jsonl$"
-            % os.getpid())
+            name, r"^ask_ask-repo_\d{8}T\d{6}_%d-[0-9a-f]{8}\.jsonl$" % os.getpid()
+        )
 
     def test_timestamp_keeps_position_for_sortability(self):
-        first = os.path.basename(
-            observe.default_trace_path("ask", "ask-repo"))
+        first = os.path.basename(observe.default_trace_path("ask", "ask-repo"))
         stamp = first.split("_")[2]
         self.assertRegex(stamp, r"^\d{8}T\d{6}$")
 
     def test_concurrent_same_thread_runs_do_not_interleave(self):
-        import ledger
+        from backend.shared import ledger
 
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(ledger, "state_dir",
-                                   return_value=d):
+            with mock.patch.object(ledger, "state_dir", return_value=d):
                 p1 = observe.default_trace_path("ask", "ask-repo")
                 p2 = observe.default_trace_path("ask", "ask-repo")
             self.assertNotEqual(p1, p2)
@@ -110,8 +115,9 @@ class TestUniqueTracePath(unittest.TestCase):
             e1 = [json.loads(line) for line in open(p1)]
             e2 = [json.loads(line) for line in open(p2)]
             for events in (e1, e2):
-                self.assertEqual([e["type"] for e in events],
-                                 ["run_start", "tool_call", "run_end"])
+                self.assertEqual(
+                    [e["type"] for e in events], ["run_start", "tool_call", "run_end"]
+                )
             self.assertIn("one", e1[1]["result_preview"])
             self.assertIn("two", e2[1]["result_preview"])
             self.assertNotIn("two", e1[1]["result_preview"])
@@ -122,20 +128,20 @@ class TestTotals(unittest.TestCase):
     def test_aggregates_usage_and_calls(self):
         with tempfile.TemporaryDirectory() as d:
             rec = observe.TraceRecorder(os.path.join(d, "t.jsonl"))
-            rec.model_response({"input_tokens": 100, "output_tokens": 20,
-                                "total_tokens": 120})
-            rec.model_response({"input_tokens": 50, "output_tokens": 10,
-                                "total_tokens": 60})
-            rec.tool_call("grep_repo", {"pattern": "x"}, 0.5, True,
-                          result="hit")
+            rec.model_response(
+                {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
+            )
+            rec.model_response(
+                {"input_tokens": 50, "output_tokens": 10, "total_tokens": 60}
+            )
+            rec.tool_call("grep_repo", {"pattern": "x"}, 0.5, True, result="hit")
             rec.tool_call("bad", {}, 0.1, False, error="boom")
             rec.close()
             usage, calls = rec.totals()
-            self.assertEqual(usage, {"input_tokens": 150,
-                                     "output_tokens": 30,
-                                     "total_tokens": 180})
-            self.assertEqual([c["name"] for c in calls],
-                             ["grep_repo", "bad"])
+            self.assertEqual(
+                usage, {"input_tokens": 150, "output_tokens": 30, "total_tokens": 180}
+            )
+            self.assertEqual([c["name"] for c in calls], ["grep_repo", "bad"])
 
     def test_empty_totals_are_zeros(self):
         with tempfile.TemporaryDirectory() as d:
@@ -154,17 +160,18 @@ class TestMiddleware(unittest.TestCase):
             _, _, wrap_mw = observe.trace_middleware(rec)
             wrap = wrap_mw.wrap_tool_call
             req = SimpleNamespace(
-                tool_call={"name": "grep_repo",
-                           "args": {"pattern": "x"}})
+                tool_call={"name": "grep_repo", "args": {"pattern": "x"}}
+            )
             out = wrap(req, lambda r: "hit!")
             self.assertEqual(out, "hit!")
             with self.assertRaises(RuntimeError):
+
                 def boom(r):
                     raise RuntimeError("nope")
+
                 wrap(req, boom)
             rec.close()
-            events = [json.loads(line) for line in
-                      open(os.path.join(d, "t.jsonl"))]
+            events = [json.loads(line) for line in open(os.path.join(d, "t.jsonl"))]
             calls = [e for e in events if e["type"] == "tool_call"]
             self.assertEqual(len(calls), 2)
             self.assertTrue(calls[0]["ok"])
@@ -178,20 +185,22 @@ class TestMiddleware(unittest.TestCase):
             before_mw, after_mw, _ = observe.trace_middleware(rec)
             before_mw.before_model({"messages": [{}, {}]}, None)
             msg = SimpleNamespace(
-                usage_metadata={"input_tokens": 5, "output_tokens": 7,
-                                "total_tokens": 12})
+                usage_metadata={
+                    "input_tokens": 5,
+                    "output_tokens": 7,
+                    "total_tokens": 12,
+                }
+            )
             after_mw.after_model({"messages": [msg]}, None)
             after_mw.after_model({}, None)
             rec.close()
-            events = [json.loads(line) for line in
-                      open(os.path.join(d, "t.jsonl"))]
+            events = [json.loads(line) for line in open(os.path.join(d, "t.jsonl"))]
             types = [e["type"] for e in events]
             self.assertEqual(
-                types, ["model_request", "model_response",
-                        "model_response"])
+                types, ["model_request", "model_response", "model_response"]
+            )
             self.assertEqual(events[0]["n_messages"], 2)
             self.assertEqual(events[1]["usage"]["total_tokens"], 12)
-
 
     def test_tool_trace_through_real_agent(self):
         from langchain.agents import create_agent
@@ -210,12 +219,9 @@ class TestMiddleware(unittest.TestCase):
             def _llm_type(self):
                 return "queue-fake"
 
-            def _generate(self, messages, stop=None, run_manager=None,
-                          **kwargs):
-                msg = self.replies.pop(0) if self.replies \
-                    else AIMessage(content="")
-                return ChatResult(
-                    generations=[ChatGeneration(message=msg)])
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+                msg = self.replies.pop(0) if self.replies else AIMessage(content="")
+                return ChatResult(generations=[ChatGeneration(message=msg)])
 
             def bind_tools(self, tools, **kwargs):
                 return self
@@ -229,22 +235,33 @@ class TestMiddleware(unittest.TestCase):
             """
             return f"pong:{q}"
 
-        model = QueueChatModel(replies=[
-            AIMessage(content="", tool_calls=[{
-                "name": "probe", "args": {"q": "x"}, "id": "call-1",
-                "type": "tool_call"}]),
-            AIMessage(content="done"),
-        ])
+        model = QueueChatModel(
+            replies=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "probe",
+                            "args": {"q": "x"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
         with tempfile.TemporaryDirectory() as d:
             rec = observe.TraceRecorder(os.path.join(d, "t.jsonl"))
             agent = create_agent(
-                model=model, tools=[probe],
-                middleware=observe.trace_middleware(rec))
-            agent.invoke({"messages": [{"role": "user", "content": "go"}]},
-                         config={"recursion_limit": 25})
+                model=model, tools=[probe], middleware=observe.trace_middleware(rec)
+            )
+            agent.invoke(
+                {"messages": [{"role": "user", "content": "go"}]},
+                config={"recursion_limit": 25},
+            )
             rec.close()
-            events = [json.loads(line) for line in
-                      open(os.path.join(d, "t.jsonl"))]
+            events = [json.loads(line) for line in open(os.path.join(d, "t.jsonl"))]
             calls = [e for e in events if e["type"] == "tool_call"]
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0]["name"], "probe")

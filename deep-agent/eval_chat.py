@@ -28,7 +28,7 @@ import re
 import sys
 import time
 
-import cli
+from backend.shared import cli
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 cli.bootstrap()

@@ -116,8 +116,8 @@ pi_runs_lock = threading.Lock()
 pending_resumes: dict = {}
 pending_resumes_lock = threading.Lock()
 
-import model_router  # noqa: E402
-import pricing  # noqa: E402
+from backend.shared import model_router  # noqa: E402
+from backend.shared import pricing  # noqa: E402
 
 
 def _repo_root() -> str:

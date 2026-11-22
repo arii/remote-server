@@ -335,7 +335,7 @@ class TestAskTools(unittest.TestCase):
     def test_search_web_registered_and_guarded(self):
         from unittest import mock
 
-        import s5tools
+        from backend.shared import s5tools
 
         self.assertIn("fetch_url", ai.search_web.description)
         # Guarded shapes fail without touching the network.

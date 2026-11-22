@@ -83,7 +83,7 @@ class TestGitStashPermissions(unittest.TestCase):
 
     def test_update_permissions_script_has_git_stash_operations(self):
         """Verify update-permissions.sh includes push, pop, drop, apply stash rules."""
-        from cli import repo_root
+        from backend.shared.cli import repo_root
 
         script_path = Path(repo_root(), "scripts/update-permissions.sh")
         content = script_path.read_text(encoding="utf-8")

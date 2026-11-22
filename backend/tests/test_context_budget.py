@@ -305,7 +305,7 @@ class PromptGateTests(unittest.TestCase):
         import deep_chat
 
         with mock.patch.dict(os.environ, {cb.NUM_CTX_ENV: "1000"}):
-            with mock.patch("cli.usage_error") as usage:
+            with mock.patch("backend.shared.cli.usage_error") as usage:
                 deep_chat._prompt_budget_gate("x" * 800)
         message = usage.call_args[0][0]
         self.assertIn("prompt", message)

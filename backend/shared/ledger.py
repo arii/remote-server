@@ -2,7 +2,7 @@
 
 Each entry: timestamp, script, model, thread, duration, tool calls,
 token usage, final preview. Usage totals power Nebius spend tracking.
-Reader: python ledger.py [n]  (prints last n entries, compact)
+Reader: python3 -m backend.shared.ledger [n]  (prints last n entries, compact)
 """
 
 import fcntl
@@ -13,8 +13,8 @@ import sys
 import time
 from contextlib import contextmanager
 
-import cli
-import pricing
+from backend.shared import cli
+from backend.shared import pricing
 
 
 # EVAL_LEDGER lets parallel eval gates isolate their ledgers; the eval
@@ -26,9 +26,7 @@ def state_dir():
     image sets /var/lib/buttons/deep-agent so Past-runs survive
     recreates); default is this source dir for dev.
     """
-    return os.environ.get("DEEP_AGENT_STATE_DIR") or os.path.dirname(
-        os.path.abspath(__file__)
-    )
+    return os.environ.get("DEEP_AGENT_STATE_DIR") or cli.deep_agent_dir()
 
 
 LEDGER = os.environ.get("EVAL_LEDGER") or os.path.join(state_dir(), "ledger.jsonl")

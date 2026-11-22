@@ -196,7 +196,7 @@ class TestCoderLoop(unittest.TestCase):
         )
 
     def test_approve_implement_gate_persist(self):
-        import ledger
+        from backend.shared import ledger
 
         with tempfile.TemporaryDirectory() as tmp:
             ledger_path = os.path.join(tmp, "ledger.jsonl")

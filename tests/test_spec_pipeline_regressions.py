@@ -92,7 +92,7 @@ class TestSpecResume(unittest.TestCase):
                     "draft_text",
                     return_value=f"### Allowed Files\n- `widget.py`\n- {question}",
                 ),
-                mock.patch("ledger.record"),
+                mock.patch("backend.shared.ledger.record"),
             ):
                 ok, state, text = pipe.stage_spec()
             self.assertTrue(ok, text)
@@ -127,7 +127,7 @@ class TestFailureDetail(unittest.TestCase):
 )
 class TestSpecUsage(unittest.TestCase):
     def test_investigation_calls_survive_recursion_truncation(self):
-        import ledger
+        from backend.shared import ledger
         from langchain_core.language_models.fake_chat_models import (
             FakeMessagesListChatModel,
         )
@@ -188,7 +188,7 @@ class TestSpecUsage(unittest.TestCase):
                 )
 
     def test_validation_failure_keeps_completed_draft_usage(self):
-        import ledger
+        from backend.shared import ledger
         from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
         from langchain_core.messages import AIMessage
 
@@ -232,7 +232,7 @@ class TestSpecUsage(unittest.TestCase):
             self.assertIn('"input_tokens": 1000', trace)
 
     def test_missing_usage_and_model_errors_are_unknown_not_free(self):
-        import ledger
+        from backend.shared import ledger
         from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
         from langchain_core.messages import AIMessage
 
@@ -275,10 +275,10 @@ class TestSpecUsage(unittest.TestCase):
 
 class TestUnknownSpend(unittest.TestCase):
     def test_unrated_usage_is_repriced_when_rates_become_available(self):
-        import ledger
-        import model_router
-        import pricing
-        import runs
+        from backend.shared import ledger
+        from backend.shared import model_router
+        from backend.shared import pricing
+        from backend.shared import runs
 
         with tempfile.TemporaryDirectory() as root:
             path = str(Path(root, "ledger.jsonl"))
@@ -319,9 +319,9 @@ class TestUnknownSpend(unittest.TestCase):
                 self.assertIsNone(json.loads(Path(path).read_text())["cost_usd"])
 
     def test_recorded_unknown_remote_cost_blocks_router(self):
-        import ledger
-        import model_router
-        import runs
+        from backend.shared import ledger
+        from backend.shared import model_router
+        from backend.shared import runs
 
         with tempfile.TemporaryDirectory() as root:
             path = str(Path(root, "ledger.jsonl"))
@@ -354,8 +354,8 @@ class TestUnknownSpend(unittest.TestCase):
                     model_router.resolve_llm(prefer="nebius")
 
     def test_local_and_free_missing_usage_still_cost_zero(self):
-        import ledger
-        import runs
+        from backend.shared import ledger
+        from backend.shared import runs
 
         with tempfile.TemporaryDirectory() as root:
             path = str(Path(root, "ledger.jsonl"))
@@ -480,7 +480,7 @@ class TestSpecToolBudget(unittest.TestCase):
     """Live agent-loop proof of the tool budget and forced final turn."""
 
     def _run(self, responses, max_tool_calls):
-        import ledger
+        from backend.shared import ledger
         from langchain_core.language_models.fake_chat_models import (
             FakeMessagesListChatModel,
         )

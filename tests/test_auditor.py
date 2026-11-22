@@ -95,14 +95,14 @@ class TestHardGatePreviewUrl(unittest.TestCase):
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langgraph)")
 class TestAuditorGraph(unittest.TestCase):
     def setUp(self):
-        import ledger
+        from backend.shared import ledger
 
         self._ledger_tmp = tempfile.TemporaryDirectory()
         self._ledger_prev = ledger.LEDGER
         ledger.LEDGER = os.path.join(self._ledger_tmp.name, "ledger.jsonl")
 
     def tearDown(self):
-        import ledger
+        from backend.shared import ledger
 
         ledger.LEDGER = self._ledger_prev
         self._ledger_tmp.cleanup()
@@ -170,7 +170,7 @@ class TestAuditorGraph(unittest.TestCase):
             self.assertIn("verify-scope", seen)
 
     def test_verdict_approved_on_approve(self):
-        import ledger
+        from backend.shared import ledger
 
         with tempfile.TemporaryDirectory() as tmp:
             ledger_path = os.path.join(tmp, "ledger.jsonl")
@@ -185,7 +185,7 @@ class TestAuditorGraph(unittest.TestCase):
             self.assertEqual(final.get("verdict", {}).get("status"), "APPROVED")
 
     def test_approve_persists(self):
-        import ledger
+        from backend.shared import ledger
 
         with tempfile.TemporaryDirectory() as tmp:
             ledger_path = os.path.join(tmp, "ledger.jsonl")
@@ -237,7 +237,7 @@ class TestAuditorGraph(unittest.TestCase):
                 def invoke(self, messages, config=None):
                     return fake_verdict
 
-            import model_router
+            from backend.shared import model_router
 
             with (
                 mock.patch.object(
@@ -283,7 +283,7 @@ class TestAuditorGraph(unittest.TestCase):
 
                     return {"messages": [FakeAiMsg()]}
 
-            import model_router
+            from backend.shared import model_router
 
             with (
                 mock.patch.object(
@@ -511,7 +511,7 @@ class TestAskMain(unittest.TestCase):
         import io
         from contextlib import redirect_stderr, redirect_stdout
 
-        import ledger
+        from backend.shared import ledger
 
         def run(argv):
             with tempfile.TemporaryDirectory() as tmp:
@@ -630,7 +630,7 @@ class TestAskMain(unittest.TestCase):
         self.assertEqual(verdict, "fail", reasons)
 
     def test_unexpected_error_records_row_and_raises(self):
-        import ledger as ledger_mod
+        from backend.shared import ledger as ledger_mod
 
         recorded = []
         orig_record = ledger_mod.record

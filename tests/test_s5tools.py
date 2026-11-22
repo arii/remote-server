@@ -3,7 +3,7 @@ import sys
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import s5tools
+from backend.shared import s5tools
 
 try:
     import pytest  # noqa: F401

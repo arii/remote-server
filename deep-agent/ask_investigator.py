@@ -9,15 +9,15 @@ issue_generator.py; there is no standalone runner.
 import json
 import subprocess
 
-import cli
+from backend.shared import cli
 
 cli.bootstrap()
 
 from langchain_core.tools import tool  # noqa: E402
 
 import retrieval  # noqa: E402
-import runs  # noqa: E402
-import s5tools  # noqa: E402
+from backend.shared import runs  # noqa: E402
+from backend.shared import s5tools  # noqa: E402
 import impact  # noqa: E402
 
 

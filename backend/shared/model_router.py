@@ -49,14 +49,14 @@ import os
 import re
 import sys
 
-import twt_transport
+from backend.shared import twt_transport
 import time
 import urllib.request
 
-import ledger
-import pricing
-import runs
-from pricing import PROVIDERS
+from backend.shared import ledger
+from backend.shared import pricing
+from backend.shared import runs
+from backend.shared.pricing import PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ class _BoundedHistory:
         return kwargs
 
     def _generate(self, messages, *args, **kwargs):
-        import twt_receipts
+        from backend.shared import twt_receipts
 
         token = twt_receipts.latest.set(None)
         dispatched = False
@@ -140,7 +140,7 @@ class _BoundedHistory:
             twt_receipts.latest.reset(token)
 
     async def _agenerate(self, messages, *args, **kwargs):
-        import twt_receipts
+        from backend.shared import twt_receipts
 
         token = twt_receipts.latest.set(None)
         dispatched = False
@@ -540,7 +540,7 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
         raise ValueError(f"unknown pipeline model stage: {stage}")
     if spec.get("provider") != "twt":
         return
-    import twt_provenance
+    from backend.shared import twt_provenance
 
     base_url = spec.get("base_url") or _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL)
     uds = spec.get("uds") or (_env("TWT_UDS") or None)
@@ -611,7 +611,7 @@ def build_chat_model(
             ]
     if preflight or _env("TWT_PREFLIGHT_REQUIRED") == "1":
         preflight_gateway(spec=spec, stage=stage)
-    import twt_receipts
+    from backend.shared import twt_receipts
 
     if spec.get("provider") == "ollama":
         from langchain_ollama import ChatOllama  # noqa: E402

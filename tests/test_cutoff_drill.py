@@ -22,7 +22,7 @@ from unittest import mock
 
 from backend.exec import agent_turn  # noqa: E402
 
-import model_router  # noqa: E402
+from backend.shared import model_router  # noqa: E402
 
 MUSE_RE = re.compile(r"muse", re.I)
 
@@ -32,7 +32,7 @@ MUSE_RE = re.compile(r"muse", re.I)
 MUSE_FREE_MODULES = [
     "backend/briefing_summary.py",
     "backend/api/routers/briefing.py",
-    "deep-agent/model_router.py",
+    "backend/shared/model_router.py",
     "deep-agent/ask_investigator.py",
     "deep-agent/deep_chat.py",
     "deep-agent/eval_lib.py",

@@ -29,8 +29,8 @@ ANCHORS = [
     ("backend/api/routers/agents.py", "def health(", "health"),
     ("backend/api/routers/agents.py", "def agent_runs(", "agent_runs"),
     ("backend/api/routers/agents.py", "def agent_run(", "agent_run"),
-    ("deep-agent/runs.py", "def list_runs(", "list_runs"),
-    ("deep-agent/runs.py", "def get_run(", "get_run"),
+    ("backend/shared/runs.py", "def list_runs(", "list_runs"),
+    ("backend/shared/runs.py", "def get_run(", "get_run"),
     ("backend/api/routers/chat.py", "def chat_stream_get(", "chat_stream_get"),
     ("backend/api/routers/chat.py", "def chat_stream_post(", "chat_stream_post"),
     ("backend/api/routers/chat.py", "def chat_abort(", "chat_abort"),
@@ -53,7 +53,9 @@ ANCHORS = [
 
 # Bare file:line pins: path.py:123. Symbol anchors (deep_chat.py:main)
 # have no digits after the colon and never match.
-FILE_LINE_PIN = re.compile(r"\b[A-Za-z0-9_./-]+\.(?:py|tsx?|jsx?|sh|yml|yaml|json|md|css):\d")
+FILE_LINE_PIN = re.compile(
+    r"\b[A-Za-z0-9_./-]+\.(?:py|tsx?|jsx?|sh|yml|yaml|json|md|css):\d"
+)
 
 # Bare section-relative pins: `:7309`, `:13-24`. The lookbehind keeps
 # `::` ranges and `INTERRUPT: {...}` prose out of the match.
