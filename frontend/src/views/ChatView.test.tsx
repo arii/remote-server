@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_BACKEND_OPTIONS, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, isTurnInProgressError, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, restoreUserBubble, resumeActionForStatus, runActionLabel, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, FIRST_TOKEN_WARN_SECONDS, streamPhaseLabel, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_BACKEND_OPTIONS, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, CHAT_PROMPT_CHIPS_HINT, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, isTurnInProgressError, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, restoreUserBubble, resumeActionForStatus, runActionLabel, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, FIRST_TOKEN_WARN_SECONDS, streamPhaseLabel, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -835,7 +835,10 @@ describe('prompt chips (issue #664)', () => {
     expect(html).toContain('data-testid="chat-chip-todos"');
     expect(html).toContain('data-testid="chat-chip-diff"');
     expect(html).toContain('Review uncommitted changes');
-    expect(html).toContain('Alt+click fills without sending');
+    expect(html).toContain('Tap a starter to fill the prompt. Press Enter or Send to send it.');
+    expect(html).toContain('aria-describedby="chat-prompt-chips-hint"');
+    expect(html).not.toContain('Alt+click');
+    expect(html).not.toContain('without sending');
     expect(html).not.toContain('disabled');
   });
 
@@ -844,12 +847,29 @@ describe('prompt chips (issue #664)', () => {
     expect(html).toContain('disabled');
   });
 
-  it('tap sends, alt-click fills, streaming blocks', () => {
-    expect(chipPickAction('Review my uncommitted changes', false, false)).toBe('send');
-    expect(chipPickAction('Review my uncommitted changes', true, false)).toBe('fill');
-    expect(chipPickAction('Review my uncommitted changes', false, true)).toBe('none');
-    expect(chipPickAction('Review my uncommitted changes', true, true)).toBe('none');
-    expect(chipPickAction('   ', false, false)).toBe('none');
+  it('a click only fills: the pick action is fill, never send', () => {
+    expect(chipPickAction('Review my uncommitted changes', false)).toBe('fill');
+    expect(chipPickAction('Review my uncommitted changes', true)).toBe('none');
+    expect(chipPickAction('   ', false)).toBe('none');
+  });
+
+  it('click passes only the prompt text (no alt-key path) and the hint is visible text', () => {
+    const picked: unknown[][] = [];
+    const tree = PromptChips({ disabled: false, onPick: (...a: unknown[]) => picked.push(a) });
+    const buttons: Array<{ props: { onClick: (e: unknown) => void } }> = [];
+    const walk = (n: unknown): void => {
+      if (!n || typeof n !== 'object') return;
+      const el = n as { type?: unknown; props?: { children?: unknown; onClick?: (e: unknown) => void } };
+      if (el.type === 'button') buttons.push(el as never);
+      const c = el.props?.children;
+      (Array.isArray(c) ? c : [c]).forEach(walk);
+      if (Array.isArray(n)) n.forEach(walk);
+    };
+    walk(tree);
+    expect(buttons).toHaveLength(3);
+    buttons[0].props.onClick({ altKey: true });
+    expect(picked).toEqual([[CHAT_PROMPT_CHIPS[0].prompt]]);
+    expect(CHAT_PROMPT_CHIPS_HINT).toBe('Tap a starter to fill the prompt. Press Enter or Send to send it.');
   });
 });
 

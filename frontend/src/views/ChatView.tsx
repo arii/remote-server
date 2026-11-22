@@ -52,18 +52,20 @@ export const CHAT_BACKEND_OPTIONS: Array<{ value: ChatBackend; label: string }> 
   { value: 'cloud', label: 'Cloud allowed' },
 ];
 
-// One-tap prompt starters above the composer (#664). Tap sends the
-// preset immediately through the normal send path; alt-click fills
-// the composer for editing instead. Static set by design.
+// Prompt starters above the composer (#664, #1491). A tap fills the
+// composer and focuses it; sending takes Enter or the Send button.
+// Static set by design.
 export const CHAT_PROMPT_CHIPS: Array<{ id: string; label: string; prompt: string }> = [
   { id: 'review', label: 'Review uncommitted changes', prompt: 'Review my uncommitted changes' },
   { id: 'todos', label: 'Find active TODOs', prompt: 'Find active TODOs' },
   { id: 'diff', label: 'Summarize branch diff', prompt: 'Summarize this branch diff' },
 ];
 
-export function chipPickAction(text: string, altKey: boolean, streaming: boolean): 'send' | 'fill' | 'none' {
+export const CHAT_PROMPT_CHIPS_HINT = 'Tap a starter to fill the prompt. Press Enter or Send to send it.';
+
+export function chipPickAction(text: string, streaming: boolean): 'fill' | 'none' {
   if (streaming || !text.trim()) return 'none';
-  return altKey ? 'fill' : 'send';
+  return 'fill';
 }
 
 // Prefetched worklist metrics (issue #897): uncommitted count,
@@ -110,23 +112,33 @@ export function PromptChips({
   onPick,
 }: {
   disabled: boolean;
-  onPick: (prompt: string, altKey: boolean) => void;
+  onPick: (prompt: string) => void;
 }) {
   return (
-    <div className="actions" role="group" aria-label="Prompt starters" data-testid="chat-prompt-chips">
-      {CHAT_PROMPT_CHIPS.map((c) => (
-        <button
-          key={c.id}
-          type="button"
-          data-testid={`chat-chip-${c.id}`}
-          title={`${c.label} (Alt+click fills without sending)`}
-          disabled={disabled}
-          onClick={(e) => onPick(c.prompt, e.altKey)}
-        >
-          {c.label}
-        </button>
-      ))}
-    </div>
+    <>
+      <div
+        className="actions"
+        role="group"
+        aria-label="Prompt starters"
+        aria-describedby="chat-prompt-chips-hint"
+        data-testid="chat-prompt-chips"
+      >
+        {CHAT_PROMPT_CHIPS.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            data-testid={`chat-chip-${c.id}`}
+            disabled={disabled}
+            onClick={() => onPick(c.prompt)}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+      <p className="row-meta" id="chat-prompt-chips-hint" data-testid="chat-prompt-chips-hint">
+        {CHAT_PROMPT_CHIPS_HINT}
+      </p>
+    </>
   );
 }
 
@@ -2379,13 +2391,10 @@ export default function ChatView({
     void sendText(lastSent);
   }
 
-  function onPickChip(text: string, altKey: boolean) {
-    const action = chipPickAction(text, altKey, streaming);
-    if (action === 'fill') {
+  function onPickChip(text: string) {
+    if (chipPickAction(text, streaming) === 'fill') {
       setPrompt(text);
       promptRef.current?.focus({ preventScroll: true });
-    } else if (action === 'send') {
-      void sendText(text);
     }
   }
 
@@ -2723,7 +2732,7 @@ export default function ChatView({
       {/* Starters only start conversations: once a thread
           exists the chips would be a third button row (#839). */}
       {messages.length === 0 && (
-        <PromptChips disabled={streaming} onPick={(text, altKey) => onPickChip(text, altKey)} />
+        <PromptChips disabled={streaming} onPick={onPickChip} />
       )}
       {/* One-glance status (D5): the strip rides above the composer;
           its facts come from the App-level single sources and a tap
