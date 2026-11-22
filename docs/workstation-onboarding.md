@@ -415,7 +415,7 @@ Only two items live outside revision control — back these up:
 | Item | Location | Why not in git |
 |---|---|---|
 | Secrets | `.env` (copy of `.env.example` with real values) | Credentials — never commit |
-| Named volumes | `pi-data`, `ollama-data`, `local-data`, `muse-data`, `gh-data`, `code-server-*`, `tailscale-state` | Runtime state (sessions, auth, models); recreated empty if lost |
+| Named volumes | `pi-data`, `ollama-data`, `local-data`, `muse-data`, `gh-data`, `code-server-*` | Runtime state (sessions, auth, models); recreated empty if lost |
 
 Reinstall procedure:
 
