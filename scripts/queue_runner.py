@@ -513,6 +513,33 @@ def reconcile_job(config, source, directory, runtime_directory):
     return read_json(recovery)
 
 
+def finish_retry(root, status_path, status):
+    intent = status.get("retry_intent")
+    if not intent:
+        return
+    key = intent["issue"]
+    repo, number = key.rsplit("#", 1)
+    issue = {"repo": repo, "number": int(number)}
+    ordered_issues([issue])
+    directory = root / (repo.replace("/", "_") + "-" + str(issue["number"]))
+    archive = Path(intent["directory"])
+    if directory.exists():
+        if archive.exists():
+            raise SafetyStop("retry source and archive both exist; inspect evidence")
+        directory.rename(archive)
+    elif not archive.is_dir():
+        raise SafetyStop("retry source and archive missing; inspect evidence")
+    status["completed"] = [item for item in status["completed"] if item != key]
+    status.get("skipped", {}).pop(key, None)
+    status.update(retry=key, done=False)
+    status.setdefault("retry_spend", {})[key] = intent["prior_spend_usd"]
+    status.setdefault("retry_archives", []).append(
+        {field: intent[field] for field in ("issue", "directory", "cost_usd")}
+    )
+    status.pop("retry_intent")
+    write_json(status_path, status)
+
+
 def retry_issue(config_path, key):
     repo, number = key.rsplit("#", 1)
     issue = {"repo": repo, "number": int(number)}
@@ -530,6 +557,7 @@ def retry_issue(config_path, key):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status_path = root / "status.json"
         status = read_json(status_path)
+        finish_retry(root, status_path, status)
         if status.get("current") or status.get("retry"):
             raise SafetyStop("resolve the current or pending retry before retrying")
         saved = read_json(directory / "job.json")["issue"]
@@ -567,15 +595,14 @@ def retry_issue(config_path, key):
         archive_root = root / "archive"
         archive_root.mkdir(mode=0o700, exist_ok=True)
         archive = archive_root / f"{name}-{time.time_ns()}"
-        directory.rename(archive)
-        status["completed"] = [item for item in status["completed"] if item != key]
-        status.get("skipped", {}).pop(key, None)
-        status.update(retry=key, done=False)
-        status.setdefault("retry_spend", {})[key] = spent
-        status.setdefault("retry_archives", []).append(
-            {"issue": key, "directory": str(archive), "cost_usd": cost}
-        )
+        status["retry_intent"] = {
+            "issue": key,
+            "directory": str(archive),
+            "cost_usd": cost,
+            "prior_spend_usd": spent,
+        }
         write_json(status_path, status)
+        finish_retry(root, status_path, status)
         print(f"REQUEUED {key} archive={archive} prior_spend_usd={spent:.8f}")
     return 0
 
@@ -599,6 +626,7 @@ def supervise(config_path, *, clear_halt=False):
     with (root / "queue.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status = read_json(status_path) if status_path.exists() else {"completed": []}
+        finish_retry(root, status_path, status)
         if status.get("current"):
             current = status["current"]
             try:

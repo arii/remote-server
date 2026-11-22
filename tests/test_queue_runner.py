@@ -185,6 +185,55 @@ class RunnerTests(unittest.TestCase):
         )
         return process
 
+    @mock.patch.object(runner.signal, "signal")
+    def test_interrupted_retry_finishes_archival_on_restart(self, _signal):
+        for failure in ("move", "status"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as root:
+                config, state, directory = self.failed_run(root)
+                original_write = runner.write_json
+                original_rename = Path.rename
+
+                def write(path, value, failure=failure):
+                    if Path(path) == state / "status.json" and value.get("retry"):
+                        if failure == "status":
+                            raise OSError("interrupted status write")
+                    original_write(path, value)
+
+                def rename(path, target, failure=failure):
+                    if path == directory and failure == "move":
+                        raise OSError("interrupted archive move")
+                    return original_rename(path, target)
+
+                with (
+                    mock.patch.object(
+                        runner.subprocess,
+                        "Popen",
+                        return_value=self.retry_process(directory),
+                    ),
+                    mock.patch.object(runner, "write_json", side_effect=write),
+                    mock.patch.object(Path, "rename", rename),
+                    self.assertRaises(OSError),
+                ):
+                    runner.retry_issue(config, "owner/repo#7")
+                saved = runner.read_json(state / "status.json")
+                self.assertIn("retry_intent", saved)
+                self.assertEqual(saved["retry_intent"]["prior_spend_usd"], 0.1)
+                (state / "STOP").touch()
+                with mock.patch.object(runner.subprocess, "Popen") as spawn:
+                    self.assertEqual(runner.supervise(config), 0)
+                    spawn.assert_not_called()
+                saved = runner.read_json(state / "status.json")
+                self.assertNotIn("retry_intent", saved)
+                self.assertNotIn("owner/repo#7", saved["completed"])
+                self.assertEqual(saved["retry"], "owner/repo#7")
+                self.assertEqual(saved["retry_spend"]["owner/repo#7"], 0.1)
+                self.assertEqual(len(saved["retry_archives"]), 1)
+                archive = Path(saved["retry_archives"][0]["directory"])
+                self.assertEqual(
+                    (archive / "ledger.jsonl").read_text(), "original ledger evidence\n"
+                )
+                self.assertFalse(directory.exists())
+
     def test_retry_archives_evidence_and_preserves_halts_stop_and_other_issues(self):
         with tempfile.TemporaryDirectory() as root:
             config, state, directory = self.failed_run(root)
