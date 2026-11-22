@@ -130,5 +130,4 @@ the check for one-off `docker compose run` shells.
 
 - `docs/agent-integration-guide.md` — SPA ↔ agent wiring.
 - `docs/boomtick-issues.md` — BoomTick-side tracking.
-- `docs/deepagents.md` — Deep Agents guide; `docs/local-ux.md` —
-  local preview workflow.
+- `docs/deepagents.md` — Deep Agents guide.

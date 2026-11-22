@@ -67,7 +67,7 @@ Committed shapes: `GET /api/attention?repo=` → `{updated_at, items[]}` (epoch 
 
 - Rollback first: pin current buttons image, drill down/up/verify, then forward cut.
 - Cut: Caddy `/buttons*` → new stack (strip_prefix + image swap); phone + webhook smoke post-cut.
-- Deslop after green: delete legacy template UI from `buttons/server.py`, dead scripts/fixtures, killed surfaces; reconcile `main` ↔ `muse-set-up` into one line.
+- Deslop after green: delete dead scripts/fixtures, killed surfaces; reconcile `main` ↔ `muse-set-up` into one line.
 
 ## 9. Milestones
 
