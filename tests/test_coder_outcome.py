@@ -91,6 +91,7 @@ class TestCoderOutcome(unittest.TestCase):
         setup=None,
         repair_files=(),
         verified=False,
+        repair=False,
     ):
         with tempfile.TemporaryDirectory() as root:
             trace = Path(root, "trace.jsonl")
@@ -155,10 +156,41 @@ class TestCoderOutcome(unittest.TestCase):
                             "thread",
                             5,
                             repair_files=repair_files,
+                            repair=repair,
                         )
                     except RuntimeError as exc:
                         result = exc
             return result, [json.loads(line) for line in trace.read_text().splitlines()]
+
+    def test_full_coding_turn_fits_graph_budget_including_repairs(self):
+        for repair in (False, True):
+            with self.subTest(repair=repair):
+                result, events = self.run_scenario(
+                    "DONE #1261",
+                    operation=lambda actions: [
+                        actions.write(f"result-{index}.txt", "done")
+                        for index in range(coder.REPAIR_MODEL_LIMIT - 1)
+                    ],
+                    repair=repair,
+                )
+                self.assertNotIsInstance(result, BaseException)
+                self.assertEqual(result[0], "DONE #1261")
+                self.assertTrue(events[-1]["ok"])
+
+    def test_repair_model_call_limit_still_bounds_a_long_coding_turn(self):
+        from langchain.agents.middleware.model_call_limit import (
+            ModelCallLimitExceededError,
+        )
+
+        with self.assertRaises(ModelCallLimitExceededError):
+            self.run_scenario(
+                "DONE #1261",
+                operation=lambda actions: [
+                    actions.write(f"result-{index}.txt", "done")
+                    for index in range(coder.REPAIR_MODEL_LIMIT)
+                ],
+                repair=True,
+            )
 
     def test_flatline_is_failed_with_missing_contract_reason(self):
         result, events = self.run_scenario("")
