@@ -9,7 +9,7 @@ Last verified: 2026-11-21 on branch `chore/cleanup-and-open-issues`, Python 3.11
 | deep-agent (`deep-agent/`) | experimental | Covered by backend and root tests. Live model calls are not run in the sandbox. `coder.py` accepts `model_tier` but ignores it, so model escalation in `pipeline.py` has no effect on the coder. |
 | terminal (`terminal/`) | unverified | Image build needs Docker. CI builds it, this sandbox cannot. |
 | caddy (`caddy/`) | unverified | Needs Docker and the S5 host. |
-| docker-compose stack | unverified | No Docker in the sandbox. Compose validation runs in CI only. Named-volume boundary is undocumented: [#1517](https://github.com/arii/remote-server/issues/1517). |
+| docker-compose stack | unverified | No Docker in the sandbox. Compose validation runs in CI only. The `/var/lib/buttons` named-volume contract and a read-only check (`scripts/buttons-volume-check.sh`) are documented in `docs/buttons.md`; the check has not been run against the live S5 volume: [#1517](https://github.com/arii/remote-server/issues/1517). |
 | webhook and certbot hooks (`hooks/`) | experimental | `test_certbot_deploy_hook` errors in the sandbox (needs openssl). Not exercised against a real certificate. |
 | chrome-extension | experimental | 65 vitest tests pass. Canonical form-observer extension is undecided: [#1510](https://github.com/arii/remote-server/issues/1510). |
 | buttons-pair | experimental | 31 tests pass. Lint runs in `npm run lint`. |
