@@ -51,9 +51,11 @@ phone browser
 ```
 
 The route table is [`caddy/Caddyfile`](caddy/Caddyfile). Compose also defines
-Ollama, the shared Chromium browser, browser relay, Tailscale and skills
+Ollama, the shared Chromium browser, browser relay and skills
 provisioning. OpenClaw and actions-runner examples are commented out, not
-started services. Tailscale is not required for the OAuth-gated terminal.
+started services. Tailscale is not part of the compose stack: it runs on
+the host only (see [docs/remote-access.md](docs/remote-access.md)) and is not
+required for the OAuth-gated terminal.
 
 ## Initial host setup
 
@@ -153,5 +155,6 @@ is under `docs/archive/` and proposals under `docs/specs/`.
   Treat that access like an admin shell.
 - Certbot certificates are mounted read-only as a whole directory so
   renewal symlink changes remain visible.
-- Tailscale is a separate VPN path. `TS_SERVE=1` is opt-in; do not enable a
-  second public ingress as part of routine verification.
+- Tailscale is a separate VPN path run by the host's systemd `tailscaled`.
+  Do not enable `tailscale serve` or a second public ingress as part of
+  routine verification.

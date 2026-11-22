@@ -9,8 +9,8 @@
 #     -> buttons (allowlisted action runner, see docs/buttons.md)
 #     -> code-server (browser VS Code, see docs/remote-access.md)
 #
-# Tailscale = VPN mesh for admin access to everything else (SSH, future
-# services). The terminal does NOT require Tailscale.
+# Tailscale is not part of this stack: it runs on the host only (systemd),
+# see docs/remote-access.md.
 #
 # Pi + Ollama are ACTIVE (2026-10-27, see docs/pi-setup.md).
 # openclaw / actions-runner stay ON HOLD — decision deferred 2026-10-22.
@@ -264,37 +264,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 120s # model load into RAM takes a while on CPU
-    logging: *default-logging
-    restart: unless-stopped
-
-  # VPN mesh for admin access (SSH, future services). Outbound only.
-  # Terminal access does NOT go through Tailscale — it uses the public DDNS URL.
-  tailscale:
-    # Pinned 2026-11-04 (#478): digest of tailscale v1.104.2, the version
-    # running in prod at pin time (was :stable) — byte-identical, no upgrade.
-    # Upgrade: run the candidate, smoke `tailscale status` on the box,
-    # then bump tag+digest together and note old/new versions in the PR.
-    image: tailscale/tailscale:v1.104.2@sha256:b11583ad2e93e4671128538c88cf11f460444a5d7e449311dd1933a400ab849d
-    network_mode: host
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    volumes:
-      - tailscale-state:/var/lib/tailscale
-      - ./scripts/tailscale-entrypoint.sh:/usr/local/bin/tailscale-entrypoint.sh:ro
-    environment:
-      TS_AUTHKEY: ${TS_AUTHKEY} # reusable auth key from Tailscale admin console
-      TS_HOSTNAME: ${TS_HOSTNAME:-s5}
-      TS_SERVE: ${TS_SERVE:-} # opt-in: also serve the edge over the tailnet (see entrypoint)
-      TS_SERVE_TARGET: ${TS_SERVE_TARGET:-} # optional serve target override (default: proxy listener)
-    entrypoint: ["/usr/local/bin/tailscale-entrypoint.sh"]
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
     logging: *default-logging
     restart: unless-stopped
 
@@ -579,7 +548,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  tailscale-state:
   ollama-data:
   pi-data:
   gemini-data:

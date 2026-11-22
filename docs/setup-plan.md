@@ -76,7 +76,7 @@ Run `scripts/bootstrap.sh` (idempotent, `set -euo pipefail`; pass
    inbound rules.)
 5. `fail2ban`: enable the sshd jail (defense in depth for the LAN rule).
 6. Disable password SSH auth (`PasswordAuthentication no`), keep key-only.
-7. Set timezone, hostname (`s5` or similar), install Tailscale-free
+7. Set timezone, hostname (`s5` or similar), install
    mDNS (`avahi-daemon`) so `s5.local` resolves on the LAN.
 
 Your existing certbot/DDNS setup is **not touched** by this script — it
@@ -113,7 +113,6 @@ Every secret via environment variables; `.env` is git-ignored, and
 |---|---|---|---|
 | `oauth2-proxy` | TLS edge (existing LE certs) + GitHub OAuth gate, single-user allowlist | `quay.io/oauth2-proxy/oauth2-proxy` (pinned v7) | **public** `TERMINAL_PORT`/tcp |
 | `terminal` | browser terminal: ttyd + zellij, Docker CLI, repo + socket mounts | built from `terminal/Dockerfile` (pinned ttyd/zellij) | compose network only, via oauth2-proxy |
-| `tailscale` | VPN mesh for admin access (SSH, future services) | `tailscale/tailscale` | outbound only |
 
 Agent services (`ollama`, `openclaw`, `actions-runner`) are commented out
 under `profiles: ["agents"]` — decision deferred, see docs/agent-harness.md.
@@ -142,7 +141,7 @@ required for the terminal.
    or issue an additional cert with your existing certbot (out of scope
    here — your certbot already works).
 2. **Fill in `.env`**: `TERMINAL_DOMAIN`, `TERMINAL_PORT`, `LE_DIR`
-   (default `/etc/letsencrypt`), plus the Tailscale key.
+   (default `/etc/letsencrypt`).
 3. **Create the GitHub OAuth App** (github.com/settings/developers → New
    OAuth App). Authorization callback URL, registered **exactly**:
    `https://<TERMINAL_DOMAIN>:<TERMINAL_PORT>/oauth2/callback`
@@ -167,14 +166,14 @@ wrong cert is being served.
 
 ## Phase 5b — VPN (Tailscale) for admin access
 
-`docker compose up -d tailscale` (uses `TS_AUTHKEY`); approve the device in
-the Tailscale admin console. The phone's Tailscale app gives you VPN access
+Tailscale runs on the host only (systemd `tailscaled`); compose does not run
+it (#1514, see docs/remote-access.md). Install it on the host, run
+`sudo tailscale up`, and approve the device in the Tailscale admin console. The phone's Tailscale app gives you VPN access
 to the box for anything not on the public port (SSH via a terminal app,
 future services). The web terminal itself does not need Tailscale.
 
 If the public terminal port is ever blocked (restrictive network), the
-manual fallback is documented in `scripts/tailscale-entrypoint.sh`
-(`tailscale serve` the proxy over the tailnet).
+manual fallback is `tailscale serve` of the proxy on the host.
 
 Verify: with the phone on cellular and Tailscale on, `ping` the tailnet IP
 of the box (or SSH to it) — proves the mesh works independently of the
@@ -184,7 +183,7 @@ public port.
 
 What: (a) this repo (compose files, configs, scripts, `terminal/`) — pushed
 to GitHub, which is backup #1; (b) named-volume data that isn't
-reproducible: `tailscale-state` (re-enrollment is annoying — back it up).
+reproducible: host Tailscale state (`/var/lib/tailscale`; re-enrollment is annoying — back it up).
 
 How: `restic` in a cron container or host cron, nightly, to a local
 USB disk (first copy) — plus `rclone` weekly to cheap object storage

@@ -48,7 +48,6 @@ class TestDurability(unittest.TestCase):
             "oauth2-proxy",
             "terminal",
             "ollama",
-            "tailscale",
             "buttons",
             "caddy",
             "browser-relay",
@@ -66,11 +65,11 @@ class TestDurability(unittest.TestCase):
         for name in ("terminal", "code-server", "buttons", "caddy", "ollama"):
             with self.subTest(service=name):
                 self.assertIn("healthcheck", services[name])
-        for name in ("oauth2-proxy", "tailscale", "browser-relay"):
+        for name in ("oauth2-proxy", "browser-relay"):
             with self.subTest(service=name):
                 # Deliberately none: TLS edge (no shell/curl in the image;
                 # liveness is covered host-side by scripts/edge-liveness-watch.sh,
-                # see #537), host-net VPN (nothing gates on it), relay
+                # see #537), relay
                 # (agent-managed daemon).
                 self.assertNotIn("healthcheck", services[name])
 

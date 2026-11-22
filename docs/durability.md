@@ -10,7 +10,6 @@
 | gh CLI login (`hosts.yml`) | `gh-data` |
 | VS Code settings, extensions, workspaces | `code-server-data`, `code-server-config` |
 | Ollama models | `ollama-data` |
-| Tailscale identity | `tailscale-state` |
 | Buttons audit ledger | `buttons-data` |
 | BrowserMCP daemon identity (pairing) | `local-data` via `BROWSER_MCP_HOME` |
 
@@ -37,8 +36,7 @@
   restarts the proxy after 3 consecutive probe failures and ledgers the
   event to cron output + syslog (`journalctl -t edge-liveness`). That
   covers the live-but-dark wedge (bad renewal, upstream hang) that
-  `restart:` never fires on. Deliberately none for tailscale (nothing
-  gates on it) and browser-relay (its upstream daemon is agent-managed,
+  `restart:` never fires on. Deliberately none for browser-relay (its upstream daemon is agent-managed,
   not compose-managed).
 - **Startup order**: `depends_on` with `service_healthy` gates the chain
   (edge waits for backends). Generous `start_period`s cover slow boots

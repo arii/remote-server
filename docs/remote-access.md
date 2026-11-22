@@ -11,8 +11,8 @@ browser, no SSH client. GitHub OAuth as the identity.
 
 **`https://<DDNS>:<PORT>` → oauth2-proxy (terminates TLS with Ari's existing
 Let's Encrypt certs, GitHub provider, single-GitHub-user allowlist) →
-ttyd + zellij. Tailscale stays as the VPN mesh for admin access; the terminal
-does not require it.**
+ttyd + zellij. Tailscale runs on the host only, as the VPN mesh for admin access; the
+terminal does not require it.**
 
 Request flow:
 
@@ -114,10 +114,31 @@ the Docker socket — so `docker compose ps/up/logs` all work from the phone.
 The socket mount is root-equivalent by design; the GitHub OAuth single-user
 gate is the security boundary (see threat model).
 
-## VPN — Tailscale kept, WireGuard documented as the alternative
+## VPN — Tailscale on the host only, WireGuard documented as the alternative
 
-Ari asked for a VPN in the stack. Decision: **Tailscale only** (already in the
-compose). Rationale:
+Ari asked for a VPN. Decision: **Tailscale only, owned by the host.**
+`tailscaled` runs as a systemd service on the host and is the single owner of
+`tailscale0`. Docker no longer runs Tailscale (#1514): the former `tailscale`
+compose service fought the host daemon for the TUN device
+(`TUN device tailscale0 is busy`) and restarted in a loop, so the service,
+its `tailscale-state` volume, `scripts/tailscale-entrypoint.sh` and the
+`TS_*` env vars were deleted. Install, auth and upgrade Tailscale with the
+host package manager and `tailscale up`, not with compose.
+
+One-time host steps for an existing deployment (run by the repo owner on S5;
+the compose file no longer starts the container, but it does not remove the
+old one):
+
+```sh
+docker compose rm -sf tailscale        # remove the old container
+docker volume rm remote_tailscale-state  # old state; host tailscaled keeps its own
+docker compose up -d --remove-orphans
+systemctl status tailscaled && tailscale status
+docker compose ps                      # no restarting containers
+```
+
+(The volume name carries the compose project prefix; check `docker volume ls`.)
+Rationale for Tailscale at all:
 
 - The terminal's primary path is the public DDNS URL — no VPN needed for it.
 - Tailscale covers what the public path must not: SSH, and any future service
@@ -125,9 +146,8 @@ compose). Rationale:
   over the mesh with zero additional public listeners.
 - It is the fallback when the public port is unreachable: restrictive
   hotel/café firewalls often block non-443 ports, while Tailscale's NAT
-  traversal usually gets through. Set `TS_SERVE=1` (then recreate the
-  tailscale container) to serve the proxy over the tailnet automatically;
-  the equivalent manual command is in `scripts/tailscale-entrypoint.sh`.
+  traversal usually gets through. Serving the proxy over the tailnet is a manual host
+  command (`tailscale serve`), not part of the deployment.
 - Phone UX is one app toggle; full-tunnel mode is available in the app.
 
 **Alternative (documented, not chosen): self-hosted WireGuard**

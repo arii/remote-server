@@ -19,7 +19,7 @@ class FakeProc:
 
 PS = json.dumps(
     [
-        {"Name": "remote-tailscale-1", "Service": "tailscale", "State": "restarting"},
+        {"Name": "remote-relay-1", "Service": "browser-relay", "State": "restarting"},
         {"Name": "remote-caddy-1", "Service": "caddy", "State": "running"},
     ]
 )
@@ -55,7 +55,7 @@ class ContainerRestartsTest(unittest.TestCase):
                 os.environ[k] = v
 
     def tick(self, tail, caddy, now):
-        counts = {"remote-tailscale-1": tail, "remote-caddy-1": caddy}
+        counts = {"remote-relay-1": tail, "remote-caddy-1": caddy}
         return cr.record_container_restarts(run=fake_docker(counts), now=now)
 
     def test_first_sighting_is_baseline_only(self):
@@ -65,11 +65,11 @@ class ContainerRestartsTest(unittest.TestCase):
     def test_growth_writes_one_history_row_per_container(self):
         self.tick(40, 0, 1000.0)
         grew = self.tick(43, 0, 1060.0)
-        self.assertEqual(grew, [{"name": "remote-tailscale-1", "restarts": 3}])
+        self.assertEqual(grew, [{"name": "remote-relay-1", "restarts": 3}])
         rows = ledger.read("system")
         self.assertEqual(len(rows), 1)
         self.assertEqual(
-            rows[0]["event"], "container remote-tailscale-1 restarted on its own"
+            rows[0]["event"], "container remote-relay-1 restarted on its own"
         )
         self.assertEqual(rows[0]["restarts"], 3)
         self.assertEqual(self.tick(43, 0, 1120.0), [])
@@ -87,8 +87,8 @@ class ContainerRestartsTest(unittest.TestCase):
         self.tick(3, 0, 1120.0)
         loops = cr.list_loops(now=1200.0)
         self.assertEqual(len(loops), 1)
-        self.assertEqual(loops[0]["name"], "remote-tailscale-1")
-        self.assertEqual(loops[0]["service"], "tailscale")
+        self.assertEqual(loops[0]["name"], "remote-relay-1")
+        self.assertEqual(loops[0]["service"], "browser-relay")
         self.assertEqual(loops[0]["restarts"], 3)
         self.assertEqual(cr.list_loops(now=1060.0 + 3601), [])
 
@@ -97,7 +97,7 @@ class ContainerRestartsTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             cr.record_container_restarts(run=fake_docker({}, inspect_rc=1), now=1060.0)
         self.assertEqual(
-            self.tick(1, 0, 1120.0), [{"name": "remote-tailscale-1", "restarts": 1}]
+            self.tick(1, 0, 1120.0), [{"name": "remote-relay-1", "restarts": 1}]
         )
 
     def test_attention_item_for_loop(self):
@@ -111,10 +111,10 @@ class ContainerRestartsTest(unittest.TestCase):
             cr.list_loops = orig
         item = [i for i in items if i["kind"] == "container-restart-loop"]
         self.assertEqual(len(item), 1)
-        self.assertEqual(item[0]["title"], "remote-tailscale-1 keeps restarting")
+        self.assertEqual(item[0]["title"], "remote-relay-1 keeps restarting")
         self.assertIn("5 times in the last hour", item[0]["detail"])
         self.assertEqual(
-            item[0]["action"]["href"], "api/system/containers/tailscale/logs"
+            item[0]["action"]["href"], "api/system/containers/browser-relay/logs"
         )
         self.assertFalse(item[0]["action"]["destructive"])
 
