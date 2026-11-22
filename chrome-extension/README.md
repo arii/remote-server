@@ -41,6 +41,7 @@ A local-first Chrome Extension using Chrome's Built-in On-Device AI foundation m
    - **Active snapshot**: Captures filled form fields and page text on demand.
    - **Passive submit observer**: Detects form submissions and compares values against the vault.
    - Zero silent overwrites: presents proposed updates in the **Review & Merge Queue** with approve/discard actions and toolbar badge counters.
+   - **Correction learning**: repeated approved corrections for the same field label become alias proposals in a "Learned" section (on-device, aliases only, verified before promotion).
 
 ---
 
