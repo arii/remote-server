@@ -274,23 +274,20 @@ def verify_gateway_capabilities(
         prov = query_gateway_provenance(
             base_url=base_url, uds=uds, timeout=timeout, client=client
         )
-        if prov:
-            commit_id = prov.get("commit_id")
-            req_rev = prov.get("requested_revision")
-            exp = expected_sha.strip().lower()
-            matches = False
-            for cand in (commit_id, req_rev):
-                if cand and (
-                    cand.strip().lower() == exp
-                    or cand.strip().lower().startswith(exp)
-                    or exp.startswith(cand.strip().lower())
-                ):
-                    matches = True
-                    break
-            if not matches:
-                raise TwTVCSMismatchError(
-                    f"TwT gateway provenance preflight failed: running gateway commit '{commit_id}' "
-                    f"does not match expected SHA '{expected_sha}'"
-                )
+        if not prov:
+            raise TwTVCSMismatchError(
+                f"TwT gateway provenance preflight failed: gateway at {uds or base_url} "
+                f"reported no provenance, so expected SHA '{expected_sha}' cannot be confirmed"
+            )
+        try:
+            verify_installed_vcs_sha(
+                prov.get("package") or "tokens-with-taste",
+                expected_sha,
+                provenance=prov,
+            )
+        except TwTVCSMismatchError as exc:
+            raise TwTVCSMismatchError(
+                f"TwT gateway provenance preflight failed: {exc}"
+            ) from exc
 
     return models
