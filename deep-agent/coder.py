@@ -24,7 +24,9 @@ success, 1 with a Sorry line on failure, 3 on plan pause.
 Every run is traced + ledgered (recorder totals, like deep_chat).
 
 Env: CODER_TIMEOUT (wall seconds, default 1800; also the plan
-freshness cap on resume), CODER_MODEL (override), CODER_THINK=1
+freshness cap on resume), CODER_MODEL (override), CODER_STRONG_MODEL (model
+used when the pipeline escalates to model_tier 'strong'; required
+then), CODER_THINK=1
 (Ollama thinking traces), CODER_VERIFY_ROUNDS (verify re-prompts,
 default 2, 0 disables), CODER_PLAN (always|never|unset auto),
 plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
@@ -1188,6 +1190,22 @@ def mark_unverified(summary):
     return "[unverified]"
 
 
+def tier_model(model_tier):
+    """Model override for a pipeline model_tier ('fast', 'strong', None).
+
+    'strong' requires CODER_STRONG_MODEL and fails loudly without it;
+    'fast' and None use CODER_MODEL (None means the router default).
+    """
+    if model_tier not in (None, "fast", "strong"):
+        raise ValueError(f"unknown model_tier {model_tier!r}")
+    if model_tier == "strong":
+        strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip()
+        if not strong:
+            raise ValueError("model_tier 'strong' requires CODER_STRONG_MODEL")
+        return strong
+    return os.environ.get("CODER_MODEL") or None
+
+
 def run_coder(
     worktree,
     brief,
@@ -1216,11 +1234,13 @@ def run_coder(
     import ledger  # noqa: E402
 
     started = time.time()
+    override = tier_model(model_tier)
     recorder = observe.TraceRecorder(observe.default_trace_path("coder", thread))
-    model, spec = build_model(os.environ.get("CODER_MODEL") or None)
+    model, spec = build_model(override)
     label = f"{spec['provider']}:{spec['model']}"
-    print(f"coder via {label}", file=sys.stderr, flush=True)
-    recorder.run_start("coder.py", thread, label)
+    marker = " (tier=strong)" if model_tier == "strong" else ""
+    print(f"coder via {label}{marker}", file=sys.stderr, flush=True)
+    recorder.run_start("coder.py", thread, label + marker)
     invocation_started = False
 
     def fail(error, reply=""):
