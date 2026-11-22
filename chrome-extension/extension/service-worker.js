@@ -5,6 +5,16 @@
 import { aliasMatches } from "./lib/matcher.js";
 import { normalizeForDedup, valueAlreadyHeld } from "./lib/delta-guards.js";
 import { deduplicateVault } from "./lib/vault.js";
+import { isSensitiveLabel } from "./lib/sensitive.js";
+import {
+  MAX_LEARNED_LOG,
+  aggregateProposals,
+  casesFromDeltas,
+  promoteAlias,
+  recordCase,
+  recordCases,
+  verifyProposal
+} from "./lib/learning.js";
 import {
   applyDeltaApprove,
   applyDeltaApproveAll,
@@ -95,6 +105,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.type && LEARNING_HANDLERS[message.type]) {
+    LEARNING_HANDLERS[message.type](message)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ error: err.message }));
+    return true;
+  }
+
   // Single-writer boundary (OD-19 D3): the panel sends typed mutations for
   // vault/delta state instead of writing chrome.storage.local itself.
   if (message.type && MUTATION_HANDLERS[message.type]) {
@@ -142,13 +159,41 @@ async function writeVaultState(state) {
   return state;
 }
 
+// Correction learning: approve/discard decisions become labeled cases. The
+// worker owns learningCases and learnedAliases (single-writer, same queue).
+const LEARNING_OUTCOMES = {
+  "delta:approve": { outcome: "approved", all: false },
+  "delta:discard": { outcome: "discarded", all: false },
+  "delta:approveAll": { outcome: "approved", all: true },
+  "delta:discardAll": { outcome: "discarded", all: true }
+};
+
+async function readLearningState() {
+  const { learningCases = [], learnedAliases = [] } = await chrome.storage.local.get([
+    "learningCases",
+    "learnedAliases"
+  ]);
+  return { learningCases, learnedAliases };
+}
+
 async function handleMutation(message) {
   const build = MUTATION_HANDLERS[message.type];
   if (!build) throw new Error(`Unknown vault/delta mutation: ${message.type}`);
 
   return enqueueMutation(async () => {
     const state = await readVaultState();
+    // Capture cases from the deltas BEFORE the transition removes them.
+    const rule = LEARNING_OUTCOMES[message.type];
+    let newCases = [];
+    if (rule) {
+      const targets = rule.all ? state.pendingDeltas : state.pendingDeltas.filter((d) => d.deltaId === message.deltaId);
+      newCases = casesFromDeltas(targets, rule.outcome, state.userContextVault);
+    }
     const next = await writeVaultState(build(message)(state));
+    if (newCases.length > 0) {
+      const { learningCases } = await readLearningState();
+      await chrome.storage.local.set({ learningCases: recordCases(learningCases, newCases) });
+    }
     return {
       ok: true,
       vaultCount: next.userContextVault.length,
@@ -156,6 +201,58 @@ async function handleMutation(message) {
     };
   });
 }
+
+const LEARNING_HANDLERS = {
+  // Fill verdicts from a hydrate run: [{label, entryId, ok}]. Only what the
+  // panel can attribute to a vault entry is recorded.
+  "learning:recordVerdicts": (msg) =>
+    enqueueMutation(async () => {
+      const { userContextVault } = await readVaultState();
+      const { learningCases } = await readLearningState();
+      let next = learningCases;
+      for (const v of Array.isArray(msg.verdicts) ? msg.verdicts : []) {
+        const entry = userContextVault.find((e) => e.id === v?.entryId);
+        if (!entry) continue;
+        next = recordCase(next, {
+          label: v.label,
+          entryId: entry.id,
+          entryKey: entry.key,
+          outcome: v.ok ? "fill-pass" : "fill-fail"
+        });
+      }
+      if (next !== learningCases) await chrome.storage.local.set({ learningCases: next });
+      return { ok: true, caseCount: next.length };
+    }),
+
+  "learning:getProposals": async () => {
+    const { userContextVault } = await readVaultState();
+    const { learningCases, learnedAliases } = await readLearningState();
+    const proposals = aggregateProposals(learningCases, userContextVault).filter(
+      (p) => verifyProposal(p, learningCases, userContextVault).ok
+    );
+    return { ok: true, proposals, learned: learnedAliases, cases: learningCases, vault: userContextVault };
+  },
+
+  // Re-verifies against the stored cases and current vault inside the queue;
+  // nothing the panel sends is trusted. Adds the alias only.
+  "learning:promote": (msg) =>
+    enqueueMutation(async () => {
+      const state = await readVaultState();
+      const { learningCases, learnedAliases } = await readLearningState();
+      const proposal = msg.proposal;
+      const verdict = verifyProposal(proposal, learningCases, state.userContextVault);
+      if (!verdict.ok) return { ok: false, reason: verdict.reason };
+      const entry = state.userContextVault.find((e) => e.id === proposal.entryId);
+      const alias = String(proposal.alias).toLowerCase().replace(/\s+/g, " ").trim();
+      const vault = promoteAlias(state.userContextVault, { ...proposal, alias });
+      const log = [
+        { label: proposal.label, alias, entryId: entry.id, entryKey: entry.key, ts: Date.now() },
+        ...learnedAliases
+      ].slice(0, MAX_LEARNED_LOG);
+      await chrome.storage.local.set({ userContextVault: vault, learnedAliases: log });
+      return { ok: true, alias, entryId: entry.id };
+    })
+};
 
 // The observer's delta merge reads and writes inside the same queue, so a
 // panel mutation in flight cannot clobber it (and vice versa).
@@ -174,11 +271,10 @@ async function handleFormSubmitObservation(payload, tab) {
   ]);
 
   const newDeltas = [];
-  const sensitiveRegex = /password|passcode|cvv|cvc|cc-number|card-number|ssn|social-security/i;
 
   for (const field of payload.filledFormFields || []) {
     if (!field.value || typeof field.value !== "string") continue;
-    if (sensitiveRegex.test(field.query) || sensitiveRegex.test(field.locator?.name || "")) continue;
+    if (isSensitiveLabel(field.query) || isSensitiveLabel(field.locator?.name)) continue;
 
     const propText = String(field.value).trim();
     const normProp = normalizeForDedup(propText);
@@ -241,6 +337,7 @@ async function handleFormSubmitObservation(payload, tab) {
         action: "create",
         category,
         key,
+        fieldLabel: field.query,
         proposedValue: propText,
         evidenceSnippet: `Submitted on form "${pageTitle}"`,
         sourceUrl: pageUrl,
@@ -266,6 +363,7 @@ async function handleFormSubmitObservation(payload, tab) {
           targetEntryId: existing.id,
           category: existing.category,
           key: existing.key,
+          fieldLabel: field.query,
           previousValue: existing.value,
           proposedValue: propText,
           evidenceSnippet: `Observed updated value on form "${pageTitle}"`,

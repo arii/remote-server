@@ -30,6 +30,10 @@ Shared pure logic lives in `extension/lib/`:
 - `hydration.js` — verified-fill verdicts and summaries (`verifyValueLanded`,
   `summarizeHydrationResult`).
 - `vault.js` — `deduplicateVault` merge rules.
+- `sensitive.js` — `SENSITIVE_PATTERN` / `isSensitiveLabel` (password, passcode,
+  cvv, cvc, cc-number, card-number, ssn, social-security). The content script
+  keeps a literal copy; `tests/learning.test.js` asserts the sources match.
+- `learning.js` — correction learning (§9).
 
 The content script cannot `import` ES modules (classic-script injection per
 `manifest.json`), so it consumes the matcher exclusively through the
@@ -38,13 +42,15 @@ The content script cannot `import` ES modules (classic-script injection per
 
 ## 2. Storage — keys and single owners
 
-All persistence is `chrome.storage.local`. Four keys, each with exactly one
+All persistence is `chrome.storage.local`. Six keys, each with exactly one
 writer:
 
 | Key | Writer | Written by |
 |---|---|---|
 | `userContextVault` | **service worker only** | `handleMutation` for panel mutations; `sanitizeVaultStorage` at install/startup |
 | `pendingDeltas` | **service worker only** | `handleMutation` and `enqueueObserverMerge` — both inside the same serialized queue |
+| `learningCases` | **service worker only** | `handleMutation` (approve/discard), `learning:recordVerdicts` |
+| `learnedAliases` | **service worker only** | `learning:promote` |
 | `observerDomainAllowlist` | side panel only (Observer tab toggle, fail-closed read in content script) | single-owner, no contention |
 | `activeSessionContext` | side panel only (job-description capture) | single-owner, no contention |
 
@@ -53,14 +59,14 @@ messages (§3) and re-renders its vault/delta views after each mutation's
 response (the `renderVault()` calls that follow every `sendMessage`), plus on
 search input and category-filter changes. A grep-based
 regression test (`tests/single-writer.test.js`) fails the suite if any
-`chrome.storage.local.set` for `userContextVault`/`pendingDeltas` appears
+`chrome.storage.local.set` for `userContextVault`/`pendingDeltas`/`learningCases`/`learnedAliases` appears
 outside `service-worker.js`.
 
 Vault entries: `{ id, category, key, aliases, value, tags, updatedAt }`. IDs are
 canonical (`identity.full_name`) for seeded/manual facts or
 `category.timestamp[_n]` for approved deltas; `deduplicateVault` sorts
 canonical IDs first so they win merges. Pending deltas:
-`{ deltaId, action: "create"|"update", targetEntryId?, category, key, proposedValue, previousValue?, evidenceSnippet, sourceUrl, confidence }`,
+`{ deltaId, action: "create"|"update", targetEntryId?, fieldLabel?, category, key, proposedValue, previousValue?, evidenceSnippet, sourceUrl, confidence }`,
 capped at 100.
 
 ## 3. Message API (side panel / content script → service worker)
@@ -85,6 +91,12 @@ All eight flow through one serialized promise queue (`createMutationQueue` in
 transition, writes, and only then releases the next task. The observer's merge
 runs in the same queue, so a panel mutation in flight can never clobber an
 observed delta — the lost-update race is structurally impossible.
+
+**Learning messages** (`type`; see §9): `learning:recordVerdicts`
+(`verdicts: [{label, entryId, ok}]`), `learning:getProposals`
+(returns `{proposals, learned, cases, vault}`), `learning:promote`
+(`proposal: {label, entryId, alias}` -> `{ok, alias, entryId}` or
+`{ok:false, reason}`). The two writers run inside the same mutation queue.
 
 **Content-script messages** (`action` field, not `type`):
 
@@ -183,3 +195,55 @@ Manifest V3 with `sidePanel`, `activeTab`, `scripting`, `storage`; host
 permission `<all_urls>` for content-script injection. The scope is deliberately
 unchanged this phase (defensible while the extension is unpacked/personal);
 reducing it is tracked in `future_work.md`.
+
+## 9. Correction learning (`lib/learning.js`)
+
+On-device only; no network. Approve/discard decisions and fill verdicts become
+alias proposals for existing vault entries. Aliases only: entry `value`, `key`
+and `tags` are never changed.
+
+**Storage** (worker-owned):
+
+- `learningCases`: array, newest last, capped at 200 (FIFO eviction).
+  Case: `{ label (normalized), entryId, entryKey, outcome: "approved"|"discarded"|"fill-pass"|"fill-fail", ts }`.
+- `learnedAliases`: newest first, capped at 50: `{ label, alias, entryId, entryKey, ts }`.
+
+**Record.** `delta:approve|discard|approveAll|discardAll` capture cases from the
+pending deltas before they are removed. Only deltas with `fieldLabel` and
+`targetEntryId` (observer update deltas) yield a case; `fieldLabel` is the
+original form label, which update deltas previously lost (their `key` is the
+entry key). Create deltas and panel-extracted deltas have no label/entry and
+are skipped. Fill verdicts: the panel tags deterministically matched fields with
+`entryId`; after Stage 1 hydration it sends `learning:recordVerdicts` using
+`filledFields` (new, `[{fieldId, query}]`) and `failedFields` from the content
+script's hydrate result. Fields without an `entryId` are not recorded.
+
+**Propose.** `aggregateProposals`: >= `MIN_CORRECTIONS` (2) `approved` cases
+with the same normalized label and entry, where the label does not already
+resolve to that entry (`resolveEntry`, vault order, key/aliases via
+`aliasMatches`) -> `{label, entryId, alias: label, count}`.
+
+**Verify** (`verifyProposal`, worker-side, before any write). Rejects when:
+label/alias empty, sensitive, over 80 chars, or alias is not the label's
+punctuation-insensitive form; entry unknown or sensitive; the label already
+resolves to a different entry, or the label/alias equals another entry's key or
+alias; replaying all cases with and without the alias breaks a case that
+resolved to its entry (`fill-fail` excluded) or resolves a label the user
+discarded for that entry; or no recorded `approved` case for the entry is fixed.
+
+**Promote.** `learning:promote` re-runs `verifyProposal` against the stored
+cases and current vault inside the mutation queue, then `promoteAlias` appends
+the alias (no duplicates) and logs to `learnedAliases`. Triggered by the "Add
+alias" button in the queue's Learned section.
+
+**Refinement.** When `LanguageModel.availability()` is `available`, the panel
+prompts for JSON constrained by `REFINEMENT_SCHEMA`
+`{proposals:[{entryId:string, alias:string<=80}]}` (no extra keys). Output is
+untrusted: `parseRefinement` requires valid JSON, exact keys, an offered
+`entryId`, an alias that is a punctuation-insensitive form of the offered label,
+and `verifyProposal` success; any failure discards the whole response and the
+deterministic proposals are used. `downloadable`/unavailable also fall back to
+deterministic proposals (no download is triggered).
+
+**Sensitive fields** are never recorded or proposed (`isSensitiveLabel` on the
+label and the entry key, in `recordCase`, `aggregateProposals`, `verifyProposal`).

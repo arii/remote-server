@@ -457,6 +457,7 @@
   // Counts a field as filled ONLY when the setter verified the value landed.
   async function hydratePageForms(doc, options = { highlightConfidence: true }) {
     let filledCount = 0;
+    const filledFields = [];
     const failedFields = [];
 
     for (const field of doc.fields || []) {
@@ -482,6 +483,7 @@
             matchedRadio.checked = true;
             matchedRadio.dispatchEvent(new Event("change", { bubbles: true }));
             filledCount++;
+            filledFields.push({ fieldId: field.fieldId, query: field.query });
           } else {
             failedFields.push({ fieldId: field.fieldId, query: field.query, reason: "Radio option not found" });
           }
@@ -502,6 +504,7 @@
           continue;
         }
         filledCount++;
+        filledFields.push({ fieldId: field.fieldId, query: field.query });
 
         if (options.highlightConfidence) {
           const conf = typeof field.confidence === "number" ? field.confidence : 1.0;
@@ -518,6 +521,7 @@
     return {
       totalFields: (doc.fields || []).length,
       filledCount,
+      filledFields,
       failedFields
     };
   }
