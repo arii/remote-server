@@ -96,7 +96,12 @@ do_verify() {
   while IFS='|' read -r name _source _path want _ref; do
     checked=$((checked + 1))
     if is_tracked_skill "$name"; then
-      echo "TRACKED  $name (locked, but project skill reviewed via git; hash not compared locally)" >&2
+      local tfile="$SKILLS_DIR/$name/SKILL.md"
+      if [[ -f "$tfile" && "$(sha256_file "$tfile")" != "$want" ]]; then
+        echo "TRACKED-DRIFT $name (tracked copy differs from the locked upstream pin; warning only, not a failure)" >&2
+      else
+        echo "TRACKED  $name (locked, but project skill reviewed via git; hash not compared locally)" >&2
+      fi
       continue
     fi
     local file="$SKILLS_DIR/$name/SKILL.md"

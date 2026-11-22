@@ -141,6 +141,24 @@ class VerifySkillsTest(unittest.TestCase):
         with open(self.lock_path) as f:
             self.assertEqual(json.load(f)["skills"][name]["computedHash"], "0" * 64)
 
+    def test_tracked_drift_warns_without_failing(self):
+        name = self._tracked_name()
+        os.makedirs(os.path.join(self.skills, name))
+        with open(os.path.join(self.skills, name, "SKILL.md"), "wb") as f:
+            f.write(b"# drifted\n")
+        with open(self.lock_path) as f:
+            lock = json.load(f)
+        lock["skills"][name] = {
+            "source": "example/example", "sourceType": "github",
+            "skillPath": "skills/%s/SKILL.md" % name,
+            "computedHash": "0" * 64,
+        }
+        with open(self.lock_path, "w") as f:
+            json.dump(lock, f)
+        proc = self._run()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("TRACKED-DRIFT %s" % name, proc.stderr)
+
     def _provision(self, *args):
         root = os.path.join(self.tmp.name, "root")
         shutil.copytree("scripts", os.path.join(root, "scripts"), dirs_exist_ok=True)

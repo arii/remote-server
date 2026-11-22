@@ -447,6 +447,10 @@ over plain HTTPS git, so it needs git credentials with read access to that repo
   `lane-orchestrator`, `independent-tests`, `lane-coder`, `swarm`) are never
   overwritten by provisioning, and local `verify-skills.sh` and `--repin` leave
   them alone. Their lock pins record the upstream copy for `--check-upstream`.
+  Local verify prints `TRACKED-DRIFT` (a warning, never a failure) when the
+  tracked file's hash differs from its pin. `lane-orchestrator` currently
+  drifts: the in-repo copy is intentionally kept as is, and Ari decides whether
+  to update it to the pinned upstream version or re-pin to match it.
 - Bump a pin: set the new 40-char `ref` for the entry, run
   `bash scripts/provision-skills.sh`, then `npm run skills:repin`, review the
   lock diff and commit it.
