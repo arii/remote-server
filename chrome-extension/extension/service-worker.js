@@ -15,6 +15,7 @@ import {
   recordCases,
   verifyProposal
 } from "./lib/learning.js";
+import { buildOutcomeRecords, fillStats, recordOutcomes, shouldRecord } from "./lib/outcomes.js";
 import {
   applyDeltaApprove,
   applyDeltaApproveAll,
@@ -106,7 +107,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type && LEARNING_HANDLERS[message.type]) {
-    LEARNING_HANDLERS[message.type](message)
+    LEARNING_HANDLERS[message.type](message, sender)
       .then((res) => sendResponse(res))
       .catch((err) => sendResponse({ error: err.message }));
     return true;
@@ -223,6 +224,34 @@ const LEARNING_HANDLERS = {
       if (next !== learningCases) await chrome.storage.local.set({ learningCases: next });
       return { ok: true, caseCount: next.length };
     }),
+
+  // Fill outcomes (#1539). The content script sends values once, in this
+  // transient message; only classes and ids are stored. The sender tab's own
+  // hostname must be on observerDomainAllowlist, so a page cannot opt itself in.
+  "learning:recordOutcomes": (msg, sender) =>
+    enqueueMutation(async () => {
+      let host = "";
+      try {
+        host = new URL(sender?.tab?.url || "").hostname;
+      } catch {
+        return { ok: false, reason: "no-sender-host" };
+      }
+      const { observerDomainAllowlist = [], fillOutcomes = [] } = await chrome.storage.local.get([
+        "observerDomainAllowlist",
+        "fillOutcomes"
+      ]);
+      if (!shouldRecord(host, observerDomainAllowlist)) return { ok: false, reason: "not-allowlisted" };
+      const { userContextVault } = await readVaultState();
+      const records = buildOutcomeRecords({ fillId: msg.fillId, host, fields: msg.fields }, userContextVault);
+      if (records.length === 0) return { ok: true, recorded: 0 };
+      await chrome.storage.local.set({ fillOutcomes: recordOutcomes(fillOutcomes, records) });
+      return { ok: true, recorded: records.length };
+    }),
+
+  "learning:getOutcomes": async () => {
+    const { fillOutcomes = [] } = await chrome.storage.local.get(["fillOutcomes"]);
+    return { ok: true, ...fillStats(fillOutcomes) };
+  },
 
   "learning:getProposals": async () => {
     const { userContextVault } = await readVaultState();

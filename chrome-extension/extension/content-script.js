@@ -44,6 +44,48 @@
   }
   const { aliasMatches, resolveLabel: resolveFieldLabel } = matcher;
 
+  // Fill registry (#1539): what Form-Import++ filled, kept in memory only so a
+  // later submit can report kept/edited/cleared. Replaced on each new fillId.
+  // Values leave this script only in the learning:recordOutcomes message.
+  let fillRegistry = { fillId: null, items: [] };
+
+  function readTracked(el) {
+    if (el.type === "checkbox") return el.checked ? "true" : "";
+    if (el.type === "radio" && el.name) {
+      const picked = document.querySelector(`input[type="radio"][name="${CSS.escape(el.name)}"]:checked`);
+      return picked ? picked.value : "";
+    }
+    return el.isContentEditable ? el.textContent || "" : el.value || "";
+  }
+
+  function trackFill(el, field, filled, fillId) {
+    if (!fillId || !field.pass) return;
+    const type = (el.getAttribute("type") || el.tagName).toLowerCase();
+    const sig = {
+      label: resolveFieldLabel(el),
+      name: el.name || "",
+      autocomplete: el.getAttribute("autocomplete") || "",
+      type
+    };
+    if (
+      type === "password" ||
+      [sig.label, sig.name, sig.autocomplete, field.entryKey].some((s) => SENSITIVE_PATTERNS.test(s || ""))
+    ) {
+      return;
+    }
+    if (fillRegistry.fillId !== fillId) fillRegistry = { fillId, items: [] };
+    fillRegistry.items = fillRegistry.items.filter((i) => i.el !== el);
+    fillRegistry.items.push({
+      el,
+      sig,
+      filled: String(filled),
+      entryKey: field.entryKey || null,
+      entryId: field.entryId || null,
+      pass: field.pass,
+      confidence: typeof field.confidence === "number" ? field.confidence : null
+    });
+  }
+
   // 2. Build unique, resilient CSS selector
   function buildCssSelector(el) {
     if (el.id) return `#${CSS.escape(el.id)}`;
@@ -484,6 +526,7 @@
             matchedRadio.dispatchEvent(new Event("change", { bubbles: true }));
             filledCount++;
             filledFields.push({ fieldId: field.fieldId, query: field.query });
+            if (options.trackFill) trackFill(matchedRadio, field, matchedRadio.value, options.fillId);
           } else {
             failedFields.push({ fieldId: field.fieldId, query: field.query, reason: "Radio option not found" });
           }
@@ -505,6 +548,7 @@
         }
         filledCount++;
         filledFields.push({ fieldId: field.fieldId, query: field.query });
+        if (options.trackFill) trackFill(el, field, readTracked(el), options.fillId);
 
         if (options.highlightConfidence) {
           const conf = typeof field.confidence === "number" ? field.confidence : 1.0;
@@ -556,12 +600,34 @@
     }
   }
 
+  function reportFillOutcomes() {
+    const { fillId, items } = fillRegistry;
+    if (!fillId || items.length === 0) return;
+    const fields = items
+      .filter((i) => i.el.isConnected)
+      .map((i) => ({
+        sig: i.sig,
+        filled: i.filled,
+        submitted: readTracked(i.el),
+        entryKey: i.entryKey,
+        entryId: i.entryId,
+        pass: i.pass,
+        confidence: i.confidence
+      }));
+    fillRegistry = { fillId: null, items: [] }; // one report per fill
+    if (fields.length === 0) return;
+    chrome.runtime
+      .sendMessage({ type: "learning:recordOutcomes", fillId, host: window.location.hostname, fields })
+      .catch(() => {});
+  }
+
   // Listen for passive form submissions to propose context updates
   document.addEventListener(
     "submit",
     async () => {
       try {
         if (!(await isObserverEnabledForCurrentDomain())) return;
+        reportFillOutcomes();
         const snapshot = capturePageSnapshot();
         if (snapshot.filledFormFields.length > 0) {
           chrome.runtime.sendMessage({

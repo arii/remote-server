@@ -54,7 +54,7 @@ function extractRemoveKeys(source) {
   return keys;
 }
 
-const PROTECTED_KEYS = ["userContextVault", "pendingDeltas", "learningCases", "learnedAliases"];
+const PROTECTED_KEYS = ["userContextVault", "pendingDeltas", "learningCases", "learnedAliases", "fillOutcomes"];
 
 describe("single-writer boundary (source guard)", () => {
   it("never writes or removes userContextVault/pendingDeltas from the side panel", () => {
@@ -303,6 +303,42 @@ describe("worker mutation handler", () => {
     expect(pending.some((d) => d.proposedValue === "found@corp.example")).toBe(true);
   });
 
+  it("records fill outcomes only for an allowlisted sender host and stores no values", async () => {
+    const mock = makeChromeMock();
+    mock.store.set("userContextVault", [{ id: "identity.email", key: "Email", value: "ada@example.test" }]);
+    mock.store.set("observerDomainAllowlist", ["ok.test"]);
+    const listener = await loadWorker(mock);
+    const msg = {
+      type: "learning:recordOutcomes",
+      fillId: "f1",
+      host: "ok.test",
+      fields: [
+        {
+          sig: { label: "Email", name: "email", autocomplete: "email", type: "email" },
+          filled: "ada@example.test",
+          submitted: "other@example.test",
+          entryKey: "Email",
+          entryId: "identity.email",
+          pass: "autocomplete",
+          confidence: 0.99
+        }
+      ]
+    };
+
+    const denied = await sendUpdate(listener, msg, { tab: { id: 1, url: "https://evil.test/form" } });
+    expect(denied.ok).toBe(false);
+    expect(mock.store.has("fillOutcomes")).toBe(false);
+
+    const ok = await sendUpdate(listener, msg, { tab: { id: 1, url: "https://ok.test/form" } });
+    expect(ok.recorded).toBe(1);
+    const stored = mock.store.get("fillOutcomes");
+    expect(stored[0].outcome).toBe("edited");
+    expect(JSON.stringify(stored)).not.toMatch(/example\.test/);
+
+    const stats = await sendUpdate(listener, { type: "learning:getOutcomes" });
+    expect(stats.last).toEqual({ kept: 0, edited: 1, cleared: 0 });
+  });
+
   it("leaves storage untouched for an unrecognized message type (same as before D3)", async () => {
     const mock = makeChromeMock();
     mock.store.set("userContextVault", [{ id: "a" }]);
@@ -319,10 +355,10 @@ describe("worker mutation handler", () => {
 // The worker's FORM_SUBMIT_DETECTED branch keeps the channel open (returns
 // true) and resolves via sendResponse — route both shapes through one helper
 // that only resolves once a response arrives.
-function sendUpdate(listener, message) {
+function sendUpdate(listener, message, sender = { tab: { id: 1 } }) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`no response for ${message.type || message.action}`)), 1000);
-    const maybe = listener(message, { tab: { id: 1 } }, (res) => {
+    const maybe = listener(message, sender, (res) => {
       clearTimeout(timer);
       resolve(res);
     });

@@ -34,6 +34,7 @@ Shared pure logic lives in `extension/lib/`:
   cvv, cvc, cc-number, card-number, ssn, social-security). The content script
   keeps a literal copy; `tests/learning.test.js` asserts the sources match.
 - `learning.js` — correction learning (§9).
+- `outcomes.js` — fill outcomes from user edits (§10).
 
 The content script cannot `import` ES modules (classic-script injection per
 `manifest.json`), so it consumes the matcher exclusively through the
@@ -42,7 +43,7 @@ The content script cannot `import` ES modules (classic-script injection per
 
 ## 2. Storage — keys and single owners
 
-All persistence is `chrome.storage.local`. Six keys, each with exactly one
+All persistence is `chrome.storage.local`. Seven keys, each with exactly one
 writer:
 
 | Key | Writer | Written by |
@@ -51,6 +52,7 @@ writer:
 | `pendingDeltas` | **service worker only** | `handleMutation` and `enqueueObserverMerge` — both inside the same serialized queue |
 | `learningCases` | **service worker only** | `handleMutation` (approve/discard), `learning:recordVerdicts` |
 | `learnedAliases` | **service worker only** | `learning:promote` |
+| `fillOutcomes` | **service worker only** | `learning:recordOutcomes` |
 | `observerDomainAllowlist` | side panel only (Observer tab toggle, fail-closed read in content script) | single-owner, no contention |
 | `activeSessionContext` | side panel only (job-description capture) | single-owner, no contention |
 
@@ -59,7 +61,7 @@ messages (§3) and re-renders its vault/delta views after each mutation's
 response (the `renderVault()` calls that follow every `sendMessage`), plus on
 search input and category-filter changes. A grep-based
 regression test (`tests/single-writer.test.js`) fails the suite if any
-`chrome.storage.local.set` for `userContextVault`/`pendingDeltas`/`learningCases`/`learnedAliases` appears
+`chrome.storage.local.set` for `userContextVault`/`pendingDeltas`/`learningCases`/`learnedAliases`/`fillOutcomes` appears
 outside `service-worker.js`.
 
 Vault entries: `{ id, category, key, aliases, value, tags, updatedAt }`. IDs are
@@ -97,6 +99,8 @@ observed delta — the lost-update race is structurally impossible.
 (returns `{proposals, learned, cases, vault}`), `learning:promote`
 (`proposal: {label, entryId, alias}` -> `{ok, alias, entryId}` or
 `{ok:false, reason}`). The two writers run inside the same mutation queue.
+`learning:recordOutcomes` (from the content script; `{fillId, host, fields}`, see §10) and
+`learning:getOutcomes` (returns `{last, keptRate, fills}`).
 
 **Content-script messages** (`action` field, not `type`):
 
@@ -320,3 +324,47 @@ deterministic proposals (no download is triggered).
 
 **Sensitive fields** are never recorded or proposed (`isSensitiveLabel` on the
 label and the entry key, in `recordCase`, `aggregateProposals`, `verifyProposal`).
+
+## 10. Fill outcomes (`lib/outcomes.js`)
+
+After a Form-Import++ fill, did the user keep what we filled? On submit the
+extension records, per filled field, whether it was kept, edited or cleared.
+
+**Decision: a new key `fillOutcomes`, not an extension of `learningCases`.**
+`learningCases` (§9) holds label -> vault-entry verdicts (approved, discarded,
+fill-pass, fill-fail) and feeds alias proposals; its records are keyed by label
+and entry and capped at 200. A fill outcome is a different thing: one record per
+filled field per submit, with the field signature, the pass that filled it and
+the user's reaction. Putting both in one array would mix two schemas and
+retention windows, and the 200-case cap would be consumed by whichever arrives
+faster. Boundary: `learningCases` answers "which entry does this label mean?";
+`fillOutcomes` answers "how often did a fill survive the user?". Neither reads
+the other.
+
+**Record** (`fillOutcomes`, newest last, cap 500, oldest dropped):
+`{fillId, ts, host, sig:{label,name,autocomplete,type}, entryKey|null, pass:"learned"|"autocomplete"|"alias"|"prompt", confidence, outcome:"kept"|"edited"|"cleared", remappedEntryId|null}`.
+Signature parts are normalized (`normalizeLabel`). **No field values are stored.**
+
+**Flow.** The panel tags matched fields with `entryId`, `entryKey` and `pass`
+(essays and pre-drafted cover letters are `prompt`) and hydrates with
+`options.trackFill` and one `fillId` per run (Stage 1 and the final essay
+hydrate; streaming partial hydrations do not track). The content script keeps an
+in-memory registry (element, filled value, signature). On submit, only if
+`isObserverEnabledForCurrentDomain()` (the `observerDomainAllowlist` check), it
+sends one transient `learning:recordOutcomes` message with the filled and
+submitted values and clears the registry. The worker re-checks that the sender
+tab's hostname is on the allowlist, skips sensitive fields (`sensitive.js`),
+classifies, and stores classes only.
+
+**Classifier.** `classifyOutcome`: empty submitted value -> `cleared`; equal after
+`normalizeLabel` (case and whitespace insensitive) -> `kept`; otherwise `edited`.
+For `edited`, `remapTarget` stores the id of a different non-sensitive vault
+entry whose value exactly equals the submitted value (else null).
+
+**Stats.** `fillStats`: "Last fill" counts the newest `fillId`; the kept-rate is
+kept / all recorded fields over the last 20 distinct `fillId`s. The Fill tab shows
+`Last fill: N kept, M edited, K cleared` and that rate.
+
+**Side effect.** The panel now tags alias-pass matches with `entryId` too (before,
+only autocomplete matches carried it), so `learning:recordVerdicts` also receives
+verdicts for alias-pass fills.

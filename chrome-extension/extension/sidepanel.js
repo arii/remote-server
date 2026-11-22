@@ -598,6 +598,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       "activeSessionContext"
     ]);
 
+    const fillId = `fill_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const autoConsent = document.getElementById("chk-agree-consent")?.checked ?? true;
     const longFormFields = [];
 
@@ -629,10 +630,10 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
         // If vault has a direct deterministic match for this essay/project prompt (e.g. "Share something cool you've built"), use it!
         const essayMatch = matchField({ label: q }, userContextVault);
         const matchedVaultEssay = essayMatch ? essayMatch.entry.value : null;
-        if (essayMatch) field.entryId = essayMatch.entry.id;
+        if (essayMatch) tagMatch(field, essayMatch);
         if (matchedVaultEssay) {
           field.value = matchedVaultEssay;
-          field.confidence = 0.98;
+          field.confidence = essayMatch.confidence;
           continue;
         }
 
@@ -640,6 +641,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
         if (activeSessionContext?.preDraftedCoverLetter && /cover letter|note|motivation|why/i.test(q)) {
           field.value = activeSessionContext.preDraftedCoverLetter;
           field.confidence = 0.99;
+          field.pass = "prompt";
         } else {
           longFormFields.push(field);
         }
@@ -659,9 +661,9 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       const atomicMatch = matchField({ label: q, autocomplete: field.constraints?.autocomplete }, userContextVault);
       if (atomicMatch) {
         const { entry, pass, confidence } = atomicMatch;
+        tagMatch(field, atomicMatch);
         if (pass === "autocomplete") {
           field.value = entry.value;
-          field.entryId = entry.id;
         } else if (field.inputType === "checkbox") {
           field.value = /^(yes|true|1)$/i.test(String(entry.value).trim());
         } else {
@@ -676,7 +678,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     const stage1Result = await sendToActiveTab({
       action: "HYDRATE_PAGE_FORMS",
       document: doc,
-      options: { highlightConfidence: true }
+      options: { highlightConfidence: true, trackFill: true, fillId }
     });
     Telemetry.logTrace({
       type: "HYDRATE",
@@ -685,6 +687,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       details: summarizeHydrationResult(stage1Result)
     });
     reportFillVerdicts(doc, stage1Result);
+    renderFillStats();
     statusBox.textContent = `Stage 1 filled ${stage1Result.filledCount} fields instantly...`;
 
     // 4. Stage 2: On-Device LLM synthesis ONLY for remaining tailored essays or unmapped fields
@@ -750,6 +753,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
             }
             field.value = finalText;
             field.confidence = 0.92;
+            field.pass = "prompt";
           }
         }
         session.destroy?.();
@@ -760,7 +764,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
         const finalResult = await sendToActiveTab({
           action: "HYDRATE_PAGE_FORMS",
           document: doc,
-          options: { highlightConfidence: true }
+          options: { highlightConfidence: true, trackFill: true, fillId }
         });
         Telemetry.logTrace({
           type: "HYDRATE",
@@ -787,6 +791,34 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     btn.textContent = "✨ Auto-Fill Active Form with AI";
   }
 });
+
+// Fill outcomes (#1539): "Last fill: N kept, M edited, K cleared" plus the
+// kept-rate over the last 20 fills. Read-only; the worker owns the data.
+async function renderFillStats() {
+  const el = document.getElementById("fill-stats-line");
+  if (!el) return;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "learning:getOutcomes" });
+    if (!res?.last) {
+      el.textContent = "Last fill: no submitted fills recorded yet.";
+      return;
+    }
+    const { kept, edited, cleared } = res.last;
+    const rate = Math.round(res.keptRate * 100);
+    el.textContent = `Last fill: ${kept} kept, ${edited} edited, ${cleared} cleared. Kept-rate over last ${res.fills} fills: ${rate}%`;
+  } catch {
+    el.textContent = "";
+  }
+}
+renderFillStats();
+
+// Tag a doc field with the vault entry and pass that filled it, so the content
+// script can report the outcome after submit.
+function tagMatch(field, match) {
+  field.entryId = match.entry.id;
+  field.entryKey = match.entry.key;
+  field.pass = match.pass;
+}
 
 // Phase 3: Manual JSON Import
 document.getElementById("btn-run-manual-import").addEventListener("click", async () => {

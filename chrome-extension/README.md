@@ -42,6 +42,7 @@ A local-first Chrome Extension using Chrome's Built-in On-Device AI foundation m
    - **Passive submit observer**: Detects form submissions and compares values against the vault.
    - Zero silent overwrites: presents proposed updates in the **Review & Merge Queue** with approve/discard actions and toolbar badge counters.
    - **Correction learning**: repeated approved corrections for the same field label become alias proposals in a "Learned" section (on-device, aliases only, verified before promotion).
+   - **Fill outcomes**: on allowlisted domains, submitting a filled form records per field whether it was kept, edited or cleared (never the values). The Fill tab shows `Last fill: N kept, M edited, K cleared` and the kept-rate over the last 20 fills.
 
 ---
 
