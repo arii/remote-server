@@ -10,6 +10,7 @@ import {
   lastPullLines,
   facetCounts,
   historyRowMatches,
+  inRepoScope,
   jobPassesKindFilter,
   kindBadge,
   rowInFacet,
@@ -353,7 +354,8 @@ export default function HistoryView({
   filterRequest?: HistoryFilterRequest | null;
 }) {
   const { data, error, loading, load } = useSnapshotData(loadHistorySnapshot, EMPTY_HISTORY);
-  const { jobs, entries } = data;
+  const jobs = data.jobs.filter((j) => inRepoScope(j.repo, repo));
+  const entries = data.entries.filter((e) => inRepoScope(e.repo, repo));
   const [kind, setKind] = useState('all');
   const [query, setQuery] = useState('');
   const [facet, setFacet] = useState<HistoryFacet>('all');
@@ -442,7 +444,7 @@ export default function HistoryView({
   // Stale-first (#907): rows stay visible during reloads with
   // an inline Refreshing note; the full loader shows only when
   // nothing has rendered yet. Errors never hide stale rows.
-  const initial = jobs.length === 0 && entries.length === 0;
+  const initial = data.jobs.length === 0 && data.entries.length === 0;
   const showContent = shouldShowSnapshotContent(initial, loading);
 
   function clearFilters() {
@@ -457,7 +459,7 @@ export default function HistoryView({
     <div data-testid="history-view">
       <WorkflowRunsSection repo={repo} onFindInFeed={(text) => setQuery(text)} />
 
-      <ActivityTimeline active={active} />
+      <ActivityTimeline active={active} repo={repo} query={query} />
 
       <section aria-label="History">
         <div className="page-head">

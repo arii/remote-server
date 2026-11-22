@@ -1026,8 +1026,8 @@ export function RunsPane({
           aria-pressed={showAllRepos}
           title={
             showAllRepos
-              ? `Show only ${repo} runs`
-              : 'Show runs from all repos'
+              ? `Showing runs from all repos. Press to show only ${repo} runs`
+              : `Showing only ${repo} runs. Press to show runs from all repos`
           }
           onClick={() => onToggleScope()}
         >

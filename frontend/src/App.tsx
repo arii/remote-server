@@ -874,7 +874,7 @@ export default function App() {
         </div>
       </header>
       <main ref={mainRef} id="main-content" tabIndex={-1}>
-        <h1 className="sr-only">Operator console</h1>
+        <h1 className="sr-only">Buttons operator console</h1>
         <SyncBanner />
         <SessionBanner />
         <CommandPalette

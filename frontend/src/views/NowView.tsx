@@ -688,6 +688,18 @@ export function heroCountsText(counts: HeroCounts): string {
   return heroSegments(counts).map((s) => s.text).join(' · ');
 }
 
+// Hero "N needing attention" tap (#1491 finding 3): bring the
+// Attention section into view and move focus to it, so the tap has a
+// visible and keyboard-visible result even when the list is short.
+export function revealAttention(doc: Document = document): boolean {
+  const el = doc.querySelector<HTMLElement>('[data-testid="now-attention"]');
+  if (!el) return false;
+  const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  el.scrollIntoView?.({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+  el.focus({ preventScroll: true });
+  return true;
+}
+
 export function fireHeroSegment(
   target: HeroSegmentTarget,
   cbs: {
@@ -1547,7 +1559,7 @@ export default function NowView({
           onError={setError}
           onSection={(s) => onOpenSection?.(s)}
           onTab={(t) => onOpenTab(t)}
-          onAttention={() => {}}
+          onAttention={() => void revealAttention()}
           onAskAgent={onAskAgent}
           onHistoryDeploys={() => {
             if (onOpenHistoryQuery) onOpenHistoryQuery('deploy');
@@ -1584,7 +1596,7 @@ export default function NowView({
       )}
       {data && (
         <>
-          <section aria-label="Attention" data-testid="now-attention">
+          <section aria-label="Attention" data-testid="now-attention" tabIndex={-1}>
             <h2>Attention</h2>
           {(stubRows.length > 0 || snoozedLive.length > 0) && (
             <ul className="session-list" data-testid="now-snoozed">

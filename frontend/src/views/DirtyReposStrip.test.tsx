@@ -176,3 +176,18 @@ describe('DirtyReposStrip (issue #937)', () => {
     expect(html).not.toContain('Open in Chat');
   });
 });
+
+describe('clean repos note (#1491 finding 4)', () => {
+  const props = { onViewDiff: () => {}, onAction: vi.fn(), onAskAgent: () => {} };
+  it('says how many clean repos are not listed', () => {
+    const html = renderToStaticMarkup(
+      <DirtyReposStrip repos={[clean, { ...clean, name: 'b' }, dirtyBehind]} {...props} />,
+    );
+    expect(html).toContain('data-testid="repo-status-clean-note"');
+    expect(html).toContain('2 clean repos not listed.');
+  });
+  it('omits the note when every repo is listed', () => {
+    const html = renderToStaticMarkup(<DirtyReposStrip repos={[dirtyBehind]} {...props} />);
+    expect(html).not.toContain('repo-status-clean-note');
+  });
+});

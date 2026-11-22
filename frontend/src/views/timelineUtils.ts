@@ -1,7 +1,7 @@
 import type { AgentRun } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import type { HistoryRow } from './historyUtils';
-import { epochOf, rowTime, sentenceCase, toHistoryRows } from './historyUtils';
+import { epochOf, inRepoScope, rowTime, sentenceCase, toHistoryRows } from './historyUtils';
 
 // Unified activity timeline (issue #812): one chronological feed
 // merging the four existing surfaces — job runs (Jobs), agent
@@ -98,6 +98,17 @@ function isRoutinePassingJob(j: JobRecord): boolean {
 
 export interface TimelineOptions {
   includeRoutine?: boolean;
+  // Selected repo (#1491 finding 5): other repos' events drop out.
+  repo?: string;
+  // Search text (#1491 finding 22): same match rule as the
+  // History search box (summary, feed, detail; leading # ignored).
+  query?: string;
+}
+
+function itemMatches(item: TimelineItem, query: string): boolean {
+  const q = query.trim().replace(/^#+/, '').toLowerCase();
+  if (!q) return true;
+  return [item.summary, item.feed, item.detail].some((v) => v.toLowerCase().includes(q));
 }
 
 /**
@@ -117,13 +128,16 @@ export function toTimelineItems(
   merges: LedgerEntry[],
   options?: TimelineOptions,
 ): TimelineItem[] {
-  const visibleJobs = options?.includeRoutine ? jobs : jobs.filter((j) => !isRoutinePassingJob(j));
+  const repo = options?.repo ?? '';
+  const visibleJobs = (options?.includeRoutine ? jobs : jobs.filter((j) => !isRoutinePassingJob(j)))
+    .filter((j) => inRepoScope(j.repo, repo));
+  // Keys use the unfiltered index so a row keeps its key as filters change.
   const items: TimelineItem[] = [
     ...visibleJobs.map(runItem),
-    ...turns.map(turnItem),
-    ...pulls.map((e, i) => ledgerItem('pull', e, i)),
-    ...merges.map((e, i) => ledgerItem('merge', e, i)),
-  ];
+    ...turns.filter((t) => inRepoScope(t.repo, repo)).map(turnItem),
+    ...pulls.flatMap((e, i) => (inRepoScope(e.repo, repo) ? [ledgerItem('pull', e, i)] : [])),
+    ...merges.flatMap((e, i) => (inRepoScope(e.repo, repo) ? [ledgerItem('merge', e, i)] : [])),
+  ].filter((item) => itemMatches(item, options?.query ?? ''));
   items.sort((a, b) => b.rawAt - a.rawAt);
   return items;
 }
