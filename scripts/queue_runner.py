@@ -727,6 +727,16 @@ def supervise(config_path, *, clear_halt=False):
                 )
                 write_json(status_path, status)
                 return 2
+            try:
+                remaining_cap = checked_cap(
+                    cap - status.get("retry_spend", {}).get(key, 0)
+                )
+            except ValueError as error:
+                status.update(
+                    halted=True, reason=f"issue budget prevents dispatch: {error}"
+                )
+                write_json(status_path, status)
+                return 2
             directory.mkdir(mode=0o700)
             runtime_directory = runtime_root / name
             job = {
@@ -736,7 +746,7 @@ def supervise(config_path, *, clear_halt=False):
                     "title": fresh["title"],
                     "body": fresh.get("body") or "",
                 },
-                "cap_usd": checked_cap(cap - status.get("retry_spend", {}).get(key, 0)),
+                "cap_usd": remaining_cap,
                 "checkout": config["repo_paths"][issue["repo"]],
                 "pipeline_checkout": config["pipeline_checkout"],
                 "environment": config.get("environment", {}),

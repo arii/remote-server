@@ -234,6 +234,42 @@ class RunnerTests(unittest.TestCase):
                 )
                 self.assertFalse(directory.exists())
 
+    @mock.patch.object(runner.signal, "signal")
+    @mock.patch.object(
+        runner.subprocess,
+        "check_output",
+        return_value=json.dumps({"state": "open", "title": "Fix"}),
+    )
+    def test_lowered_cap_halts_retry_without_creating_empty_directory(
+        self, _read, _signal
+    ):
+        for cap in (0.2, 0.3):
+            with self.subTest(cap=cap), tempfile.TemporaryDirectory() as root:
+                config, state = self.fixture(root)
+                settings = runner.read_json(config)
+                settings["cap_usd"] = cap
+                runner.write_json(config, settings)
+                state.mkdir()
+                runner.write_json(
+                    state / "status.json",
+                    {
+                        "completed": [],
+                        "retry": "owner/repo#7",
+                        "retry_spend": {"owner/repo#7": 0.3},
+                    },
+                )
+                with mock.patch.object(runner.subprocess, "Popen") as spawn:
+                    self.assertEqual(runner.supervise(config), 2)
+                    with self.assertRaisesRegex(runner.SafetyStop, "queue is halted"):
+                        runner.supervise(config)
+                    spawn.assert_not_called()
+                self.assertFalse((state / "owner_repo-7").exists())
+                saved = runner.read_json(state / "status.json")
+                self.assertTrue(saved["halted"])
+                self.assertIsNone(saved.get("current"))
+                self.assertIn("budget", saved["reason"])
+                self.assertEqual(saved["retry"], "owner/repo#7")
+
     def test_retry_archives_evidence_and_preserves_halts_stop_and_other_issues(self):
         with tempfile.TemporaryDirectory() as root:
             config, state, directory = self.failed_run(root)
