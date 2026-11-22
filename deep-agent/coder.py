@@ -67,14 +67,18 @@ from backend.shared.s5tools import (  # noqa: E402,F401
 HERE = os.path.dirname(os.path.abspath(__file__))
 CODER_DB = os.path.join(HERE, ".coder_threads", "coder.db")
 
-# Coding needs more graph steps than chat turns (read/plan/edit/verify).
-RECURSION_LIMIT = int(os.environ.get("CODER_RECURSION_LIMIT", "20"))
 DEFAULT_TIMEOUT = 1800
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 DEFAULT_VERIFY_ROUNDS = 2
 REPAIR_TOOL_LIMIT = 20
 REPAIR_REPEAT_LIMIT = 3
 REPAIR_MODEL_LIMIT = 12
+# Middleware adds graph steps beyond the model and tool calls themselves.
+RECURSION_LIMIT = int(
+    os.environ.get(
+        "CODER_RECURSION_LIMIT", str(4 * (REPAIR_MODEL_LIMIT + REPAIR_TOOL_LIMIT))
+    )
+)
 
 DEFAULT_TOOL_OUTPUT_LIMIT = 4000
 READ_FILE_OUTPUT_LIMIT = 8000
@@ -1290,14 +1294,12 @@ def run_coder(
         )
         config = {"configurable": {"thread_id": thread}}
 
-        limit = min(RECURSION_LIMIT, 15) if repair else RECURSION_LIMIT
-
         def _invoke(msgs):
             nonlocal invocation_started
             invocation_started = True
             return agent.invoke(
                 {"messages": msgs},
-                config={**config, "recursion_limit": limit},
+                config={**config, "recursion_limit": RECURSION_LIMIT},
             )
 
         last_diff = None

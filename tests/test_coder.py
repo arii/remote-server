@@ -381,8 +381,12 @@ class TestCoderDefaults(unittest.TestCase):
         self.assertEqual(rounds, 1)
         self.assertEqual(len(invocations), 2)
 
-    def test_recursion_limit_clamped(self):
-        self.assertLessEqual(coder.RECURSION_LIMIT, 25)
+    def test_recursion_limit_allows_bounded_model_and_tool_calls(self):
+        self.assertGreaterEqual(
+            coder.RECURSION_LIMIT,
+            4 * (coder.REPAIR_MODEL_LIMIT + coder.REPAIR_TOOL_LIMIT),
+        )
+        self.assertLessEqual(coder.RECURSION_LIMIT, 150)
 
     @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langchain_core)")
     def test_search_tool_handles_empty_query(self):
