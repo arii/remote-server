@@ -7,11 +7,19 @@ import unittest
 
 def compose_config():
     res = subprocess.run(
-        ["docker", "compose", "--env-file", ".env.example", "config", "--format", "json"],
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            ".env.example",
+            "config",
+            "--format",
+            "json",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        check=True
+        check=True,
     )
     return json.loads(res.stdout)
 
@@ -36,8 +44,16 @@ class TestDurability(unittest.TestCase):
     @needs_docker
     def test_all_services_log_rotated(self):
         services = compose_config()["services"]
-        for name in ("oauth2-proxy", "terminal", "ollama", "tailscale",
-                      "buttons", "caddy", "browser-relay", "code-server"):
+        for name in (
+            "oauth2-proxy",
+            "terminal",
+            "ollama",
+            "tailscale",
+            "buttons",
+            "caddy",
+            "browser-relay",
+            "code-server",
+        ):
             with self.subTest(service=name):
                 logging = services[name].get("logging", {})
                 self.assertEqual(logging.get("driver"), "json-file")

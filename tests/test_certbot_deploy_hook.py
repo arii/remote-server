@@ -7,6 +7,7 @@ when it did not — a restart the daemon merely ACCEPTED is not success.
 Runs the real hook with a fake `docker` on PATH and a stub TLS server, so
 no real renewal or container is needed.
 """
+
 import http.server
 import os
 import shutil
@@ -18,8 +19,7 @@ import tempfile
 import threading
 import unittest
 
-HOOK = os.path.abspath(
-    os.path.join("scripts", "certbot-deploy-hook.sh"))
+HOOK = os.path.abspath(os.path.join("scripts", "certbot-deploy-hook.sh"))
 
 
 class _PingHandler(http.server.BaseHTTPRequestHandler):
@@ -60,11 +60,27 @@ def _make_cert(tmpdir):
     cert = os.path.join(tmpdir, "cert.pem")
     key = os.path.join(tmpdir, "key.pem")
     res = subprocess.run(
-        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-         "-keyout", key, "-out", cert, "-days", "2",
-         "-subj", "/CN=127.0.0.1",
-         "-addext", "subjectAltName=IP:127.0.0.1"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            key,
+            "-out",
+            cert,
+            "-days",
+            "2",
+            "-subj",
+            "/CN=127.0.0.1",
+            "-addext",
+            "subjectAltName=IP:127.0.0.1",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
         timeout=60,
     )
     if res.returncode != 0:
@@ -74,20 +90,26 @@ def _make_cert(tmpdir):
 
 def _fake_docker(bindir, log, running="true", present=True):
     with open(os.path.join(bindir, "docker"), "w", encoding="utf-8") as f:
-        f.write('#!/usr/bin/env bash\n'
-                'echo "$@" >> "%s"\n'
-                'if [[ "$1" == "ps" ]]; then %s; fi\n'
-                'if [[ "$1" == "restart" ]]; then echo deadbeef1234; fi\n'
-                'if [[ "$1" == "inspect" ]]; then echo "%s"; fi\n'
-                % (log, 'echo deadbeef1234' if present else 'true', running))
+        f.write(
+            "#!/usr/bin/env bash\n"
+            'echo "$@" >> "%s"\n'
+            'if [[ "$1" == "ps" ]]; then %s; fi\n'
+            'if [[ "$1" == "restart" ]]; then echo deadbeef1234; fi\n'
+            'if [[ "$1" == "inspect" ]]; then echo "%s"; fi\n'
+            % (log, "echo deadbeef1234" if present else "true", running)
+        )
     os.chmod(os.path.join(bindir, "docker"), 0o755)
 
 
 def _run_hook(env, timeout=90):
     full_env = dict(os.environ)
     # Scrub anything that could resolve a real probe target.
-    for var in ("CERTBOT_HOOK_URL", "TERMINAL_DOMAIN", "TERMINAL_PORT",
-                "REMOTE_SERVER_DIR"):
+    for var in (
+        "CERTBOT_HOOK_URL",
+        "TERMINAL_DOMAIN",
+        "TERMINAL_PORT",
+        "REMOTE_SERVER_DIR",
+    ):
         full_env.pop(var, None)
     full_env.update(env)
     return subprocess.run(
@@ -105,12 +127,17 @@ class TestCertbotDeployHook(unittest.TestCase):
         self.assertTrue(os.path.isfile(HOOK))
         mode = os.stat(HOOK).st_mode
         self.assertTrue(mode & stat.S_IXUSR, "hook must be executable")
-        res = subprocess.run(["bash", "-n", HOOK],
-                             stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True)
+        res = subprocess.run(
+            ["bash", "-n", HOOK],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         self.assertEqual(res.returncode, 0, res.stderr)
 
-    @unittest.skipUnless(shutil.which("openssl"), "needs openssl to mint the TLS stub cert")
+    @unittest.skipUnless(
+        shutil.which("openssl"), "needs openssl to mint the TLS stub cert"
+    )
     def test_healthy_restart_logs_served_expiry(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cert, key = _make_cert(tmpdir)
@@ -121,18 +148,19 @@ class TestCertbotDeployHook(unittest.TestCase):
                 log = os.path.join(tmpdir, "docker.log")
                 _fake_docker(bindir, log, running="true")
                 url = "https://127.0.0.1:%d/ping" % server.server_port
-                env = {"CERTBOT_HOOK_URL": url,
-                       "SSL_CERT_FILE": cert,
-                       "CERTBOT_HOOK_TIMEOUT": "20",
-                       "CERTBOT_HOOK_INTERVAL": "1",
-                       "REMOTE_SERVER_DIR": tmpdir,
-                       "PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
+                env = {
+                    "CERTBOT_HOOK_URL": url,
+                    "SSL_CERT_FILE": cert,
+                    "CERTBOT_HOOK_TIMEOUT": "20",
+                    "CERTBOT_HOOK_INTERVAL": "1",
+                    "REMOTE_SERVER_DIR": tmpdir,
+                    "PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+                }
                 res = _run_hook(env)
                 self.assertEqual(res.returncode, 0, res.stdout)
                 self.assertIn("restarted oauth2-proxy", res.stdout)
                 # Proves the NEW cert is live, not just the old process.
-                self.assertIn("serving renewed certificate: notAfter=",
-                              res.stdout)
+                self.assertIn("serving renewed certificate: notAfter=", res.stdout)
                 with open(log, encoding="utf-8") as f:
                     calls = f.read()
                 self.assertIn("restart deadbeef1234", calls)
@@ -147,11 +175,13 @@ class TestCertbotDeployHook(unittest.TestCase):
             os.mkdir(bindir)
             log = os.path.join(tmpdir, "docker.log")
             _fake_docker(bindir, log, running="false")
-            env = {"CERTBOT_HOOK_URL": "http://127.0.0.1:1/ping",
-                   "CERTBOT_HOOK_TIMEOUT": "4",
-                   "CERTBOT_HOOK_INTERVAL": "1",
-                   "REMOTE_SERVER_DIR": tmpdir,
-                   "PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
+            env = {
+                "CERTBOT_HOOK_URL": "http://127.0.0.1:1/ping",
+                "CERTBOT_HOOK_TIMEOUT": "4",
+                "CERTBOT_HOOK_INTERVAL": "1",
+                "REMOTE_SERVER_DIR": tmpdir,
+                "PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+            }
             res = _run_hook(env)
             self.assertNotEqual(res.returncode, 0, res.stdout)
             self.assertIn("unhealthy", res.stdout)
@@ -166,11 +196,13 @@ class TestCertbotDeployHook(unittest.TestCase):
             log = os.path.join(tmpdir, "docker.log")
             _fake_docker(bindir, log, running="true")
             url = "https://127.0.0.1:%d/ping" % _closed_port()
-            env = {"CERTBOT_HOOK_URL": url,
-                   "CERTBOT_HOOK_TIMEOUT": "4",
-                   "CERTBOT_HOOK_INTERVAL": "1",
-                   "REMOTE_SERVER_DIR": tmpdir,
-                   "PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
+            env = {
+                "CERTBOT_HOOK_URL": url,
+                "CERTBOT_HOOK_TIMEOUT": "4",
+                "CERTBOT_HOOK_INTERVAL": "1",
+                "REMOTE_SERVER_DIR": tmpdir,
+                "PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+            }
             res = _run_hook(env)
             self.assertNotEqual(res.returncode, 0, res.stdout)
             self.assertIn("unhealthy", res.stdout)
@@ -182,10 +214,12 @@ class TestCertbotDeployHook(unittest.TestCase):
             os.mkdir(bindir)
             log = os.path.join(tmpdir, "docker.log")
             _fake_docker(bindir, log, present=False)
-            env = {"CERTBOT_HOOK_TIMEOUT": "4",
-                   "CERTBOT_HOOK_INTERVAL": "1",
-                   "REMOTE_SERVER_DIR": tmpdir,
-                   "PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
+            env = {
+                "CERTBOT_HOOK_TIMEOUT": "4",
+                "CERTBOT_HOOK_INTERVAL": "1",
+                "REMOTE_SERVER_DIR": tmpdir,
+                "PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+            }
             res = _run_hook(env)
             self.assertEqual(res.returncode, 0, res.stdout)
             self.assertIn("nothing to restart", res.stdout)
@@ -196,10 +230,12 @@ class TestCertbotDeployHook(unittest.TestCase):
             os.mkdir(bindir)
             log = os.path.join(tmpdir, "docker.log")
             _fake_docker(bindir, log, running="true")
-            env = {"CERTBOT_HOOK_TIMEOUT": "4",
-                   "CERTBOT_HOOK_INTERVAL": "1",
-                   "REMOTE_SERVER_DIR": tmpdir,
-                   "PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
+            env = {
+                "CERTBOT_HOOK_TIMEOUT": "4",
+                "CERTBOT_HOOK_INTERVAL": "1",
+                "REMOTE_SERVER_DIR": tmpdir,
+                "PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+            }
             res = _run_hook(env)
             self.assertEqual(res.returncode, 0, res.stdout)
             self.assertIn("verifying container state only", res.stdout)

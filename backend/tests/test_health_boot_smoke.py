@@ -30,7 +30,9 @@ class HealthBootSmokeTest(unittest.TestCase):
     def test_uvicorn_boots_and_health_is_ok(self):
         port = _free_port()
         env = dict(os.environ)
-        env["PYTHONPATH"] = os.pathsep.join([REPO_ROOT, os.path.join(REPO_ROOT, "deep-agent")])
+        env["PYTHONPATH"] = os.pathsep.join(
+            [REPO_ROOT, os.path.join(REPO_ROOT, "deep-agent")]
+        )
         proc = subprocess.Popen(
             [
                 sys.executable,
@@ -54,7 +56,9 @@ class HealthBootSmokeTest(unittest.TestCase):
             deadline = time.monotonic() + BOOT_TIMEOUT_S
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
-                    self.fail(f"uvicorn exited {proc.returncode} before /health:\n{proc.stdout.read()}")
+                    self.fail(
+                        f"uvicorn exited {proc.returncode} before /health:\n{proc.stdout.read()}"
+                    )
                 try:
                     with urllib.request.urlopen(url, timeout=2) as resp:
                         body = json.load(resp)
