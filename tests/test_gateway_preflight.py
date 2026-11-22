@@ -316,6 +316,60 @@ class TestUnchangedPackageVersionVCSUpgradeRegression(unittest.TestCase):
             self.assertEqual(prov["version"], "0.1.0")
 
 
+    def _gateway(self, provenance_response):
+        def handler(req):
+            if req.url.path == "/v1/models":
+                return httpx.Response(
+                    200,
+                    json={"object": "list", "data": [{"id": "m", "owned_by": "nebius"}]},
+                    request=req,
+                )
+            if req.url.path == "/v1/provenance":
+                return provenance_response(req)
+            return httpx.Response(404, request=req)
+
+        return httpx.Client(transport=MockTransport(handler))
+
+    def test_expected_sha_without_gateway_provenance_fails_closed(self):
+        client = self._gateway(lambda req: httpx.Response(404, request=req))
+        with self.assertRaises(TwTVCSMismatchError) as ctx:
+            verify_gateway_capabilities(
+                base_url="http://gateway.test/v1",
+                expected_sha="c2ddafcdca38f553f9ad1a1473be67bc4b91f825",
+                client=client,
+            )
+        self.assertIn("reported no provenance", str(ctx.exception))
+
+    def test_gateway_provenance_without_vcs_info_fails_closed(self):
+        client = self._gateway(
+            lambda req: httpx.Response(
+                200,
+                json={"data": {"package": "tokens-with-taste", "version": "0.1.0"}},
+                request=req,
+            )
+        )
+        with self.assertRaises(TwTVCSMismatchError) as ctx:
+            verify_gateway_capabilities(
+                base_url="http://gateway.test/v1",
+                expected_sha="c2ddafcdca38f553f9ad1a1473be67bc4b91f825",
+                client=client,
+            )
+        self.assertIn("lacks VCS provenance", str(ctx.exception))
+
+    def test_gateway_short_sha_prefix_does_not_match(self):
+        client = self._gateway(
+            lambda req: httpx.Response(
+                200,
+                json={"data": {"commit_id": "c2ddafcdca38f553f9ad1a1473be67bc4b91f825"}},
+                request=req,
+            )
+        )
+        with self.assertRaises(TwTVCSMismatchError):
+            verify_gateway_capabilities(
+                base_url="http://gateway.test/v1", expected_sha="c2d", client=client
+            )
+
+
 class TestModelRouterPreflightIntegration(unittest.TestCase):
     def test_local_provider_skips_gateway_preflight(self):
         # Non-twt providers do not require twt gateway
