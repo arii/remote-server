@@ -77,6 +77,10 @@ export default function DirtyReposStrip({
   const dirty = dirtyOnly(repos);
   const outOfSync = outOfSyncRepos(repos);
   if (dirty.length === 0 && outOfSync.length === 0) return null;
+  // Clean repos are not listed (#1491 finding 4); say how many so the
+  // count does not read as the whole repo list.
+  const flagged = new Set([...dirty, ...outOfSync].map((r) => r.name));
+  const cleanCount = repos.length - flagged.size;
 
   function recordFailure(repo: string, err: unknown) {
     setResults((prev) => ({
@@ -194,6 +198,11 @@ export default function DirtyReposStrip({
             <tbody>{renderRows(outOfSync, 'sync-row')}</tbody>
           </table>
         </>
+      )}
+      {cleanCount > 0 && (
+        <p className="row-meta" data-testid="repo-status-clean-note">
+          {cleanCount} clean repo{cleanCount === 1 ? '' : 's'} not listed.
+        </p>
       )}
     </section>
   );
