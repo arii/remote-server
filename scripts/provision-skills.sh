@@ -18,6 +18,25 @@
 # fallback), reviewed via PRs like lane-coder — provisioning must never
 # overwrite the tracked copy with upstream (#1176).
 #
+# Sources: public GitHub repos plus arii/skills (PRIVATE, owner Ari, standard
+# layout skills/<name>/SKILL.md). Fetches use plain HTTPS git, so private
+# access comes from the caller's git credentials (the sandbox gateway helper
+# or a developer's credential helper); this script adds no auth of its own.
+# Without access to a private source the entry fails (or warns with
+# --fail-open) and the rest still provision.
+#
+# Tracked project skills (e.g. lane-coder, swarm, and locked ones such as
+# td-tools, lane-orchestrator, independent-tests) are skipped: their
+# .agents/skills/<name> is git-tracked and is never overwritten (#1176).
+# Their lock pins record the upstream copy and are checked by
+# verify-skills.sh --check-upstream.
+#
+# Bumping a pin: resolve the new source commit, provision it, then
+#   bash scripts/verify-skills.sh --repin   (npm run skills:repin)
+# update "ref" in skills-lock.json to the full 40-char commit, review the
+# diff and commit the lock. CI (--check-upstream) skips arii/skills because
+# its default token cannot read it; run it locally with access.
+#
 #   provision-skills.sh [--fail-open]
 #
 # --fail-open  warn instead of exiting nonzero (for container bring-up:
@@ -63,6 +82,11 @@ sha256_file() { sha256sum "$1" | cut -d' ' -f1; }
 installed=0 skipped=0
 while IFS='|' read -r name source skill_path want ref; do
   dest="$SKILLS_DIR/$name/SKILL.md"
+  if git -C "$ROOT" ls-files --error-unmatch -- ".agents/skills/$name/SKILL.md" >/dev/null 2>&1; then
+    echo "provision-skills: $name is a git-tracked project skill, not overwriting" >&2
+    skipped=$((skipped + 1))
+    continue
+  fi
   if [[ -f "$dest" ]] && [[ "$(sha256_file "$dest")" == "$want" ]]; then
     skipped=$((skipped + 1))
     continue
