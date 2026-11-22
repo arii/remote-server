@@ -5,6 +5,7 @@ no lock check, so scripts/verify-skills.sh is the enforcement path. These
 tests drive the real script against a synthetic lock + temp skills dir (the
 real .agents/skills is untracked and absent from fresh checkouts).
 """
+
 import hashlib
 import json
 import os
@@ -59,9 +60,17 @@ class VerifySkillsTest(unittest.TestCase):
 
     def _run(self, *args):
         return subprocess.run(
-            ["bash", SCRIPT, "--lock", self.lock_path,
-             "--skills-dir", self.skills, *args],
-            capture_output=True, text=True,
+            [
+                "bash",
+                SCRIPT,
+                "--lock",
+                self.lock_path,
+                "--skills-dir",
+                self.skills,
+                *args,
+            ],
+            capture_output=True,
+            text=True,
         )
 
     def test_verify_ok(self):
@@ -94,9 +103,15 @@ class VerifySkillsTest(unittest.TestCase):
 
     def test_git_tracked_project_skill_passes(self):
         proc = subprocess.run(
-            ["git", "-C", os.path.abspath("."), "ls-files",
-             ".agents/skills/*/SKILL.md"],
-            capture_output=True, text=True,
+            [
+                "git",
+                "-C",
+                os.path.abspath("."),
+                "ls-files",
+                ".agents/skills/*/SKILL.md",
+            ],
+            capture_output=True,
+            text=True,
         )
         tracked = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
         if not tracked:
@@ -114,9 +129,15 @@ class VerifySkillsTest(unittest.TestCase):
 
     def _tracked_name(self):
         proc = subprocess.run(
-            ["git", "-C", os.path.abspath("."), "ls-files",
-             ".agents/skills/lane-coder/SKILL.md"],
-            capture_output=True, text=True,
+            [
+                "git",
+                "-C",
+                os.path.abspath("."),
+                "ls-files",
+                ".agents/skills/lane-coder/SKILL.md",
+            ],
+            capture_output=True,
+            text=True,
         )
         if not proc.stdout.strip():
             self.skipTest("lane-coder is not tracked in this checkout")
@@ -127,7 +148,8 @@ class VerifySkillsTest(unittest.TestCase):
         with open(self.lock_path) as f:
             lock = json.load(f)
         lock["skills"][name] = {
-            "source": "example/example", "sourceType": "github",
+            "source": "example/example",
+            "sourceType": "github",
             "skillPath": "skills/%s/SKILL.md" % name,
             "computedHash": "0" * 64,
         }
@@ -149,7 +171,8 @@ class VerifySkillsTest(unittest.TestCase):
         with open(self.lock_path) as f:
             lock = json.load(f)
         lock["skills"][name] = {
-            "source": "example/example", "sourceType": "github",
+            "source": "example/example",
+            "sourceType": "github",
             "skillPath": "skills/%s/SKILL.md" % name,
             "computedHash": "0" * 64,
         }
@@ -162,16 +185,24 @@ class VerifySkillsTest(unittest.TestCase):
     def _provision(self, *args):
         root = os.path.join(self.tmp.name, "root")
         shutil.copytree("scripts", os.path.join(root, "scripts"), dirs_exist_ok=True)
-        lock = {"version": 1, "skills": {"ghost": {
-            "source": "bogus-owner/nonexistent", "sourceType": "github",
-            "skillPath": "skills/ghost/SKILL.md", "computedHash": "0" * 64,
-            "ref": "a" * 40,
-        }}}
+        lock = {
+            "version": 1,
+            "skills": {
+                "ghost": {
+                    "source": "bogus-owner/nonexistent",
+                    "sourceType": "github",
+                    "skillPath": "skills/ghost/SKILL.md",
+                    "computedHash": "0" * 64,
+                    "ref": "a" * 40,
+                }
+            },
+        }
         with open(os.path.join(root, "skills-lock.json"), "w") as f:
             json.dump(lock, f)
         return subprocess.run(
             ["bash", os.path.join(root, "scripts", "provision-skills.sh"), *args],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
 
@@ -194,7 +225,8 @@ class VerifySkillsTest(unittest.TestCase):
             lock = json.load(f)
         with open(os.path.join(self.skills, "alpha-skill", "SKILL.md"), "rb") as f:
             self.assertEqual(
-                lock["skills"]["alpha-skill"]["computedHash"], _sha256(f.read()))
+                lock["skills"]["alpha-skill"]["computedHash"], _sha256(f.read())
+            )
         self.assertEqual(self._run().returncode, 0)
 
     def test_repin_missing_skill_fails(self):
