@@ -35,12 +35,15 @@ test.describe('chat-first home', () => {
       await views.getByTestId(`nav-${section}`).click();
       await expect(page.getByTestId('triage-drawer').getByTestId(`${section}-view`)).toBeVisible();
       await expect(page.getByTestId('now-view')).toHaveCount(0);
-      await expect(page.getByTestId('chat-view')).toHaveCount(0);
+      // Chat stays mounted under the modal drawer.
+      await expect(page.getByTestId('chat-view')).toHaveCount(1);
       await expect(views.locator('[aria-current="page"]')).toHaveCount(1);
       await expect(views.getByTestId(`nav-${section}`)).toHaveAttribute('aria-current', 'page');
       await page.getByTestId('triage-close').click();
-      await expect(page.getByTestId('now-view')).toBeVisible();
-      await expect(views.getByTestId('nav-now')).toHaveAttribute('aria-current', 'page');
+      await expect(page.getByTestId('triage-drawer')).toHaveCount(0);
+      await expect(page.getByTestId('chat-view')).toBeVisible();
+      await expect(page.getByTestId('now-view')).toHaveCount(0);
+      await expect(views.getByTestId('nav-chat')).toHaveAttribute('aria-current', 'page');
     }
   });
 });
