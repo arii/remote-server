@@ -1,11 +1,18 @@
 // fallow-ignore-file unused-file
 // Playwright loads this by glob/config, not by import — unreachable in fallow's graph by design.
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 // Co-browse / topbar responsive layout (operator UX feedback):
 // the agent rail must hold 300-380px without mid-word clipping at
 // desktop widths, stack below the browser under 1100px, and the
 // top bar must expose all destinations without horizontal scrolling.
+// Review/Jobs/Queue/Briefing open a modal triage drawer that makes the
+// rest of the page inert, so close it before clicking the next nav item.
+async function closeTriageDrawer(page: Page) {
+  const close = page.getByTestId('triage-close');
+  if (await close.count()) await close.click();
+}
+
 // Stateless: opens the Browser tab and measures, mutates nothing.
 test.describe('responsive console layout', () => {
   for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
@@ -27,6 +34,7 @@ test.describe('responsive console layout', () => {
         await page.evaluate(() => window.scrollTo(99999, 0));
         expect(await page.evaluate(() => window.scrollX), `${view} must not scroll sideways`).toBeLessThanOrEqual(1);
         await page.evaluate(() => window.scrollTo(0, 0));
+        await closeTriageDrawer(page);
       }
     });
   }
@@ -182,6 +190,7 @@ test.describe('responsive console layout', () => {
       await page.getByTestId(`nav-${view}`).click();
       await expect(page.getByTestId(`nav-${view}`)).toHaveAttribute('aria-current', 'page');
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+      await closeTriageDrawer(page);
     }
     await page.getByTestId('nav-jobs').click();
     await page.screenshot({ path: testInfo.outputPath('jobs-390.png') });
