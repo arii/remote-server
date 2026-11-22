@@ -27,15 +27,15 @@
 
 Run the smoke tests on the S5 host, which has docker, openssl and pytest:
 
-- Backend: `PYTHONPATH=./deep-agent python3 -m unittest discover -s backend/tests` (sandbox baseline: 1633 pass, 4 skipped).
-- Frontend: `pnpm --filter frontend test` (1379 pass).
+- Backend: `PYTHONPATH=./deep-agent python3 -m unittest discover -s backend/tests` (sandbox baseline: 1633 pass, 4 skipped at #1521).
+- Frontend: `pnpm --filter frontend test` (1380 pass).
 - Extensions: `pnpm run test:extension` (buttons-pair 31, chrome-extension 65 pass).
 - Static checks: `npm run compile-check && npm run lint:python`.
-- Root suite: `PYTHONPATH=./deep-agent python3 -m unittest discover -s tests`. The sandbox run had 5 failures and 10 errors. Most are likely environmental: `test_eval_fixtures_gate`, `test_pipeline_e2e` and the `test_coder_backend` verification test need pytest. `test_certbot_deploy_hook`, `test_durability` and `test_browser_relay` need openssl and docker. Confirm these pass on S5.
+- Root suite: `PYTHONPATH=./deep-agent python3 -m unittest discover -s tests`. The sandbox run had 1552 tests, 6 docker-only errors and 28 skipped. Tests that need openssl or docker (`test_certbot_deploy_hook`, `test_durability`, `test_browser_relay`) cannot run there. Confirm these pass on S5.
 
 ### `test_twt_bounds` (fixed)
 
-Fixed in PR #1515 (branch `fix/twt-bounds-explicit-output-budget`). Refactor #1483 moved model construction into `model_router.build_chat_model` and dropped the explicit output-token caps (`min(2000, ceiling)` in `triage_fanout.py`, `min(4000, ceiling)` in `resolve_conflicts.py`). The test also patched a dead `ChatOpenAI = None` placeholder. No S5 reproduction is needed. The S5 smoke tests above still cover the remaining root-suite errors that need docker and openssl: `test_certbot_deploy_hook`, `test_durability` (4) and `test_browser_relay::test_compose_browser_relay`.
+Fixed in PR #1515. Refactor #1483 moved model construction into `model_router.build_chat_model` and dropped the explicit output-token caps (`min(2000, ceiling)` in `triage_fanout.py`, `min(4000, ceiling)` in `resolve_conflicts.py`). The test also patched a dead `ChatOpenAI = None` placeholder. No S5 reproduction is needed. The S5 smoke tests above still cover the remaining root-suite errors that need docker and openssl: `test_certbot_deploy_hook`, `test_durability` (4) and `test_browser_relay::test_compose_browser_relay`.
 
 ## Next: core loop hardening
 
@@ -46,18 +46,23 @@ Fixed in PR #1515 (branch `fix/twt-bounds-explicit-output-budget`). Refactor #14
 
 `chrome-extension/` and `gdocs-access/` stay in `main`.
 
-Done, on the user's approval: 71 remote branches whose PRs were merged with an identical branch tip were deleted. All are recoverable from the merged PRs' `refs/pull/<n>/head` and from `archive/pre-cleanup` at `7f3a2cc`.
+Done, by owner approval, deleted from origin: 71 branches whose PRs were merged with a tip equal to the merged PR head; 5 closed-unmerged branches (#803, #1420, #1074, #365, #367, each closed with a written reason as a duplicate or supersession); and `skill/gemini-repo-ask`, `fix/timeline-failure-details-1453` and `single-canonical-repo-path-2090810062843671711`. All are recoverable from `refs/pull/<n>/head` and from `archive/pre-cleanup` at `7f3a2cc`.
 
-Held for a decision (11 branches); none are pruned until the exact diff and file list is reviewed in a PR:
+Merged: #1515 (twt caps fix), #1516 (dead docs removed), #1519 (cleanup, guardrails, partial fixes for #1508, #1487, #1490, fixes #1509 and #1517), #1520 (ruff format), #1521 (`model_tier`).
 
-- `fix/timeline-failure-details-1453`
-- `single-canonical-repo-path-2090810062843671711`
-- `fix/preaudit-gate-1403`
-- `docs/branch-protection-config-2956332781543753827`
-- `fix/report-dialog-compact`
-- `fix/review-issue-selection-232030301160202618`
-- `tap-to-fire-jobs-actions-12378469273495919378`
-- `feat/localform-ai-chrome-extension-untracked`
-- `s5-heal-rescue`
-- `docs/operator-notes-batch-d`
-- `skill/gemini-repo-ask`
+Six merged work branches are still on origin and wait for the repo owner to decide on deletion: `chore/cleanup-and-open-issues`, `chore/remove-dead-docs`, `docs/salvage-ideas-roadmap`, `fix/coder-honor-model-tier`, `fix/twt-bounds-explicit-output-budget`, `style/ruff-format-1515-files`.
+
+Held for a decision (3 branches); none are pruned until the exact diff and file list is reviewed in a PR:
+
+- `s5-heal-rescue`: one Nov 16 commit adding modifier-key handling in `backend/api/routers/browser_view.py`. `main` has similar `_MODIFIER_MASK` code, so it is probably superseded (unconfirmed).
+- `docs/operator-notes-batch-d`: a 10-line Batch D note appended to `docs/operator-comments-2026-11-06.md`, which #1516 deleted from `main`.
+- `feat/localform-ai-chrome-extension-untracked`: 7 commits, Nov 10 to 13. The extension landed as #1277 and #1315, but this tip differs in `sidepanel.js` and has a 3,301-line prototype, `chrome-extension/localform_ai_7_phase_chrome_extension_suite_builder.tsx`. The owner keeps `chrome-extension/`.
+
+### Open items
+
+- [#1508](https://github.com/arii/remote-server/issues/1508): backend imports five deep-agent modules at load, so booting needs the Dockerfile `PYTHONPATH`.
+- [#1487](https://github.com/arii/remote-server/issues/1487): failing cobrowser schedules live in the S5 data volume.
+- [#1490](https://github.com/arii/remote-server/issues/1490): the blank terminal needs S5 host diagnosis. The Browser layout was fixed in #1499.
+- [#1491](https://github.com/arii/remote-server/issues/1491): batch issue; remaining findings need a pass against the deployed console.
+- [#1514](https://github.com/arii/remote-server/issues/1514): docker tailscale TUN conflict. The code part is that container restarts do not appear in History or Attention.
+- [#1334](https://github.com/arii/remote-server/issues/1334): buttons-pair; no failing symptom is recorded yet.
