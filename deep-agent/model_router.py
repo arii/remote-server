@@ -563,13 +563,16 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
     )
 
 
-def build_chat_model(spec=None, think=False, num_ctx=None, stage=None, preflight=False):
+def build_chat_model(
+    spec=None, think=False, num_ctx=None, stage=None, preflight=False, max_tokens=None
+):
     """Container-correct chat model (Ollama no-think default). Venv-only.
 
     resolve_llm() picks local or keyed remote through the spend choke;
     chat_kwargs() supplies the
     provider-correct constructor args including the in-container
-    Ollama base_url. Returns (model, spec).
+    Ollama base_url. Returns (model, spec). max_tokens is an optional
+    per-caller output budget, clamped to PIPELINE_MAX_TOKENS.
     """
     spec = dict(spec) if spec else resolve_llm()
     if stage is not None and stage not in STAGE_NEBIUS_MODELS:
@@ -597,6 +600,9 @@ def build_chat_model(spec=None, think=False, num_ctx=None, stage=None, preflight
         spec["provider_models"] = provider_models
         spec["provider_reasoning_effort"] = dict.fromkeys(("nvidia", "nebius"), "low")
     kwargs = chat_kwargs(spec)
+    if max_tokens is not None:
+        budget_key = "num_predict" if spec.get("provider") == "ollama" else "max_tokens"
+        kwargs[budget_key] = min(max_tokens, PIPELINE_MAX_TOKENS)
     if spec.get("provider") == "twt" and spec.get("provider_models"):
         kwargs["extra_body"] = {"provider_models": spec["provider_models"]}
         if spec.get("provider_reasoning_effort"):

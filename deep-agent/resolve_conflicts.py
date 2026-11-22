@@ -187,7 +187,8 @@ def main() -> int:
             file=sys.stderr,
         )
     model, spec = model_router.build_chat_model(
-        spec=spec, think=os.environ.get("RESOLVER_THINK", "") == "1"
+        spec=spec, think=os.environ.get("RESOLVER_THINK", "") == "1",
+        max_tokens=4000,
     )
     model_id = spec.get("model", "default")
     thread = "resolve-" + os.path.basename(os.path.normpath(WORKTREE))

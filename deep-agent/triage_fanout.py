@@ -279,7 +279,8 @@ def main() -> int:
             file=sys.stderr,
         )
     model, spec = model_router.build_chat_model(
-        spec=spec, think=os.environ.get("FANOUT_THINK", "") == "1"
+        spec=spec, think=os.environ.get("FANOUT_THINK", "") == "1",
+        max_tokens=2000,
     )
     model_id = spec.get("model", "default")
     repo_list = ", ".join(repos)
