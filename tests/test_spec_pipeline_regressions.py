@@ -479,6 +479,100 @@ class TestSpecBounds(unittest.TestCase):
 class TestSpecToolBudget(unittest.TestCase):
     """Live agent-loop proof of the tool budget and forced final turn."""
 
+    def test_exhausted_budget_requests_cited_summary_even_without_bound_tools(self):
+        from langchain_core.messages import HumanMessage
+
+        middleware = issue_generator.force_final_turn({"exhausted": True})
+        for tools in (["lookup"], []):
+            with self.subTest(tools=tools):
+                messages = [HumanMessage(content="Gather evidence")]
+                request = mock.Mock(tools=tools, messages=messages)
+                handler = mock.Mock()
+                middleware.wrap_model_call(request, handler)
+                override = request.override.call_args.kwargs
+                self.assertEqual(override["tools"], [])
+                self.assertEqual(override["tool_choice"], "none")
+                self.assertEqual(override["messages"][:-1], messages)
+                prompt = override["messages"][-1].content
+                self.assertIn("final evidence summary", prompt)
+                self.assertIn("repo file path:line", prompt)
+                self.assertIn("do not request tools or emit <tool_call> markup", prompt)
+                self.assertEqual(len(messages), 1)
+                handler.assert_called_once_with(request.override.return_value)
+
+    def test_unspent_budget_leaves_request_unchanged(self):
+        middleware = issue_generator.force_final_turn({"exhausted": False})
+        request, handler = mock.Mock(), mock.Mock()
+        middleware.wrap_model_call(request, handler)
+        request.override.assert_not_called()
+        handler.assert_called_once_with(request)
+
+    def test_1537_markup_only_reply_is_rejected_before_grounding(self):
+        replay = (
+            "<tool_call>grep_repo<arg_key>pattern</arg_key>"
+            "<arg_value>def post_entry|def read_latest|def ledger_read</arg_value>"
+            "</tool_call><tool_call>grep_repo<arg_key>pattern</arg_key>"
+            "<arg_value>class RunnerTests|def test_.*ledger|S5-Queue|S5-Local"
+            "</arg_value></tool_call>"
+        )
+        for evidence in (
+            replay,
+            " <tool_call>read_repo_file<arg_value>widget.py:1</arg_value></tool_call> ",
+        ):
+            with self.subTest(evidence=evidence), tempfile.TemporaryDirectory() as root:
+                Path(root, "widget.py").write_text("pass\n")
+                graph = issue_generator.IssueGeneratorGraph(
+                    root,
+                    investigate_fn=lambda *_, evidence=evidence: evidence,
+                    model_fn=lambda: None,
+                    max_loops=5,
+                )
+                with (
+                    mock.patch.object(graph, "td_init", return_value=(True, {})),
+                    mock.patch.object(graph, "draft_text", return_value="Draft"),
+                    mock.patch.object(
+                        issue_generator,
+                        "evidence_cites_repo_file",
+                        side_effect=AssertionError("markup reached grounding"),
+                    ) as grounding,
+                ):
+                    result = graph.run("Fix #1537")
+                grounding.assert_not_called()
+                self.assertFalse(result.get("valid"))
+                self.assertTrue(result["off_brief"])
+                self.assertIn("only tool-call markup", result["errors"][0])
+                self.assertEqual(result["attempts"], 1)
+
+    def test_empty_and_cited_evidence_still_use_existing_grounding(self):
+        for evidence, grounded in (("", False), ("widget.py:1 evidence", True)):
+            with self.subTest(evidence=evidence), tempfile.TemporaryDirectory() as root:
+                Path(root, "widget.py").write_text("pass\n")
+                graph = issue_generator.IssueGeneratorGraph(
+                    root,
+                    investigate_fn=lambda *_, evidence=evidence: evidence,
+                    model_fn=lambda: None,
+                    max_loops=1,
+                )
+                with (
+                    mock.patch.object(graph, "td_init", return_value=(True, {})),
+                    mock.patch.object(graph, "draft_text", return_value="Draft"),
+                    mock.patch.object(
+                        graph,
+                        "validate_spec",
+                        return_value=(False, {}, ["validation gate"]),
+                    ) as validate,
+                    mock.patch.object(
+                        issue_generator,
+                        "evidence_cites_repo_file",
+                        wraps=issue_generator.evidence_cites_repo_file,
+                    ) as grounding,
+                ):
+                    result = graph.run("Fix widget")
+                grounding.assert_called_once_with(evidence, root)
+                self.assertEqual(validate.called, grounded)
+                self.assertFalse(result.get("valid"))
+                self.assertEqual(bool(result.get("off_brief")), not grounded)
+
     def _run(self, responses, max_tool_calls):
         from backend.shared import ledger
         from langchain_core.language_models.fake_chat_models import (
