@@ -8,6 +8,7 @@ real .agents/skills is untracked and absent from fresh checkouts).
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -110,6 +111,61 @@ class VerifySkillsTest(unittest.TestCase):
         proc = self._run()
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("TRACKED  %s" % name, proc.stderr)
+
+    def _tracked_name(self):
+        proc = subprocess.run(
+            ["git", "-C", os.path.abspath("."), "ls-files",
+             ".agents/skills/lane-coder/SKILL.md"],
+            capture_output=True, text=True,
+        )
+        if not proc.stdout.strip():
+            self.skipTest("lane-coder is not tracked in this checkout")
+        return "lane-coder"
+
+    def test_locked_tracked_skill_is_not_hash_compared_or_repinned(self):
+        name = self._tracked_name()
+        with open(self.lock_path) as f:
+            lock = json.load(f)
+        lock["skills"][name] = {
+            "source": "example/example", "sourceType": "github",
+            "skillPath": "skills/%s/SKILL.md" % name,
+            "computedHash": "0" * 64,
+        }
+        with open(self.lock_path, "w") as f:
+            json.dump(lock, f)
+        proc = self._run()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("TRACKED  %s" % name, proc.stderr)
+        proc = self._run("--repin")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(self.lock_path) as f:
+            self.assertEqual(json.load(f)["skills"][name]["computedHash"], "0" * 64)
+
+    def _provision(self, *args):
+        root = os.path.join(self.tmp.name, "root")
+        shutil.copytree("scripts", os.path.join(root, "scripts"), dirs_exist_ok=True)
+        lock = {"version": 1, "skills": {"ghost": {
+            "source": "bogus-owner/nonexistent", "sourceType": "github",
+            "skillPath": "skills/ghost/SKILL.md", "computedHash": "0" * 64,
+            "ref": "a" * 40,
+        }}}
+        with open(os.path.join(root, "skills-lock.json"), "w") as f:
+            json.dump(lock, f)
+        return subprocess.run(
+            ["bash", os.path.join(root, "scripts", "provision-skills.sh"), *args],
+            capture_output=True, text=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+
+    def test_provision_bogus_source_fails_closed(self):
+        proc = self._provision()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("fetch", proc.stderr)
+
+    def test_provision_bogus_source_fail_open_continues(self):
+        proc = self._provision("--fail-open")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("continuing (--fail-open)", proc.stderr)
 
     def test_repin_updates_lock_then_verifies(self):
         with open(os.path.join(self.skills, "alpha-skill", "SKILL.md"), "ab") as f:

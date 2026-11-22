@@ -435,3 +435,23 @@ docker compose up -d --build buttons
 # 3. Verify skills resolved (or run manually: bash scripts/provision-skills.sh).
 bash scripts/verify-skills.sh
 ```
+
+**Private skills source (`arii/skills`, owner Ari).** Six skills are pinned from
+the private repo `arii/skills` (layout `skills/<name>/SKILL.md`) in
+`skills-lock.json` at a full commit `ref`. `provision-skills.sh` fetches them
+over plain HTTPS git, so it needs git credentials with read access to that repo
+(the sandbox gateway or your credential helper); without access it warns under
+`--fail-open` and continues.
+
+- Skills whose `.agents/skills/<name>` is git-tracked (`td-tools`,
+  `lane-orchestrator`, `independent-tests`, `lane-coder`, `swarm`) are never
+  overwritten by provisioning, and local `verify-skills.sh` and `--repin` leave
+  them alone. Their lock pins record the upstream copy for `--check-upstream`.
+- Bump a pin: set the new 40-char `ref` for the entry, run
+  `bash scripts/provision-skills.sh`, then `npm run skills:repin`, review the
+  lock diff and commit it.
+- CI `skills-lock` job: the default `GITHUB_TOKEN` cannot read `arii/skills`, so
+  `--check-upstream` prints `SKIPPED` for that source only. Mismatches on
+  readable sources, and any failure on other sources, still fail. Run
+  `bash scripts/verify-skills.sh --check-upstream` locally with access to
+  check the private pins.

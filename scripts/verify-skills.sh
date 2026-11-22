@@ -16,6 +16,17 @@
 #                     re-pin, commit the lock).
 #   --check-upstream  fetch each locked commit and verify its skill hashes
 #                     (the CI path: fresh checkouts have no installed skills).
+#                     Sources listed in PRIVATE_SOURCES (arii/skills) are
+#                     skipped with a SKIPPED line when the fetch is refused
+#                     as not found/unauthenticated (CI's default token cannot
+#                     read them). Hash mismatches and missing paths on a
+#                     fetched private repo, and every failure on any other
+#                     source, still fail.
+#
+# A locked skill whose .agents/skills/<name>/SKILL.md is git-tracked is a
+# project skill: the lock pin records the upstream (verified by
+# --check-upstream) but local verify and --repin leave the tracked copy
+# alone, as provision-skills.sh does (#1176).
 #
 # Limitation: the lock pins SKILL.md only. Sibling files shipped inside a
 # skill dir (references/, scripts/) are not hash-checked.
@@ -25,6 +36,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK="$ROOT/skills-lock.json"
 SKILLS_DIR="$ROOT/.agents/skills"
 MODE="verify"
+# Private lock sources that unauthenticated CI cannot read (owner: Ari).
+PRIVATE_SOURCES=(arii/skills)
 WORK_DIR=""
 trap '[ -n "$WORK_DIR" ] && rm -rf "$WORK_DIR"' EXIT
 
@@ -69,10 +82,23 @@ is_tracked_skill() {
   git -C "$ROOT" ls-files --error-unmatch -- ".agents/skills/$1/SKILL.md" >/dev/null 2>&1
 }
 
+# Zero when the source is a known private lock source.
+is_private_source() {
+  local s
+  for s in "${PRIVATE_SOURCES[@]}"; do
+    [[ "$s" == "$1" ]] && return 0
+  done
+  return 1
+}
+
 do_verify() {
   local failures=0 checked=0
   while IFS='|' read -r name _source _path want _ref; do
     checked=$((checked + 1))
+    if is_tracked_skill "$name"; then
+      echo "TRACKED  $name (locked, but project skill reviewed via git; hash not compared locally)" >&2
+      continue
+    fi
     local file="$SKILLS_DIR/$name/SKILL.md"
     if [[ ! -f "$file" ]]; then
       echo "MISSING  $name ($file not installed — fresh worktree? run bash scripts/provision-skills.sh first)" >&2
@@ -113,6 +139,10 @@ do_verify() {
 do_repin() {
   local failures=0 repinned=0
   while IFS='|' read -r name _source _path _want _ref; do
+    if is_tracked_skill "$name"; then
+      echo "TRACKED  $name (project skill, not re-pinned from the local copy)" >&2
+      continue
+    fi
     local file="$SKILLS_DIR/$name/SKILL.md"
     if [[ ! -f "$file" ]]; then
       echo "MISSING  $name (cannot pin what is not installed)" >&2
@@ -142,10 +172,10 @@ EOF
 }
 
 do_upstream() {
-  local failures=0 checked=0
+  local failures=0 checked=0 skipped=0
   WORK_DIR="$(mktemp -d)"
   local n=0
-  declare -A cloned=()
+  declare -A cloned=() skipped_sources=()
   while IFS='|' read -r name source path want ref; do
     checked=$((checked + 1))
     if [[ ! "$ref" =~ ^[0-9a-f]{40}$ ]]; then
@@ -154,10 +184,27 @@ do_upstream() {
       continue
     fi
     local key="$source@$ref"
+    if [[ -n "${skipped_sources[$key]:-}" ]]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
     if [[ -z "${cloned[$key]:-}" ]]; then
       n=$((n + 1))
       git init -q "$WORK_DIR/repo-$n"
-      git -C "$WORK_DIR/repo-$n" fetch -q --depth 1 "https://github.com/$source" "$ref" >&2
+      local err
+      # The ".git" suffix is required by the sandbox git gateway and is
+      # accepted by github.com. Prompts are off so CI never hangs on auth.
+      if ! err="$(GIT_TERMINAL_PROMPT=0 git -C "$WORK_DIR/repo-$n" fetch -q --depth 1 "https://github.com/$source.git" "$ref" 2>&1)"; then
+        if is_private_source "$source" && grep -qiE 'not found|could not read (Username|Password)|Authentication failed|Invalid username' <<<"$err"; then
+          echo "SKIPPED  $name ($source is private and not readable with this credential; checked where it is readable)" >&2
+          skipped_sources[$key]=1
+          skipped=$((skipped + 1))
+          continue
+        fi
+        echo "$err" >&2
+        failures=$((failures + 1))
+        continue
+      fi
       cloned[$key]="$WORK_DIR/repo-$n"
     fi
     local file="$WORK_DIR/SKILL.md"
@@ -174,8 +221,12 @@ do_upstream() {
     fi
   done < <(lock_entries)
   if [[ "$failures" -gt 0 ]]; then
-    echo "verify-skills: lock matches upstream for $((checked - failures))/$checked skill(s)" >&2
+    echo "verify-skills: lock matches upstream for $((checked - failures - skipped))/$checked skill(s) ($skipped skipped)" >&2
     return 1
+  fi
+  if [[ "$skipped" -gt 0 ]]; then
+    echo "verify-skills: lock matches upstream for $((checked - skipped)) skill(s); $skipped private skill(s) skipped"
+    return 0
   fi
   echo "verify-skills: lock matches upstream for all $checked skill(s)"
 }
