@@ -816,5 +816,380 @@
       "outcome": "correctFill",
       "ok": true
     }
-  ]
+  ],
+  "replay": {
+    "corrections": 11,
+    "confirmed": 11,
+    "modeledLlmFills": 11,
+    "before": {
+      "total": {
+        "correct": 42,
+        "expected": 53,
+        "accuracy": 0.7925,
+        "correctFill": 31,
+        "wrongFill": 0,
+        "correctAbstain": 11,
+        "wrongAbstain": 11
+      },
+      "byType": {
+        "plain": {
+          "correct": 23,
+          "expected": 27,
+          "accuracy": 0.8519,
+          "correctFill": 18,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 4
+        },
+        "ambiguous": {
+          "correct": 2,
+          "expected": 8,
+          "accuracy": 0.25,
+          "correctFill": 2,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 6
+        },
+        "mismatch": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "dynamic": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain": {
+          "correct": 5,
+          "expected": 5,
+          "accuracy": 1,
+          "correctFill": 0,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      },
+      "fixtures": {
+        "ashby-form.html": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "greenhouse-form.html": {
+          "correct": 9,
+          "expected": 10,
+          "accuracy": 0.9,
+          "correctFill": 7,
+          "wrongFill": 0,
+          "correctAbstain": 2,
+          "wrongAbstain": 1
+        },
+        "lever-form.html": {
+          "correct": 7,
+          "expected": 9,
+          "accuracy": 0.7778,
+          "correctFill": 4,
+          "wrongFill": 0,
+          "correctAbstain": 3,
+          "wrongAbstain": 2
+        },
+        "ambiguous-fieldsets.html": {
+          "correct": 2,
+          "expected": 8,
+          "accuracy": 0.25,
+          "correctFill": 2,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 6
+        },
+        "mismatched-controls.html": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "dynamic-multistep.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 1,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      }
+    },
+    "quarantined": {
+      "total": {
+        "correct": 42,
+        "expected": 53,
+        "accuracy": 0.7925,
+        "correctFill": 31,
+        "wrongFill": 0,
+        "correctAbstain": 11,
+        "wrongAbstain": 11
+      },
+      "byType": {
+        "plain": {
+          "correct": 23,
+          "expected": 27,
+          "accuracy": 0.8519,
+          "correctFill": 18,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 4
+        },
+        "ambiguous": {
+          "correct": 2,
+          "expected": 8,
+          "accuracy": 0.25,
+          "correctFill": 2,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 6
+        },
+        "mismatch": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "dynamic": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain": {
+          "correct": 5,
+          "expected": 5,
+          "accuracy": 1,
+          "correctFill": 0,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      },
+      "fixtures": {
+        "ashby-form.html": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "greenhouse-form.html": {
+          "correct": 9,
+          "expected": 10,
+          "accuracy": 0.9,
+          "correctFill": 7,
+          "wrongFill": 0,
+          "correctAbstain": 2,
+          "wrongAbstain": 1
+        },
+        "lever-form.html": {
+          "correct": 7,
+          "expected": 9,
+          "accuracy": 0.7778,
+          "correctFill": 4,
+          "wrongFill": 0,
+          "correctAbstain": 3,
+          "wrongAbstain": 2
+        },
+        "ambiguous-fieldsets.html": {
+          "correct": 2,
+          "expected": 8,
+          "accuracy": 0.25,
+          "correctFill": 2,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 6
+        },
+        "mismatched-controls.html": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "dynamic-multistep.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 1,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      }
+    },
+    "after": {
+      "total": {
+        "correct": 53,
+        "expected": 53,
+        "accuracy": 1,
+        "correctFill": 42,
+        "wrongFill": 0,
+        "correctAbstain": 11,
+        "wrongAbstain": 0
+      },
+      "byType": {
+        "plain": {
+          "correct": 27,
+          "expected": 27,
+          "accuracy": 1,
+          "correctFill": 22,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        },
+        "ambiguous": {
+          "correct": 8,
+          "expected": 8,
+          "accuracy": 1,
+          "correctFill": 8,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 0
+        },
+        "mismatch": {
+          "correct": 7,
+          "expected": 7,
+          "accuracy": 1,
+          "correctFill": 7,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 0
+        },
+        "dynamic": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain": {
+          "correct": 5,
+          "expected": 5,
+          "accuracy": 1,
+          "correctFill": 0,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      },
+      "fixtures": {
+        "ashby-form.html": {
+          "correct": 7,
+          "expected": 7,
+          "accuracy": 1,
+          "correctFill": 7,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 0
+        },
+        "greenhouse-form.html": {
+          "correct": 10,
+          "expected": 10,
+          "accuracy": 1,
+          "correctFill": 8,
+          "wrongFill": 0,
+          "correctAbstain": 2,
+          "wrongAbstain": 0
+        },
+        "lever-form.html": {
+          "correct": 9,
+          "expected": 9,
+          "accuracy": 1,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 3,
+          "wrongAbstain": 0
+        },
+        "ambiguous-fieldsets.html": {
+          "correct": 8,
+          "expected": 8,
+          "accuracy": 1,
+          "correctFill": 8,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 0
+        },
+        "mismatched-controls.html": {
+          "correct": 7,
+          "expected": 7,
+          "accuracy": 1,
+          "correctFill": 7,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 0
+        },
+        "dynamic-multistep.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 1,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      }
+    },
+    "accuracyRise": 0.2075
+  }
 }

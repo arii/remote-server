@@ -1,0 +1,111 @@
+{
+  "_comment": "Synthetic recorded corrections for the replay in run-eval.mjs. Each: a field was filled with filledEntryId and the user edited it to the value of submittedEntryId. confirmByClick lists fields confirmed with the Confirm button; every other mapping is confirmed by clean uses. No personal data.",
+  "corrections": [
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "bill_street"
+      },
+      "filledEntryId": "basics.full_name",
+      "submittedEntryId": "billing.street"
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "bill_city"
+      },
+      "filledEntryId": "basics.full_name",
+      "submittedEntryId": "billing.city"
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "bill_zip"
+      },
+      "filledEntryId": "shipping.zip",
+      "submittedEntryId": "billing.zip"
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "ship_street"
+      },
+      "filledEntryId": "basics.full_name",
+      "submittedEntryId": "shipping.street"
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "ship_city"
+      },
+      "filledEntryId": "basics.full_name",
+      "submittedEntryId": "shipping.city"
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "ship_zip"
+      },
+      "filledEntryId": "billing.zip",
+      "submittedEntryId": "shipping.zip"
+    },
+    {
+      "fixture": "ashby-form.html",
+      "field": {
+        "name": "currentCompany"
+      },
+      "filledEntryId": "basics.full_name",
+      "submittedEntryId": "professional.company"
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "github_url"
+      },
+      "filledEntryId": "social.linkedin",
+      "submittedEntryId": "social.github"
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "phone"
+      },
+      "filledEntryId": "basics.full_name",
+      "submittedEntryId": "basics.phone"
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "github-urls"
+      },
+      "filledEntryId": "social.linkedin",
+      "submittedEntryId": "social.github"
+    },
+    {
+      "fixture": "mismatched-controls.html",
+      "field": {
+        "id": "pref_mail"
+      },
+      "filledEntryId": "basics.email",
+      "submittedEntryId": "prefs.contact"
+    }
+  ],
+  "confirmByClick": [
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "ship_zip"
+      },
+      "filledEntryId": "billing.zip",
+      "submittedEntryId": "shipping.zip"
+    },
+    {
+      "fixture": "mismatched-controls.html",
+      "field": {
+        "id": "pref_mail"
+      },
+      "filledEntryId": "basics.email",
+      "submittedEntryId": "prefs.contact"
+    }
+  ]
+}

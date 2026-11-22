@@ -11,11 +11,17 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Window } from "happy-dom";
 import { fieldSignature, matchField, resolveLabel } from "../extension/lib/matcher.js";
+import { QUARANTINE_CLEAN_USES, confirmMapping, learnFromOutcomes } from "../extension/lib/mappings.js";
+import { buildOutcomeRecords } from "../extension/lib/outcomes.js";
 
 const ROOT = join(import.meta.dirname, "..");
 const FIXTURES_DIR = join(ROOT, "tests", "fixtures");
 export const VAULT_PATH = join(ROOT, "eval", "eval-vault.json");
 export const LAST_RUN_PATH = join(ROOT, "eval", "last-run.json");
+export const REPLAY_PATH = join(ROOT, "eval", "replay-outcomes.json");
+
+// Each fixture stands in for one site, so learned mappings are scoped to it.
+export const fixtureHost = (fixture) => `${fixture.replace(/\.html$/, "")}.example.test`;
 
 const round = (n) => Math.round(n * 10000) / 10000;
 
@@ -63,8 +69,10 @@ function findControl(doc, { id, name }) {
 }
 
 // Returns {total, fixtures, results}. `vault` defaults to eval/eval-vault.json;
-// tests pass a modified copy to simulate a regression.
-export function runEval({ vault } = {}) {
+// tests pass a modified copy to simulate a regression. `learned` is a
+// learnedMappings list (#1540) used by the corrections replay; without it the
+// run is the plain deterministic baseline.
+export function runEval({ vault, learned = null } = {}) {
   const activeVault = vault || JSON.parse(readFileSync(VAULT_PATH, "utf8"));
   const golden = JSON.parse(readFileSync(join(FIXTURES_DIR, "expected-matches.json"), "utf8"));
   const window = new Window();
@@ -91,7 +99,7 @@ export function runEval({ vault } = {}) {
       const label = resolveLabel(el, doc);
       const autocomplete = el.getAttribute("autocomplete") || "";
       const sig = fieldSignature({ label, name: el.getAttribute("name") || "", autocomplete, type: el.type || el.tagName.toLowerCase() });
-      const match = matchField({ label, autocomplete }, activeVault);
+      const match = matchField({ label, autocomplete, name: el.getAttribute("name") || "", type: el.type || el.tagName.toLowerCase() }, activeVault, { learned, host: fixtureHost(fill.fixture) });
       const actual = match ? match.entry.key : null;
       const outcome = scoreOutcome(fill.expect, actual);
       results.push({
@@ -123,6 +131,95 @@ export function runEval({ vault } = {}) {
   return { total, byType, fixtures, results };
 }
 
+const strip = ({ total, byType, fixtures }) => ({ total, byType, fixtures });
+
+// Corrections replay (#1540). eval/replay-outcomes.json is a synthetic list of
+// recorded corrections: a field was filled with the wrong vault entry and the
+// user edited it to the right one. The replay pushes them through the real
+// mapping functions and re-runs matching:
+//   before      the plain baseline
+//   quarantined after the corrections are learned (nothing may change: a
+//               quarantined mapping is never used to fill)
+//   after       after every mapping is confirmed, by one Confirm click (the
+//               fields listed in confirmByClick) or by the agreeing
+//               submissions the extension would actually see
+// Every visit asks matchField what the extension would fill with the mappings
+// learned so far, so a quarantined mapping fills nothing and the user keeps
+// correcting, exactly as in production. UPPER BOUND: outcomes exist only for
+// fields the extension filled. Where the vault abstains the replay assumes the
+// on-device model filled the field with spec.filledEntryId (pass "prompt");
+// `modeledLlmFills` counts those fields. Without the model the vault-abstain
+// fields produce no outcome and are not learnable.
+export function runReplay({ vault } = {}) {
+  const activeVault = vault || JSON.parse(readFileSync(VAULT_PATH, "utf8"));
+  const spec = JSON.parse(readFileSync(REPLAY_PATH, "utf8"));
+  const before = runEval({ vault: activeVault });
+  const find = (c) => {
+    const r = before.results.find((x) => x.fixture === c.fixture && JSON.stringify(x.field) === JSON.stringify(c.field));
+    if (!r) throw new Error(`replay: no field ${JSON.stringify(c.field)} in ${c.fixture}`);
+    return r;
+  };
+  const byId = (id) => activeVault.find((e) => e.id === id);
+  let mappings = [];
+  let n = 0;
+  let modeledLlmFills = 0;
+  const modeled = new Set();
+  // One visit to the field: fill as matchField would, the user submits the
+  // submittedEntryId value, the outcome is learned.
+  const visit = (c) => {
+    const r = find(c);
+    const [label, name, autocomplete, type] = r.sig.split("|");
+    const host = fixtureHost(c.fixture);
+    const m = matchField({ label, name, autocomplete, type }, activeVault, { learned: mappings, host });
+    if (!m) modeled.add(JSON.stringify([c.fixture, c.field]));
+    const filled = m ? m.entry : byId(c.filledEntryId);
+    const submitted = byId(c.submittedEntryId);
+    const records = buildOutcomeRecords(
+      {
+        fillId: `replay-${++n}`,
+        host,
+        fields: [
+          {
+            sig: { label, name, autocomplete, type },
+            filled: filled.value,
+            submitted: submitted.value,
+            entryKey: filled.key,
+            entryId: filled.id,
+            pass: m ? m.pass : "prompt",
+            confidence: m ? m.confidence : 0.6
+          }
+        ]
+      },
+      activeVault,
+      n
+    );
+    mappings = learnFromOutcomes(mappings, records, activeVault, n);
+    return r.sig;
+  };
+  const sigs = spec.corrections.map((c) => visit(c));
+  const quarantined = runEval({ vault: activeVault, learned: mappings });
+  const clicked = new Set(spec.confirmByClick.map((c) => JSON.stringify([c.fixture, c.field])));
+  spec.corrections.forEach((c, i) => {
+    if (clicked.has(JSON.stringify([c.fixture, c.field]))) {
+      mappings = confirmMapping(mappings, sigs[i]);
+      return;
+    }
+    const status = () => mappings.find((m) => m.sig === sigs[i])?.status;
+    for (let k = 0; k < 2 * QUARANTINE_CLEAN_USES && status() !== "confirmed"; k++) visit(c);
+  });
+  modeledLlmFills = modeled.size;
+  const after = runEval({ vault: activeVault, learned: mappings });
+  return {
+    corrections: spec.corrections.length,
+    confirmed: mappings.filter((m) => m.status === "confirmed").length,
+    modeledLlmFills,
+    before: strip(before),
+    quarantined: strip(quarantined),
+    after: strip(after),
+    accuracyRise: round(after.total.accuracy - before.total.accuracy)
+  };
+}
+
 export function readBaseline() {
   return JSON.parse(readFileSync(LAST_RUN_PATH, "utf8"));
 }
@@ -146,7 +243,20 @@ function main() {
   console.log(`total: ${t.correct}/${t.expected} (${pct(t.accuracy)})`);
   const typeAccuracy = Object.fromEntries(Object.entries(run.byType).map(([k, v]) => [k, v.accuracy]));
   console.log(JSON.stringify({ eval: "fill-accuracy", ...t, byType: typeAccuracy }));
-  writeFileSync(LAST_RUN_PATH, JSON.stringify(run, null, 2) + "\n");
+  const replay = runReplay();
+  console.log(`corrections replay (before -> quarantined -> after confirm; upper bound, ${replay.modeledLlmFills} of ${replay.corrections} fields assume an on-device model fill):`);
+  for (const [name, f] of Object.entries(replay.after.fixtures)) {
+    const b = replay.before.fixtures[name];
+    const q = replay.quarantined.fixtures[name];
+    console.log(`  ${name}: ${b.correct}/${b.expected} -> ${q.correct}/${q.expected} -> ${f.correct}/${f.expected}`);
+  }
+  for (const [name, f] of Object.entries(replay.after.byType)) {
+    const b = replay.before.byType[name];
+    console.log(`  type ${name}: ${pct(b.accuracy)} -> ${pct(f.accuracy)}`);
+  }
+  const rt = replay.after.total;
+  console.log(`replay total: ${pct(replay.before.total.accuracy)} -> ${pct(replay.quarantined.total.accuracy)} -> ${pct(rt.accuracy)} (+${pct(replay.accuracyRise)})`);
+  writeFileSync(LAST_RUN_PATH, JSON.stringify({ ...run, replay }, null, 2) + "\n");
 }
 
 if (process.argv[1] === import.meta.filename) main();

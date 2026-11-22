@@ -598,6 +598,21 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       "activeSessionContext"
     ]);
 
+    // Learned mappings (#1540): only confirmed ones are used by matchField.
+    let learned = [];
+    try {
+      learned = (await chrome.runtime.sendMessage({ type: "learning:getMappings" }))?.mappings || [];
+    } catch {
+      learned = [];
+    }
+    let host = "";
+    try {
+      host = tab.url ? new URL(tab.url).hostname : "";
+    } catch {
+      host = "";
+    }
+    const matchOpts = { learned, host };
+
     const fillId = `fill_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const autoConsent = document.getElementById("chk-agree-consent")?.checked ?? true;
     const longFormFields = [];
@@ -628,7 +643,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
 
       if (isLongFormEssay) {
         // If vault has a direct deterministic match for this essay/project prompt (e.g. "Share something cool you've built"), use it!
-        const essayMatch = matchField({ label: q }, userContextVault);
+        const essayMatch = matchField(fieldMatchInput(field, q), userContextVault, matchOpts);
         const matchedVaultEssay = essayMatch ? essayMatch.entry.value : null;
         if (essayMatch) tagMatch(field, essayMatch);
         if (matchedVaultEssay) {
@@ -658,7 +673,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       }
 
       // Deterministic match for standard atomic inputs
-      const atomicMatch = matchField({ label: q, autocomplete: field.constraints?.autocomplete }, userContextVault);
+      const atomicMatch = matchField(fieldMatchInput(field, q), userContextVault, matchOpts);
       if (atomicMatch) {
         const { entry, pass, confidence } = atomicMatch;
         tagMatch(field, atomicMatch);
@@ -811,6 +826,19 @@ async function renderFillStats() {
   }
 }
 renderFillStats();
+
+// Input for matchField. name/type rebuild the signature the content script
+// records at submit time (type is the element's type attribute or tag name).
+function fieldMatchInput(field, label) {
+  const t = field.inputType || "";
+  const type = t.startsWith("select") ? "select" : t === "radio-group" ? "radio" : t;
+  return {
+    label,
+    autocomplete: field.constraints?.autocomplete,
+    name: field.locator?.name || "",
+    type
+  };
+}
 
 // Tag a doc field with the vault entry and pass that filled it, so the content
 // script can report the outcome after submit.
@@ -1040,16 +1068,20 @@ async function renderLearned() {
   const box = document.getElementById("learned-container");
   if (!box) return;
   let res;
+  let mres;
   try {
     res = await chrome.runtime.sendMessage({ type: "learning:getProposals" });
+    mres = await chrome.runtime.sendMessage({ type: "learning:getMappings" });
   } catch {
     return;
   }
   if (!res || res.error) return;
   const proposals = await refineWithLanguageModel(res.proposals || [], res.cases || [], res.vault || []);
   const keyOf = (id) => (res.vault || []).find((e) => e.id === id)?.key || id;
-  const learned = res.learned || [];
-  if (proposals.length === 0 && learned.length === 0) {
+  // One flat list: aliases you added (#1529) and field mappings learned from
+  // your edits (#1540). Delete on every row, Confirm only on unconfirmed rows.
+  const rows = mres?.rows || [];
+  if (proposals.length === 0 && rows.length === 0) {
     box.innerHTML = "";
     return;
   }
@@ -1067,10 +1099,17 @@ async function renderLearned() {
       </div>`
       )
       .join("")}
-    ${learned
-      .slice(0, 5)
+    ${rows
       .map(
-        (l) => `<div style="font-size:10.5px; color:var(--text-muted);">Learned: ${escapeHtml(l.alias)} &rarr; ${escapeHtml(l.entryKey)}</div>`
+        (r, i) => `
+      <div class="item-card" style="margin-bottom:6px;">
+        <div style="font-size:11px;"><b>${escapeHtml(r.from)}</b> &rarr; ${escapeHtml(r.to)}
+          <span style="color:var(--text-muted);">(${escapeHtml(r.origin)})</span></div>
+        <div class="btn-row" style="margin-top:4px;">
+          ${r.unconfirmed ? `<button class="btn btn-primary btn-sm btn-confirm-learned" data-index="${i}">Confirm</button>` : ""}
+          <button class="btn btn-sm btn-delete-learned" data-index="${i}">Delete</button>
+        </div>
+      </div>`
       )
       .join("")}`;
   box.querySelectorAll(".btn-promote-alias").forEach((btn) => {
@@ -1079,6 +1118,24 @@ async function renderLearned() {
       const r = await chrome.runtime.sendMessage({ type: "learning:promote", proposal: { label, entryId, alias } });
       if (r && r.ok === false) alert(`Alias not added: ${r.reason}`);
       renderVault();
+      renderLearned();
+    });
+  });
+  box.querySelectorAll(".btn-confirm-learned").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await chrome.runtime.sendMessage({ type: "learning:confirmMapping", sig: rows[Number(btn.dataset.index)].sig });
+      renderLearned();
+    });
+  });
+  box.querySelectorAll(".btn-delete-learned").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const r = rows[Number(btn.dataset.index)];
+      await chrome.runtime.sendMessage(
+        r.kind === "alias"
+          ? { type: "learning:deleteAlias", entryId: r.entryId, alias: r.from }
+          : { type: "learning:deleteMapping", sig: r.sig }
+      );
+      if (r.kind === "alias") renderVault();
       renderLearned();
     });
   });

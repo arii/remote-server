@@ -53,6 +53,7 @@ writer:
 | `learningCases` | **service worker only** | `handleMutation` (approve/discard), `learning:recordVerdicts` |
 | `learnedAliases` | **service worker only** | `learning:promote` |
 | `fillOutcomes` | **service worker only** | `learning:recordOutcomes` |
+| `learnedMappings` | **service worker only** | `learning:recordOutcomes` (same queued write as `fillOutcomes`), `learning:confirmMapping`, `learning:deleteMapping` |
 | `observerDomainAllowlist` | side panel only (Observer tab toggle, fail-closed read in content script) | single-owner, no contention |
 | `activeSessionContext` | side panel only (job-description capture) | single-owner, no contention |
 
@@ -61,7 +62,7 @@ messages (§3) and re-renders its vault/delta views after each mutation's
 response (the `renderVault()` calls that follow every `sendMessage`), plus on
 search input and category-filter changes. A grep-based
 regression test (`tests/single-writer.test.js`) fails the suite if any
-`chrome.storage.local.set` for `userContextVault`/`pendingDeltas`/`learningCases`/`learnedAliases`/`fillOutcomes` appears
+`chrome.storage.local.set` for `userContextVault`/`pendingDeltas`/`learningCases`/`learnedAliases`/`fillOutcomes`/`learnedMappings` appears
 outside `service-worker.js`.
 
 Vault entries: `{ id, category, key, aliases, value, tags, updatedAt }`. IDs are
@@ -368,3 +369,76 @@ kept / all recorded fields over the last 20 distinct `fillId`s. The Fill tab sho
 **Side effect.** The panel now tags alias-pass matches with `entryId` too (before,
 only autocomplete matches carried it), so `learning:recordVerdicts` also receives
 verdicts for alias-pass fills.
+
+## 11. Learned field mappings (`lib/mappings.js`, #1540)
+
+A re-map in the outcome log (the user edited a filled field to the value of a
+DIFFERENT vault entry, `remappedEntryId`) teaches `field signature -> vault entry`.
+
+**Three stores, three jobs.** `learningCases` (§9): label -> entry verdicts, feed
+alias proposals. `fillOutcomes` (§10): what happened to each fill, no behaviour.
+`learnedMappings`: signature-scoped rules the matcher can use. `learnedAliases`
+(§9) are label-global aliases that live on vault entries. Aliases are written
+only when the user clicks Add alias, so they are already user-confirmed: they are
+shown with origin "added by you" and never quarantined. Alias proposals are the
+quarantine for aliases (a proposal does nothing until clicked).
+
+**Record** (`learnedMappings`, cap 100, oldest `lastSeen` dropped):
+`{sig, entryId, entryKey, hosts[] (cap 10), hits, cleanUses, status:"quarantined"|"confirmed", lastSeen}`.
+`sig` is `fieldSignature` (normalized label|name|autocomplete|type). Ids, keys and
+counters only: no field values. Sensitive signatures, password fields and
+sensitive entries are never stored (`sensitive.js`). The vault is never changed.
+
+**Quarantine.** New records start `quarantined` and are never used to fill.
+- Clean use: a fill whose outcome was `kept`, where the quarantined rule's lookup
+  (host + signature, or signature alone on 2+ sites) gives the same `entryKey`
+  the fill used, or a re-correction to the mapped entry's value (the usual
+  case: a quarantined mapping is never applied, so the user keeps correcting).
+  It increments `cleanUses` without applying anything. At
+  `QUARANTINE_CLEAN_USES` (3) the record becomes `confirmed`.
+- The Confirm button on an unconfirmed row sets `confirmed` directly.
+- Demotion: the first user overwrite (`edited` to another value, or `cleared`)
+  on a field where a confirmed mapping applied or a quarantined one would have
+  applied deletes the record. Learning the same correction again starts over in
+  quarantine. (There is no "edited twice" rule.)
+- The same correction seen on another site adds that host, keeps the status
+  and counts as one agreeing submission. A different correction on a site
+  where the mapping did not apply leaves the record alone.
+- A correction whose value equals two or more vault entries (billing and
+  shipping ZIP) teaches nothing.
+- Radio groups are signed with the group label, name and `radio` on both the
+  content-script and side-panel sides.
+
+**Matching order** (`matchField(field, vault, {learned, host})`): confirmed
+mapping with exact host + signature, else the signature alone once `hosts.length
+>= 2` (pass `learned`, confidence 0.995); then per entry autocomplete token
+(0.99) then aliases (0.98); then the Prompt API passes. A mapping to a deleted
+entry is ignored.
+
+**Worker.** `learning:recordOutcomes` updates `learnedMappings` in the same
+queued mutation as `fillOutcomes` (it holds the quarantine state, so it computes
+the would-have-applied lookups). `learning:getMappings` returns the raw list and
+the flat rows; `learning:confirmMapping`, `learning:deleteMapping` and
+`learning:deleteAlias` (removes an alias from its entry and the log, values and
+keys untouched) are the other handlers.
+
+**UI.** One flat list in the queue's existing "Learned" section. Rows read
+`alias or field label -> vault field (origin)` with origin "added by you",
+"learned from your edit" or "learned, unconfirmed"; Delete on every row, Confirm
+only on unconfirmed rows; the existing Add alias button is the one Add control.
+No confidence scores, hit counts, regex editors, bulk tools or undo, and no
+second list in the Vault tab.
+
+**Eval.** `npm run eval` also replays `eval/replay-outcomes.json` (synthetic
+corrections) through these functions and records `replay` in `eval/last-run.json`:
+before, after learning (quarantined, must not change), and after confirmation
+(agreeing submissions, or Confirm for the listed fields). Each visit fills
+what `matchField` would fill with the mappings so far. The replay is an upper
+bound: outcomes exist only for fields the extension filled, so where the vault
+abstains it assumes the on-device model filled the field (`modeledLlmFills`).
+The plain baseline is untouched. CI fails if `eval/last-run.json` changes.
+
+**Open questions for Ari.** N = 3 clean uses; the 2-site threshold; the caps
+(500 outcomes / 100 mappings / 10 hosts); what counts as an edit versus a typo
+fix (today any normalized difference is an edit, and only an exact match to
+another entry's value teaches a mapping).

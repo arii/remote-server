@@ -26,16 +26,19 @@ export function classifyOutcome(filled, submitted) {
 }
 
 // Vault entry (other than the one we filled from) whose value equals what the
-// user submitted. Sensitive entries are never a target. Returns an id or null.
+// user submitted. Sensitive entries are never a target. Returns an id, or null
+// when none matches or when several do (two entries with the same value, such
+// as billing and shipping ZIP, cannot tell us which one the user meant).
 export function remapTarget(submitted, vault, excludeEntryId) {
   const target = normalizeLabel(submitted);
   if (!target) return null;
+  const hits = [];
   for (const entry of vault || []) {
     if (!entry || entry.id === excludeEntryId) continue;
     if (isSensitiveLabel(entry.key) || isSensitiveLabel(entry.id)) continue;
-    if (normalizeLabel(entry.value) === target) return entry.id;
+    if (normalizeLabel(entry.value) === target) hits.push(entry.id);
   }
-  return null;
+  return hits.length === 1 ? hits[0] : null;
 }
 
 // Exact hostname match against observerDomainAllowlist; fail closed.

@@ -5,7 +5,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CASE_TYPES, LAST_RUN_PATH, VAULT_PATH, readBaseline, runEval, scoreOutcome } from "../eval/run-eval.mjs";
+import { CASE_TYPES, LAST_RUN_PATH, VAULT_PATH, readBaseline, runEval, runReplay, scoreOutcome } from "../eval/run-eval.mjs";
 
 describe("fill accuracy eval", () => {
   it("accuracy is at least the committed baseline", () => {
@@ -15,7 +15,9 @@ describe("fill accuracy eval", () => {
   });
 
   it("is deterministic and matches the committed last-run.json", () => {
-    expect(runEval()).toEqual(JSON.parse(readFileSync(LAST_RUN_PATH, "utf8")));
+    const { replay, ...base } = JSON.parse(readFileSync(LAST_RUN_PATH, "utf8"));
+    expect(runEval()).toEqual(base);
+    expect(runReplay()).toEqual(replay);
   });
 
   it("a deliberately broken alias drops accuracy below baseline", () => {

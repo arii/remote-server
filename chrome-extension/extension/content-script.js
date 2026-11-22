@@ -61,12 +61,23 @@
   function trackFill(el, field, filled, fillId) {
     if (!fillId || !field.pass) return;
     const type = (el.getAttribute("type") || el.tagName).toLowerCase();
-    const sig = {
-      label: resolveFieldLabel(el),
-      name: el.name || "",
-      autocomplete: el.getAttribute("autocomplete") || "",
-      type
-    };
+    // A radio group is matched by the side panel under its group label
+    // (field.query), name and constraint autocomplete, so it must be signed
+    // the same way here, not by the clicked option's own label.
+    const sig =
+      field.inputType === "radio-group"
+        ? {
+            label: field.query || "",
+            name: field.locator?.name || el.name || "",
+            autocomplete: field.constraints?.autocomplete || "",
+            type: "radio"
+          }
+        : {
+            label: resolveFieldLabel(el),
+            name: el.name || "",
+            autocomplete: el.getAttribute("autocomplete") || "",
+            type
+          };
     if (
       type === "password" ||
       [sig.label, sig.name, sig.autocomplete, field.entryKey].some((s) => SENSITIVE_PATTERNS.test(s || ""))

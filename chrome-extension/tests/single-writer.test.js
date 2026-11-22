@@ -54,7 +54,7 @@ function extractRemoveKeys(source) {
   return keys;
 }
 
-const PROTECTED_KEYS = ["userContextVault", "pendingDeltas", "learningCases", "learnedAliases", "fillOutcomes"];
+const PROTECTED_KEYS = ["userContextVault", "pendingDeltas", "learningCases", "learnedAliases", "fillOutcomes", "learnedMappings"];
 
 describe("single-writer boundary (source guard)", () => {
   it("never writes or removes userContextVault/pendingDeltas from the side panel", () => {
@@ -337,6 +337,44 @@ describe("worker mutation handler", () => {
 
     const stats = await sendUpdate(listener, { type: "learning:getOutcomes" });
     expect(stats.last).toEqual({ kept: 0, edited: 1, cleared: 0 });
+  });
+
+  it("learning handlers: getMappings, confirm, delete mapping and delete alias are panel-only writes", async () => {
+    const mock = makeChromeMock();
+    mock.store.set("userContextVault", [
+      { id: "billing.zip", key: "Billing ZIP", value: "N1 0AA", aliases: ["postcode", "zip"] }
+    ]);
+    mock.store.set("learnedAliases", [{ label: "postcode", alias: "postcode", entryId: "billing.zip", entryKey: "Billing ZIP", ts: 1 }]);
+    mock.store.set("learnedMappings", [
+      { sig: "zip||text", entryId: "billing.zip", entryKey: "Billing ZIP", hosts: ["a.test"], hits: 1, cleanUses: 0, status: "quarantined", lastSeen: 1 }
+    ]);
+    const listener = await loadWorker(mock);
+    const tab = { tab: { id: 1, url: "https://evil.test/" } };
+    const panel = {}; // the side panel has no sender.tab
+
+    const got = await sendUpdate(listener, { type: "learning:getMappings" }, panel);
+    expect(got.rows.map((r) => r.origin)).toEqual(["added by you", "learned, unconfirmed"]);
+
+    // A content-script sender cannot lift quarantine or delete anything.
+    for (const msg of [
+      { type: "learning:confirmMapping", sig: "zip||text" },
+      { type: "learning:deleteMapping", sig: "zip||text" },
+      { type: "learning:deleteAlias", entryId: "billing.zip", alias: "postcode" }
+    ]) {
+      expect((await sendUpdate(listener, msg, tab)).ok).toBe(false);
+    }
+    expect(mock.store.get("learnedMappings")[0].status).toBe("quarantined");
+    expect(mock.store.get("userContextVault")[0].aliases).toEqual(["postcode", "zip"]);
+
+    expect((await sendUpdate(listener, { type: "learning:confirmMapping", sig: "zip||text" }, panel)).ok).toBe(true);
+    expect(mock.store.get("learnedMappings")[0].status).toBe("confirmed");
+
+    expect((await sendUpdate(listener, { type: "learning:deleteAlias", entryId: "billing.zip", alias: "postcode" }, panel)).ok).toBe(true);
+    expect(mock.store.get("userContextVault")[0]).toMatchObject({ value: "N1 0AA", aliases: ["zip"] });
+    expect(mock.store.get("learnedAliases")).toEqual([]);
+
+    expect((await sendUpdate(listener, { type: "learning:deleteMapping", sig: "zip||text" }, panel)).ok).toBe(true);
+    expect(mock.store.get("learnedMappings")).toEqual([]);
   });
 
   it("leaves storage untouched for an unrecognized message type (same as before D3)", async () => {

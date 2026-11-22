@@ -49,6 +49,18 @@ describe("remapTarget", () => {
   });
 });
 
+describe("remapTarget ambiguity", () => {
+  it("returns null when two entries hold the same value", () => {
+    const twins = [
+      { id: "billing.zip", key: "Billing ZIP", value: "N1 0AA" },
+      { id: "shipping.zip", key: "Shipping ZIP", value: "N1 0AA" },
+      { id: "basics.name", key: "Name", value: "Ada" }
+    ];
+    expect(remapTarget("n1 0aa", twins, "basics.name")).toBeNull();
+    expect(remapTarget("n1 0aa", twins, "billing.zip")).toBe("shipping.zip");
+  });
+});
+
 describe("shouldRecord", () => {
   it("records only for allowlisted hosts", () => {
     expect(shouldRecord("a.test", ["a.test"])).toBe(true);
