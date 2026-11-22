@@ -13,6 +13,7 @@ import {
   briefingActions,
   briefingFreshness,
   briefingAllClear,
+  briefingSummary,
   DigestControlsView,
   digestChannels,
   digestDisabledReason,
@@ -308,6 +309,14 @@ describe('digest schedule line (issue #636)', () => {
       }),
     );
     expect(failed).toContain('last scheduled send failed (boom)');
+    const noChannels = digestScheduleLine(
+      sched({
+        cadence: 'daily',
+        next_run: 1793760000,
+        last_result: { ok: false, at: 1793673600, error: 'no notification channels configured' },
+      }),
+    );
+    expect(noChannels).toMatch(/\(no notification channels configured\)\.$/);
   });
 });
 
@@ -887,6 +896,15 @@ describe('briefing empty-state generate (issue #929)', () => {
     expect(html).toContain('data-testid="briefing-clear"');
     expect(html).toContain('data-testid="briefing-generate"');
     expect(html).toContain('Generate Briefing Now');
+  });
+
+  it('scopes the clear claim when a narrative names a risk (#1487)', () => {
+    const html = renderBody(briefing({ narrative: 'The top risk is an unpatched dependency.' }));
+    expect(html).toContain('data-testid="briefing-clear"');
+    expect(html).not.toContain('All clear');
+    expect(html).toContain('Nothing open in PRs, conflicts or runs');
+    expect(briefingSummary(briefing({ narrative: 'x' }))).toBe('Nothing open in PRs, conflicts or runs.');
+    expect(briefingSummary(briefing())).toBe('All clear — nothing open.');
   });
 
   it('shows progress and disables the button while generating', () => {
