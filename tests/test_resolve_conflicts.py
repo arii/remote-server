@@ -143,7 +143,7 @@ def _run_main(worktree, env, agent, prefer=None):
                     with mock.patch.object(
                         rc.model_router,
                         "build_chat_model",
-                        side_effect=lambda spec, think=False: (agent, spec),
+                        side_effect=lambda spec, think=False, max_tokens=None: (agent, spec),
                     ):
                         buf = io.StringIO()
                         with redirect_stdout(buf):
@@ -280,7 +280,7 @@ def _run_prefer(args, env, spec):
             mock.patch.object(
                 rc.model_router,
                 "build_chat_model",
-                side_effect=lambda spec, think=False: (agent, spec),
+                side_effect=lambda spec, think=False, max_tokens=None: (agent, spec),
             ) as build_mock,
             mock.patch.object(ledger, "record") as record_mock,
             mock.patch.object(

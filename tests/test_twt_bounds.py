@@ -126,16 +126,20 @@ class BoundsTests(unittest.TestCase):
                             model_router, "resolve_llm", return_value=spec
                         ),
                         mock.patch.object(model_router, "PIPELINE_MAX_TOKENS", ceiling),
-                        mock.patch.object(module, "ChatOpenAI") as constructor,
-                        mock.patch.object(module, "build_agent", return_value=agent),
+                        mock.patch.object(
+                            module, "build_agent", return_value=agent
+                        ) as build_agent,
                         mock.patch.object(ledger, "record"),
                         contextlib.redirect_stdout(io.StringIO()),
                         contextlib.redirect_stderr(io.StringIO()),
                     ):
                         self.assertEqual(module.main(), 0)
-                    self.assertEqual(
-                        constructor.call_args.kwargs["max_tokens"], min(budget, ceiling)
-                    )
+                    (model,) = [
+                        arg
+                        for arg in build_agent.call_args.args
+                        if isinstance(arg, ChatOpenAI)
+                    ]
+                    self.assertEqual(model.max_tokens, min(budget, ceiling))
 
     def test_history_empty_normal_and_oversized(self):
         self.assertEqual(model_router.bounded_history([]), [])
