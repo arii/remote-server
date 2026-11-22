@@ -920,7 +920,9 @@ export default function App() {
             onSectionChange={setTriageSection}
             onClose={() => {
               setTriageOpen(false);
-              setTab('now');
+              // Chat stays mounted under the drawer: closing returns
+              // to it; other views keep the return-to-Now behavior.
+              setTab((t) => (t === 'chat' ? 'chat' : 'now'));
             }}
             repo={repo}
             defaultBranch={repos.find((r) => r.name === repo)?.branch}
@@ -1016,7 +1018,9 @@ export default function App() {
             onFilterHistory={openHistoryFilter}
           />
         )}
-        {!triageOpen && tab === 'chat' &&
+        {/* Chat stays mounted while the triage drawer is open over it, so the
+            stream, draft prompt and scroll position survive. */}
+        {tab === 'chat' &&
           (isRollupRepo(repo) ? (
             <RollupGate view="Chat" />
           ) : (

@@ -10,6 +10,7 @@ import QueueView from './QueueView';
 import BriefingView from './BriefingView';
 import { isRollupRepo } from '../components/RepoPicker';
 import { RollupGate } from '../components/RollupGate';
+import Dialog from '../components/Dialog';
 
 export type TriageSection = 'review' | 'jobs' | 'queue' | 'briefing';
 
@@ -57,7 +58,18 @@ export default function TriageDrawer({
   const [lastPr, setLastPr] = useState<number | null>(null);
   if (!open) return null;
   return (
-    <section className="detail triage-drawer" data-testid="triage-drawer" aria-label="Triage">
+    // Modal Dialog over the current view: Escape, backdrop tap, focus
+    // containment, scroll lock and focus return to the status strip
+    // (the Chat trigger) come from the shared wrapper. The view
+    // underneath stays mounted.
+    <Dialog
+      open
+      onClose={onClose}
+      label="Triage"
+      testId="triage-drawer"
+      className="triage-drawer"
+      returnFocusTo='[data-testid="status-strip"]'
+    >
       <div className="triage-head">
         <button type="button" data-testid="triage-close" onClick={onClose}>
           Close
@@ -108,6 +120,6 @@ export default function TriageDrawer({
           />
         )
       )}
-    </section>
+    </Dialog>
   );
 }
