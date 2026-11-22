@@ -16,7 +16,8 @@ import unittest
 import urllib.error
 import urllib.request
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Tests run from the repo root (see scripts/verify-python-paths.py).
+REPO_ROOT = os.getcwd()
 BOOT_TIMEOUT_S = 60
 
 
