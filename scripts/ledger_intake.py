@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Deterministic normalization for Agent Ledger intake rows."""
+"""Deterministic normalization for Agent Ledger intake rows.
+
+Blank required fields (repo, scope, done_when, ...) are never defaulted or
+inferred here: they stay blank, are listed in missing_fields and the row is
+NEEDS_INFO until a human fills them (#1585).
+"""
 
 import hashlib
 import re

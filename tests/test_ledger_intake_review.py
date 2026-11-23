@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -153,3 +154,56 @@ class LedgerIntakeReviewTests(unittest.TestCase):
                 ),
                 {"https://github.com/o/r/issues/8"},
             )
+
+
+class NoInferredValuesTests(unittest.TestCase):
+    def test_prompt_forbids_proposing_values(self):
+        prompt = review.build_prompt({"url": "u", "title": "t", "body": "b"}, [])
+        self.assertIn("Do not propose, suggest, infer or fill in any value", prompt)
+
+    def test_parse_result_drops_values_the_model_adds(self):
+        reply = json.dumps(
+            {
+                "missing_fields": ["scope"],
+                "duplicate_url": None,
+                "reason": "needs scope",
+                "repo": "arii/guess",
+                "scope": "everything",
+                "done_when": "whenever",
+                "suggested_values": {"scope": "x"},
+            }
+        )
+        result = review.parse_result(reply, set())
+        self.assertEqual(set(result), {"missing_fields", "duplicate_url", "reason"})
+        self.assertEqual(result["missing_fields"], ["scope"])
+
+    def test_review_source_never_assigns_model_output_to_routing_fields(self):
+        import ast
+        from pathlib import Path
+
+        root = Path(os.getcwd())
+        briefing = ast.parse((root / "backend/api/routers/briefing.py").read_text())
+        approve = next(
+            node
+            for node in ast.walk(briefing)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "approve_ledger_intake"
+        )
+        trees = [
+            (path.name, ast.parse(path.read_text()))
+            for path in root.glob("scripts/ledger_intake*.py")
+        ]
+        trees.append(("briefing.approve_ledger_intake", approve))
+        guarded = {"repo", "scope", "done_when"}
+        for name, tree in trees:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if (
+                            isinstance(target, ast.Subscript)
+                            and isinstance(target.slice, ast.Constant)
+                            and target.slice.value in guarded
+                        ):
+                            self.fail(
+                                f"{name}:{node.lineno} assigns {target.slice.value}"
+                            )

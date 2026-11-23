@@ -59,6 +59,25 @@ class LedgerIntakeTests(unittest.TestCase):
         self.assertEqual(row["canonical_intake_id"], row["intake_id"])
         self.assertEqual(row["agent_issue_url"], "")
 
+    def test_blank_routing_fields_need_info_and_are_never_defaulted(self):
+        full = {
+            "title": "Task",
+            "repo": "arii/remote-server",
+            "problem": "why",
+            "scope": "backend",
+            "done_when": "tests pass",
+        }
+        for name in ("repo", "scope", "done_when"):
+            with self.subTest(name):
+                row = build_row({**full, name: "  "})
+                self.assertEqual(row["missing_fields"], name)
+                self.assertEqual(row["status"], "NEEDS_INFO")
+                self.assertEqual(row[name], "  ")
+        absent = build_row({"title": "Task"})
+        self.assertEqual(absent["missing_fields"], "repo,problem,scope,done_when")
+        for name in ("repo", "scope", "done_when"):
+            self.assertNotIn(name, absent)
+
     def test_duplicate_and_ready_states_are_explicit(self):
         complete = {
             "title": "Task",
