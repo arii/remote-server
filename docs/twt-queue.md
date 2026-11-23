@@ -237,6 +237,8 @@ review of a real PR needs Ari.
 
 ## Agent Ledger rows
 
+`python3 scripts/ledger_intake_review.py OWNER/REPO NUMBER` audits one new `ledger-intake` issue through local Ollama/TwT and may post one finding comment; it never changes labels or issue state.
+
 The supervisor posts Agent Ledger rows for every issue it works, through
 `scripts/ledger_post.py` `post_entry` (the existing Form writer) and reads with
 `scripts/ledger_read.py` `read_ledger`. Source is `S5-Queue`.
