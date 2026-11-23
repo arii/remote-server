@@ -1231,6 +1231,10 @@ def supervise(config_path, *, clear_halt=False):
                 status.setdefault("ledger_skipped", {})[key] = held
                 write_json(status_path, status)
                 continue
+            if stopping or (root / "STOP").exists():
+                status.update(stopped=True, current=None)
+                write_json(status_path, status)
+                return 0
             directory.mkdir(mode=0o700)
             runtime_directory = runtime_root / name
             tier, tier_reason = start_tier(

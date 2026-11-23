@@ -1655,6 +1655,24 @@ class LedgerTests(unittest.TestCase):
         )
         self.assertNotIn("owner/repo#7", saved["completed"])
 
+    def test_stop_during_ledger_read_does_not_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+
+            def slow_read():
+                (state / "STOP").touch()
+                return []
+
+            with (
+                mock.patch.object(runner, "ledger_rows", slow_read),
+                mock.patch.object(runner.subprocess, "Popen") as popen,
+            ):
+                self.assertEqual(runner.supervise(config), 0)
+            popen.assert_not_called()
+            saved = runner.read_json(state / "status.json")
+        self.assertTrue(saved["stopped"])
+        self.assertEqual(saved["completed"], [])
+
     def test_ledger_timestamps_are_sheet_local_time(self):
         now = runner.datetime.datetime(
             2026, 11, 23, 12, 15, tzinfo=runner.datetime.timezone.utc
