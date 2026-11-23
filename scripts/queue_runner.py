@@ -374,6 +374,15 @@ def ledger_rows():
     )
 
 
+def audit_failures(config):
+    if not (database := config.get("failure_audit_db")):
+        return
+    try:
+        ledger_module("twt_failure_audit").audit(config, database, poster=ledger_write)
+    except Exception as error:
+        print(f"S5 failure audit failed: {type(error).__name__}: {error}", flush=True)
+
+
 def ledger_log(message):
     print("LEDGER " + message, flush=True)
 
@@ -1115,7 +1124,12 @@ def supervise(config_path, *, clear_halt=False):
                 saved = read_json(directory / "job.json")["issue"]
                 if (saved["repo"], saved["number"]) != (repo, issue["number"]):
                     raise SafetyStop("current issue differs from saved job")
-                recovery = reconcile_job(config, source, directory, runtime_root / name)
+                try:
+                    recovery = reconcile_job(
+                        config, source, directory, runtime_root / name
+                    )
+                finally:
+                    audit_failures(config)
                 summary_path = directory / "summary.json"
                 summary = read_json(summary_path) if summary_path.exists() else {}
                 if summary.get("halt_queue") is True:
@@ -1274,6 +1288,7 @@ def supervise(config_path, *, clear_halt=False):
                     text=True,
                 )
                 process.communicate(source)
+            audit_failures(config)
             summary_path = directory / "summary.json"
             if not summary_path.exists():
                 status.update(

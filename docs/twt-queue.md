@@ -237,6 +237,73 @@ review of a real PR needs Ari.
 
 ## Agent Ledger rows
 
+### Post-run S5 failure audit
+
+The optional audit runs on the supervisor after each worker exits, including
+failed or interrupted runs recovered on startup. It makes no model calls. It
+reads the TwT SQLite audit tables in read-only mode and counts failed upstream
+attempts by provider and HTTP status or known error reason, plus exhausted
+waterfalls. It checks retained coder traces in current and archived jobs via
+the configured worker runtime so root-owned traces stay in the container.
+Counts are per provider attempt, exhausted request, or affected coder trace.
+Only the fixed cause signatures leave the audit, not provider payloads or
+individual trace contents.
+
+On S5, dry-run from the host using the active queue's config:
+
+```sh
+python3 scripts/twt_failure_audit.py --config ~/twt/queue/config-main.json \
+  --twt-db ~/twt/catalog.sqlite3
+```
+
+This prints grouped counts, seen signatures, and the causes eligible to post
+today without writing to the Agent Ledger or its audit state. The first scan
+includes historical causes. Before enabling filing on S5, record causes
+already tracked in GitHub (one repeatable `--mark-known SIGNATURE=URL` per
+signature, using the name from the dry-run). This writes only to the queue
+state, not GitHub or the Form. For the initial S5 backfill:
+
+```sh
+python3 scripts/twt_failure_audit.py --config ~/twt/queue/config-main.json \
+  --mark-known 'TwT nvidia HTTP 404=https://github.com/arii/boomtick/issues/1419' \
+  --mark-known 'TwT cloudflare HTTP 410=https://github.com/arii/boomtick/pull/1421' \
+  --mark-known 'TwT sambanova HTTP 402=https://github.com/arii/boomtick/pull/1421' \
+  --mark-known 'TwT nvidia timeout=https://github.com/arii/boomtick/issues/1301' \
+  --mark-known 'TwT nebius HTTP 529=https://github.com/arii/boomtick/issues/1305' \
+  --mark-known 'Coder repeat loop=https://github.com/arii/remote-server/issues/1627' \
+  --mark-known 'Coder read-only run=https://github.com/arii/remote-server/issues/1633'
+```
+
+The repeat-loop group also covers the repeated read in #1630. The caller-side
+model configuration error in #1635 is not an upstream attempt or a coder
+guard trip, so there is no signature to mark for it.
+
+Run the dry-run again after marking known causes. On the next approved queue
+start, point `QUEUE_RUNNER` at the updated checkout (with
+`twt_failure_audit.py` and `ledger_post.py` alongside it) and add
+`"failure_audit_db": "/home/ari/twt/catalog.sqlite3"` to the host queue config.
+No separate service or TwT configuration change is needed. Omit the setting
+to leave filing disabled.
+
+For each new signature, the audit uses the existing Form writer as `S5-Local`
+with status `Act` (TwT tasks go to `boomtick`, coder tasks to `remote-server`).
+The Agent Ledger hook must allow that source and both repos. The supervisor
+records seen signatures, their tracker URLs when known, the pending backlog
+and the UTC-day post count in `failure-audit-seen.json` under `state_dir`.
+Keep this file across restarts. The audit accepts an optional positive integer
+`failure_audit_daily_post_cap` in the host config (default 3, below the hook's
+shared cap of 5). Higher-count causes are submitted first, with ties sorted
+by signature; excess causes remain pending for the next run with UTC-day
+capacity. Only successful Form submissions consume the local cap.
+Submissions use stable notes so the hook's replay deduplication also applies.
+Other Form sources share the hook's capacity; a Form success does not confirm
+issue creation, and the audit does not resubmit a row the Form already accepted.
+Check the hook's outcome rows after enabling.
+The audit never sets `ready`. Audit errors are logged but do not change the
+queue's run status; a failed Form submission remains eligible on the next run.
+
+### Ledger intake review
+
 `python3 scripts/ledger_intake_review.py OWNER/REPO NUMBER` audits one new `ledger-intake` issue through local Ollama/TwT and may post one finding comment. It checks the issue body for the canonical `problem`, `scope` and `done_when` fields (the hook's `Problem`, `Out of scope` and `Done when` sections; `title` and `repo` come from the issue itself) and reports gaps by those names. It never changes labels or issue state.
 
 ### Missing routing fields (#1585)

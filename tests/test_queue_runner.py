@@ -972,6 +972,48 @@ class RunnerTests(unittest.TestCase):
 
     @mock.patch.object(runner.signal, "signal")
     @mock.patch.object(
+        runner.subprocess,
+        "check_output",
+        return_value=json.dumps(
+            {"state": "open", "labels": [{"name": "ready"}], "title": "Run", "body": ""}
+        ),
+    )
+    def test_failure_audit_runs_after_worker_even_without_summary(self, _read, _signal):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            settings = runner.read_json(config)
+            settings["failure_audit_db"] = "/fixture/catalog.sqlite3"
+            runner.write_json(config, settings)
+            process = mock.Mock()
+            completed = []
+            process.communicate.side_effect = lambda _source: completed.append(True)
+
+            def audit(*_args, **_kwargs):
+                self.assertEqual(completed, [True])
+                raise OSError("fixture audit failure")
+
+            with (
+                mock.patch.object(runner.subprocess, "Popen", return_value=process),
+                mock.patch(
+                    "scripts.twt_failure_audit.audit", side_effect=audit
+                ) as run_audit,
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+            ):
+                self.assertEqual(runner.supervise(config), 2)
+            run_audit.assert_called_once_with(
+                settings, "/fixture/catalog.sqlite3", poster=runner.ledger_write
+            )
+            self.assertIn(
+                "S5 failure audit failed: OSError: fixture audit failure",
+                stdout.getvalue(),
+            )
+            status = runner.read_json(state / "status.json")
+            self.assertEqual(
+                status["reason"], "worker exited without verifiable cost/reconciliation"
+            )
+
+    @mock.patch.object(runner.signal, "signal")
+    @mock.patch.object(
         runner.subprocess, "check_output", return_value=json.dumps({"state": "closed"})
     )
     def test_closed_issues_are_not_dispatched(self, _read, _signal):
