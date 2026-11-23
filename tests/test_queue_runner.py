@@ -61,10 +61,8 @@ class OutOfScopeFindingTests(unittest.TestCase):
     def test_post_uses_task_shape(self):
         calls = {}
         real = ledger_post.post_entry
-        ledger_post.post_entry = (
-            lambda agent, note, status="Act", link="": calls.update(
-                {"agent": agent, "note": note, "status": status, "link": link}
-            )
+        ledger_post.post_entry = lambda agent, note, status="Act", link="": (
+            calls.update({"agent": agent, "note": note, "status": status, "link": link})
             or 200
         )
         try:
