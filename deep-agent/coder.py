@@ -784,8 +784,8 @@ def coder_tool_middleware(*, repair=False, planning=False):
                         content=(
                             f"{explored} inspection calls without an edit. You have "
                             "enough context: make the planned edit now with "
-                            "edit_file or write_file, or finish with "
-                            "BLOCKED: <reason>."
+                            "edit_file or write_file, or explain the blocker and "
+                            "end with the BLOCKED #<issue> line."
                         ),
                         tool_call_id=call["id"],
                         status="error",
