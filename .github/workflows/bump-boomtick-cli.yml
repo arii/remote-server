@@ -1,8 +1,9 @@
 # Advances immutable CLI pins to newer published cli-* releases.
 #
-# Pins live in four places and must move together:
+# Pins live in six places and must move together:
 #   Dockerfile (ARG BOOMTICK_CLI_REF), terminal/Dockerfile (ARG),
-#   .github/workflows/e2e.yml (pip install @ref), tests/e2e/run.sh (same).
+#   .github/workflows/{e2e,ci,ai-review}.yml (pip install @ref),
+#   tests/e2e/run.sh (same).
 # Runs weekly plus on demand; never downgrades an unreleased SHA pin.
 name: bump-boomtick-cli
 
@@ -50,6 +51,8 @@ jobs:
               "Dockerfile": r"(?m)(^ARG BOOMTICK_CLI_REF=)[0-9a-f]{40}$",
               "terminal/Dockerfile": r"(?m)(^ARG BOOMTICK_CLI_REF=)[0-9a-f]{40}$",
               ".github/workflows/e2e.yml": r"(github\.com/arii/boomtick\.git@)[0-9a-f]{40}(?=#subdirectory=cli)",
+              ".github/workflows/ci.yml": r"(github\.com/arii/boomtick\.git@)[0-9a-f]{40}(?=#subdirectory=cli)",
+              ".github/workflows/ai-review.yml": r"(github\.com/arii/boomtick\.git@)[0-9a-f]{40}(?=#subdirectory=cli)",
               "tests/e2e/run.sh": r"(github\.com/arii/boomtick\.git@)[0-9a-f]{40}(?=#subdirectory=cli)",
           }
           updates = {}
@@ -75,7 +78,7 @@ jobs:
           git config user.name "arii"
           git config user.email "arii"
           git checkout -B "$BRANCH"
-          git add Dockerfile terminal/Dockerfile .github/workflows/e2e.yml tests/e2e/run.sh
+          git add Dockerfile terminal/Dockerfile .github/workflows/e2e.yml .github/workflows/ci.yml .github/workflows/ai-review.yml tests/e2e/run.sh
           git commit -m "chore(deps): bump boomtick CLI ref to $TAG"
           git push -u origin "$BRANCH" --force-with-lease
           if gh pr list --head "$BRANCH" --json number --jq -e '.[0].number' >/dev/null; then

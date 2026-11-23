@@ -69,7 +69,7 @@ jobs:
       # (same immutable revision as the Dockerfiles).
       - name: install boomtick td CLI
         # v0.20.2 + unreleased workflows/MCP changes; no compatible release yet.
-        run: pip install "git+https://github.com/arii/boomtick.git@3e970a570aee0a550ec6409de769c201c9a5b900#subdirectory=cli"
+        run: pip install "git+https://github.com/arii/boomtick.git@a0c62ee55460de42037ed37fb5d2289b692e3043#subdirectory=cli"
 
       - name: cache e2e npm store
         uses: actions/cache@v6

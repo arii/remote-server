@@ -241,6 +241,11 @@ jobs:
         # instead of skipping. sentence-transformers is the RAG index
         # backend and no root test imports it.
         run: grep -v '^sentence-transformers' deep-agent/requirements.txt > "$RUNNER_TEMP/deep-agent-ci.txt" && pip install -r "$RUNNER_TEMP/deep-agent-ci.txt"
+      - name: install boomtick td CLI
+        # tests/test_verify_scope_issue_spec.py runs the real `td verify-scope`
+        # (#1577). Same immutable revision as e2e.yml and the Dockerfiles; the
+        # bump-boomtick-cli workflow keeps the pins in sync.
+        run: pip install "git+https://github.com/arii/boomtick.git@a0c62ee55460de42037ed37fb5d2289b692e3043#subdirectory=cli"
       - name: compile-check backend tree
         run: npm run compile-check
       - name: lint Python (ruff pyflakes-class)
@@ -249,9 +254,11 @@ jobs:
         run: npm run test:backend
       - name: root unit tests
         # REQUIRE_DEEP_AGENT_DEPS makes tests/test_coder_budget.py fail on
-        # missing deep-agent deps instead of skipping its real-graph tests.
+        # missing deep-agent deps instead of skipping its real-graph tests;
+        # REQUIRE_TD does the same for the real-td scope tests.
         env:
           REQUIRE_DEEP_AGENT_DEPS: "1"
+          REQUIRE_TD: "1"
         run: npm run test:root
       - name: validate configs
         run: python3 -m backend.validate_config
