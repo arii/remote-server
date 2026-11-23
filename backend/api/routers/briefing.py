@@ -285,6 +285,13 @@ def _duplicate_candidate(row: dict, rows: dict[str, dict]) -> dict | None:
     return best[1] if best else None
 
 
+def _awaiting_triage(row: dict) -> bool:
+    status = str(row.get("status", "")).upper()
+    if status == "DUPLICATE":
+        return not _is_human_linked(row)
+    return status in {"NEW", "NEEDS_INFO", "SUSPECTED-DUPLICATE"}
+
+
 def _intake_rows() -> list[dict]:
     """Rows awaiting triage. Read-only: duplicate candidates are only
     flagged here; nothing is linked or appended without a confirmed
@@ -293,11 +300,7 @@ def _intake_rows() -> list[dict]:
     latest = _latest_intake_rows()
     rows = []
     for row in latest.values():
-        status = str(row.get("status", "")).upper()
-        if status == "DUPLICATE":
-            if _is_human_linked(row):
-                continue
-        elif status not in {"NEW", "NEEDS_INFO", "SUSPECTED-DUPLICATE"}:
+        if not _awaiting_triage(row):
             continue
         candidate = _duplicate_candidate(row, latest)
         enriched = {**row}
@@ -325,11 +328,13 @@ def ledger_intake() -> dict:
 
 @router.post("/ledger-intake/{intake_id}/approve")
 def approve_ledger_intake(intake_id: str, body: IntakeApproval) -> dict:
+    # Look up the one row by id; no whole-queue duplicate scan (#1584).
     row = next(
         (
             candidate
-            for candidate in _intake_rows()
-            if str(candidate.get("canonical_intake_id") or candidate.get("row_key"))
+            for candidate in _latest_intake_rows().values()
+            if _awaiting_triage(candidate)
+            and str(candidate.get("canonical_intake_id") or candidate.get("row_key"))
             == intake_id
         ),
         None,

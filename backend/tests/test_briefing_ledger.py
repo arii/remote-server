@@ -592,6 +592,33 @@ class BriefingLedgerTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def test_approve_does_not_scan_queue_for_duplicates(self):
+        self._seed_pair()
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-other",
+                "canonical_intake_id": "intake-other",
+                "status": "NEW",
+                "title": "Completely unrelated zebra",
+                "repo": "x/y",
+                "dedupe_hash": "zzz",
+            }
+        )
+        with mock.patch(
+            "backend.api.routers.briefing._duplicate_candidate"
+        ) as candidate:
+            response = self.client.post(
+                "/api/ledger-intake/intake-other/approve", json={"fields": {}}
+            )
+            missing = self.client.post(
+                "/api/ledger-intake/nope/approve", json={"fields": {}}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(missing.status_code, 404)
+        candidate.assert_not_called()
+        self.assertNotIn("duplicate_candidate", response.json()["row"])
+
     def test_distinct_rejects_candidate_that_is_not_detected(self):
         self._seed_pair()
         ledger.append(
