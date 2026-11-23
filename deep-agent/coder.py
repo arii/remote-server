@@ -35,6 +35,7 @@ plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 """
 
 import argparse
+import ast
 import contextvars
 import difflib
 import hashlib
@@ -663,6 +664,145 @@ def proposed_syntax_error(file_path, content):
     )
 
 
+def python_module_names(tree):
+    names, exports = set(), set()
+
+    def assigned_names(target):
+        if isinstance(target, ast.Name):
+            yield target.id
+        elif isinstance(target, (ast.List, ast.Tuple)):
+            for element in target.elts:
+                yield from assigned_names(element)
+        elif isinstance(target, ast.Starred):
+            yield from assigned_names(target.value)
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                names.update(assigned_names(target))
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    if not isinstance(node, ast.AugAssign):
+                        exports.clear()
+                    if isinstance(node.value, (ast.List, ast.Set, ast.Tuple)):
+                        exports.update(
+                            elt.value
+                            for elt in node.value.elts
+                            if isinstance(elt, ast.Constant)
+                            and isinstance(elt.value, str)
+                        )
+    return names, exports
+
+
+def python_import_references(tree, importer, modules, removed):
+    package = tuple(importer.split("/")[:-1])
+    bindings = {}
+
+    def bind(name, module):
+        bindings.setdefault(name, set()).add(module)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module = tuple(alias.name.split("."))
+                bind(alias.asname or module[0], module if alias.asname else module[:1])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level > len(package):
+                continue
+            parent = package[: len(package) + 1 - node.level] if node.level else ()
+            module = parent + tuple(node.module.split(".") if node.module else ())
+            for alias in node.names:
+                if module in modules and alias.name in removed:
+                    yield alias.name, alias.lineno
+                bind(alias.asname or alias.name, (*module, alias.name))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute) or node.attr not in removed:
+            continue
+        parts = ()
+        value = node.value
+        while isinstance(value, ast.Attribute):
+            parts = (value.attr, *parts)
+            value = value.value
+        if isinstance(value, ast.Name) and any(
+            (*module, *parts) in modules for module in bindings.get(value.id, ())
+        ):
+            yield node.attr, node.lineno
+
+
+def proposed_import_error(worktree, target, content):
+    if not target.is_file():
+        return None
+    path = target.relative_to(os.path.realpath(worktree)).as_posix()
+    try:
+        before, old_exports = python_module_names(ast.parse(target.read_bytes()))
+    except (OSError, SyntaxError):
+        return None
+    after, new_exports = python_module_names(ast.parse(content))
+    removed = (before - after) | (old_exports - new_exports)
+    if not removed:
+        return None
+    git = ["git", "-C", worktree, "--literal-pathspecs"]
+    tracked = subprocess.run(
+        [*git, "ls-files", "--error-unmatch", "--", path], capture_output=True
+    )
+    if tracked.returncode:
+        return None
+
+    parts = tuple(os.path.splitext(path)[0].split("/"))
+    is_package = parts[-1] == "__init__"
+    module = parts[:-1] if is_package else parts
+    if not module:
+        return None
+    modules = {module}
+    if len(module) > 1 and module[0] in {"src", "deep-agent"}:
+        modules.add(module[1:])
+
+    terms = {module[-1], *removed} if is_package else {module[-1]}
+    candidates = subprocess.run(
+        [
+            "git",
+            "-C",
+            worktree,
+            "grep",
+            "-Flzw",
+            "--no-textconv",
+            *(arg for term in sorted(terms) for arg in ("-e", term)),
+            "--",
+            "*.py",
+        ],
+        capture_output=True,
+    )
+    if candidates.returncode not in (0, 1):
+        return f"{SYNTAX_REJECTION}: {path}: could not check tracked Python importers."
+    references = {}
+    for raw in candidates.stdout.split(b"\0"):
+        importer = os.fsdecode(raw)
+        if not importer or importer == path:
+            continue
+        try:
+            resolved = active_checkout_path(worktree, importer)
+            with open(resolved, "rb") as file:
+                tree = ast.parse(file.read(), filename=importer)
+        except (OSError, SyntaxError, ValueError):
+            continue
+        for name, line in python_import_references(tree, importer, modules, removed):
+            references.setdefault(name, set()).add((importer, line))
+    if not references:
+        return None
+    details = "\n".join(
+        f"- {name}: " + ", ".join(f"{file}:{line}" for file, line in sorted(locations))
+        for name, locations in sorted(references.items())
+    )
+    return (
+        f"{SYNTAX_REJECTION}: {path}: removed names still referenced by tracked files:\n"
+        f"{details}\nKeep these names or update the importers in the plan before "
+        "removing them."
+    )
+
+
 def build_filesystem_backend(worktree):
     from deepagents.backends import FilesystemBackend
 
@@ -688,6 +828,14 @@ def build_filesystem_backend(worktree):
             error = proposed_syntax_error(file_path, content)
             if error:
                 return WriteResult(error=error)
+            if os.path.splitext(file_path)[1].lower() == ".py":
+                try:
+                    target = self._resolve_path(file_path)
+                except (OSError, RuntimeError) as exc:
+                    return WriteResult(error=f"Error writing file '{file_path}': {exc}")
+                error = proposed_import_error(worktree, target, content)
+                if error:
+                    return WriteResult(error=error)
             return super().write(file_path, content)
 
         def edit(self, file_path, old_string, new_string, replace_all=False):
