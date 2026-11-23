@@ -307,6 +307,17 @@ def _intake_rows() -> list[dict]:
     return rows
 
 
+def _require_detected_candidate(row: dict, candidate: dict, rows: dict) -> None:
+    """Merge and distinct only act on the candidate the detector flags."""
+    resolved = _duplicate_candidate(row, rows)
+    if resolved is None or str(
+        resolved.get("canonical_intake_id") or resolved.get("row_key")
+    ) != str(candidate.get("canonical_intake_id") or candidate.get("row_key")):
+        raise HTTPException(
+            status_code=400, detail="candidate is not a detected duplicate"
+        )
+
+
 @router.get("/ledger-intake")
 def ledger_intake() -> dict:
     return {"rows": _intake_rows()}
@@ -325,6 +336,12 @@ def approve_ledger_intake(intake_id: str, body: IntakeApproval) -> dict:
     )
     if row is None:
         raise HTTPException(status_code=404, detail="intake row not found")
+    if str(row.get("status", "")).upper() == "DUPLICATE":
+        # Quarantined until a human merges or marks it distinct (#1584).
+        raise HTTPException(
+            status_code=400,
+            detail="duplicate row needs merge or distinct before approval",
+        )
     fields = {
         key: value.strip()
         for key, value in body.fields.items()
@@ -359,13 +376,7 @@ def merge_ledger_intake(intake_id: str, body: IntakeMerge | None = None) -> dict
     candidate = _find_intake_row(rows, body.candidate_id)
     if row is None or candidate is None:
         raise HTTPException(status_code=404, detail="intake row or candidate not found")
-    resolved = _duplicate_candidate(row, rows)
-    if resolved is None or str(
-        resolved.get("canonical_intake_id") or resolved.get("row_key")
-    ) != str(candidate.get("canonical_intake_id") or candidate.get("row_key")):
-        raise HTTPException(
-            status_code=400, detail="candidate is not a detected duplicate"
-        )
+    _require_detected_candidate(row, candidate, rows)
     note = body.notes.strip()
     prior_notes = str(row.get("notes") or "").strip()
     merged_notes = prior_notes
@@ -399,6 +410,7 @@ def distinct_ledger_intake(intake_id: str, body: IntakeDistinct | None = None) -
     candidate = _find_intake_row(rows, body.candidate_id)
     if row is None or candidate is None:
         raise HTTPException(status_code=404, detail="intake row or candidate not found")
+    _require_detected_candidate(row, candidate, rows)
     prior = row.get("distinct_of")
     distinct_of = [str(x) for x in prior] if isinstance(prior, list) else []
     for value in sorted(_row_ids(candidate)):

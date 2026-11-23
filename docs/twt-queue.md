@@ -316,9 +316,9 @@ Gated actions on the Ledger triage screen, each a two-step tap and each rejected
 | Merge duplicate (links `canonical_intake_id`, appends notes) | `POST /api/ledger-intake/{id}/merge` | `ledger-intake-merge` |
 | Not a duplicate (resets to `NEW`, never `READY`, drops the link, remembers the pair so it is not flagged again) | `POST /api/ledger-intake/{id}/distinct` | `ledger-intake-distinct` |
 
-Merge always needs the confirm, for exact-hash and fuzzy matches alike. This overrides the one-tap Merge in #1583. The hook may still set `DUPLICATE` on an exact dedupe hash at submit, because that is a status and not a link. Those rows stay in triage until a human merges or marks them distinct.
+Merge always needs the confirm, for exact-hash and fuzzy matches alike. This overrides the one-tap Merge in #1583. The hook may still set `DUPLICATE` on an exact dedupe hash at submit, because that is a status and not a link. Those rows stay in triage until a human merges or marks them distinct, and `approve` rejects them with 400 until then. Merge and distinct both only accept the candidate the detector flags.
 
-Nothing hard-deletes intake rows. The only path that removes them is `POST /api/ledger/clear` (intent `ledger-clear`), which truncates the whole ledger including intake rows. `backend/tests/test_briefing_ledger.py` guards this in `test_ledger_intake_no_delete_path`. Only Ari adds `ready` to a `ledger-intake` issue.
+The intake code and routes contain no delete path. The only path that removes them is `POST /api/ledger/clear` (intent `ledger-clear`), which truncates the whole ledger including intake rows. `backend/tests/test_briefing_ledger.py` guards this in `test_ledger_intake_no_delete_path`, a tripwire on call names and direct file writes in `scripts/ledger_intake*.py` and the intake routes, not a proof. Only Ari adds `ready` to a `ledger-intake` issue.
 
 ## Strong-tier routing
 

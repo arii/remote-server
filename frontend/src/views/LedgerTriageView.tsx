@@ -211,14 +211,18 @@ export default function LedgerTriageView(): ReactElement {
                   />
                 </label>
               ))}
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() => void approve(row)}
-                disabled={busy !== null}
-              >
-                {busy === id ? 'Saving…' : 'Approve and mark READY'}
-              </button>
+              {row.status?.toUpperCase() === 'DUPLICATE' ? (
+                <p className="row-meta">Merge or mark as not a duplicate before approving.</p>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => void approve(row)}
+                  disabled={busy !== null}
+                >
+                  {busy === id ? 'Saving…' : 'Approve and mark READY'}
+                </button>
+              )}
             </article>
           );
         })}

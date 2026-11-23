@@ -557,6 +557,66 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual([r["intake_id"] for r in rows], ["intake-new"])
         self.assertNotIn("duplicate_candidate", rows[0])
 
+    def test_approve_rejects_quarantined_duplicate_row(self):
+        self._seed_pair()
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-new",
+                "canonical_intake_id": "intake-new",
+                "status": "DUPLICATE",
+                "title": "Retry policy",
+                "repo": "o/r",
+                "dedupe_hash": "same",
+            }
+        )
+        before = self._intake_count()
+        response = self.client.post(
+            "/api/ledger-intake/intake-new/approve", json={"fields": {}}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._intake_count(), before)
+        rows = self.client.get("/api/ledger-intake").json()["rows"]
+        self.assertEqual(rows[0]["status"], "DUPLICATE")
+        # after a human marks it distinct it is NEW and approvable
+        self.client.post(
+            "/api/ledger-intake/intake-new/distinct",
+            json={
+                "candidate_id": "intake-old",
+                "intent": "ledger-intake-distinct",
+                "confirmed": True,
+            },
+        )
+        response = self.client.post(
+            "/api/ledger-intake/intake-new/approve", json={"fields": {}}
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_distinct_rejects_candidate_that_is_not_detected(self):
+        self._seed_pair()
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-other",
+                "canonical_intake_id": "intake-other",
+                "status": "NEW",
+                "title": "Completely unrelated zebra",
+                "repo": "x/y",
+                "dedupe_hash": "zzz",
+            }
+        )
+        before = self._intake_count()
+        response = self.client.post(
+            "/api/ledger-intake/intake-new/distinct",
+            json={
+                "candidate_id": "intake-other",
+                "intent": "ledger-intake-distinct",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._intake_count(), before)
+
     def test_hook_marked_duplicate_row_visible_until_human_links_it(self):
         self._seed_pair()
         ledger.append(
@@ -628,6 +688,31 @@ class BriefingLedgerTest(unittest.TestCase):
                         )
                         self.assertNotIn(
                             name.lower(), banned | {"ledger_clear"}, fn.name
+                        )
+        # Direct file writes in the intake scripts would bypass the ledger.
+        write_calls = {"write_text", "write_bytes", "writelines"}
+        for path in sources:
+            tree = ast.parse(pathlib.Path(path).read_text())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                name = (
+                    fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                )
+                self.assertNotIn(name, write_calls, f"{path}:{node.lineno}")
+                if name == "open":
+                    modes = [
+                        a.value for a in node.args[1:2] if isinstance(a, ast.Constant)
+                    ]
+                    modes += [
+                        k.value.value
+                        for k in node.keywords
+                        if k.arg == "mode" and isinstance(k.value, ast.Constant)
+                    ]
+                    for mode in modes:
+                        self.assertFalse(
+                            set(str(mode)) & set("wax+"), f"{path}:{node.lineno}"
                         )
         route = next(
             n

@@ -117,4 +117,14 @@ describe('LedgerTriageView', () => {
     expect(api.distinctLedgerIntake).toHaveBeenCalledWith('intake-new', 'intake-old');
     expect(api.mergeLedgerIntake).not.toHaveBeenCalled();
   });
+
+  it('hides Approve on a quarantined DUPLICATE row', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{ ...duplicateRows.rows[0], status: 'DUPLICATE' }],
+    });
+    await act(async () => root.render(<LedgerTriageView />));
+    expect(host.textContent).not.toContain('Approve and mark READY');
+    expect(host.textContent).toContain('before approving');
+    expect(tap('merge-intake-new')).toBeTruthy();
+  });
 });
