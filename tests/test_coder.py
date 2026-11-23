@@ -389,9 +389,14 @@ class TestCoderDefaults(unittest.TestCase):
         self.assertLessEqual(coder.RECURSION_LIMIT, 150)
 
     @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langchain_core)")
-    def test_search_tool_handles_empty_query(self):
-        tool = coder.build_search_tool("/tmp")
-        self.assertEqual(tool.invoke({"query": ""}), "REJECTED: empty query")
+    def test_rules_name_only_tools_the_default_agent_has(self):
+        # build_agent's default extra tool is run_check; the rules must
+        # name it and must not advertise search_code (#1533), which no
+        # agent receives.
+        self.assertEqual(coder.build_check_tool("/tmp").name, "run_check")
+        self.assertIn("run_check", coder.CODER_RULES)
+        self.assertNotIn("search_code", coder.CODER_RULES)
+        self.assertFalse(hasattr(coder, "build_search_tool"))
 
 
 class TestReadCacheAndTruncation(unittest.TestCase):
