@@ -783,8 +783,14 @@ def build_agent(
     repair=False,
     repo=None,
     planning=False,
+    thread_floor=0,
+    call_cap=None,
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
+
+    thread_floor is the model-call count already checkpointed on this
+    thread (a resumed turn); the turn gets the usual limit on top of it,
+    clipped to call_cap when the parent budget has less left.
 
     tools defaults to [run_check]; interrupt_on/permissions pass
     through to create_deep_agent (the plan agent denies writes and
@@ -829,7 +835,11 @@ def build_agent(
         middleware.insert(
             0,
             ModelCallLimitMiddleware(
-                thread_limit=REPAIR_MODEL_LIMIT if repair else INITIAL_MODEL_LIMIT,
+                thread_limit=thread_floor
+                + min(
+                    REPAIR_MODEL_LIMIT if repair else INITIAL_MODEL_LIMIT,
+                    INITIAL_MODEL_LIMIT if call_cap is None else call_cap,
+                ),
                 exit_behavior="error",
             ),
         )
@@ -1231,6 +1241,9 @@ def tier_model(model_tier):
     return os.environ.get("CODER_MODEL") or None
 
 
+CONTINUE_PROMPT = "Continue; your changes are preserved."
+
+
 def run_coder(
     worktree,
     brief,
@@ -1242,36 +1255,77 @@ def run_coder(
     repair=False,
     model_tier=None,
     repo=None,
+    continuations=0,
+    call_budget=None,
+    meter=None,
 ):
-    """Code normally, then allow one TwT fallback on initial default-route model exhaustion."""
+    """Code normally; on a model-call cap, resume, then allow one TwT fallback.
+
+    A cap hit resumes on the SAME checkpointed thread with a fresh
+    per-turn budget, at most ``continuations`` times and never past
+    ``call_budget`` total model calls (None: unbounded by the caller).
+    The one-shot TwT fallback on initial default-route exhaustion runs
+    after the continuations. ``meter`` (a dict) accumulates "calls" and
+    "continuations" across every turn, including failed ones. Cap
+    exhaustion re-raises ModelCallLimitExceededError.
+    """
     from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 
     from backend.shared import model_router
 
+    meter = meter if meter is not None else {}
+    meter.setdefault("calls", 0)
+    meter.setdefault("continuations", 0)
     kwargs = dict(
-        repair_files=repair_files, repair=repair, model_tier=model_tier, repo=repo
+        repair_files=repair_files,
+        repair=repair,
+        model_tier=model_tier,
+        repo=repo,
+        meter=meter,
     )
+
+    def left():
+        return None if call_budget is None else call_budget - meter["calls"]
+
     deadline = time.monotonic() + timeout
-    try:
-        return _run_coder_attempt(
-            worktree, brief, system, thread, timeout, deadline=deadline, **kwargs
-        )
-    except ModelCallLimitExceededError as error:
-        spec = getattr(error, "coder_model_spec", {})
-        fallback = os.environ.get(
-            "CODER_FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL
-        ).strip()
-        if (
-            repair
-            or model_router.local_only()
-            or spec.get("provider") != "twt"
-            or spec.get("model") not in ("default", "route:default")
-            or error.thread_limit != INITIAL_MODEL_LIMIT
-            or error.thread_count < INITIAL_MODEL_LIMIT
-            or not fallback
-        ):
-            raise
-        prior_files = error.coder_written_files
+    turn_brief, floor, prior_files = brief, 0, ()
+    while True:
+        try:
+            return _run_coder_attempt(
+                worktree,
+                turn_brief,
+                system,
+                thread,
+                timeout,
+                deadline=deadline,
+                thread_floor=floor,
+                call_cap=left(),
+                prior_files=prior_files,
+                **kwargs,
+            )
+        except ModelCallLimitExceededError as error:
+            capped = error
+            if meter["continuations"] >= continuations or (
+                call_budget is not None and left() <= 0
+            ):
+                break
+            meter["continuations"] += 1
+            turn_brief, floor = CONTINUE_PROMPT, error.thread_count
+            prior_files = error.coder_written_files
+    error = capped
+    spec = getattr(error, "coder_model_spec", {})
+    fallback = os.environ.get("CODER_FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL).strip()
+    if (
+        repair
+        or (call_budget is not None and left() <= 0)
+        or model_router.local_only()
+        or spec.get("provider") != "twt"
+        or spec.get("model") not in ("default", "route:default")
+        or error.thread_limit - floor != INITIAL_MODEL_LIMIT
+        or error.thread_count - floor < INITIAL_MODEL_LIMIT
+        or not fallback
+    ):
+        raise error
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise RuntimeError(f"coder timed out after {timeout}s before fallback")
@@ -1285,7 +1339,8 @@ def run_coder(
         remaining,
         deadline=deadline,
         fallback_model=fallback,
-        prior_files=prior_files,
+        prior_files=error.coder_written_files,
+        call_cap=left(),
         **kwargs,
     )
 
@@ -1304,6 +1359,9 @@ def _run_coder_attempt(
     fallback_model=None,
     prior_files=(),
     deadline=None,
+    thread_floor=0,
+    call_cap=None,
+    meter=None,
 ):
     """Invoke the coder with a verify gate.
 
@@ -1346,6 +1404,8 @@ def _run_coder_attempt(
         recorder.run_end(False)
         recorder.close()
         usage, calls = recorder.totals()
+        if meter is not None:
+            meter["calls"] = meter.get("calls", 0) + recorder.model_calls
         ledger.record(
             "coder.py",
             spec["model"],
@@ -1380,6 +1440,8 @@ def _run_coder_attempt(
             written_files=written_files,
             repair=repair,
             repo=repo,
+            thread_floor=thread_floor,
+            call_cap=call_cap,
         )
         config = {"configurable": {"thread_id": thread}}
 
@@ -1440,6 +1502,8 @@ def _run_coder_attempt(
         recorder.run_end(True)
         recorder.close()
         usage, calls = recorder.totals()
+        if meter is not None:
+            meter["calls"] = meter.get("calls", 0) + recorder.model_calls
         print(f"trace: {recorder.path}", file=sys.stderr)
         return reply, usage, calls, started, label, recorder.path, verified, rounds
     except BaseException as error:
