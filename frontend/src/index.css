@@ -16,11 +16,14 @@
 
 .ledger-card-deck {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
 .ledger-triage-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  overflow-wrap: anywhere;
   gap: 12px;
   padding: 16px;
   background: var(--surface);
@@ -30,6 +33,7 @@
 
 .ledger-card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
@@ -38,6 +42,15 @@
 .ledger-triage-card h3,
 .ledger-triage-card p {
   margin: 0;
+}
+
+.ledger-card-problem summary {
+  cursor: pointer;
+}
+
+.ledger-card-problem p {
+  margin-top: 6px;
+  white-space: pre-wrap;
 }
 
 .ledger-triage-card label {
@@ -68,6 +81,7 @@
 
 .ledger-duplicate-pair {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
