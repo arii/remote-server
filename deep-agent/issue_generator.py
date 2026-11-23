@@ -181,8 +181,25 @@ def force_final_turn(budget):
 
     @wrap_model_call
     def strip_spent_tools(request, handler):
-        if budget.get("exhausted") and getattr(request, "tools", None):
-            request = request.override(tools=[], tool_choice="none")
+        if budget.get("exhausted"):
+            from langchain_core.messages import HumanMessage
+
+            request = request.override(
+                tools=[],
+                tool_choice="none",
+                messages=[
+                    *request.messages,
+                    HumanMessage(
+                        content="The investigation tool budget is exhausted. "
+                        "Write the final evidence summary now, citing each factual "
+                        "claim with a repo file path:line from the pre-seeded "
+                        "context or tool results already gathered. No tools are "
+                        "available: do not request tools or emit <tool_call> markup. "
+                        "If no repository evidence was gathered, say so explicitly "
+                        "instead of inventing citations."
+                    ),
+                ],
+            )
         return handler(request)
 
     return strip_spent_tools
@@ -225,6 +242,9 @@ def write_spec(path, text):
 COMPOSE_OLLAMA_URL = "http://ollama:11434"
 
 _REPO_FILE_RE = re.compile(r"(?<![\w/])([\w./-]+\.\w+)(?::\d+)?")
+_TOOL_CALL_MARKUP_RE = re.compile(
+    r"<tool_call\b[^>]*>.*?</tool_call>", re.DOTALL | re.IGNORECASE
+)
 
 
 def _env_positive_int(name, default):
@@ -770,6 +790,17 @@ class IssueGeneratorGraph:
             evidence = outer.investigate_text(
                 state.get("brief", ""), state.get("draft", "")
             )
+            if _TOOL_CALL_MARKUP_RE.search(evidence or "") and not (
+                _TOOL_CALL_MARKUP_RE.sub("", evidence).strip()
+            ):
+                return {
+                    "evidence": evidence,
+                    "errors": [
+                        "investigation returned only tool-call markup instead "
+                        "of a cited evidence summary"
+                    ],
+                    "off_brief": True,
+                }
             if not evidence_cites_repo_file(evidence, outer.repo_root):
                 return {
                     "evidence": evidence,
