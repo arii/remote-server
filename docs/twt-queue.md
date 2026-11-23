@@ -20,7 +20,11 @@ example absolute paths with persistent paths in your deployment:
   "state_dir": "/absolute/queue-state",
   "runtime_state_dir": "/absolute/queue-state",
   "pipeline_checkout": "/absolute/remote-server",
-  "repo_paths": {"arii/remote-server": "/absolute/remote-server"},
+  "repo_paths": {
+    "arii/remote-server": "/absolute/remote-server",
+    "arii/boomtick": "/absolute/boomtick"
+  },
+  "discover_repos": ["arii/remote-server", "arii/boomtick"],
   "runtime_command": [],
   "worker_python": "/opt/venvs/td/bin/python",
   "cap_usd": 0.5,
@@ -70,6 +74,21 @@ Human-decision #1377 is held only in `arii/remote-server`; the same number in
 another repository is not held. remote-server #1359 is always skipped because
 its change merged via #1381. The snapshot preserves other recorded human/operator
 holds; update the manifest deliberately rather than guessing whether an issue is fixed.
+
+### Polling for `ready` issues
+
+At each supervisor start, for every repo in `discover_repos` the queue runs
+`gh issue list --repo R --state open --label ready --json number,title,createdAt,labels --limit 100`
+and appends issues missing from the manifest after all manifest entries, oldest
+`createdAt` first. They then run sequentially under the usual rules. Held
+(`skip_reason`), completed and closed issues are not added, and each is still
+refreshed through GitHub before dispatch. The merge is in memory only: the manifest
+stays the human-edited file and is never rewritten, and the queue never adds or
+removes labels. Every `discover_repos` entry must also be in `repo_paths`
+(startup fails otherwise). If the key is absent or empty, nothing is discovered.
+If `gh` fails for a repo, a `DISCOVERY` line is logged and that repo is skipped
+for this refresh. If a repo returns 100 issues, the log warns that older ones
+may be missing.
 
 ## Accounting and recovery
 
