@@ -61,6 +61,35 @@ class ScriptedPipeline(pipeline_mod.Pipeline):
 
 
 class TestHelpers(unittest.TestCase):
+    def test_count_run_rows_matches_stage_threads_and_receipt_ids(self):
+        thread = 'run-"例'
+        trace = "receipt-1"
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.object(ledger, "LEDGER", str(Path(root, "ledger.jsonl"))),
+        ):
+            ledger.record("pipeline.py", "", thread, [], 0)
+            ledger.record("coder.py", "", f"{thread}-edit", [], 0)
+            ledger.record(
+                "slop_review.py",
+                "",
+                "slop-1576",
+                [],
+                0,
+                usage={"twt_trace_ids": [trace]},
+            )
+            ledger.record("coder.py", "", f"{thread}other", [], 0)
+            ledger.record(
+                "coder.py",
+                "",
+                "another-run",
+                [],
+                0,
+                usage={"twt_trace_ids": ["receipt-10"]},
+            )
+            self.assertEqual(pipeline_mod._count_run_rows(thread, {trace}), 3)
+            self.assertEqual(pipeline_mod._count_run_rows(thread, set()), 2)
+
     def test_parse_json_output_ok(self):
         payload, error = pipeline_mod.parse_json_output('{"a": 1}')
         self.assertEqual(payload, {"a": 1})

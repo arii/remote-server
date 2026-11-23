@@ -77,11 +77,16 @@ def _is_test_command(argv):
     )
 
 
-def _count_run_rows(thread_id, trace_ids):
+def _count_run_rows(thread_id: str, trace_ids: set[str]):
+    thread_prefix = json.dumps(thread_id)[:-1]
+    exact_ids = [json.dumps(trace) for trace in trace_ids]
+    candidates = re.compile("|".join(map(re.escape, [thread_prefix, *exact_ids])))
     count = 0
     try:
         with open(ledger.LEDGER, encoding="utf-8") as handle:
             for line in handle:
+                if not candidates.search(line):
+                    continue
                 try:
                     row = json.loads(line)
                 except ValueError:
@@ -1059,7 +1064,7 @@ class Pipeline:
                 0,
                 started,
             )
-        self._record_outcome(result, receipts.ids if receipts is not None else ())
+        self._record_outcome(result, receipts.ids if receipts is not None else set())
         return result
 
     def _record_outcome(self, result, trace_ids):
