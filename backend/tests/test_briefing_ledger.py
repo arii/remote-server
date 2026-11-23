@@ -413,6 +413,43 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(response.json()["row"]["status"], "READY")
         self.assertEqual(self.client.get("/api/ledger-intake").json()["rows"], [])
 
+    def test_ledger_intake_shows_candidate_and_merge_links_duplicate(self):
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-new",
+                "canonical_intake_id": "intake-new",
+                "status": "NEW",
+                "title": "Retry policy",
+                "repo": "o/r",
+                "dedupe_hash": "same",
+            }
+        )
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-old",
+                "canonical_intake_id": "intake-old",
+                "status": "READY",
+                "title": "Retry policy",
+                "repo": "o/r",
+                "dedupe_hash": "same",
+                "ts": time.time() - 60,
+            }
+        )
+        rows = self.client.get("/api/ledger-intake").json()["rows"]
+        self.assertEqual(rows[0]["duplicate_candidate"]["title"], "Retry policy")
+        response = self.client.post(
+            "/api/ledger-intake/intake-new/merge",
+            json={"candidate_id": "intake-old", "notes": "Same scope."},
+        )
+        self.assertEqual(response.status_code, 200)
+        merged = response.json()["row"]
+        self.assertEqual(merged["status"], "DUPLICATE")
+        self.assertEqual(merged["canonical_intake_id"], "intake-old")
+        self.assertEqual(merged["notes"], "Same scope.")
+        self.assertEqual(self.client.get("/api/ledger-intake").json()["rows"], [])
+
     def test_ledger_since_filter(self):
         now = time.time()
         rows = [

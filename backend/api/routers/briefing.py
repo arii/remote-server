@@ -21,6 +21,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from difflib import SequenceMatcher
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -163,18 +164,84 @@ class IntakeApproval(BaseModel):
     fields: dict[str, str] = Field(default_factory=dict)
 
 
-def _intake_rows() -> list[dict]:
+class IntakeMerge(BaseModel):
+    candidate_id: str
+    notes: str = ""
+
+
+def _latest_intake_rows() -> dict[str, dict]:
     latest: dict[str, dict] = {}
     for row in ledger_read("ledger-intake", 200):
-        key = str(row.get("canonical_intake_id") or row.get("row_key") or "")
+        key = str(
+            row.get("intake_id")
+            or row.get("row_key")
+            or row.get("canonical_intake_id")
+            or ""
+        )
         if key and key not in latest:
             latest[key] = row
-    return [
-        row
-        for row in latest.values()
-        if str(row.get("status", "")).upper()
-        in {"NEW", "NEEDS_INFO", "DUPLICATE", "SUSPECTED-DUPLICATE"}
-    ]
+    return latest
+
+
+def _find_intake_row(rows: dict[str, dict], identifier: str) -> dict | None:
+    if identifier in rows:
+        return rows[identifier]
+    return next(
+        (
+            row
+            for row in rows.values()
+            if str(row.get("canonical_intake_id") or "") == identifier
+        ),
+        None,
+    )
+
+
+def _duplicate_candidate(row: dict, rows: dict[str, dict]) -> dict | None:
+    explicit = str(
+        row.get("duplicate_of") or row.get("duplicate_candidate_id") or ""
+    ).strip()
+    explicit_row = _find_intake_row(rows, explicit) if explicit else None
+    if explicit_row is not None and explicit_row is not row:
+        return explicit_row
+    row_hash = str(row.get("dedupe_hash") or "")
+    if row_hash:
+        for candidate in rows.values():
+            if candidate is not row and candidate.get("dedupe_hash") == row_hash:
+                return candidate
+    source = " ".join(
+        str(row.get(field) or "").casefold() for field in ("title", "repo")
+    ).strip()
+    if not source:
+        return None
+    best: tuple[float, dict] | None = None
+    for candidate in rows.values():
+        if candidate is row:
+            continue
+        target = " ".join(
+            str(candidate.get(field) or "").casefold() for field in ("title", "repo")
+        ).strip()
+        score = SequenceMatcher(None, source, target).ratio()
+        if score > 0.8 and (best is None or score > best[0]):
+            best = (score, candidate)
+    return best[1] if best else None
+
+
+def _intake_rows() -> list[dict]:
+    latest = _latest_intake_rows()
+    rows = []
+    for row in latest.values():
+        if str(row.get("status", "")).upper() not in {
+            "NEW",
+            "NEEDS_INFO",
+            "SUSPECTED-DUPLICATE",
+        }:
+            continue
+        candidate = _duplicate_candidate(row, latest)
+        enriched = {**row}
+        if candidate is not None:
+            enriched["duplicate_candidate"] = candidate
+        rows.append(enriched)
+    return rows
 
 
 @router.get("/ledger-intake")
@@ -212,6 +279,38 @@ def approve_ledger_intake(intake_id: str, body: IntakeApproval) -> dict:
             detail=f"missing required fields: {', '.join(map(str, unresolved))}",
         )
     updated = {**row, **fields, "status": "READY", "approved": True}
+    ledger_append({"kind": "ledger-intake", **updated})
+    return {"ok": True, "row": updated}
+
+
+@router.post("/ledger-intake/{intake_id}/merge")
+def merge_ledger_intake(intake_id: str, body: IntakeMerge) -> dict:
+    rows = _latest_intake_rows()
+    row = _find_intake_row(rows, intake_id)
+    candidate = _find_intake_row(rows, body.candidate_id)
+    if row is None or candidate is None:
+        raise HTTPException(status_code=404, detail="intake row or candidate not found")
+    resolved = _duplicate_candidate(row, rows)
+    if resolved is None or str(
+        resolved.get("canonical_intake_id") or resolved.get("row_key")
+    ) != str(candidate.get("canonical_intake_id") or candidate.get("row_key")):
+        raise HTTPException(
+            status_code=400, detail="candidate is not a detected duplicate"
+        )
+    note = body.notes.strip()
+    prior_notes = str(row.get("notes") or "").strip()
+    merged_notes = prior_notes
+    if note and note not in prior_notes:
+        merged_notes = f"{prior_notes}\n{note}".strip()
+    updated = {
+        **row,
+        "status": "DUPLICATE",
+        "canonical_intake_id": str(
+            candidate.get("canonical_intake_id") or candidate.get("row_key")
+        ),
+        "duplicate_of": body.candidate_id,
+        "notes": merged_notes,
+    }
     ledger_append({"kind": "ledger-intake", **updated})
     return {"ok": True, "row": updated}
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactElement } from 'react';
-import { approveLedgerIntake, fetchLedgerIntake } from '../apiClient';
+import { approveLedgerIntake, fetchLedgerIntake, mergeLedgerIntake } from '../apiClient';
 import type { LedgerIntakeRow } from '../apiTypes';
 
 const FIELD_LABELS: Record<string, string> = {
@@ -10,7 +10,7 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 function rowId(row: LedgerIntakeRow): string {
-  return String(row.canonical_intake_id || row.row_key || '');
+  return String(row.intake_id || row.row_key || row.canonical_intake_id || '');
 }
 
 function statusLabel(status: string | undefined): string {
@@ -26,6 +26,7 @@ export default function LedgerTriageView(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [mergeNotes, setMergeNotes] = useState<Record<string, string>>({});
 
   async function load() {
     setLoading(true);
@@ -67,6 +68,26 @@ export default function LedgerTriageView(): ReactElement {
     }
   }
 
+  async function merge(row: LedgerIntakeRow) {
+    const id = rowId(row);
+    const candidate = row.duplicate_candidate;
+    const candidateId = candidate
+      ? String(candidate.canonical_intake_id || candidate.row_key || candidate.intake_id || '')
+      : '';
+    if (!id || !candidateId || busy) return;
+    setBusy(id);
+    setNotice(null);
+    try {
+      await mergeLedgerIntake(id, candidateId, mergeNotes[id] || '');
+      setRows((current) => current.filter((item) => rowId(item) !== id));
+      setNotice('Merged as DUPLICATE.');
+    } catch (err) {
+      setNotice(`Could not merge: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <section className="ledger-triage" aria-labelledby="ledger-triage-title">
       <div className="page-head">
@@ -94,8 +115,52 @@ export default function LedgerTriageView(): ReactElement {
                 <span className="status-badge">{statusLabel(row.status)}</span>
                 <span className="row-meta">{id}</span>
               </div>
-              <h3>{row.title || 'Untitled intake row'}</h3>
-              {row.problem && <p>{row.problem}</p>}
+              {row.duplicate_candidate ? (
+                <div className="ledger-duplicate-pair">
+                  <div className="ledger-duplicate-pane">
+                    <strong>Incoming row</strong>
+                    <h3>{row.title || 'Untitled intake row'}</h3>
+                    {row.problem && <p>{row.problem}</p>}
+                  </div>
+                  <div className="ledger-duplicate-pane ledger-duplicate-candidate" aria-label="Duplicate candidate">
+                    <strong>Possible match</strong>
+                    <span>{row.duplicate_candidate.title || 'Untitled row'}</span>
+                    <span className="row-meta">
+                      {row.duplicate_candidate.status || 'Unknown status'} ·{' '}
+                      {(row.duplicate_candidate.ts ?? row.duplicate_candidate.at)
+                        ? new Date(
+                            typeof (row.duplicate_candidate.ts ?? row.duplicate_candidate.at) === 'number'
+                              ? Number(row.duplicate_candidate.ts ?? row.duplicate_candidate.at) * 1000
+                              : String(row.duplicate_candidate.ts ?? row.duplicate_candidate.at),
+                          ).toLocaleString()
+                        : 'timestamp unavailable'}
+                    </span>
+                    <label>
+                      Merge note (optional)
+                      <input
+                        value={mergeNotes[id] || ''}
+                        onChange={(event) => setMergeNotes((current) => ({
+                          ...current,
+                          [id]: event.target.value,
+                        }))}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => void merge(row)}
+                      disabled={busy !== null}
+                    >
+                      {busy === id ? 'Merging…' : 'Merge duplicate'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <h3>{row.title || 'Untitled intake row'}</h3>
+                  {row.problem && <p>{row.problem}</p>}
+                </>
+              )}
               {row.duplicate_of && (
                 <p className="row-meta">
                   Duplicate candidate: <a href={row.duplicate_of}>{row.duplicate_of}</a>

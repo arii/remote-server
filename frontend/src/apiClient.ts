@@ -775,6 +775,17 @@ export function approveLedgerIntake(
   );
 }
 
+export function mergeLedgerIntake(
+  intakeId: string,
+  candidateId: string,
+  notes = '',
+): Promise<{ ok: boolean; row: LedgerIntakeRow }> {
+  return postJson<{ ok: boolean; row: LedgerIntakeRow }>(
+    `api/ledger-intake/${encodeURIComponent(intakeId)}/merge`,
+    { candidate_id: candidateId, notes },
+  );
+}
+
 export interface WorkflowRun {
   id: number | string;
   name: string;
