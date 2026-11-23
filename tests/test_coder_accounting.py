@@ -87,6 +87,22 @@ class TestVerificationIsolation(unittest.TestCase):
 
 
 class TestCoderAccounting(unittest.TestCase):
+    def test_pipeline_counts_filtered_frontend_vitest(self):
+        pipe = pipeline.Pipeline("/tmp", "fix", issue_id=1357)
+        pipe.verification_evidence = [
+            {
+                "command": "pnpm --filter frontend exec vitest run src/View.test.tsx",
+                "passed": True,
+            }
+        ]
+        with (
+            mock.patch.object(pipe, "_repo_slug", return_value="arii/remote-server"),
+            mock.patch.object(pipeline, "_count_run_rows", return_value=0),
+            mock.patch.object(pipeline.history_ledger, "append") as append,
+        ):
+            pipe._record_outcome({"status": pipeline.BLOCKED, "submit_url": ""}, set())
+        self.assertEqual(append.call_args.args[0]["test_status"], "passed")
+
     def test_pipeline_coder_tracks_actual_implementation_model(self):
         pipe = pipeline.Pipeline("/tmp", "fix", issue_id=1357)
         graph = pipe.make_coder("fix")
