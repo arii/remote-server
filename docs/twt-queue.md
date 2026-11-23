@@ -274,8 +274,16 @@ The next run checks it again. The reader is standard library only, so the
 service's `/usr/bin/python3` can run it. On the S5 host set `GOOGLE_TOKEN_FILE` in
 `~/.config/twt-queue/environment` to the host path of
 `gdocs-access/token.json`, because the default is the container path.
-[PR #1619](https://github.com/arii/remote-server/pull/1619) merged; its S5
-system-Python read probe does not prove deployment or live skip behavior.
+[PR #1619](https://github.com/arii/remote-server/pull/1619) merged and was
+deployed on S5: the queue worktree was on main at `3d6c58c` with
+`GOOGLE_TOKEN_FILE` set. A live claim check read 215 ledger rows and skipped a
+claimed issue. This proves the live claim check, not the full claim-to-result
+handoff tracked in [#1537](https://github.com/arii/remote-server/issues/1537).
+
+Nov 23 status: `twt-queue.service` failed at 04:10 and a restart was in progress
+when reported. Separately, main is red on a test-only lint failure tracked in
+[PR #1621](https://github.com/arii/remote-server/pull/1621); two root test
+failures on main are tracked in [#1623](https://github.com/arii/remote-server/issues/1623).
 
 A failed post never fails the run. The row is saved in `status.json`
 `ledger_pending`, retried once at the next boundary (the start of the next
