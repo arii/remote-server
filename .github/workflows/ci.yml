@@ -236,6 +236,11 @@ jobs:
         run: pip install -r backend/requirements-test.txt
       - name: install root-suite deps
         run: pip install "pytest==9.1.1" "ruff==0.17.4"
+      - name: install deep-agent deps (minus the heavy embedding backend)
+        # Lets the real coder middleware/graph budget tests run (#1603)
+        # instead of skipping. sentence-transformers is the RAG index
+        # backend and no root test imports it.
+        run: grep -v '^sentence-transformers' deep-agent/requirements.txt > "$RUNNER_TEMP/deep-agent-ci.txt" && pip install -r "$RUNNER_TEMP/deep-agent-ci.txt"
       - name: compile-check backend tree
         run: npm run compile-check
       - name: lint Python (ruff pyflakes-class)
@@ -243,6 +248,10 @@ jobs:
       - name: backend unit tests
         run: npm run test:backend
       - name: root unit tests
+        # REQUIRE_DEEP_AGENT_DEPS makes tests/test_coder_budget.py fail on
+        # missing deep-agent deps instead of skipping its real-graph tests.
+        env:
+          REQUIRE_DEEP_AGENT_DEPS: "1"
         run: npm run test:root
       - name: validate configs
         run: python3 -m backend.validate_config

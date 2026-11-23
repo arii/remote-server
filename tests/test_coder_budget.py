@@ -27,6 +27,9 @@ try:
 
     HAS_DEPS = True
 except ImportError:
+    # CI sets this so the real middleware/graph tests cannot skip silently.
+    if os.environ.get("REQUIRE_DEEP_AGENT_DEPS") == "1":
+        raise
     HAS_DEPS = False
 
     class FakeMessagesListChatModel:
@@ -331,6 +334,222 @@ class TestRunCoderResume(unittest.TestCase):
         self.assertEqual(attempt.call_count, 1)
 
 
+class TestDefaultRouteSequence(unittest.TestCase):
+    """Initial turn, one same-thread continuation, one TwT fallback (#1603).
+
+    _run_coder_attempt is scripted offline: no model is built, so no paid
+    call can happen. Every attempt adds its model calls to the shared meter
+    the way the real attempt does.
+    """
+
+    SPEC = {"provider": "twt", "model": "default"}
+    PLAN = {"a.py": True}
+
+    def cap_error(self, floor, files=("a.py",), spec=None):
+        from langchain.agents.middleware.model_call_limit import (
+            ModelCallLimitExceededError,
+        )
+
+        error = ModelCallLimitExceededError(floor + 20, floor + 20, floor + 20, None)
+        error.coder_model_spec = spec or self.SPEC
+        error.coder_written_files = files
+        return error
+
+    def run_sequence(self, outcomes, *, env=None, local_only=False, timeout=60, **kw):
+        """outcomes: one exception or result per attempt, 20 calls each."""
+        seen = []
+        script = iter(outcomes)
+
+        def fake_attempt(*args, **kwargs):
+            seen.append((args, kwargs))
+            kwargs["meter"]["calls"] += 20
+            outcome = next(script)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        meter = {}
+        patched_env = {"CODER_FALLBACK_MODEL": "fb/model", **(env or {})}
+        error = result = None
+        with (
+            mock.patch.object(coder, "_run_coder_attempt", side_effect=fake_attempt),
+            mock.patch.dict(os.environ, patched_env),
+            mock.patch(
+                "backend.shared.model_router.local_only", return_value=local_only
+            ),
+        ):
+            try:
+                result = coder.run_coder(
+                    "/tmp",
+                    "brief",
+                    "system",
+                    "thread",
+                    timeout,
+                    meter=meter,
+                    first_edit=self.PLAN,
+                    **kw,
+                )
+            except Exception as exc:  # noqa: BLE001 - asserted by callers
+                error = exc
+        return seen, meter, result, error
+
+    def threads(self, seen):
+        return [args[3] for args, _ in seen]
+
+    def assert_no_paid_attempt(self, seen):
+        self.assertFalse(
+            [k for _, k in seen if k.get("fallback_model")],
+            "unexpected TwT fallback attempt",
+        )
+        self.assertNotIn("thread-fallback", self.threads(seen))
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_default_route_runs_initial_one_continuation_then_one_fallback(self):
+        seen, meter, result, error = self.run_sequence(
+            [self.cap_error(0), self.cap_error(20, ("a.py", "b.py")), "done"],
+            continuations=1,
+            call_budget=100,
+        )
+        self.assertIsNone(error)
+        self.assertEqual(result, "done")
+        self.assertEqual(self.threads(seen), ["thread", "thread", "thread-fallback"])
+        initial, cont, fallback = seen
+        self.assertEqual(initial[1]["thread_floor"], 0)
+        self.assertEqual(cont[0][1], coder.CONTINUE_PROMPT)
+        self.assertEqual(cont[1]["thread_floor"], 20)
+        self.assertEqual(cont[1]["prior_files"], ("a.py",))
+        self.assertIsNone(initial[1].get("fallback_model"))
+        self.assertIsNone(cont[1].get("fallback_model"))
+        self.assertEqual(fallback[1]["fallback_model"], "fb/model")
+        self.assertEqual(fallback[1]["prior_files"], ("a.py", "b.py"))
+        self.assertTrue(fallback[0][1].startswith("brief"))
+        # Shared parent budget: each attempt is capped by what is left.
+        self.assertEqual([k["call_cap"] for _, k in seen], [100, 80, 60])
+        self.assertEqual(meter["calls"], 60)
+        self.assertEqual(meter["continuations"], 1)
+        # One deadline for the whole sequence; plan and meter are shared.
+        self.assertEqual(len({k["deadline"] for _, k in seen}), 1)
+        self.assertTrue(all(k["first_edit"] is self.PLAN for _, k in seen))
+        self.assertTrue(all(k["meter"] is meter for _, k in seen))
+        self.assertLessEqual(fallback[0][4], 60)
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_fallback_is_one_shot_and_its_cap_error_is_raised(self):
+        seen, meter, _, error = self.run_sequence(
+            [self.cap_error(0), self.cap_error(20), self.cap_error(0)],
+            continuations=1,
+            call_budget=100,
+        )
+        self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
+        self.assertEqual(len(seen), 3)
+        self.assertEqual(self.threads(seen).count("thread-fallback"), 1)
+        self.assertEqual(meter["calls"], 60)
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_no_continuation_allowed_goes_straight_to_one_fallback(self):
+        seen, _, result, error = self.run_sequence(
+            [self.cap_error(0), "done"], call_budget=100
+        )
+        self.assertIsNone(error)
+        self.assertEqual(self.threads(seen), ["thread", "thread-fallback"])
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_exhausted_parent_budget_after_continuation_blocks_fallback(self):
+        seen, meter, _, error = self.run_sequence(
+            [self.cap_error(0), self.cap_error(20), "never"],
+            continuations=1,
+            call_budget=40,
+        )
+        self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
+        self.assertEqual(self.threads(seen), ["thread", "thread"])
+        self.assertEqual([k["call_cap"] for _, k in seen], [40, 20])
+        self.assertEqual(meter["calls"], 40)
+        self.assert_no_paid_attempt(seen)
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_exhausted_budget_after_initial_blocks_continuation_and_fallback(self):
+        seen, _, _, error = self.run_sequence(
+            [self.cap_error(0), "never"], continuations=1, call_budget=20
+        )
+        self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
+        self.assertEqual(len(seen), 1)
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_expired_deadline_blocks_fallback(self):
+        seen, _, _, error = self.run_sequence(
+            [self.cap_error(0), self.cap_error(20), "never"],
+            continuations=1,
+            call_budget=100,
+            timeout=0,
+        )
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn("timed out", str(error))
+        self.assertEqual(len(seen), 2)
+        self.assert_no_paid_attempt(seen)
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_local_only_never_falls_back(self):
+        seen, _, _, error = self.run_sequence(
+            [self.cap_error(0), self.cap_error(20), "never"],
+            continuations=1,
+            call_budget=100,
+            local_only=True,
+        )
+        self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
+        self.assert_no_paid_attempt(seen)
+        self.assertEqual(len(seen), 2)
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_repair_never_falls_back(self):
+        seen, _, _, error = self.run_sequence(
+            [self.cap_error(0), "never"], repair=True, call_budget=100
+        )
+        self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
+        self.assertEqual(len(seen), 1)
+        self.assert_no_paid_attempt(seen)
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_disabled_fallback_never_falls_back(self):
+        seen, _, _, error = self.run_sequence(
+            [self.cap_error(0), self.cap_error(20), "never"],
+            env={"CODER_FALLBACK_MODEL": " "},
+            continuations=1,
+            call_budget=100,
+        )
+        self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
+        self.assertEqual(len(seen), 2)
+        self.assert_no_paid_attempt(seen)
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_non_default_route_never_falls_back(self):
+        other = {"provider": "twt", "model": "route:other"}
+        seen, _, _, error = self.run_sequence(
+            [self.cap_error(0, spec=other), "never"], call_budget=100
+        )
+        self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
+        self.assert_no_paid_attempt(seen)
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_non_budget_error_neither_continues_nor_falls_back(self):
+        seen, _, _, error = self.run_sequence(
+            [ValueError("boom"), "never"], continuations=1, call_budget=100
+        )
+        self.assertIsInstance(error, ValueError)
+        self.assertEqual(len(seen), 1)
+        self.assert_no_paid_attempt(seen)
+
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+    def test_non_budget_error_after_continuation_does_not_fall_back(self):
+        seen, _, _, error = self.run_sequence(
+            [self.cap_error(0), ValueError("boom"), "never"],
+            continuations=1,
+            call_budget=100,
+        )
+        self.assertIsInstance(error, ValueError)
+        self.assertEqual(len(seen), 2)
+        self.assert_no_paid_attempt(seen)
+
+
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestRealGraphResume(unittest.TestCase):
     def model(self, writes, finish):
@@ -356,7 +575,7 @@ class TestRealGraphResume(unittest.TestCase):
             calls.append(AIMessage(content="DONE #1"))
         return Model(responses=calls)
 
-    def run_real(self, model, **kwargs):
+    def run_real(self, model, *, spec=None, fallback=None, **kwargs):
         from langgraph.checkpoint.memory import InMemorySaver
 
         saver = InMemorySaver()
@@ -366,8 +585,17 @@ class TestRealGraphResume(unittest.TestCase):
             mock.patch.object(
                 coder,
                 "build_model",
-                return_value=(model, {"provider": "local", "model": "fake"}),
+                return_value=(
+                    model,
+                    spec or {"provider": "local", "model": "fake"},
+                ),
             ),
+            mock.patch.object(
+                coder,
+                "build_fallback_model",
+                return_value=(fallback, {"provider": "twt", "model": "fb"}),
+            ) as build_fb,
+            mock.patch("backend.shared.model_router.local_only", return_value=False),
             mock.patch.object(
                 deep_chat, "open_checkpointer", return_value=(saver, False, None)
             ),
@@ -390,6 +618,7 @@ class TestRealGraphResume(unittest.TestCase):
                 error = exc
         floors = [c.kwargs["thread_floor"] for c in build.call_args_list]
         threads = set(saver.storage)
+        self.fallback_builds = build_fb.call_count
         return result, error, meter, floors, threads
 
     def test_resume_gets_a_fresh_budget_on_the_same_thread(self):
@@ -419,6 +648,37 @@ class TestRealGraphResume(unittest.TestCase):
         self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
         self.assertEqual(meter["calls"], 30)
         self.assertEqual(meter["continuations"], 1)
+
+    def test_default_route_continuation_then_one_fallback_shares_budget(self):
+        twt = {"provider": "twt", "model": "default"}
+        result, error, meter, floors, threads = self.run_real(
+            self.model(writes=40, finish=False),
+            spec=twt,
+            fallback=self.model(writes=0, finish=True),
+            continuations=1,
+            call_budget=100,
+        )
+        self.assertIsNone(error)
+        self.assertEqual(result[0], "DONE #1")
+        self.assertEqual(self.fallback_builds, 1)
+        self.assertEqual(floors, [0, 20, 0])
+        self.assertEqual(threads, {"thread", "thread-fallback"})
+        self.assertEqual(meter["calls"], 41)
+        self.assertEqual(meter["continuations"], 1)
+
+    def test_default_route_fallback_is_blocked_when_budget_is_spent(self):
+        twt = {"provider": "twt", "model": "default"}
+        _, error, meter, floors, _ = self.run_real(
+            self.model(writes=40, finish=False),
+            spec=twt,
+            fallback=self.model(writes=0, finish=True),
+            continuations=1,
+            call_budget=40,
+        )
+        self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
+        self.assertEqual(self.fallback_builds, 0)
+        self.assertEqual(floors, [0, 20])
+        self.assertEqual(meter["calls"], 40)
 
 
 if __name__ == "__main__":
