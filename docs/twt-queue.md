@@ -239,9 +239,11 @@ review of a real PR needs Ari.
 
 `python3 scripts/ledger_intake_review.py OWNER/REPO NUMBER` audits one new `ledger-intake` issue through local Ollama/TwT and may post one finding comment. It checks the issue body for the canonical `problem`, `scope` and `done_when` fields (the hook's `Problem`, `Out of scope` and `Done when` sections; `title` and `repo` come from the issue itself) and reports gaps by those names. It never changes labels or issue state.
 
-The supervisor posts Agent Ledger rows for every issue it works, through
-`scripts/ledger_post.py` `post_entry` (the existing Form writer) and reads with
-`scripts/ledger_read.py` `read_ledger`. Source is `S5-Queue`.
+The supervisor reads the response Sheet via `scripts/ledger_read.py` and posts
+claims and results as `S5-Queue` via `scripts/ledger_post.py`. The only agent
+writers are this script and BoomTick's `scripts/agent_ledger.py`. Ledger rows
+are data, not a source of work. Ariel dispatches Kiro herself per issue; Devin
+never starts Kiro. Kiro uses the BoomTick CLI to post its own claim and result.
 
 Key: the `Link` column is always the issue URL
 (`https://github.com/<repo>/issues/<n>`), because `ledger_read.py` folds the
@@ -262,14 +264,26 @@ row from another source with status `Act` newer than `ledger_stale_hours`
 (config, default `6`) makes the supervisor skip the issue, log
 `LEDGER skip ...`, and record it in `status.json` `ledger_skipped`. The issue is
 not marked completed, so the next run checks again. Rows from `S5-Queue`, older
-claims, and other statuses do not block. Sheet timestamps are read as UTC and
-the export lags about an hour, so keep the window well above that. If the
-ledger cannot be read, the check fails closed: the issue is skipped and
-recorded in `ledger_skipped` as `ledger unreadable (<error>)`, and the next
-run checks again. The reader is standard library only, so the service's
-`/usr/bin/python3` can run it; on the S5 host set `GOOGLE_TOKEN_FILE` in
+claims, and other statuses do not block. The supervisor reads the response
+Sheet through Drive CSV export, not the hourly JSONL snapshot. It interprets
+timestamps as UTC.
+
+If the ledger cannot be read, the check fails closed: the issue is skipped and
+recorded in `ledger_skipped` as `ledger unreadable (<ErrorType>), failing closed`.
+The next run checks it again. The reader is standard library only, so the
+service's `/usr/bin/python3` can run it. On the S5 host set `GOOGLE_TOKEN_FILE` in
 `~/.config/twt-queue/environment` to the host path of
 `gdocs-access/token.json`, because the default is the container path.
+[PR #1619](https://github.com/arii/remote-server/pull/1619) merged and was
+deployed on S5: the queue worktree was on main at `3d6c58c` with
+`GOOGLE_TOKEN_FILE` set. A live claim check read 215 ledger rows and skipped a
+claimed issue. This proves the live claim check, not the full claim-to-result
+handoff tracked in [#1537](https://github.com/arii/remote-server/issues/1537).
+
+Nov 23 status: `twt-queue.service` failed at 04:10 and a restart was in progress
+when reported. Separately, main hit a test-only lint failure fixed by merged
+[PR #1621](https://github.com/arii/remote-server/pull/1621); two root test
+failures on main are tracked in [#1623](https://github.com/arii/remote-server/issues/1623).
 
 A failed post never fails the run. The row is saved in `status.json`
 `ledger_pending`, retried once at the next boundary (the start of the next
@@ -284,7 +298,13 @@ because the Form is public.
 
 Not posted: a `Needs Okay` row for login or CAPTCHA walls (the queue cannot
 detect them), a pass/fail result against the issue's "done when" check, and an
-issue comment per result.
+issue comment per result. See [#1537](https://github.com/arii/remote-server/issues/1537)
+for the remaining result requirements and live claim-to-result proof.
+
+Root tests run behind a network guard for `docs.google.com`
+([#1617](https://github.com/arii/remote-server/pull/1617)). Stub ledger reads
+and writes in queue tests; never point a test at the live Form.
+
 ## Strong-tier routing
 
 The worker always runs with `NEBIUS_ONLY=1` and no `CODER_MODEL`, so an ordinary
