@@ -68,6 +68,7 @@ DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 DEFAULT_TWT_BASE_URL = "http://127.0.0.1:8000/v1"
 # The TwT gateway accepts provider_models only on this route.
 TWT_DEFAULT_MODEL = "default"
+TWT_STRONG_ROUTE = "route:strong"
 PIPELINE_MAX_TOKENS = 8192
 PIPELINE_HISTORY_CHARS = 64000
 
@@ -537,6 +538,35 @@ STAGE_NEBIUS_MODELS = dict.fromkeys(("coder", "spec", "audit"), "zai-org/GLM-5.3
 STAGE_NVIDIA_MODELS = dict.fromkeys(("coder", "spec", "audit"), "z-ai/glm-5.3-flash")
 
 
+def _gateway_strong_models():
+    """Parse TWT_STRONG_MODELS (the gateway's provider->model JSON), or None if unset."""
+    from backend.shared import twt_provenance
+
+    raw = _env("TWT_STRONG_MODELS")
+    if not raw:
+        return None
+    guidance = (
+        "TWT_STRONG_MODELS must be a non-empty JSON object of provider -> model id "
+        "(same value the gateway uses for route:strong)"
+    )
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        raise twt_provenance.TwTPreflightError(
+            f"{guidance}: invalid JSON ({exc})"
+        ) from exc
+    if (
+        not isinstance(parsed, dict)
+        or not parsed
+        or not all(
+            isinstance(k, str) and k and isinstance(v, str) and v.strip()
+            for k, v in parsed.items()
+        )
+    ):
+        raise twt_provenance.TwTPreflightError(f"{guidance}; got {raw[:200]!r}")
+    return parsed
+
+
 def preflight_gateway(spec=None, expected_sha=None, stage=None):
     """Preflight check for TwT gateway capabilities and provenance before paid inference."""
     spec = dict(spec) if spec else resolve_llm()
@@ -562,12 +592,21 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
                 f"TWT_{stage.upper()}_NEBIUS_MODEL", STAGE_NEBIUS_MODELS[stage]
             ),
         }
+    extra = {}
+    model = spec.get("model")
+    if model == TWT_STRONG_ROUTE:
+        # route:strong is resolved gateway-side and is absent from /v1/models;
+        # validate the gateway's own strong map when we can see it.
+        provider_models = _gateway_strong_models() or provider_models
+    elif model and model != TWT_DEFAULT_MODEL:
+        extra["model_ids"] = [model]
     sha = expected_sha or _env("TWT_EXPECTED_SHA")
     twt_provenance.verify_gateway_capabilities(
         base_url=base_url,
         uds=uds,
         provider_models=provider_models,
         expected_sha=sha,
+        **extra,
     )
 
 

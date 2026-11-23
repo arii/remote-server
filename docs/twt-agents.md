@@ -82,6 +82,28 @@ is metered, not free-only: its API requires active billing, so Mistral
 attempts bill per token instead of serving as a zero-cost fallback, and
 when TWT_DAILY_BUDGET_USD is set they pass through the same daily budget
 gate as Nebius. Nebius remains the paid fallback.
+### Strong coder tier
+
+The `strong` model tier requires `CODER_STRONG_MODEL`; unset raises
+`ValueError` and never falls back to the fast model. Set it to either:
+
+- `route:strong`: the gateway resolves the model from its own
+  `TWT_STRONG_MODELS` (JSON provider -> model) or `TWT_OLLAMA_STRONG_MODEL`.
+  Those variables are gateway-side. The client sends no `provider_models` or
+  `provider_reasoning_effort` on this route and never carries the fast
+  selection.
+- a concrete catalog id such as `nebius/<model>`, sent as-is with no
+  provider controls.
+
+With `TWT_PREFLIGHT_REQUIRED=1`, preflight checks `/v1/models` before any
+`/v1/chat/completions` request. A concrete id missing from the catalog
+raises `TwTPreflightError` naming `CODER_STRONG_MODEL` and the available
+ids. For `route:strong` (absent from the catalog), if `TWT_STRONG_MODELS`
+is also set in the client environment, its provider/model pairs are checked
+against the catalog, and invalid JSON, a non-object, an empty object, or
+empty values raise `TwTPreflightError`. The default route still preflights
+its stage `provider_models`.
+
 Local and hosted traces share the same private database
 and appear together in `twt inspect` and `twt report`.
 
