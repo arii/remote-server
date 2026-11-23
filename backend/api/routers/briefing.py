@@ -31,7 +31,8 @@ from backend.core.env_config import (
     briefing_fixture_candidate,
     resolve_briefing_fixture_path,
 )
-from backend.core.validation import validate_repo_name
+from backend.core.intake_risk import risk_categories
+from backend.core.validation import require_confirm, validate_repo_name
 from backend.exec import turn_engine
 from backend.exec.engine import stack_dir
 from backend.ledger import LEDGER_KINDS, append as ledger_append, clear as ledger_clear
@@ -160,6 +161,9 @@ class BackendStatus(BaseModel):
     health: dict = Field(default_factory=dict)
 
 
+HIGH_RISK_APPROVE_INTENT = "ledger-intake-approve-high-risk"
+
+
 # Mirrors scripts.ledger_intake.REQUIRED_FIELDS (backend does not import
 # scripts; a test asserts the two stay equal).
 INTAKE_REQUIRED_FIELDS = ("title", "repo", "problem", "scope", "done_when")
@@ -180,6 +184,8 @@ def _unresolved_required_fields(row: dict, fields: dict) -> list[str]:
 
 class IntakeApproval(BaseModel):
     fields: dict[str, str] = Field(default_factory=dict)
+    intent: str = ""
+    confirmed: bool = False
 
 
 class IntakeMerge(BaseModel):
@@ -307,7 +313,22 @@ def _awaiting_triage(row: dict) -> bool:
     status = str(row.get("status", "")).upper()
     if status == "DUPLICATE":
         return not _is_human_linked(row)
-    return status in {"NEW", "NEEDS_INFO", "SUSPECTED-DUPLICATE"}
+    return status in {"NEW", "NEEDS_INFO", "NEEDS_APPROVAL", "SUSPECTED-DUPLICATE"}
+
+
+def _row_risk_categories(row: dict, fields: dict | None = None) -> list[str]:
+    """Risk categories re-derived server-side (#1586).
+
+    The boomtick hook writes NEW without a risk tag, so categories are
+    recomputed from the row text and unioned with any stored value. The
+    stored value may be a list or the comma string build_row writes.
+    """
+    stored = row.get("risk_categories") or []
+    if isinstance(stored, str):
+        stored = stored.split(",")
+    found = set(map(str.strip, map(str, stored))) - {""}
+    found.update(risk_categories({**row, **(fields or {})}))
+    return sorted(found)
 
 
 def _intake_rows() -> list[dict]:
@@ -321,7 +342,7 @@ def _intake_rows() -> list[dict]:
         if not _awaiting_triage(row):
             continue
         candidate = _duplicate_candidate(row, latest)
-        enriched = {**row}
+        enriched = {**row, "risk_categories": _row_risk_categories(row)}
         if candidate is not None:
             enriched["duplicate_candidate"] = candidate
         rows.append(enriched)
@@ -387,7 +408,25 @@ def approve_ledger_intake(intake_id: str, body: IntakeApproval) -> dict:
             status_code=400,
             detail=f"missing required fields: {', '.join(blank)}",
         )
-    updated = {**row, **fields, "status": "READY", "approved": True}
+    categories = _row_risk_categories(row, fields)
+    if categories or str(row.get("status", "")).upper() == "NEEDS_APPROVAL":
+        # High-blast-radius rows need an explicit confirm (#1586).
+        try:
+            require_confirm(body, HIGH_RISK_APPROVE_INTENT)
+        except HTTPException as exc:
+            # Name the categories so the UI can switch to its confirm control
+            # when the risk came from fields typed at approval time.
+            raise HTTPException(
+                status_code=400,
+                detail=f"{exc.detail}: high blast radius ({', '.join(categories)})",
+            ) from exc
+    updated = {
+        **row,
+        **fields,
+        "risk_categories": categories,
+        "status": "READY",
+        "approved": True,
+    }
     ledger_append({"kind": "ledger-intake", **updated})
     return {"ok": True, "row": updated}
 

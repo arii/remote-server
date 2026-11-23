@@ -481,6 +481,116 @@ class BriefingLedgerTest(unittest.TestCase):
             briefing_router.INTAKE_REQUIRED_FIELDS, ledger_intake.REQUIRED_FIELDS
         )
 
+    def _flagged_row(self, **overrides):
+        row = {
+            "kind": "ledger-intake",
+            "canonical_intake_id": "intake-risk",
+            "status": "NEW",
+            "title": "Deploy the backend",
+            "repo": "arii/remote-server",
+            "problem": "ship it",
+            "scope": "backend",
+            "done_when": "live",
+            **overrides,
+        }
+        ledger.append(row)
+        return row
+
+    def test_ledger_intake_lists_needs_approval_with_categories(self):
+        self._flagged_row(status="NEEDS_APPROVAL")
+        self._flagged_row(
+            canonical_intake_id="intake-new", status="NEW", title="Email customers"
+        )
+        rows = {
+            row["canonical_intake_id"]: row
+            for row in self.client.get("/api/ledger-intake").json()["rows"]
+        }
+        self.assertEqual(
+            rows["intake-risk"]["risk_categories"], ["production_mutation"]
+        )
+        self.assertEqual(rows["intake-new"]["risk_categories"], ["external_comms"])
+
+    def test_high_risk_approve_without_confirm_is_400_and_stays_pending(self):
+        self._flagged_row(status="NEEDS_APPROVAL")
+        for body in (
+            {"fields": {}},
+            {"fields": {}, "intent": "ledger-intake-approve-high-risk"},
+            {"fields": {}, "intent": "wrong", "confirmed": True},
+        ):
+            response = self.client.post(
+                "/api/ledger-intake/intake-risk/approve", json=body
+            )
+            self.assertEqual(response.status_code, 400, body)
+        rows = self.client.get("/api/ledger-intake").json()["rows"]
+        self.assertEqual([r["status"] for r in rows], ["NEEDS_APPROVAL"])
+
+    def test_high_risk_approve_with_confirm_marks_ready(self):
+        self._flagged_row(status="NEEDS_APPROVAL")
+        response = self.client.post(
+            "/api/ledger-intake/intake-risk/approve",
+            json={
+                "fields": {},
+                "intent": "ledger-intake-approve-high-risk",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["row"]["status"], "READY")
+        self.assertEqual(self.client.get("/api/ledger-intake").json()["rows"], [])
+
+    def test_hook_written_new_row_is_gated_by_server_side_rederivation(self):
+        self._flagged_row(status="NEW")
+        response = self.client.post(
+            "/api/ledger-intake/intake-risk/approve", json={"fields": {}}
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_high_risk_approve_still_refuses_blank_required_fields(self):
+        self._flagged_row(status="NEEDS_APPROVAL", scope="")
+        response = self.client.post(
+            "/api/ledger-intake/intake-risk/approve",
+            json={
+                "fields": {},
+                "intent": "ledger-intake-approve-high-risk",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("scope", response.json()["detail"])
+
+    def test_risk_from_approval_time_field_is_named_in_400(self):
+        self._flagged_row(
+            canonical_intake_id="intake-typed",
+            status="NEEDS_INFO",
+            title="Tidy docs",
+            problem="",
+            missing_fields=["problem"],
+        )
+        body = {"fields": {"problem": "migrate the prod DB"}}
+        response = self.client.post(
+            "/api/ledger-intake/intake-typed/approve", json=body
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("confirmation required", response.json()["detail"])
+        self.assertIn("production_mutation", response.json()["detail"])
+        response = self.client.post(
+            "/api/ledger-intake/intake-typed/approve",
+            json={
+                **body,
+                "intent": "ledger-intake-approve-high-risk",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["row"]["status"], "READY")
+
+    def test_unflagged_approval_needs_no_confirm(self):
+        self._flagged_row(status="NEW", title="Tidy docs")
+        response = self.client.post(
+            "/api/ledger-intake/intake-risk/approve", json={"fields": {}}
+        )
+        self.assertEqual(response.status_code, 200)
+
     def test_ledger_intake_shows_candidate_and_merge_links_duplicate(self):
         ledger.append(
             {

@@ -15,6 +15,16 @@ const FIELD_LABELS: Record<string, string> = {
   done_when: 'Done-when',
 };
 
+const RISK_LABELS: Record<string, string> = {
+  production_mutation: 'production mutation',
+  external_comms: 'external communication',
+  billing_permission: 'billing or permission change',
+};
+
+function riskList(row: LedgerIntakeRow): string[] {
+  return (row.risk_categories || []).map(String).filter(Boolean);
+}
+
 function rowId(row: LedgerIntakeRow): string {
   return String(row.intake_id || row.row_key || row.canonical_intake_id || '');
 }
@@ -39,6 +49,7 @@ export default function LedgerTriageView(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [serverRisks, setServerRisks] = useState<Record<string, string[]>>({});
   const [mergeNotes, setMergeNotes] = useState<Record<string, string>>({});
 
   async function load() {
@@ -65,17 +76,31 @@ export default function LedgerTriageView(): ReactElement {
     }));
   }
 
+  function rowRisks(row: LedgerIntakeRow): string[] {
+    return Array.from(new Set([...riskList(row), ...(serverRisks[rowId(row)] || [])]));
+  }
+
   async function approve(row: LedgerIntakeRow) {
     const id = rowId(row);
     if (!id || busy) return;
     setBusy(id);
     setNotice(null);
     try {
-      await approveLedgerIntake(id, values[id] || {});
+      await approveLedgerIntake(id, values[id] || {}, rowRisks(row).length > 0);
       setRows((current) => current.filter((candidate) => rowId(candidate) !== id));
       setNotice('Marked READY.');
     } catch (err) {
-      setNotice(`Could not approve: ${err instanceof Error ? err.message : String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      // The server re-derives risk from fields typed here. Switch this row to the
+      // confirm control so the reviewer can retry.
+      const found = /confirmation required: high blast radius \(([^)]*)\)/.exec(message);
+      if (found) {
+        const names = found[1].split(',').map((name) => name.trim()).filter(Boolean);
+        setServerRisks((current) => ({ ...current, [id]: names }));
+        setNotice('This row touches a high blast radius area. Confirm to approve.');
+      } else {
+        setNotice(`Could not approve: ${message}`);
+      }
     } finally {
       setBusy(null);
     }
@@ -136,6 +161,7 @@ export default function LedgerTriageView(): ReactElement {
         {rows.map((row) => {
           const id = rowId(row);
           const missing = (row.missing_fields || []).map(String);
+          const risks = rowRisks(row).map((name) => RISK_LABELS[name] || name);
           return (
             <article className="ledger-triage-card" key={id} tabIndex={0}>
               <div className="ledger-card-head">
@@ -211,8 +237,21 @@ export default function LedgerTriageView(): ReactElement {
                   />
                 </label>
               ))}
+              {risks.length > 0 && row.status?.toUpperCase() !== 'DUPLICATE' && (
+                <p role="note" className="row-meta">
+                  High blast radius: {risks.join(', ')}. A human must confirm before this row can be READY.
+                </p>
+              )}
               {row.status?.toUpperCase() === 'DUPLICATE' ? (
                 <p className="row-meta">Merge or mark as not a duplicate before approving.</p>
+              ) : risks.length > 0 ? (
+                <TapToFire
+                  label="Approve and mark READY"
+                  testid={`approve-high-risk-${id}`}
+                  disabled={busy !== null}
+                  confirm={`This row touches ${risks.join(', ')}. Mark READY so the queue may pick it up?`}
+                  onFire={() => void approve(row)}
+                />
               ) : (
                 <button
                   type="button"

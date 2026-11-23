@@ -341,6 +341,40 @@ Merge always needs the confirm, for exact-hash and fuzzy matches alike. This ove
 
 The intake code and routes contain no delete path. The only path that removes them is `POST /api/ledger/clear` (intent `ledger-clear`), which truncates the whole ledger including intake rows. `backend/tests/test_briefing_ledger.py` guards this in `test_ledger_intake_no_delete_path`, a tripwire on call names and direct file writes in `scripts/ledger_intake*.py` and the intake routes, not a proof. Only Ari adds `ready` to a `ledger-intake` issue.
 
+### High-blast-radius lock (#1586)
+
+A schema-complete intake row that matches a high-blast-radius category gets
+status `NEEDS_APPROVAL` instead of `READY`. Detection is deterministic keyword
+matching (no model) over `title`, `problem`, `scope`, `done_when` and `notes`,
+case-insensitive, at word starts. False positives are expected and cost one
+confirm. False negatives are possible for phrasings the lists do not cover
+(the lock then fails open to `READY`); extend the lists when you see one. The
+keyword constants live in `backend/core/intake_risk.py`.
+
+| Category | Keywords |
+| --- | --- |
+| `production_mutation` | deploy, redeploy, roll out/rollout/rollback, force push, push --force, migrate, migration, delete/drop/wipe ... prod(uction), production data, drop table/database/schema/column/index, truncate table, rm -rf, compose up, restart service(s) |
+| `external_comms` | email, e-mail, tweet, post to, post a, slack, ntfy (whole word), publish, comment on, send a message, announce |
+| `billing_permission` | billing, payment, spend cap, quota, permission, iam (whole word), rotate, api key, token scope, branch protection, secret, admin |
+
+Status precedence is unchanged: `DUPLICATE`, then `NEEDS_INFO`, then
+`NEEDS_APPROVAL`, then `READY`. `scripts/ledger_intake.py` `build_row` (which imports `backend.core`, so it
+needs the backend dependencies installed) writes
+`risk_categories`. The boomtick hook still writes `NEW`, so
+`GET /api/ledger-intake` re-derives the categories server side and lists
+`NEW`, `NEEDS_INFO`, `NEEDS_APPROVAL` and suspected duplicates.
+
+Nothing promotes `NEEDS_APPROVAL` automatically. A human approves it in the
+Ledger triage view, which names the categories and asks inline before sending
+`POST /api/ledger-intake/{id}/approve` with
+`{"intent": "ledger-intake-approve-high-risk", "confirmed": true}`. Without
+that confirm the route returns 400 (`confirmation required: high blast radius (...)`),
+including when the risk comes from a field typed at approval time; the view then
+switches that row to the inline confirm. The five required fields (`title`, `repo`,
+`problem`, `scope`, `done_when`) must still be non-blank. The queue dispatches
+only on the GitHub `ready` label; no intake status maps to that label, so a
+`NEEDS_APPROVAL` row cannot be claimed.
+
 ## Strong-tier routing
 
 The worker always runs with `NEBIUS_ONLY=1` and no `CODER_MODEL`, so an ordinary
