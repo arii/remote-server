@@ -1054,6 +1054,7 @@ class Pipeline:
             max_loops=1,
             preview_url=self.preview_url,
             spec_file=self.spec_path,
+            issue_id=self.issue_id,
             verification_commands=self.verification_commands,
             verification_evidence=self.verification_evidence,
             thread_id=f"{self.thread_id}-audit-{int(time.time())}",

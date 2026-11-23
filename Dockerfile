@@ -29,7 +29,7 @@ RUN mkdir -p /tscheck && cp -rL /build/frontend/node_modules/typescript/lib /tsc
 # ---- Runtime ----
 FROM python:3.11-slim
 # v0.20.2 + unreleased workflows/MCP changes; no compatible release yet.
-ARG BOOMTICK_CLI_REF=3e970a570aee0a550ec6409de769c201c9a5b900
+ARG BOOMTICK_CLI_REF=a0c62ee55460de42037ed37fb5d2289b692e3043
 ARG DOCKER_VERSION=27.4.1
 ARG COMPOSE_VERSION=v2.32.4
 ARG NODE_VERSION=24.16.0

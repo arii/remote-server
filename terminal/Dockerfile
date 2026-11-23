@@ -34,7 +34,7 @@ ARG COPILOT_VERSION=1.0.109
 # Kiro CLI stable at time of wiring (manifest https://prod.download.cli.kiro.dev/stable/latest/manifest.json).
 ARG KIRO_CLI_VERSION=3.5.0
 # v0.20.2 + unreleased workflows/MCP changes; no compatible release yet.
-ARG BOOMTICK_CLI_REF=3e970a570aee0a550ec6409de769c201c9a5b900
+ARG BOOMTICK_CLI_REF=a0c62ee55460de42037ed37fb5d2289b692e3043
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
