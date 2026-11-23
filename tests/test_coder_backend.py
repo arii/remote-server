@@ -16,6 +16,107 @@ except ImportError:
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderBackend(unittest.TestCase):
+    def test_1570_recorded_inspections_replay_to_first_edit(self):
+        """Replay calls from fa2e25a6cb54, then simulate the prompted correction."""
+        from langchain_core.messages import AIMessage, HumanMessage
+        from tests.test_coder_outcome import LocalModel
+
+        bindings = []
+
+        class Model(LocalModel):
+            def bind_tools(self, tools, **kwargs):
+                bindings.append(
+                    ({tool.name for tool in tools}, kwargs.get("tool_choice"))
+                )
+                return self
+
+        def call(id, name, **args):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": id, "name": name, "args": args, "type": "tool_call"}
+                ],
+            )
+
+        with tempfile.TemporaryDirectory() as root:
+            checkout = Path(root)
+            (checkout / "backend").mkdir()
+            (checkout / "docs/specs").mkdir(parents=True)
+            spec = "docs/specs/issue-1570.md"
+            (checkout / spec).write_text("Recorded spec\n")
+            path = "backend/proposals.py"
+            (checkout / path).write_text("a = 1\nb = 1\n")
+            (checkout / "backend/tests").mkdir()
+            (checkout / "backend/tests/test_jobs_exec.py").touch()
+            recorded_plan = (
+                f"1. Draft [files: {spec}]\n2. Add [files: backend/models/runner.py]"
+            )
+            self.assertEqual(
+                coder.first_edit_targets(root, recorded_plan, exclude=(spec,)), {}
+            )
+            targets = coder.first_edit_targets(
+                root, recorded_plan + f"\n3. Update [files: {path}]", exclude=(spec,)
+            )
+            self.assertEqual(targets, {path: True})
+            model = Model(
+                responses=[
+                    call("7a8e687c", "ls", path="."),
+                    call("e2d6c7eb", "ls", path="backend/models"),
+                    call("167f9d7e", "read_file", file_path=f"/{spec}", limit=200),
+                    call("fa37f305", "read_file", file_path=f"/{path}", limit=50),
+                    call(
+                        "94601863",
+                        "read_file",
+                        file_path="/backend/tests/test_jobs_exec.py",
+                        limit=50,
+                    ),
+                    call(
+                        "missing",
+                        "edit_file",
+                        file_path=path,
+                        old_string="bad",
+                        new_string="new",
+                    ),
+                    call(
+                        "ambiguous",
+                        "edit_file",
+                        file_path=path,
+                        old_string="1",
+                        new_string="2",
+                    ),
+                    call(
+                        "applied",
+                        "edit_file",
+                        file_path=path,
+                        old_string="a = 1",
+                        new_string="a = 2",
+                    ),
+                    AIMessage(content="DONE #1570"),
+                ]
+            )
+            written = coder.WriteTracker()
+            graph = coder.build_agent(
+                root,
+                coder.build_system(root, ""),
+                model=model,
+                written_files=written,
+                first_edit=targets,
+            )
+            result = graph.invoke({"messages": [HumanMessage(content="Fix #1570")]})
+            self.assertEqual((checkout / path).read_text(), "a = 2\nb = 1\n")
+            self.assertEqual(written, {path})
+            self.assertEqual(written.mutations, 1)
+            self.assertEqual(bindings[:4], [({"read_file"}, "required")] * 4)
+            self.assertEqual(bindings[4:8], [({"edit_file"}, "required")] * 4)
+            self.assertIn("run_check", bindings[8][0])
+            tools = {m.tool_call_id: m for m in result["messages"] if m.type == "tool"}
+            self.assertIn("Read each planned file", tools["7a8e687c"].content)
+            self.assertIn("Make the first planned edit now", tools["94601863"].content)
+            for id in ("missing", "ambiguous"):
+                self.assertEqual(tools[id].status, "error")
+                self.assertIn("match exactly once", tools[id].content)
+            self.assertEqual(tools["applied"].status, "success")
+
     def test_implementation_requires_tool_call_until_successful_grounding(self):
         from langchain_core.messages import AIMessage, HumanMessage
         from tests.test_coder_outcome import LocalModel
