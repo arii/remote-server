@@ -33,7 +33,7 @@ example absolute paths with persistent paths in your deployment:
   "inter_issue_delay_seconds": 60,
   "environment": {
     "TWT_BASE_URL": "http://127.0.0.1:8000/v1",
-    "CODER_STRONG_MODEL": "nebius/zai-org/GLM-5.3-Flash"
+    "CODER_STRONG_MODEL": "route:strong"
   }
 }
 ```
@@ -285,9 +285,11 @@ issue comment per result.
 The worker always runs with `NEBIUS_ONLY=1` and no `CODER_MODEL`, so an ordinary
 attempt uses TwT model `default`, which TwT routes local-first and can burn its
 whole timeout on a hard issue. A **strong** attempt instead sends the explicit
-`CODER_STRONG_MODEL` to TwT from the first coder call. No local attempt is made
-and the `default` route is never used, so the bounded fallback above (it fires
-only for the `default` route) cannot double-escalate a strong attempt. That
+`CODER_STRONG_MODEL` to TwT from the first coder call. With the configured
+`route:strong` profile, TwT tries the local strong model before eligible free
+providers and Nebius last. The coder's ordinary `default` route is not used,
+so the bounded fallback above (it fires only for `default`) cannot
+double-escalate a strong attempt. That
 fallback stays as the in-attempt safety net for ordinary attempts. The tier chosen
 here is only the starting tier; once strong, pipeline repair cycles stay strong.
 
@@ -391,3 +393,16 @@ Queue PRs must pass `claims_pr_valid` (a `Closes #N` reference plus at least one
 test file). Out-of-scope findings are never shipped as code: submit them via
 `scripts/ledger_post.py` as task-shaped rows (`format_out_of_scope_finding`
 returns `{"issue", "title", "problem"}`), posted to the Agent Ledger.
+
+### Strong routing profile prerequisite
+
+The example above uses `CODER_STRONG_MODEL=route:strong`. It requires a TwT
+gateway version with the strong profile (Boomtick PR1407). Configure stronger
+provider model IDs using the gateway's `TWT_STRONG_MODELS` JSON map and an
+installed local model using `TWT_OLLAMA_STRONG_MODEL`, then sync its catalog.
+The profile tries local Ollama first, eligible free providers next and Nebius
+last, with the existing daily budget and receipts. Keep the gateway's
+`TWT_DAILY_BUDGET_USD=5` cap; this example does not change the cap or authorize
+extra provider calls. Do not use this value against an older gateway that
+only accepts default routes and exact model IDs. This is documentation, not
+a change to a running coder or host configuration.
