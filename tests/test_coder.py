@@ -436,6 +436,44 @@ class TestReadCacheAndTruncation(unittest.TestCase):
                 else:
                     self.assertEqual(guard(request, handler).status, "error")
 
+    @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langchain_core)")
+    def test_1630_unchanged_paginated_read_names_the_next_offset(self):
+        from langchain_core.messages import ToolMessage
+
+        pages = {
+            "big.ts": "@@ lines 1-100 of 143 | next offset 100 @@\nimport x;",
+            "small.ts": "@@ lines 1-77 of 77 @@\nimport y;",
+        }
+        for path, page in pages.items():
+            with self.subTest(path=path):
+                guard = coder.worktree_file_middleware("/tmp/wt", set()).wrap_tool_call
+                request = mock.Mock(
+                    tool_call={
+                        "id": "read",
+                        "name": "read_file",
+                        "args": {"file_path": path},
+                    }
+                )
+                request.override.side_effect = lambda **kwargs: types.SimpleNamespace(
+                    **kwargs
+                )
+                handler = mock.Mock(
+                    return_value=ToolMessage(
+                        content=page, tool_call_id="read", name="read_file"
+                    )
+                )
+                guard(request, handler)
+                second = guard(request, handler)
+                self.assertIn(f"[UNCHANGED: {path}", second.content)
+                if path == "big.ts":
+                    self.assertIn("offset=100", second.content)
+                else:
+                    self.assertNotIn("offset=", second.content)
+                with self.assertRaisesRegex(
+                    coder.CoderBudgetExceeded, "BLOCKED.*unchanged read"
+                ):
+                    guard(request, handler)
+
     def test_truncate_tool_output_short_and_exact(self):
         self.assertEqual(coder._truncate_tool_output("short", limit=4000), "short")
         exact = "x" * 100

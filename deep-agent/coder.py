@@ -73,6 +73,7 @@ DEFAULT_TIMEOUT = 1800
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 DEFAULT_VERIFY_ROUNDS = 2
 REPAIR_TOOL_LIMIT = 20
+NEXT_OFFSET_RE = re.compile(r"\bnext offset (\d+)")
 REPAIR_REPEAT_LIMIT = 3
 REPAIR_MODEL_LIMIT = 12
 INITIAL_MODEL_LIMIT = 20
@@ -677,6 +678,12 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
                         unchanged_reads.pop(rel, None)
                 if is_dup:
                     sentinel = f"[UNCHANGED: {rel} (sha256:{digest}) already in context. Do not re-read.]"
+                    more = NEXT_OFFSET_RE.search(result.content.split("\n", 1)[0])
+                    if more:
+                        sentinel += (
+                            f" That read stopped early: call read_file with "
+                            f"offset={more.group(1)} for the rest of the file."
+                        )
                     return ToolMessage(
                         content=sentinel,
                         tool_call_id=call["id"],
