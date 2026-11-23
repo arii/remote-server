@@ -8,6 +8,7 @@ scope) and a tmp ledger dir via BUTTONS_LEDGER_PATH.
 import ast
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ try:
 
     from backend.api.routers import briefing as briefing_router
     from backend import ledger
+    from backend.shared.cli import repo_root
 
     HAS_CLIENT = True
 except ImportError:
@@ -441,7 +443,12 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(rows[0]["duplicate_candidate"]["title"], "Retry policy")
         response = self.client.post(
             "/api/ledger-intake/intake-new/merge",
-            json={"candidate_id": "intake-old", "notes": "Same scope."},
+            json={
+                "candidate_id": "intake-old",
+                "notes": "Same scope.",
+                "intent": "ledger-intake-merge",
+                "confirmed": True,
+            },
         )
         self.assertEqual(response.status_code, 200)
         merged = response.json()["row"]
@@ -449,6 +456,297 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(merged["canonical_intake_id"], "intake-old")
         self.assertEqual(merged["notes"], "Same scope.")
         self.assertEqual(self.client.get("/api/ledger-intake").json()["rows"], [])
+
+    def _seed_pair(self, new_hash="same", old_hash="same", new_title="Retry policy"):
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-new",
+                "canonical_intake_id": "intake-new",
+                "status": "NEW",
+                "title": new_title,
+                "repo": "o/r",
+                "dedupe_hash": new_hash,
+            }
+        )
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-old",
+                "canonical_intake_id": "intake-old",
+                "status": "READY",
+                "title": "Retry policy",
+                "repo": "o/r",
+                "dedupe_hash": old_hash,
+                "ts": time.time() - 60,
+            }
+        )
+
+    def _intake_count(self):
+        return len([r for r in ledger.read(500) if r.get("kind") == "ledger-intake"])
+
+    def test_intake_merge_requires_confirm_and_appends_nothing(self):
+        # exact-hash and fuzzy candidates are both gated (#1584)
+        for new_hash, old_hash in (("same", "same"), ("a", "b")):
+            ledger.clear()
+            self._seed_pair(new_hash, old_hash)
+            before = self._intake_count()
+            for body in (
+                None,
+                {"candidate_id": "intake-old"},
+                {
+                    "candidate_id": "intake-old",
+                    "intent": "ledger-clear",
+                    "confirmed": True,
+                },
+                {"candidate_id": "intake-old", "intent": "ledger-intake-merge"},
+                {
+                    "candidate_id": "intake-old",
+                    "intent": "ledger-intake-merge",
+                    "confirmed": False,
+                },
+            ):
+                kwargs = {} if body is None else {"json": body}
+                response = self.client.post(
+                    "/api/ledger-intake/intake-new/merge", **kwargs
+                )
+                self.assertEqual(response.status_code, 400, (new_hash, body))
+            self.assertEqual(self._intake_count(), before)
+
+    def test_fuzzy_candidate_listing_never_appends(self):
+        self._seed_pair("a", "b")
+        before = self._intake_count()
+        rows = self.client.get("/api/ledger-intake").json()["rows"]
+        self.assertEqual(rows[0]["duplicate_candidate"]["title"], "Retry policy")
+        self.client.get("/api/ledger-intake")
+        self.assertEqual(self._intake_count(), before)
+
+    def test_intake_distinct_gated_resets_new_and_is_not_reflagged(self):
+        self._seed_pair()
+        before = self._intake_count()
+        for body in (
+            None,
+            {"candidate_id": "intake-old"},
+            {
+                "candidate_id": "intake-old",
+                "intent": "ledger-intake-merge",
+                "confirmed": True,
+            },
+        ):
+            kwargs = {} if body is None else {"json": body}
+            response = self.client.post(
+                "/api/ledger-intake/intake-new/distinct", **kwargs
+            )
+            self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._intake_count(), before)
+        response = self.client.post(
+            "/api/ledger-intake/intake-new/distinct",
+            json={
+                "candidate_id": "intake-old",
+                "intent": "ledger-intake-distinct",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["row"]
+        self.assertEqual(row["status"], "NEW")
+        self.assertNotEqual(row["status"], "READY")
+        self.assertEqual(row["duplicate_of"], "")
+        self.assertEqual(row["canonical_intake_id"], "intake-new")
+        rows = self.client.get("/api/ledger-intake").json()["rows"]
+        self.assertEqual([r["intake_id"] for r in rows], ["intake-new"])
+        self.assertNotIn("duplicate_candidate", rows[0])
+
+    def test_approve_rejects_quarantined_duplicate_row(self):
+        self._seed_pair()
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-new",
+                "canonical_intake_id": "intake-new",
+                "status": "DUPLICATE",
+                "title": "Retry policy",
+                "repo": "o/r",
+                "dedupe_hash": "same",
+            }
+        )
+        before = self._intake_count()
+        response = self.client.post(
+            "/api/ledger-intake/intake-new/approve", json={"fields": {}}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._intake_count(), before)
+        rows = self.client.get("/api/ledger-intake").json()["rows"]
+        self.assertEqual(rows[0]["status"], "DUPLICATE")
+        # after a human marks it distinct it is NEW and approvable
+        self.client.post(
+            "/api/ledger-intake/intake-new/distinct",
+            json={
+                "candidate_id": "intake-old",
+                "intent": "ledger-intake-distinct",
+                "confirmed": True,
+            },
+        )
+        response = self.client.post(
+            "/api/ledger-intake/intake-new/approve", json={"fields": {}}
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_approve_does_not_scan_queue_for_duplicates(self):
+        self._seed_pair()
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-other",
+                "canonical_intake_id": "intake-other",
+                "status": "NEW",
+                "title": "Completely unrelated zebra",
+                "repo": "x/y",
+                "dedupe_hash": "zzz",
+            }
+        )
+        with mock.patch(
+            "backend.api.routers.briefing._duplicate_candidate"
+        ) as candidate:
+            response = self.client.post(
+                "/api/ledger-intake/intake-other/approve", json={"fields": {}}
+            )
+            missing = self.client.post(
+                "/api/ledger-intake/nope/approve", json={"fields": {}}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(missing.status_code, 404)
+        candidate.assert_not_called()
+        self.assertNotIn("duplicate_candidate", response.json()["row"])
+
+    def test_distinct_rejects_candidate_that_is_not_detected(self):
+        self._seed_pair()
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-other",
+                "canonical_intake_id": "intake-other",
+                "status": "NEW",
+                "title": "Completely unrelated zebra",
+                "repo": "x/y",
+                "dedupe_hash": "zzz",
+            }
+        )
+        before = self._intake_count()
+        response = self.client.post(
+            "/api/ledger-intake/intake-new/distinct",
+            json={
+                "candidate_id": "intake-other",
+                "intent": "ledger-intake-distinct",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._intake_count(), before)
+
+    def test_hook_marked_duplicate_row_visible_until_human_links_it(self):
+        self._seed_pair()
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "intake_id": "intake-new",
+                "canonical_intake_id": "intake-new",
+                "status": "DUPLICATE",
+                "title": "Retry policy",
+                "repo": "o/r",
+                "dedupe_hash": "same",
+            }
+        )
+        rows = self.client.get("/api/ledger-intake").json()["rows"]
+        self.assertEqual([r["intake_id"] for r in rows], ["intake-new"])
+        self.client.post(
+            "/api/ledger-intake/intake-new/merge",
+            json={
+                "candidate_id": "intake-old",
+                "intent": "ledger-intake-merge",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(self.client.get("/api/ledger-intake").json()["rows"], [])
+
+    def test_ledger_intake_no_delete_path(self):
+        root = str(repo_root())
+        banned = {
+            "clear",
+            "delete",
+            "remove",
+            "unlink",
+            "truncate",
+            "rmtree",
+            "tombstone",
+        }
+        sources = [
+            os.path.join(root, "scripts", n)
+            for n in os.listdir(os.path.join(root, "scripts"))
+            if n.startswith("ledger_intake") and n.endswith(".py")
+        ]
+        for path in sources:
+            tree = ast.parse(pathlib.Path(path).read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    fn = node.func
+                    name = (
+                        fn.attr
+                        if isinstance(fn, ast.Attribute)
+                        else getattr(fn, "id", "")
+                    )
+                    self.assertNotIn(name.lower(), banned, f"{path}:{node.lineno}")
+        # In the router only ledger_clear_route may reach ledger clear,
+        # and it is gated by require_confirm('ledger-clear').
+        router_src = pathlib.Path(
+            root, "backend", "api", "routers", "briefing.py"
+        ).read_text()
+        router = ast.parse(router_src)
+        for fn in [n for n in ast.walk(router) if isinstance(n, ast.FunctionDef)]:
+            src = ast.get_source_segment(router_src, fn)
+            if "ledger-intake" in src or "intake" in fn.name:
+                for node in ast.walk(fn):
+                    if isinstance(node, ast.Call):
+                        f = node.func
+                        name = (
+                            f.attr
+                            if isinstance(f, ast.Attribute)
+                            else getattr(f, "id", "")
+                        )
+                        self.assertNotIn(
+                            name.lower(), banned | {"ledger_clear"}, fn.name
+                        )
+        # Direct file writes in the intake scripts would bypass the ledger.
+        write_calls = {"write_text", "write_bytes", "writelines"}
+        for path in sources:
+            tree = ast.parse(pathlib.Path(path).read_text())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                name = (
+                    fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                )
+                self.assertNotIn(name, write_calls, f"{path}:{node.lineno}")
+                if name == "open":
+                    modes = [
+                        a.value for a in node.args[1:2] if isinstance(a, ast.Constant)
+                    ]
+                    modes += [
+                        k.value.value
+                        for k in node.keywords
+                        if k.arg == "mode" and isinstance(k.value, ast.Constant)
+                    ]
+                    for mode in modes:
+                        self.assertFalse(
+                            set(str(mode)) & set("wax+"), f"{path}:{node.lineno}"
+                        )
+        route = next(
+            n
+            for n in ast.walk(router)
+            if isinstance(n, ast.FunctionDef) and n.name == "ledger_clear_route"
+        )
+        self.assertIn("ledger-clear", ast.get_source_segment(router_src, route))
 
     def test_ledger_since_filter(self):
         now = time.time()

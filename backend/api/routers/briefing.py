@@ -165,8 +165,59 @@ class IntakeApproval(BaseModel):
 
 
 class IntakeMerge(BaseModel):
-    candidate_id: str
+    """Merge links a row to its duplicate and appends notes. It always
+    needs a human confirm ({intent: 'ledger-intake-merge', confirmed:
+    true}), for exact-hash and fuzzy matches alike (#1584)."""
+
+    candidate_id: str = ""
     notes: str = ""
+    intent: str = ""
+    confirmed: bool = False
+
+
+class IntakeDistinct(BaseModel):
+    candidate_id: str = ""
+    intent: str = ""
+    confirmed: bool = False
+
+
+def _own_intake_id(row: dict) -> str:
+    return str(
+        row.get("intake_id")
+        or row.get("row_key")
+        or row.get("canonical_intake_id")
+        or ""
+    )
+
+
+def _row_ids(row: dict) -> set[str]:
+    return {
+        value
+        for value in (
+            str(row.get("intake_id") or ""),
+            str(row.get("row_key") or ""),
+            str(row.get("canonical_intake_id") or ""),
+        )
+        if value
+    }
+
+
+def _marked_distinct(row: dict, other: dict) -> bool:
+    """True when a human said these two rows are different, on either row."""
+    for a, b in ((row, other), (other, row)):
+        recorded = a.get("distinct_of")
+        if isinstance(recorded, list) and _row_ids(b) & {str(x) for x in recorded}:
+            return True
+    return False
+
+
+def _is_human_linked(row: dict) -> bool:
+    """A DUPLICATE row a human merged into a canonical row (hidden from
+    triage). Hook-marked DUPLICATE rows have no such link."""
+    if row.get("merged"):
+        return True
+    canonical = str(row.get("canonical_intake_id") or "")
+    return bool(canonical) and canonical != _own_intake_id(row)
 
 
 def _latest_intake_rows() -> dict[str, dict]:
@@ -201,12 +252,20 @@ def _duplicate_candidate(row: dict, rows: dict[str, dict]) -> dict | None:
         row.get("duplicate_of") or row.get("duplicate_candidate_id") or ""
     ).strip()
     explicit_row = _find_intake_row(rows, explicit) if explicit else None
-    if explicit_row is not None and explicit_row is not row:
+    if (
+        explicit_row is not None
+        and explicit_row is not row
+        and not _marked_distinct(row, explicit_row)
+    ):
         return explicit_row
     row_hash = str(row.get("dedupe_hash") or "")
     if row_hash:
         for candidate in rows.values():
-            if candidate is not row and candidate.get("dedupe_hash") == row_hash:
+            if (
+                candidate is not row
+                and candidate.get("dedupe_hash") == row_hash
+                and not _marked_distinct(row, candidate)
+            ):
                 return candidate
     source = " ".join(
         str(row.get(field) or "").casefold() for field in ("title", "repo")
@@ -215,7 +274,7 @@ def _duplicate_candidate(row: dict, rows: dict[str, dict]) -> dict | None:
         return None
     best: tuple[float, dict] | None = None
     for candidate in rows.values():
-        if candidate is row:
+        if candidate is row or _marked_distinct(row, candidate):
             continue
         target = " ".join(
             str(candidate.get(field) or "").casefold() for field in ("title", "repo")
@@ -226,15 +285,22 @@ def _duplicate_candidate(row: dict, rows: dict[str, dict]) -> dict | None:
     return best[1] if best else None
 
 
+def _awaiting_triage(row: dict) -> bool:
+    status = str(row.get("status", "")).upper()
+    if status == "DUPLICATE":
+        return not _is_human_linked(row)
+    return status in {"NEW", "NEEDS_INFO", "SUSPECTED-DUPLICATE"}
+
+
 def _intake_rows() -> list[dict]:
+    """Rows awaiting triage. Read-only: duplicate candidates are only
+    flagged here; nothing is linked or appended without a confirmed
+    request (#1584). Hook-marked DUPLICATE rows with no human link stay
+    visible so a human can merge or mark them distinct."""
     latest = _latest_intake_rows()
     rows = []
     for row in latest.values():
-        if str(row.get("status", "")).upper() not in {
-            "NEW",
-            "NEEDS_INFO",
-            "SUSPECTED-DUPLICATE",
-        }:
+        if not _awaiting_triage(row):
             continue
         candidate = _duplicate_candidate(row, latest)
         enriched = {**row}
@@ -244,6 +310,17 @@ def _intake_rows() -> list[dict]:
     return rows
 
 
+def _require_detected_candidate(row: dict, candidate: dict, rows: dict) -> None:
+    """Merge and distinct only act on the candidate the detector flags."""
+    resolved = _duplicate_candidate(row, rows)
+    if resolved is None or str(
+        resolved.get("canonical_intake_id") or resolved.get("row_key")
+    ) != str(candidate.get("canonical_intake_id") or candidate.get("row_key")):
+        raise HTTPException(
+            status_code=400, detail="candidate is not a detected duplicate"
+        )
+
+
 @router.get("/ledger-intake")
 def ledger_intake() -> dict:
     return {"rows": _intake_rows()}
@@ -251,17 +328,25 @@ def ledger_intake() -> dict:
 
 @router.post("/ledger-intake/{intake_id}/approve")
 def approve_ledger_intake(intake_id: str, body: IntakeApproval) -> dict:
+    # Look up the one row by id; no whole-queue duplicate scan (#1584).
     row = next(
         (
             candidate
-            for candidate in _intake_rows()
-            if str(candidate.get("canonical_intake_id") or candidate.get("row_key"))
+            for candidate in _latest_intake_rows().values()
+            if _awaiting_triage(candidate)
+            and str(candidate.get("canonical_intake_id") or candidate.get("row_key"))
             == intake_id
         ),
         None,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="intake row not found")
+    if str(row.get("status", "")).upper() == "DUPLICATE":
+        # Quarantined until a human merges or marks it distinct (#1584).
+        raise HTTPException(
+            status_code=400,
+            detail="duplicate row needs merge or distinct before approval",
+        )
     fields = {
         key: value.strip()
         for key, value in body.fields.items()
@@ -284,19 +369,19 @@ def approve_ledger_intake(intake_id: str, body: IntakeApproval) -> dict:
 
 
 @router.post("/ledger-intake/{intake_id}/merge")
-def merge_ledger_intake(intake_id: str, body: IntakeMerge) -> dict:
+def merge_ledger_intake(intake_id: str, body: IntakeMerge | None = None) -> dict:
+    from backend.core.validation import require_confirm
+
+    # Human confirm first (#1584): a bare POST gets 400, not 422, and
+    # nothing is appended without {intent, confirmed: true}.
+    require_confirm(body, "ledger-intake-merge")
+    assert body is not None
     rows = _latest_intake_rows()
     row = _find_intake_row(rows, intake_id)
     candidate = _find_intake_row(rows, body.candidate_id)
     if row is None or candidate is None:
         raise HTTPException(status_code=404, detail="intake row or candidate not found")
-    resolved = _duplicate_candidate(row, rows)
-    if resolved is None or str(
-        resolved.get("canonical_intake_id") or resolved.get("row_key")
-    ) != str(candidate.get("canonical_intake_id") or candidate.get("row_key")):
-        raise HTTPException(
-            status_code=400, detail="candidate is not a detected duplicate"
-        )
+    _require_detected_candidate(row, candidate, rows)
     note = body.notes.strip()
     prior_notes = str(row.get("notes") or "").strip()
     merged_notes = prior_notes
@@ -310,6 +395,40 @@ def merge_ledger_intake(intake_id: str, body: IntakeMerge) -> dict:
         ),
         "duplicate_of": body.candidate_id,
         "notes": merged_notes,
+        "merged": True,
+    }
+    ledger_append({"kind": "ledger-intake", **updated})
+    return {"ok": True, "row": updated}
+
+
+@router.post("/ledger-intake/{intake_id}/distinct")
+def distinct_ledger_intake(intake_id: str, body: IntakeDistinct | None = None) -> dict:
+    """Human says the flagged candidate is a different request. Resets
+    the row to NEW (never READY), drops the duplicate link, and records
+    the pair so it is not flagged again."""
+    from backend.core.validation import require_confirm
+
+    require_confirm(body, "ledger-intake-distinct")
+    assert body is not None
+    rows = _latest_intake_rows()
+    row = _find_intake_row(rows, intake_id)
+    candidate = _find_intake_row(rows, body.candidate_id)
+    if row is None or candidate is None:
+        raise HTTPException(status_code=404, detail="intake row or candidate not found")
+    _require_detected_candidate(row, candidate, rows)
+    prior = row.get("distinct_of")
+    distinct_of = [str(x) for x in prior] if isinstance(prior, list) else []
+    for value in sorted(_row_ids(candidate)):
+        if value not in distinct_of:
+            distinct_of.append(value)
+    updated = {
+        **row,
+        "status": "NEW",
+        "canonical_intake_id": _own_intake_id(row),
+        "duplicate_of": "",
+        "duplicate_candidate_id": "",
+        "merged": False,
+        "distinct_of": distinct_of,
     }
     ledger_append({"kind": "ledger-intake", **updated})
     return {"ok": True, "row": updated}

@@ -782,7 +782,17 @@ export function mergeLedgerIntake(
 ): Promise<{ ok: boolean; row: LedgerIntakeRow }> {
   return postJson<{ ok: boolean; row: LedgerIntakeRow }>(
     `api/ledger-intake/${encodeURIComponent(intakeId)}/merge`,
-    { candidate_id: candidateId, notes },
+    { candidate_id: candidateId, notes, intent: 'ledger-intake-merge', confirmed: true },
+  );
+}
+
+export function distinctLedgerIntake(
+  intakeId: string,
+  candidateId: string,
+): Promise<{ ok: boolean; row: LedgerIntakeRow }> {
+  return postJson<{ ok: boolean; row: LedgerIntakeRow }>(
+    `api/ledger-intake/${encodeURIComponent(intakeId)}/distinct`,
+    { candidate_id: candidateId, intent: 'ledger-intake-distinct', confirmed: true },
   );
 }
 

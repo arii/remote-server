@@ -1,5 +1,11 @@
 import { useEffect, useState, type ReactElement } from 'react';
-import { approveLedgerIntake, fetchLedgerIntake, mergeLedgerIntake } from '../apiClient';
+import {
+  approveLedgerIntake,
+  distinctLedgerIntake,
+  fetchLedgerIntake,
+  mergeLedgerIntake,
+} from '../apiClient';
+import TapToFire from '../components/TapToFire';
 import type { LedgerIntakeRow } from '../apiTypes';
 
 const FIELD_LABELS: Record<string, string> = {
@@ -17,6 +23,13 @@ function statusLabel(status: string | undefined): string {
   return status === 'DUPLICATE' || status?.toUpperCase() === 'SUSPECTED-DUPLICATE'
     ? 'Suspected duplicate'
     : status || 'Needs review';
+}
+
+function candidateIdOf(row: LedgerIntakeRow): string {
+  const candidate = row.duplicate_candidate;
+  return candidate
+    ? String(candidate.canonical_intake_id || candidate.row_key || candidate.intake_id || '')
+    : '';
 }
 
 export default function LedgerTriageView(): ReactElement {
@@ -70,19 +83,33 @@ export default function LedgerTriageView(): ReactElement {
 
   async function merge(row: LedgerIntakeRow) {
     const id = rowId(row);
-    const candidate = row.duplicate_candidate;
-    const candidateId = candidate
-      ? String(candidate.canonical_intake_id || candidate.row_key || candidate.intake_id || '')
-      : '';
+    const candidateId = candidateIdOf(row);
     if (!id || !candidateId || busy) return;
     setBusy(id);
     setNotice(null);
     try {
       await mergeLedgerIntake(id, candidateId, mergeNotes[id] || '');
       setRows((current) => current.filter((item) => rowId(item) !== id));
-      setNotice('Merged as DUPLICATE.');
+      setNotice('Merged as DUPLICATE after your confirmation.');
     } catch (err) {
       setNotice(`Could not merge: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function distinct(row: LedgerIntakeRow) {
+    const id = rowId(row);
+    const candidateId = candidateIdOf(row);
+    if (!id || !candidateId || busy) return;
+    setBusy(id);
+    setNotice(null);
+    try {
+      await distinctLedgerIntake(id, candidateId);
+      setRows((current) => current.filter((item) => rowId(item) !== id));
+      setNotice('Marked distinct and reset to NEW.');
+    } catch (err) {
+      setNotice(`Could not mark distinct: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy(null);
     }
@@ -145,14 +172,22 @@ export default function LedgerTriageView(): ReactElement {
                         }))}
                       />
                     </label>
-                    <button
-                      type="button"
-                      className="btn-primary"
-                      onClick={() => void merge(row)}
+                    <TapToFire
+                      label="Merge duplicate"
+                      name={`Merge duplicate ${row.title || id}`}
+                      testid={`merge-${id}`}
+                      confirm={`Link "${row.title || id}" to "${row.duplicate_candidate.title || 'matched row'}" and append notes. A human confirm is always required.`}
                       disabled={busy !== null}
-                    >
-                      {busy === id ? 'Merging…' : 'Merge duplicate'}
-                    </button>
+                      onFire={() => void merge(row)}
+                    />{' '}
+                    <TapToFire
+                      label="Not a duplicate"
+                      name={`Not a duplicate ${row.title || id}`}
+                      testid={`distinct-${id}`}
+                      confirm={`Reset "${row.title || id}" to NEW and stop flagging it against "${row.duplicate_candidate.title || 'matched row'}".`}
+                      disabled={busy !== null}
+                      onFire={() => void distinct(row)}
+                    />
                   </div>
                 </div>
               ) : (
@@ -176,14 +211,18 @@ export default function LedgerTriageView(): ReactElement {
                   />
                 </label>
               ))}
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() => void approve(row)}
-                disabled={busy !== null}
-              >
-                {busy === id ? 'Saving…' : 'Approve and mark READY'}
-              </button>
+              {row.status?.toUpperCase() === 'DUPLICATE' ? (
+                <p className="row-meta">Merge or mark as not a duplicate before approving.</p>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => void approve(row)}
+                  disabled={busy !== null}
+                >
+                  {busy === id ? 'Saving…' : 'Approve and mark READY'}
+                </button>
+              )}
             </article>
           );
         })}
