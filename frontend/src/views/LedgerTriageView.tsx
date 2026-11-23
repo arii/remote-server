@@ -35,6 +35,28 @@ function statusLabel(status: string | undefined): string {
     : status || 'Needs review';
 }
 
+const REVIEWED_KEY = 'ledgerTriage.reviewed';
+
+function rowTime(row: LedgerIntakeRow): number {
+  const raw = row.ts ?? row.at;
+  if (typeof raw === 'number') return raw * 1000;
+  const parsed = raw ? Date.parse(String(raw)) : NaN;
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function newestFirst(rows: LedgerIntakeRow[]): LedgerIntakeRow[] {
+  return [...rows].sort((a, b) => rowTime(b) - rowTime(a));
+}
+
+function loadReviewed(): Set<string> {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(REVIEWED_KEY) || '[]');
+    return new Set(Array.isArray(stored) ? stored.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 function candidateIdOf(row: LedgerIntakeRow): string {
   const candidate = row.duplicate_candidate;
   return candidate
@@ -51,13 +73,22 @@ export default function LedgerTriageView(): ReactElement {
   const [notice, setNotice] = useState<string | null>(null);
   const [serverRisks, setServerRisks] = useState<Record<string, string[]>>({});
   const [mergeNotes, setMergeNotes] = useState<Record<string, string>>({});
+  const [reviewed, setReviewed] = useState<Set<string>>(loadReviewed);
+  const unreviewedCount = rows.filter((row) => !reviewed.has(rowId(row))).length;
+
+  function markReviewed(id: string) {
+    if (!id || reviewed.has(id)) return;
+    const next = new Set(reviewed).add(id);
+    setReviewed(next);
+    localStorage.setItem(REVIEWED_KEY, JSON.stringify([...next]));
+  }
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
       const response = await fetchLedgerIntake();
-      setRows(response.rows);
+      setRows(newestFirst(response.rows));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -82,6 +113,7 @@ export default function LedgerTriageView(): ReactElement {
 
   async function approve(row: LedgerIntakeRow) {
     const id = rowId(row);
+    markReviewed(id);
     if (!id || busy) return;
     setBusy(id);
     setNotice(null);
@@ -108,6 +140,7 @@ export default function LedgerTriageView(): ReactElement {
 
   async function merge(row: LedgerIntakeRow) {
     const id = rowId(row);
+    markReviewed(id);
     const candidateId = candidateIdOf(row);
     if (!id || !candidateId || busy) return;
     setBusy(id);
@@ -125,6 +158,7 @@ export default function LedgerTriageView(): ReactElement {
 
   async function distinct(row: LedgerIntakeRow) {
     const id = rowId(row);
+    markReviewed(id);
     const candidateId = candidateIdOf(row);
     if (!id || !candidateId || busy) return;
     setBusy(id);
@@ -146,6 +180,9 @@ export default function LedgerTriageView(): ReactElement {
         <div>
           <h2 id="ledger-triage-title">Ledger triage</h2>
           <p className="row-meta">Review intake rows without editing the raw sheet.</p>
+          <p className="row-meta" data-testid="ledger-unreviewed-count">
+            {unreviewedCount} unreviewed
+          </p>
         </div>
         <button type="button" onClick={() => void load()} disabled={loading}>
           Refresh
@@ -163,9 +200,20 @@ export default function LedgerTriageView(): ReactElement {
           const missing = (row.missing_fields || []).map(String);
           const risks = rowRisks(row).map((name) => RISK_LABELS[name] || name);
           return (
-            <article className="ledger-triage-card" key={id} tabIndex={0}>
+            <article
+              className="ledger-triage-card"
+              key={id}
+              tabIndex={0}
+              onClick={() => markReviewed(id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') markReviewed(id);
+              }}
+            >
               <div className="ledger-card-head">
                 <span className="status-badge">{statusLabel(row.status)}</span>
+                {!reviewed.has(id) && (
+                  <strong data-testid={`unreviewed-${id}`}>Unreviewed</strong>
+                )}
                 <span className="row-meta">{id}</span>
               </div>
               {row.duplicate_candidate ? (
