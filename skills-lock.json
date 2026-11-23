@@ -103,8 +103,8 @@
       "source": "arii/skills",
       "sourceType": "github",
       "skillPath": "skills/lane-orchestrator/SKILL.md",
-      "computedHash": "73df2212b2901371cec6aa253161003af3eb5870e2f01e8c580ceb9675f770e1",
-      "ref": "1e1c05ac5dae1ff386814f8de65af8bb3e0a741a"
+      "computedHash": "2c5d3609178108859aa2536200434d1a01b08b09bff18dd8067d1147fb2b936f",
+      "ref": "a064172495895d5cfe8f85e91c5f7f9c5404c287"
     },
     "langchain-dependencies": {
       "source": "langchain-ai/langchain-skills",

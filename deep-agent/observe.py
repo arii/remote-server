@@ -137,6 +137,11 @@ class TraceRecorder:
         self.event("tool_call", **payload)
         self._calls.append({"name": name, "args": str(args or "")[:300]})
 
+    @property
+    def model_calls(self):
+        """Model responses recorded so far (what the call limit counts)."""
+        return self._responses
+
     def totals(self):
         """Aggregated (usage, tool_calls) for ledger rows. Never raises."""
         try:
