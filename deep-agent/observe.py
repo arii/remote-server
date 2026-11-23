@@ -46,7 +46,30 @@ TERMINATION_REASONS = (
     "infra_error",
     "success",
 )
+_COST_MARKERS = ("budget", "402", "spend limit", "insufficient credit")
 _THREAD_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def classify_termination(error):
+    """Map a run-ending exception to a TERMINATION_REASONS value.
+
+    Call caps and tool-call budgets are budget_calls; repeated-action
+    blocks are loop_detected; spend refusals are budget_cost; anything
+    else (timeouts, 429/5xx, resets, crashes) is infra_error.
+    """
+    names = {c.__name__ for c in type(error).__mro__}
+    msg = str(error).lower()
+    if "ModelCallLimitExceededError" in names or "tool budget exhausted" in msg:
+        return "budget_calls"
+    if "BudgetExceeded" in " ".join(names) or msg.startswith("blocked:"):
+        if "repeated" in msg or "dithering" in msg:
+            return "loop_detected"
+        if "names no usable" in msg:
+            return "gave_up"
+        return "budget_calls"
+    if any(m in msg for m in _COST_MARKERS):
+        return "budget_cost"
+    return "infra_error"
 
 
 def _preview(value):
@@ -194,6 +217,10 @@ class TraceRecorder:
             return usage, list(self._calls)
         except Exception:  # noqa: BLE001 - totals must never break a run
             return ({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, [])
+
+    @property
+    def terminated(self):
+        return self._terminated
 
     def termination(self, reason):
         """Record why the run ended; reason must be in TERMINATION_REASONS."""

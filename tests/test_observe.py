@@ -86,6 +86,26 @@ class TestRecorder(unittest.TestCase):
                 list(observe.TERMINATION_REASONS[:-1]),
             )
 
+    def test_classify_termination(self):
+        cases = {
+            "budget_calls": [
+                RuntimeError("BLOCKED: Repair tool budget exhausted (5 calls)")
+            ],
+            "loop_detected": [RuntimeError("BLOCKED: repeated unchanged read of x")],
+            "budget_cost": [RuntimeError("402 budget exceeded")],
+            "infra_error": [TimeoutError(), RuntimeError("HTTP 503")],
+        }
+        for reason, errors in cases.items():
+            for error in errors:
+                self.assertEqual(observe.classify_termination(error), reason)
+
+    def test_terminated_blocks_duplicate_and_success(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = observe.TraceRecorder(os.path.join(d, "t.jsonl"))
+            self.assertFalse(rec.terminated)
+            rec.termination("gave_up")
+            self.assertTrue(rec.terminated)
+
     def test_preview_truncates(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "t.jsonl")
