@@ -194,3 +194,27 @@ class TestTwtStageModels(unittest.TestCase):
                     asyncio.run(bound.ainvoke("task"))
                     self.assertEqual(bool(sent[-1].get("tools")), tools)
         self.assertEqual(len(sent), 12)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("langchain_openai"), "needs deep-agent venv"
+    )
+    def test_concrete_model_sends_no_provider_controls_default_route_keeps_them(self):
+        base = {"provider": "twt", "base_url": "http://127.0.0.1:8000/v1"}
+        concrete = "nebius/Qwen/Qwen3-235B-A22B-Instruct-2507"
+        cases = (("default", True), (concrete, False))
+        for model_id, expects_controls in cases:
+            with (
+                self.subTest(model=model_id),
+                mock.patch.dict(os.environ, {}, clear=True),
+            ):
+                model, spec = model_router.build_chat_model(
+                    spec=dict(base, model=model_id), stage="coder"
+                )
+                body = model._get_request_payload(
+                    [{"role": "user", "content": "hello"}]
+                )
+                self.assertEqual(body["model"], model_id)
+                extra_body = body.get("extra_body") or {}
+                for key in ("provider_models", "provider_reasoning_effort"):
+                    self.assertEqual(key in extra_body, expects_controls)
+                    self.assertEqual(key in spec, expects_controls)

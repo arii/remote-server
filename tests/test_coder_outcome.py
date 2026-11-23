@@ -791,7 +791,12 @@ class TestCoderOutcome(unittest.TestCase):
         self.assertIn("DONE", str(result))
         self.assertIn("no written files", str(result))
         self.assertFalse(events[-1]["ok"])
-        self.assertIn("DONE", events[-2]["reason"])
+        self.assertEqual(
+            [e["type"] for e in events[-3:]],
+            ["coder_verdict", "termination", "run_end"],
+        )
+        self.assertIn("DONE", events[-3]["reason"])
+        self.assertEqual(events[-2]["reason"], "gave_up")
 
     def test_done_without_writes_fails(self):
         result, events = self.run_scenario("DONE #1261")

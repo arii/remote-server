@@ -1918,6 +1918,8 @@ def _run_coder_attempt(
         error_usage = ledger.error_usage(error)
         if "reported_cost_usd" in error_usage:
             recorder.model_response(error_usage)
+        if not recorder.terminated:
+            recorder.termination(observe.classify_termination(error))
         recorder.run_end(False)
         recorder.close()
         usage, calls = recorder.totals()
@@ -2052,6 +2054,9 @@ def _run_coder_attempt(
         reason = implementation_failure(reply, written_files, verified)
         if reason:
             recorder.event("coder_verdict", ok=False, reason=reason)
+            recorder.termination(
+                "loop_detected" if trace_has_dither(recorder.path) else "gave_up"
+            )
             raise RuntimeError(reason)
         if not verified and max_rounds > 0:
             reply = mark_unverified(reply)
@@ -2230,6 +2235,7 @@ def plan_and_pause(worktree, brief, system, thread, timeout):
             run_bounded(lambda: _invoke([HumanMessage(content=PLAN_NUDGE)]), timeout)
             pending = deep_chat._pending_interrupts(agent, config)
     except TimeoutError:
+        recorder.termination("infra_error")
         recorder.run_end(False)
         recorder.close()
         ledger.record(
@@ -2247,6 +2253,7 @@ def plan_and_pause(worktree, brief, system, thread, timeout):
         )
         return cli.sorry(f"Sorry, the coder plan step timed out after {timeout}s.")
     except Exception as exc:  # noqa: BLE001 - sorry contract
+        recorder.termination(observe.classify_termination(exc))
         recorder.run_end(False)
         recorder.close()
         ledger.record(
@@ -2265,6 +2272,7 @@ def plan_and_pause(worktree, brief, system, thread, timeout):
         return cli.sorry(f"Sorry, the coder plan step failed: {exc}")
     _ = holder
     if not pending:
+        recorder.termination("gave_up")
         recorder.run_end(False)
         recorder.close()
         ledger.record(
@@ -2497,6 +2505,7 @@ def _cmd_resume(
             },
         )
     if not pending:
+        recorder.termination("gave_up")
         recorder.run_end(False)
         recorder.close()
         return cli.sorry(f"Sorry, no pending approval for thread {thread!r}.")
@@ -2521,6 +2530,7 @@ def _cmd_resume(
             timeout,
         )
     except TimeoutError:
+        recorder.termination("infra_error")
         recorder.run_end(False)
         recorder.close()
         ledger.record(
@@ -2538,6 +2548,7 @@ def _cmd_resume(
         )
         return cli.sorry(f"Sorry, the coder resume timed out after {timeout}s.")
     except Exception as exc:  # noqa: BLE001 - sorry contract
+        recorder.termination(observe.classify_termination(exc))
         recorder.run_end(False)
         recorder.close()
         ledger.record(
