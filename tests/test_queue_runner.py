@@ -188,6 +188,13 @@ class RetryWorktreeTests(unittest.TestCase):
 
 class RunnerTests(unittest.TestCase):
     def setUp(self):
+        for name, value in (
+            ("ledger_write", mock.Mock(return_value=200)),
+            ("ledger_rows", mock.Mock(return_value=[])),
+        ):
+            patcher = mock.patch.object(runner, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         archive = mock.patch.object(runner, "archive_retry_worktree")
         self.archive_worktree = archive.start()
         self.addCleanup(archive.stop)
@@ -1164,6 +1171,300 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(summary["reconciliation"]["cost_usd"], 0)
             self.assertEqual(len(summary["stages"]), 6)
             self.assertTrue((directory / "state").is_dir())
+
+
+ISSUE_URL = "https://github.com/owner/repo/issues/7"
+PR_URL = "https://github.com/owner/repo/pull/99"
+SECRET = "sk-test-SECRET-value-123"
+
+
+class LedgerTests(unittest.TestCase):
+    """Agent Ledger rows from the supervisor; writer and reader are faked."""
+
+    def setUp(self):
+        self.posts = []
+        self.rows = []
+        self.fail_posts = 0
+        self.now = 1_700_000_000.0
+        for name, value in (
+            ("ledger_write", self.write),
+            ("ledger_rows", lambda: list(self.rows)),
+            ("ledger_log", lambda _message: None),
+        ):
+            patcher = mock.patch.object(runner, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for patcher in (
+            mock.patch.object(runner.signal, "signal"),
+            mock.patch.object(runner.time, "time", lambda: self.now),
+            mock.patch.object(
+                runner.subprocess,
+                "check_output",
+                side_effect=lambda *a, **k: json.dumps(
+                    {"state": "open", "title": "Fix", "body": "scope"}
+                ),
+            ),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def write(self, agent, note, status, link):
+        if self.fail_posts:
+            self.fail_posts -= 1
+            self.attempts = getattr(self, "attempts", 0) + 1
+            raise OSError("ledger down " + SECRET)
+        self.posts.append((agent, note, status, link))
+        return 200
+
+    def fixture(self, root, count=1):
+        root = Path(root)
+        runner.write_json(
+            root / "issues.json",
+            [{"repo": "owner/repo", "number": 7 + n} for n in range(count)],
+        )
+        runner.write_json(
+            root / "config.json",
+            {
+                "issues_file": str(root / "issues.json"),
+                "state_dir": str(root / "state"),
+                "runtime_state_dir": "/runtime",
+                "repo_paths": {"owner/repo": "/repo"},
+                "pipeline_checkout": "/pipeline",
+                "runtime_command": ["runtime"],
+                "worker_python": "/runtime/venv/bin/python",
+                "inter_issue_delay_seconds": 0,
+                "environment": {"API_TOKEN": SECRET},
+            },
+        )
+        return root / "config.json", root / "state"
+
+    def spawn(self, state, summary):
+        def start(command, **_kwargs):
+            directory = state / Path(command[-1]).name
+            process = mock.Mock(returncode=summary["exit_code"])
+            process.communicate.side_effect = lambda _: runner.write_json(
+                directory / "summary.json",
+                {"halt_queue": False, "reconciliation": {"reconciled": True}} | summary,
+            )
+            return process
+
+        return mock.patch.object(runner.subprocess, "Popen", side_effect=start)
+
+    def run_one(self, summary, count=1):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root, count)
+            with self.spawn(state, summary):
+                code = runner.supervise(config)
+            return code, runner.read_json(state / "status.json"), config
+
+    def foreign(self, status="Act", source="BoomTick", hours=1.0, link=ISSUE_URL):
+        stamp = runner.datetime.datetime.fromtimestamp(
+            self.now - hours * 3600, runner.datetime.timezone.utc
+        )
+        return {
+            "Timestamp": stamp.strftime("%m/%d/%Y %H:%M:%S"),
+            "Agent / Source": source,
+            "Item / Note": "working",
+            "Status": status,
+            "Link": link,
+        }
+
+    SUCCESS = {
+        "exit_code": 0,
+        "result": {"status": "APPROVED", "submit_url": PR_URL},
+        "reconciliation": {
+            "reconciled": True,
+            "cost_usd": 0.0123,
+            "cost_basis": "upper_bound",
+        },
+    }
+
+    def test_start_posts_one_act_claim_keyed_by_issue_url(self):
+        self.run_one(self.SUCCESS)
+        agent, note, status, link = self.posts[0]
+        self.assertEqual((agent, status, link), ("S5-Queue", "Act", ISSUE_URL))
+        self.assertRegex(note, r"^claimed by queue run [0-9a-f]{12}$")
+        self.assertEqual(sum(p[1].startswith("claimed") for p in self.posts), 1)
+
+    def test_success_posts_act_with_pr_cost_and_tests(self):
+        _code, status, _config = self.run_one(self.SUCCESS)
+        _agent, note, state, link = self.posts[-1]
+        self.assertEqual((state, link), ("Act", ISSUE_URL))
+        self.assertIn(PR_URL, note)
+        self.assertIn("$0.0123 (upper_bound)", note)
+        self.assertIn("tests pass", note)
+        self.assertEqual(
+            status["ledger_open_prs"]["owner/repo#7"],
+            {"issue": ISSUE_URL, "pr": PR_URL},
+        )
+
+    def test_failure_posts_later_with_reason_not_detail(self):
+        summary = {
+            "exit_code": 1,
+            "result": {"status": "BLOCKED_DETERMINISTIC", "detail": "secret repo text"},
+        }
+        self.run_one(summary)
+        _agent, note, state, link = self.posts[-1]
+        self.assertEqual((state, link), ("Later", ISSUE_URL))
+        self.assertIn("BLOCKED_DETERMINISTIC", note)
+        self.assertNotIn("secret repo text", note)
+
+    def test_common_failure_limit_posts_max_common_failures(self):
+        summary = {"exit_code": 1, "result": {"status": "BLOCKED_DETERMINISTIC"}}
+        code, _status, _config = self.run_one(summary, count=4)
+        self.assertEqual(code, 2)
+        later = [p for p in self.posts if p[2] == "Later"]
+        self.assertEqual(len(later), 3)
+        self.assertIn("max_common_failures", later[-1][1])
+        self.assertNotIn("max_common_failures", later[0][1])
+
+    def test_spend_cap_posts_needs_okay(self):
+        message = ""
+        with mock.patch.object(runner, "refresh_spend", return_value=0.6):
+            try:
+                runner.check_budget(None, 0.5)
+            except runner.BudgetStop as error:
+                message = str(error)
+        self.assertTrue(runner.is_spend_cap({"detail": "BudgetStop: " + message}))
+        summary = {
+            "exit_code": 1,
+            "result": {"status": "RUNNER_ERROR", "detail": "BudgetStop: " + message},
+        }
+        self.run_one(summary)
+        self.assertEqual(self.posts[-1][2], "Needs Okay")
+        self.assertEqual(self.posts[-1][3], ISSUE_URL)
+
+    def test_fresh_foreign_act_claim_skips_the_issue(self):
+        self.rows = [self.foreign(hours=1)]
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            with mock.patch.object(runner.subprocess, "Popen") as popen:
+                self.assertEqual(runner.supervise(config), 0)
+            popen.assert_not_called()
+            saved = runner.read_json(state / "status.json")
+        self.assertEqual(self.posts, [])
+        self.assertIn("BoomTick", saved["ledger_skipped"]["owner/repo#7"])
+        self.assertNotIn("owner/repo#7", saved["completed"])
+
+    def test_stale_foreign_claim_and_non_act_rows_proceed(self):
+        for row in (
+            self.foreign(hours=7),
+            self.foreign(status="Later", hours=1),
+            self.foreign(link="https://github.com/owner/repo/issues/8"),
+        ):
+            with self.subTest(row=row):
+                self.posts.clear()
+                self.rows = [row]
+                self.run_one(self.SUCCESS)
+                self.assertTrue(self.posts[0][1].startswith("claimed"))
+
+    def test_stale_window_is_one_config_value(self):
+        self.rows = [self.foreign(hours=7)]
+        with tempfile.TemporaryDirectory() as root:
+            config, _state = self.fixture(root)
+            value = runner.read_json(config) | {"ledger_stale_hours": 8}
+            runner.write_json(config, value)
+            with mock.patch.object(runner.subprocess, "Popen") as popen:
+                runner.supervise(config)
+            popen.assert_not_called()
+
+    def test_own_previous_claim_proceeds(self):
+        self.rows = [self.foreign(source="S5-Queue", hours=0.1)]
+        self.run_one(self.SUCCESS)
+        self.assertTrue(self.posts[0][1].startswith("claimed"))
+
+    def test_latest_row_for_key_wins(self):
+        self.rows = [self.foreign(hours=1), self.foreign(status="Done", hours=0.5)]
+        self.run_one(self.SUCCESS)
+        self.assertTrue(self.posts)
+
+    def test_reader_outage_does_not_block_the_issue(self):
+        def broken():
+            raise FileNotFoundError("no token")
+
+        with mock.patch.object(runner, "ledger_rows", broken):
+            code, _status, _config = self.run_one(self.SUCCESS)
+        self.assertEqual(code, 0)
+        self.assertTrue(self.posts[0][1].startswith("claimed"))
+
+    def test_post_failure_keeps_run_green_retries_once_then_drops(self):
+        self.fail_posts = 3
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            with self.spawn(state, self.SUCCESS):
+                self.assertEqual(runner.supervise(config), 0)
+            saved = runner.read_json(state / "status.json")
+            self.assertEqual(self.posts, [])
+            self.assertEqual(len(saved["ledger_pending"]), 2)
+            self.assertEqual(self.attempts, 2)
+            self.assertNotIn(SECRET, json.dumps(saved["ledger_pending"]))
+            self.fail_posts = 1
+            runner.supervise(config)
+            saved = runner.read_json(state / "status.json")
+            self.assertEqual(self.attempts, 3)
+            self.assertEqual([p[2] for p in self.posts], ["Act"])
+            self.assertNotIn("ledger_pending", saved)
+            runner.supervise(config)
+            self.assertEqual(self.attempts, 3)
+            self.assertEqual(len(self.posts), 1)
+
+    def test_merge_confirm_posts_done_once_at_next_run(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            with self.spawn(state, self.SUCCESS):
+                runner.supervise(config)
+            merged = json.dumps(
+                {"state": "MERGED", "mergeCommit": {"oid": "abcdef123456"}}
+            )
+            with mock.patch.object(
+                runner.subprocess, "check_output", return_value=merged
+            ):
+                runner.supervise(config)
+                runner.supervise(config)
+            done = [p for p in self.posts if p[2] == "Done"]
+            self.assertEqual(len(done), 1)
+            self.assertEqual(done[0][3], ISSUE_URL)
+            self.assertEqual(done[0][1], f"merged abcdef1 {PR_URL}")
+            self.assertEqual(
+                runner.read_json(state / "status.json")["ledger_open_prs"], {}
+            )
+
+    def test_open_pr_stays_tracked_until_merged(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            with self.spawn(state, self.SUCCESS):
+                runner.supervise(config)
+            runner.supervise(config)
+            self.assertFalse([p for p in self.posts if p[2] == "Done"])
+            self.assertIn(
+                "owner/repo#7",
+                runner.read_json(state / "status.json")["ledger_open_prs"],
+            )
+
+    def test_notes_never_carry_secrets_or_free_text(self):
+        failing = {
+            "exit_code": 1,
+            "result": {
+                "status": "RUNNER_ERROR",
+                "detail": SECRET,
+                "submit_url": SECRET,
+            },
+        }
+        weird = {"exit_code": 1, "result": {"status": SECRET + " bad status"}}
+        for summary in (self.SUCCESS, failing, weird):
+            self.run_one(summary)
+        self.assertTrue(self.posts)
+        pattern = (
+            r"^(claimed by queue run [0-9a-f]{12}"
+            r"|PR https://github\.com/[\w.-]+/[\w.-]+/pull/\d+ opened, queue run [0-9a-f]{12}, "
+            r"cost \$[\d.]+ \((upper_bound|reported)\), tests pass"
+            r"|Later: [A-Z][A-Z0-9_]+, queue run [0-9a-f]{12})$"
+        )
+        for _agent, note, _status, link in self.posts:
+            self.assertRegex(note, pattern)
+            self.assertNotIn(SECRET, note + link)
+            self.assertNotIn("API_TOKEN", note)
+        self.assertEqual(sorted({p[3] for p in self.posts}), [ISSUE_URL])
 
 
 class AccountingTests(unittest.TestCase):

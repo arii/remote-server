@@ -221,6 +221,50 @@ first because it is free, then the slop review.
 Tests use a fake model and fake `gh` (`tests/test_slop_review.py`). A live
 review of a real PR needs Ari.
 
+## Agent Ledger rows
+
+The supervisor posts Agent Ledger rows for every issue it works, through
+`scripts/ledger_post.py` `post_entry` (the existing Form writer) and reads with
+`scripts/ledger_read.py` `read_ledger`. Source is `S5-Queue`.
+
+Key: the `Link` column is always the issue URL
+(`https://github.com/<repo>/issues/<n>`), because `ledger_read.py` folds the
+latest row per `Link`. The PR URL goes in the note, not in `Link`, so the
+folded row for the issue stays the latest state.
+
+| When | Status | Note |
+| --- | --- | --- |
+| Before dispatch | `Act` | `claimed by queue run <run-id>` |
+| PR opened | `Act` | PR URL, TwT cost total with its `cost_basis`, `tests pass` |
+| Failed, blocked, slop review failed | `Later` | the pipeline status code, or `max_common_failures` |
+| Queue halted on the issue | `Later` | `queue_halted` |
+| Spend cap reached | `Needs Okay` | `spend cap reached` |
+| PR seen merged at a later run | `Done` | `merged <sha> <PR URL>` |
+
+Before dispatching, the supervisor reads the latest row for the issue URL. A
+row from another source with status `Act` newer than `ledger_stale_hours`
+(config, default `6`) makes the supervisor skip the issue, log
+`LEDGER skip ...`, and record it in `status.json` `ledger_skipped`. The issue is
+not marked completed, so the next run checks again. Rows from `S5-Queue`, older
+claims, and other statuses do not block. Sheet timestamps are read as UTC and
+the export lags about an hour, so keep the window well above that. If the
+ledger cannot be read, the issue proceeds.
+
+A failed post never fails the run. The row is saved in `status.json`
+`ledger_pending`, retried once at the next boundary (the start of the next
+`supervise` run or the next dispatch), and dropped with a log line if that retry
+fails too. Merge confirmation also happens at the start of each run: for PRs in
+`status.json` `ledger_open_prs`, the supervisor runs `gh pr view` and posts
+`Done` once when the PR is merged. Closed PRs are forgotten.
+
+Notes hold only fixed text, the run id, a status code, the PR URL, and the cost
+figure. They never include pipeline detail, repo content, or environment values,
+because the Form is public.
+
+Not posted: a `Needs Okay` row for login or CAPTCHA walls (the queue cannot
+detect them), a pass/fail result against the issue's "done when" check, and an
+issue comment per result.
+
 ## User service
 
 Install `scripts/twt-queue.service` in `~/.config/systemd/user/`. Create a mode-0600
