@@ -132,6 +132,68 @@ class TestCoderFallback(unittest.TestCase):
             self.assertIs(raised.exception, error)
             self.assertEqual(attempt.call_count, 2)
 
+    def test_resumed_approved_plan_reaches_the_fallback_prompt(self):
+        for persistent in (False, True):
+            with (
+                self.subTest(persistent=persistent),
+                tempfile.TemporaryDirectory() as root,
+            ):
+                plan = dict(
+                    ts=0,
+                    brief="implement issue",
+                    system="system",
+                    worktree=root,
+                    model="twt:default",
+                    plan="Only edit approved.py; retain its public API",
+                )
+                result = ("DONE #1550", {}, [], 0, "twt:paid", "trace", True, 0)
+                with (
+                    mock.patch.dict(
+                        os.environ,
+                        {
+                            "S5_LOCAL_ONLY": "0",
+                            "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
+                        },
+                    ),
+                    mock.patch.object(coder, "latest_plan", return_value=plan),
+                    mock.patch.object(coder, "plan_is_stale", return_value=False),
+                    mock.patch.object(
+                        coder,
+                        "build_model",
+                        return_value=(None, {"provider": "twt", "model": "default"}),
+                    ),
+                    mock.patch.object(
+                        coder,
+                        "build_plan_agent",
+                        return_value=SimpleNamespace(invoke=mock.Mock(return_value={})),
+                    ),
+                    mock.patch.object(
+                        deep_chat,
+                        "open_checkpointer",
+                        return_value=(None, persistent, None),
+                    ),
+                    mock.patch.object(
+                        deep_chat,
+                        "_pending_interrupts",
+                        return_value=[object()] if persistent else [],
+                    ),
+                    mock.patch.object(coder, "_plan_requests", return_value=[]),
+                    mock.patch.object(
+                        coder,
+                        "_run_coder_attempt",
+                        side_effect=[self.cap_error(), result],
+                    ) as attempt,
+                    mock.patch.object(
+                        observe,
+                        "default_trace_path",
+                        return_value=str(Path(root, "trace.jsonl")),
+                    ),
+                    mock.patch.object(ledger, "record"),
+                ):
+                    self.assertEqual(coder._cmd_resume(root, "thread", "approve"), 0)
+                    self.assertEqual(attempt.call_count, 2)
+                    self.assertIn(plan["plan"], attempt.call_args.args[1])
+
     def test_fallback_builder_forces_twt_without_free_stage_maps(self):
         spec = {
             "provider": "twt",

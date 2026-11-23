@@ -1864,7 +1864,7 @@ def _cmd_resume(
         )
         return _implement_and_finish(
             worktree,
-            brief,
+            f"{brief}\n\nApproved plan:\n{plan['plan']}",
             system,
             thread,
             timeout,
@@ -1956,7 +1956,7 @@ def _cmd_resume(
     )
     return _implement_and_finish(
         worktree,
-        brief,
+        f"{brief}\n\nApproved plan:\n{plan['plan']}",
         system,
         thread,
         timeout,
