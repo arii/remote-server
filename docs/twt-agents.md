@@ -82,6 +82,7 @@ is metered, not free-only: its API requires active billing, so Mistral
 attempts bill per token instead of serving as a zero-cost fallback, and
 when TWT_DAILY_BUDGET_USD is set they pass through the same daily budget
 gate as Nebius. Nebius remains the paid fallback.
+
 ### Strong coder tier
 
 The `strong` model tier requires `CODER_STRONG_MODEL`; unset raises

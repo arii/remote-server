@@ -597,7 +597,7 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
     if model == TWT_STRONG_ROUTE:
         # route:strong is resolved gateway-side and is absent from /v1/models;
         # validate the gateway's own strong map when we can see it.
-        provider_models = _gateway_strong_models() or provider_models
+        provider_models = _gateway_strong_models()
     elif model and model != TWT_DEFAULT_MODEL:
         extra["model_ids"] = [model]
     sha = expected_sha or _env("TWT_EXPECTED_SHA")
