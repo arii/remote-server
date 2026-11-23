@@ -30,7 +30,7 @@ fi
 if ! command -v td >/dev/null 2>&1; then
   echo "==> installing pinned boomtick td CLI" >&2
   # v0.20.2 + unreleased workflows/MCP changes; no compatible release yet.
-  pip install "git+https://github.com/arii/boomtick.git@3e970a570aee0a550ec6409de769c201c9a5b900#subdirectory=cli"
+  pip install "git+https://github.com/arii/boomtick.git@a0c62ee55460de42037ed37fb5d2289b692e3043#subdirectory=cli"
 fi
 
 echo "==> ensuring chromium" >&2
