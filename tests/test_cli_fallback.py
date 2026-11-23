@@ -7,6 +7,7 @@ auth: every boundary (CLI runner, Ledger, gh, TwT) is a fake.
 import json
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -558,8 +559,13 @@ class RunCoderWiringTests(unittest.TestCase):
             return [{"Link": link, "Status": "Act", "Agent / Source": "run-1"}]
 
         runner = FakeRunner(present=("agy",))
+        # run_coder derives its deadline from the real time.monotonic(),
+        # so the adapter must share that clock. The fixed fake clock
+        # (1000.0) reads as "deadline expired" on hosts with < ~16 min
+        # uptime, e.g. fresh CI runners.
         cfg = _config(
             tmp,
+            clock=time.monotonic,
             runner=runner,
             twt_post=FakeTwt(),
             ledger_reader=reader,
