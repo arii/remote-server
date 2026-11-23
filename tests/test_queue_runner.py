@@ -369,7 +369,8 @@ class RunnerTests(unittest.TestCase):
 
     def test_cap_validation(self):
         self.assertEqual(runner.checked_cap(0.5), 0.5)
-        for value in (True, 0, -1, 0.51, float("nan"), float("inf"), "0.5"):
+        self.assertEqual(runner.checked_cap(1), 1.0)
+        for value in (True, 0, -1, 1.01, float("nan"), float("inf"), "0.5"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 runner.checked_cap(value)
 
@@ -711,7 +712,7 @@ class RunnerTests(unittest.TestCase):
             (-1, True),
             (float("nan"), True),
             (True, True),
-            (0.5, True),
+            (1.0, True),
         ):
             with (
                 self.subTest(cost=cost, reconciled=reconciled),
@@ -775,7 +776,7 @@ class RunnerTests(unittest.TestCase):
                 dispatched.append(name)
                 job = runner.read_json(state / name / "job.json")
                 self.assertAlmostEqual(
-                    job["cap_usd"], 0.4 if name.endswith("-7") else 0.5
+                    job["cap_usd"], 0.9 if name.endswith("-7") else 1.0
                 )
                 self.assertEqual(
                     job["model_tier"], "strong" if name.endswith("-7") else "default"
@@ -838,13 +839,13 @@ class RunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             config, state, directory = self.failed_run(root)
             status = runner.read_json(state / "status.json")
-            status["retry_spend"] = {"owner/repo#7": 0.3}
+            status["retry_spend"] = {"owner/repo#7": 0.7}
             runner.write_json(state / "status.json", status)
             with (
                 mock.patch.object(
                     runner.subprocess,
                     "Popen",
-                    return_value=self.retry_process(directory, cost=0.2),
+                    return_value=self.retry_process(directory, cost=0.3),
                 ),
                 self.assertRaises(runner.BudgetStop),
             ):
@@ -1179,6 +1180,7 @@ class RunnerTests(unittest.TestCase):
                         "env",
                         "PYTHONPATH=/pipeline/deep-agent:/pipeline",
                         "/runtime/venv/bin/python",
+                        "-P",
                         "-",
                         "--worker",
                     ],
@@ -1397,9 +1399,19 @@ class RunnerTests(unittest.TestCase):
     ):
         with tempfile.TemporaryDirectory() as root:
             config_path, state = self.fixture(root)
+            target_repo = Path(root) / "target"
+            target_backend = target_repo / "backend"
+            target_backend.mkdir(parents=True)
+            (target_backend / "__init__.py").write_text(
+                "raise AssertionError('imported backend from target repo')\n"
+            )
+            (target_repo / "observe.py").write_text(
+                "raise AssertionError('imported observe from target repo')\n"
+            )
             checkout = Path(root) / "checkout"
             agent = checkout / "deep-agent"
             agent.mkdir(parents=True)
+            (agent / "observe.py").touch()
             modules = checkout / "backend" / "shared"
             modules.mkdir(parents=True)
             (checkout / "backend" / "__init__.py").write_text("")
@@ -1436,7 +1448,7 @@ class RunnerTests(unittest.TestCase):
                 "        return {'status': 'DONE'}\n"
             )
             (modules / "cli.py").write_text(
-                "import pipeline\n"
+                "import observe, pipeline\n"
                 "def main(argv):\n"
                 "    assert '--submit-pr' in argv and '--keep-worktree' in argv\n"
                 "    pipeline.Pipeline().run()\n"
@@ -1448,10 +1460,11 @@ class RunnerTests(unittest.TestCase):
                 worker_python=sys.executable,
                 runtime_state_dir=str(state),
                 pipeline_checkout=str(checkout),
-                repo_paths={"owner/repo": str(checkout)},
+                repo_paths={"owner/repo": str(target_repo)},
             )
             runner.write_json(config_path, config)
-            self.assertEqual(runner.supervise(config_path), 0)
+            with mock.patch.dict(os.environ, {"PYTHONSAFEPATH": ""}):
+                self.assertEqual(runner.supervise(config_path), 0)
             directory = state / "owner_repo-7"
             summary = runner.read_json(directory / "summary.json")
             self.assertTrue(summary["reconciliation"]["reconciled"])
