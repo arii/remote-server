@@ -47,11 +47,30 @@ class TestRepairBudget(unittest.TestCase):
                         content="result", tool_call_id="probe", status=status
                     )
                 )
-                call = self.call("run_check", command="python3 -m pytest")
+                call = self.call("grep", path="a.py", pattern="fixed")
                 guard(call, handler)
                 guard(self.call("edit_file", file_path="a.py"), handler)
                 result = guard(call, handler)
                 self.assertEqual("Already called" in result.content, status == "error")
+
+    def test_check_can_run_again_after_install(self):
+        from langchain_core.messages import ToolMessage
+
+        for repair in (False, True):
+            with self.subTest(repair=repair):
+                guard = coder.coder_tool_middleware(repair=repair).wrap_tool_call
+                handler = mock.Mock(
+                    side_effect=[
+                        ToolMessage(content=f"exit={code}\n", tool_call_id="probe")
+                        for code in (1, 0, 0)
+                    ]
+                )
+                check = self.call("run_check", command="pnpm test")
+                guard(check, handler)
+                guard(self.call("run_check", command="pnpm install"), handler)
+                result = guard(check, handler)
+                self.assertEqual(result.content, "exit=0\n")
+                self.assertEqual(handler.call_count, 3)
 
     def test_total_budget_cannot_be_reset_by_edits_or_unique_calls(self):
         from langchain_core.messages import ToolMessage

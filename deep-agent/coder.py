@@ -731,7 +731,7 @@ def coder_tool_middleware(*, repair=False):
             calls += 1
             if calls > limit:
                 raise error(f"BLOCKED: {label} tool budget exhausted ({limit} calls)")
-            if repair or call["name"] != "read_file":
+            if call["name"] != "run_check" and (repair or call["name"] != "read_file"):
                 seen[key] = seen.get(key, 0) + 1
                 if seen[key] >= REPAIR_REPEAT_LIMIT:
                     raise error(
