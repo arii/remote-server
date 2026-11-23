@@ -230,12 +230,14 @@ def verify_gateway_capabilities(
     expected_sha: Optional[str] = None,
     timeout: float = 10.0,
     client: Optional[Any] = None,
+    model_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Fail-proof preflight: verify running gateway capabilities and provenance before paid inference.
 
     Aborts clearly with TwTPreflightError if:
     - Gateway is unreachable or returns non-200.
     - Any requested provider-model in provider_models is missing from the running gateway catalog.
+    - Any id in model_ids (concrete request model ids) is missing from the catalog.
     - expected_sha is provided and the running gateway provenance fails to match it.
     """
     models = query_gateway_models(
@@ -252,6 +254,15 @@ def verify_gateway_capabilities(
             available_pairs.add((owned, mid))
             if mid.startswith(f"{owned}/"):
                 available_pairs.add((owned, mid[len(owned) + 1 :]))
+
+    for model_id in model_ids or ():
+        if model_id not in available_ids:
+            raise TwTPreflightError(
+                f"TwT gateway capability preflight failed: requested model '{model_id}' "
+                f"is not served by running gateway at {uds or base_url}. "
+                f"Check CODER_STRONG_MODEL (a catalog id, or 'route:strong'). "
+                f"Available model ids: {sorted(available_ids)}"
+            )
 
     if provider_models:
         for provider, req_model in provider_models.items():
