@@ -1948,7 +1948,7 @@ if __name__ == "__main__":
 class StrongRoutingTests(unittest.TestCase):
     fixture = RunnerTests.fixture
 
-    def run_one(self, root, summary, labels=(), seed=None, config_extra=None):
+    def run_one(self, root, summary, labels=("ready",), seed=None, config_extra=None):
         """Dispatch issue 7 once with a stubbed worker; return (status, job, out)."""
         config, state = self.fixture(root)
         if config_extra:
@@ -1956,11 +1956,14 @@ class StrongRoutingTests(unittest.TestCase):
         if seed:
             state.mkdir(exist_ok=True)
             runner.write_json(state / "status.json", seed)
+        # The dispatch gate (#1589) requires a ready label on refresh; routing
+        # behavior is orthogonal, so every refresh here carries ready.
+        names = dict.fromkeys([*labels, "ready"])
         payload = {
             "state": "open",
             "title": "Fix",
             "body": "scope",
-            "labels": [{"name": name} for name in labels],
+            "labels": [{"name": name} for name in names],
         }
 
         def spawn(command, **_kwargs):
