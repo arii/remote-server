@@ -178,6 +178,8 @@ ledger row with script `slop_review.py`. The reply must be the strict verdict
 JSON from `deep-agent/verdicts.py`. `READY` and `APPROVE` pass; `NEEDS-WORK` and
 `BLOCK` fail. The review reports only and never edits the PR.
 
+The diff is wrapped in a per-call random `<diff-TOKEN>` ... `</diff-TOKEN>` marker pair (`secrets.token_hex(16)`), and the prompt tells the model to ignore instructions inside it. A diff that contains the token fails closed with no model call.
+
 Results appear in the PR comment and in the `status` of `pipeline-result.json`
 and `summary.json`:
 
