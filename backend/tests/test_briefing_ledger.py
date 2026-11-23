@@ -403,6 +403,9 @@ class BriefingLedgerTest(unittest.TestCase):
                 "status": "NEEDS_INFO",
                 "missing_fields": ["scope"],
                 "title": "Needs scope",
+                "repo": "arii/remote-server",
+                "problem": "p",
+                "done_when": "d",
             }
         )
         response = self.client.post(
@@ -412,6 +415,65 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["row"]["status"], "READY")
         self.assertEqual(self.client.get("/api/ledger-intake").json()["rows"], [])
+
+    def _intake_row(self, **overrides):
+        row = {
+            "kind": "ledger-intake",
+            "canonical_intake_id": "intake-1",
+            "status": "NEEDS_INFO",
+            "title": "T",
+            "repo": "arii/remote-server",
+            "problem": "p",
+            "scope": "s",
+            "done_when": "d",
+        }
+        row.update(overrides)
+        return row
+
+    def _ledger_count(self):
+        return len(ledger.read(kind="ledger-intake", limit=100))
+
+    def test_approve_blank_required_field_returns_400_and_appends_nothing(self):
+        for name in ("title", "repo", "problem", "scope", "done_when"):
+            for missing in ([name], []):
+                with self.subTest(name=name, missing_fields=missing):
+                    ledger.clear()
+                    ledger.append(
+                        self._intake_row(**{name: "", "missing_fields": missing})
+                    )
+                    before = self._ledger_count()
+                    response = self.client.post(
+                        "/api/ledger-intake/intake-1/approve", json={"fields": {}}
+                    )
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn(name, response.json()["detail"])
+                    self.assertEqual(self._ledger_count(), before)
+                    rows = self.client.get("/api/ledger-intake").json()["rows"]
+                    self.assertEqual([r["status"] for r in rows], ["NEEDS_INFO"])
+
+    def test_approve_with_all_required_fields_is_ready(self):
+        ledger.append(self._intake_row())
+        response = self.client.post(
+            "/api/ledger-intake/intake-1/approve", json={"fields": {}}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["row"]["status"], "READY")
+
+    def test_approve_accepts_human_supplied_blank_fields(self):
+        ledger.append(self._intake_row(repo="", scope="", done_when=""))
+        response = self.client.post(
+            "/api/ledger-intake/intake-1/approve",
+            json={"fields": {"repo": "arii/x", "scope": "a", "done_when": "b"}},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["row"]["repo"], "arii/x")
+
+    def test_intake_required_fields_mirror_scripts(self):
+        from scripts import ledger_intake
+
+        self.assertEqual(
+            briefing_router.INTAKE_REQUIRED_FIELDS, ledger_intake.REQUIRED_FIELDS
+        )
 
     def test_ledger_intake_shows_candidate_and_merge_links_duplicate(self):
         ledger.append(

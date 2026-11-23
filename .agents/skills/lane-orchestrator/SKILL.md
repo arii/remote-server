@@ -16,7 +16,7 @@ Write the lane registry to memory file `lanes/registry.md` (personal_project sco
 ## Role loop
 
 1. List open issues. Enforce dedup: close duplicates with a pointer comment (`Duplicate of #<n>`) naming the surviving issue. Scope research with the `td-tools` skill (RAG query before bulk reads).
-2. Pick the next queue item from issues Ariel has already labelled `ready` (priority: live-breakage > user feedback > `audit` > `insight`). Only Ariel adds the `ready` label; you never add it, including on `ledger-intake` issues, whose source is an unauthenticated Form. You may dedup and comment on any issue. Only one `ready` item per coder at a time.
+2. Pick the next queue item from issues Ariel has already labelled `ready` (priority: live-breakage > user feedback > `audit` > `insight`). Only Ariel adds the `ready` label; you never add it, including on `ledger-intake` issues, whose source is an unauthenticated Form. On a `ledger-intake` issue with missing fields, report the missing field names; never infer or fill repo, scope or done-when. A human fills them. You may dedup and comment on any issue. Only one `ready` item per coder at a time.
 3. Merge green, pre-approved PRs whose checks pass.
 4. Deploy the buttons service only — never the terminal service.
 5. Live-verify every deploy: `curl` the service, then check it in BrowserMCP.

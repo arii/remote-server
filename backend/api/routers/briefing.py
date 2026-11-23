@@ -160,6 +160,24 @@ class BackendStatus(BaseModel):
     health: dict = Field(default_factory=dict)
 
 
+# Mirrors scripts.ledger_intake.REQUIRED_FIELDS (backend does not import
+# scripts; a test asserts the two stay equal).
+INTAKE_REQUIRED_FIELDS = ("title", "repo", "problem", "scope", "done_when")
+
+
+def _unresolved_required_fields(row: dict, fields: dict) -> list[str]:
+    """Required fields still blank after merging human-supplied values (#1585).
+
+    Never defaults or infers a value: only the row and the human's fields count.
+    """
+    merged = {**row, **fields}
+    return [
+        name
+        for name in INTAKE_REQUIRED_FIELDS
+        if not str(merged.get(name) or "").strip()
+    ]
+
+
 class IntakeApproval(BaseModel):
     fields: dict[str, str] = Field(default_factory=dict)
 
@@ -277,6 +295,12 @@ def approve_ledger_intake(intake_id: str, body: IntakeApproval) -> dict:
         raise HTTPException(
             status_code=400,
             detail=f"missing required fields: {', '.join(map(str, unresolved))}",
+        )
+    blank = _unresolved_required_fields(row, fields)
+    if blank:
+        raise HTTPException(
+            status_code=400,
+            detail=f"missing required fields: {', '.join(blank)}",
         )
     updated = {**row, **fields, "status": "READY", "approved": True}
     ledger_append({"kind": "ledger-intake", **updated})

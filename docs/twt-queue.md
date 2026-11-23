@@ -239,6 +239,27 @@ review of a real PR needs Ari.
 
 `python3 scripts/ledger_intake_review.py OWNER/REPO NUMBER` audits one new `ledger-intake` issue through local Ollama/TwT and may post one finding comment. It checks the issue body for the canonical `problem`, `scope` and `done_when` fields (the hook's `Problem`, `Out of scope` and `Done when` sections; `title` and `repo` come from the issue itself) and reports gaps by those names. It never changes labels or issue state.
 
+### Missing routing fields (#1585)
+
+#### Problem
+
+Intake rows can arrive without a repo, scope or done-when. Guessing them would
+route work to the wrong place.
+
+#### Done when
+
+- A row missing `repo`, `scope` or `done_when` is `NEEDS_INFO`, with the
+  canonical names in `missing_fields`. Blank values stay blank.
+- The reviewer only reports field names. Any value it returns is ignored.
+- `POST /api/ledger-intake/{id}/approve` returns 400 until all five required
+  fields (`title`, `repo`, `problem`, `scope`, `done_when`) are present, from
+  the row or from the human's input.
+- Dispatch still needs Ariel's `ready` label. Nothing retries automatically.
+
+#### Out of scope
+
+Deriving `READY` in `status_for` (#1613) and any new required field.
+
 The supervisor reads the response Sheet via `scripts/ledger_read.py` and posts
 claims and results as `S5-Queue` via `scripts/ledger_post.py`. The only agent
 writers are this script and BoomTick's `scripts/agent_ledger.py`. Ledger rows
