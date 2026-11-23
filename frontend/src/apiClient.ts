@@ -5,6 +5,7 @@ import type {
   DispatchQueueResponse,
   JobRecord,
   JobsResponse,
+  LedgerIntakeRow,
   LedgerResponse,
 } from './apiTypes';
 import type {
@@ -757,6 +758,20 @@ export function fetchLedger(
     + (source !== undefined ? `&source=${encodeURIComponent(source)}` : '');
   return cachedViewFetch<LedgerResponse>(qs, VIEW_CACHE_SHORT_TTL_MS, () =>
     getJson<LedgerResponse>(qs),
+  );
+}
+
+export function fetchLedgerIntake(): Promise<{ rows: LedgerIntakeRow[] }> {
+  return getJson<{ rows: LedgerIntakeRow[] }>('api/ledger-intake');
+}
+
+export function approveLedgerIntake(
+  intakeId: string,
+  fields: Record<string, string>,
+): Promise<{ ok: boolean; row: LedgerIntakeRow }> {
+  return postJson<{ ok: boolean; row: LedgerIntakeRow }>(
+    `api/ledger-intake/${encodeURIComponent(intakeId)}/approve`,
+    { fields },
   );
 }
 

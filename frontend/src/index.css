@@ -14,6 +14,55 @@
   --warn: #f59e0b;
 }
 
+.ledger-card-deck {
+  display: grid;
+  gap: 12px;
+}
+
+.ledger-triage-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.ledger-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ledger-triage-card h3,
+.ledger-triage-card p {
+  margin: 0;
+}
+
+.ledger-triage-card label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.ledger-triage-card input {
+  min-height: 44px;
+  width: 100%;
+}
+
+.status-badge {
+  color: var(--warn);
+  font-weight: 700;
+}
+
+@media (min-width: 700px) {
+  .ledger-card-deck {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 * { box-sizing: border-box; }
 
 .sr-only {

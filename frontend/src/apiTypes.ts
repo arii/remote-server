@@ -130,3 +130,15 @@ export interface LedgerEntry {
 export interface LedgerResponse {
   entries: LedgerEntry[];
 }
+
+export interface LedgerIntakeRow extends LedgerEntry {
+  canonical_intake_id?: string;
+  row_key?: string;
+  title?: string;
+  problem?: string;
+  scope?: string;
+  done_when?: string;
+  missing_fields?: string[];
+  duplicate_of?: string;
+  source_url?: string;
+}

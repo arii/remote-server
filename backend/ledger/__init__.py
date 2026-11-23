@@ -35,6 +35,7 @@ LEDGER_KINDS = (
     "agent-turn",
     "cli-turn",
     "ux-finding",
+    "ledger-intake",
 )
 
 ledger_lock = threading.Lock()

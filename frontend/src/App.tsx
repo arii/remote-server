@@ -154,7 +154,7 @@ export function saveNavMemory(memory: NavMemory): void {
 
 export type NavEntry =
   | { kind: 'tab'; id: Tab; label: string; key: string }
-  | { kind: 'section'; id: 'review' | 'jobs' | 'queue' | 'briefing'; label: string };
+  | { kind: 'section'; id: 'review' | 'jobs' | 'queue' | 'briefing' | 'ledger'; label: string };
 
 export const NAV_ENTRIES: NavEntry[] = [
   { kind: 'tab', id: 'chat', label: 'Chat', key: '1' },
@@ -165,6 +165,7 @@ export const NAV_ENTRIES: NavEntry[] = [
   { kind: 'section', id: 'jobs', label: 'Jobs' },
   { kind: 'section', id: 'queue', label: 'Queue' },
   { kind: 'section', id: 'briefing', label: 'Briefing' },
+  { kind: 'section', id: 'ledger', label: 'Ledger triage' },
 ];
 
 // An open section replaces the selected tab as the visible destination.

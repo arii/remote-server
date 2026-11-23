@@ -1031,7 +1031,7 @@ describe('app', () => {
 
   it('navPressed lights exactly the visible destination (D5)', () => {
     const entry = (id: string) => NAV_ENTRIES.find((e) => e.id === id)!;
-    expect(NAV_ENTRIES.map((e) => e.id)).toEqual(['chat', 'now', 'history', 'browser', 'review', 'jobs', 'queue', 'briefing']);
+    expect(NAV_ENTRIES.map((e) => e.id)).toEqual(['chat', 'now', 'history', 'browser', 'review', 'jobs', 'queue', 'briefing', 'ledger']);
     expect(navPressed('chat', null, entry('chat'))).toBe(true);
     expect(navPressed('browser', null, entry('browser'))).toBe(true);
     expect(navPressed('browser', null, entry('chat'))).toBe(false);
@@ -1039,7 +1039,7 @@ describe('app', () => {
     expect(navPressed('now', null, entry('now'))).toBe(true);
     expect(navPressed('chat', null, entry('queue'))).toBe(false);
     for (const tab of ['chat', 'now', 'history', 'browser'] as const) {
-      for (const section of ['review', 'jobs', 'queue', 'briefing'] as const) {
+      for (const section of ['review', 'jobs', 'queue', 'briefing', 'ledger'] as const) {
         expect(NAV_ENTRIES.filter((candidate) => navPressed(tab, section, candidate))).toEqual([entry(section)]);
       }
     }
