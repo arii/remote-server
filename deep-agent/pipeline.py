@@ -19,7 +19,10 @@ import re
 import subprocess
 import tempfile
 import time
+from uuid import uuid4
 
+from backend import ledger as history_ledger
+from backend.shared import ledger
 from backend.shared import s5tools
 from backend.shared import twt_receipts
 
@@ -53,6 +56,65 @@ MAX_CALLS_PER_PARENT = 60
 SPLIT_CONTEXT_LINES = 20
 
 AGENT_PAUSED = "PAUSED_BY_USER"
+PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
+TEST_COMMANDS = (
+    ("pytest",),
+    ("python3", "-m", "pytest"),
+    ("python3", "-m", "unittest"),
+    ("pnpm", "exec", "vitest"),
+    ("pnpm", "test"),
+    ("npm", "test"),
+    ("go", "test"),
+)
+
+
+def _is_test_command(argv):
+    return (
+        any(tuple(argv[: len(head)]) == head for head in TEST_COMMANDS)
+        or len(argv) >= 2
+        and argv[0] == "python3"
+        and bool(s5tools.TEST_FILE_RE.fullmatch(argv[1]))
+        or len(argv) >= 3
+        and argv[0] in ("npm", "pnpm")
+        and argv[1] == "run"
+        and (argv[2] == "test" or argv[2].startswith("test:"))
+    )
+
+
+def _count_run_rows(thread_id: str, trace_ids: set[str]):
+    thread_prefix = json.dumps(thread_id)[:-1]
+    exact_ids = [json.dumps(trace) for trace in trace_ids]
+    candidates = re.compile("|".join(map(re.escape, [thread_prefix, *exact_ids])))
+    count = 0
+    try:
+        with open(ledger.LEDGER, encoding="utf-8") as handle:
+            for line in handle:
+                if not candidates.search(line):
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("kind") != "deep-agent-run":
+                    continue
+                thread = row.get("thread_id")
+                usage = row.get("usage")
+                traces = usage.get("twt_trace_ids") if isinstance(usage, dict) else None
+                if (
+                    isinstance(thread, str)
+                    and (thread == thread_id or thread.startswith(f"{thread_id}-"))
+                    or isinstance(traces, list)
+                    and any(
+                        isinstance(trace, str) and trace in trace_ids
+                        for trace in traces
+                    )
+                ):
+                    count += 1
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeError):
+        return None
+    return count
 
 
 _ACCEPTANCE_HEADING = re.compile(
@@ -443,9 +505,11 @@ class Pipeline:
             raise ValueError("S5_START_MODEL_TIER must be 'fast' or 'strong'")
         self.current_model_tier = self.start_model_tier
         self.escalations_used = 0
-        self.thread_id = thread_id or f"pipeline-{int(time.time())}"
+        self.thread_id = thread_id or f"pipeline-{uuid4().hex}"
         self.verification_commands = list(verification_commands or [])
         self.verification_evidence = []
+        self._test_checks = {}
+        self._opened_pr_url = ""
         self.drive_limit = drive_limit
         self.preview_url = preview_url
         self.events = []
@@ -581,6 +645,9 @@ class Pipeline:
                     **kwargs,
                 )
             except Exception as exc:
+                self.verification_evidence = coder.trace_verification_evidence(
+                    meter.get("trace"), self._repo_slug()
+                )
                 if coder.is_call_cap(exc):
                     self.stage_exhausted = True
                     raise RuntimeError(
@@ -606,8 +673,6 @@ class Pipeline:
             )
             provider, _, model = label.partition(":")
             graph.last_model_spec = {"provider": provider, "model": model}
-            from backend.shared import ledger
-
             ledger.record(
                 "pipeline.py",
                 label,
@@ -724,6 +789,8 @@ class Pipeline:
         self.stage_calls = 0
         self.stage_continuations = 0
         self.stage_exhausted = False
+        self.verification_evidence = []
+        self._test_checks = {}
 
     def _end_stage(self, sub):
         """Fold this stage_code run's calls into the sub-brief and parent."""
@@ -835,6 +902,8 @@ class Pipeline:
                     cwd=worktree_root,
                     check=False,
                 )
+                if _is_test_command(argv):
+                    self._test_checks[tuple(argv)] = proc.returncode == 0
                 if proc.returncode != 0:
                     output = ((proc.stderr or "") + (proc.stdout or ""))[-2000:]
                     cmd_str = " ".join(argv)
@@ -847,6 +916,8 @@ class Pipeline:
                         f"Command '{cmd_str}' failed (exit {proc.returncode}):\n{output}",
                     )
             except Exception as exc:
+                if _is_test_command(argv):
+                    self._test_checks[tuple(argv)] = False
                 return (
                     False,
                     "mechanical",
@@ -892,6 +963,13 @@ class Pipeline:
         state = drive_to_settled(
             gen.run, gen.run, self._audit_policy, limit=self.drive_limit
         )
+        if isinstance(state, dict):
+            for check in (
+                (state.get("gate") or {}).get("verification", {}).get("commands", [])
+            ):
+                argv = check["command"]
+                if _is_test_command(argv):
+                    self._test_checks[tuple(argv)] = check["exit"] == 0
         if not isinstance(state, dict) or state.get("drive_exhausted"):
             return BLOCKED, state, "audit drive exhausted"
         if not state.get("valid"):
@@ -932,6 +1010,8 @@ class Pipeline:
         if error:
             return False, error
         url = (payload or {}).get("url") or (payload or {}).get("pr_url")
+        if isinstance(url, str) and PR_URL.fullmatch(url):
+            self._opened_pr_url = url
         return True, url or json.dumps(payload)
 
     def stage_cleanup(self, worktree_root):
@@ -970,6 +1050,8 @@ class Pipeline:
 
     def run(self):
         """Execute all stages; returns a result dict (never raises)."""
+        started = time.time()
+        receipts = None
         try:
             with twt_receipts.run(self.thread_id) as receipts:
                 result = self._run_guarded()
@@ -979,12 +1061,42 @@ class Pipeline:
                     detail=f"TwT receipt reconciliation failed: {receipts.error}",
                 )
         except Exception as exc:
-            return self._error_result(
-                "receipt_reconciliation",
+            result = self._result(
+                BLOCKED,
+                "",
                 f"TwT receipt settlement failed: {exc}",
-                0.0,
+                0,
+                started,
             )
+        self._record_outcome(result, receipts.ids if receipts is not None else set())
         return result
+
+    def _record_outcome(self, result, trace_ids):
+        checks = {}
+        repo = self._repo_slug()
+        for check in self.verification_evidence:
+            if check.get("stale"):
+                continue
+            argv = s5tools.parse_check_command(check["command"], repo)
+            if _is_test_command(argv):
+                checks[tuple(argv)] = check["passed"]
+        checks.update(self._test_checks)
+        url = self._opened_pr_url or result["submit_url"]
+        history_ledger.append(
+            {
+                "kind": "pipeline-run",
+                "repo": repo.removeprefix("arii/"),
+                "prompt": brief_title(self.intent),
+                "status": result["status"],
+                "test_status": ("passed" if all(checks.values()) else "failed")
+                if checks
+                else "not run",
+                "submit_url": url
+                if isinstance(url, str) and PR_URL.fullmatch(url)
+                else "",
+                "ledger_rows": _count_run_rows(self.thread_id, trace_ids),
+            }
+        )
 
     def _run_guarded(self):
         started = time.time()

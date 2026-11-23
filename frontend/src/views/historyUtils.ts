@@ -47,6 +47,7 @@ export interface HistoryRow {
   recovery: string;
   tone: HistoryTone;
   detail: string;
+  submitUrl?: string;
   members: HistoryMember[];
 }
 
@@ -65,6 +66,7 @@ interface FlatEntry {
   failed: boolean;
   routine: boolean;
   detail: string;
+  submitUrl?: string;
   runId?: string;
 }
 
@@ -254,6 +256,27 @@ function isRawStderr(text: string): boolean {
 }
 
 function ledgerToEntry(e: LedgerEntry): FlatEntry {
+  if (e.kind === 'pipeline-run') {
+    const submitUrl = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(e.submit_url ?? '')
+      ? e.submit_url : undefined;
+    const failed = e.status !== 'APPROVED';
+    const result = failed ? 'Failed' : submitUrl ? 'PR opened' : 'Approved';
+    const parts = [firstLine(e.prompt), result];
+    if (e.test_status) parts.push(`tests ${e.test_status}`);
+    if (typeof e.ledger_rows === 'number') {
+      parts.push(`${e.ledger_rows} ledger row${e.ledger_rows === 1 ? '' : 's'}`);
+    }
+    return {
+      kind: e.kind,
+      summary: parts.filter(Boolean).join(' · '),
+      at: rowTime(e.ts ?? e.at),
+      rawAt: epochOf(e.ts ?? e.at),
+      failed,
+      routine: false,
+      detail: [...parts.filter(Boolean), ...(submitUrl ? [submitUrl] : [])].join('\n'),
+      submitUrl,
+    };
+  }
   if (e.kind === 'cli-turn') {
     return {
       kind: e.kind,
@@ -329,7 +352,8 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
 }
 
 function sameFailure(a: FlatEntry, b: FlatEntry): boolean {
-  return a.failed === b.failed && a.kind === b.kind && a.summary === b.summary;
+  return a.kind !== 'pipeline-run' &&
+    a.failed === b.failed && a.kind === b.kind && a.summary === b.summary;
 }
 
 function routineGroup(entry: FlatEntry): string {
@@ -402,7 +426,7 @@ export const HISTORY_FACETS: HistoryFacetDef[] = [
   { id: 'cron', label: 'Cron' },
 ];
 
-const AGENT_FACET_KINDS = new Set(['agent-turn', 'cli-turn']);
+const AGENT_FACET_KINDS = new Set(['agent-turn', 'cli-turn', 'pipeline-run']);
 const CI_FACET_KINDS = new Set(['run', 'job', 'pr-action', 'webhook', 'repair']);
 const CRON_FACET_KINDS = new Set([
   'cron',
@@ -473,7 +497,8 @@ function toRow(entry: FlatEntry, members: FlatEntry[], index: number): HistoryRo
   // failures) but still render their recovery hint inline, so a
   // lagging checkout never shows a bare skip with no next step.
   // Repeated skips keep folding into the existing ×N collapse.
-  const skipped = !failed && /skipped/i.test(entry.summary);
+  const pipeline = entry.kind === 'pipeline-run';
+  const skipped = !pipeline && !failed && /skipped/i.test(entry.summary);
   const repeated = count > 1 && !routineRun
     ? failed
       ? `${entry.summary} ×${count} — same failure repeated`
@@ -485,11 +510,12 @@ function toRow(entry: FlatEntry, members: FlatEntry[], index: number): HistoryRo
     summary: sentenceCase(routineRun ? activityLabel(group, count) : (repeated ?? entry.summary)),
     at: entry.at,
     repeat: count,
-    recovery: failed || skipped ? recoveryFor(entry.kind, entry.summary) : '',
+    recovery: !pipeline && (failed || skipped) ? recoveryFor(entry.kind, entry.summary) : '',
     // A skipped pull did not move the checkout (#1489): a neutral
     // dash, never the green check that reads as "pulled".
     tone: failed ? 'bad' : entry.routine || skipped ? 'muted' : 'ok',
     detail: entry.detail,
+    ...(entry.submitUrl ? { submitUrl: entry.submitUrl } : {}),
     members: members.map((m) => ({
       at: m.at,
       detail: m.detail,

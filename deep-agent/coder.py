@@ -1457,6 +1457,8 @@ def _run_coder_attempt(
         else build_model(override)
     )
     recorder = observe.TraceRecorder(observe.default_trace_path("coder", thread))
+    if meter is not None:
+        meter["trace"] = recorder.path
     label = f"{spec['provider']}:{spec['model']}"
     marker = " (tier=strong)" if model_tier == "strong" else ""
     print(f"coder via {label}{marker}", file=sys.stderr, flush=True)

@@ -34,6 +34,7 @@ LEDGER_KINDS = (
     "terminal",
     "agent-turn",
     "cli-turn",
+    "pipeline-run",
     "ux-finding",
     "ledger-intake",
 )
