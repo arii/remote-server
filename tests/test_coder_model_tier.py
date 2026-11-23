@@ -104,6 +104,96 @@ class TestTierModel(unittest.TestCase):
                 coder.tier_model("x")
 
 
+CATALOG = [
+    {"id": "nebius/big-m", "owned_by": "nebius"},
+    {"id": "nvidia/z-ai/glm-5.3-flash", "owned_by": "nvidia"},
+]
+TWT_SPEC = {"provider": "twt", "model": "default", "base_url": "http://gw/v1"}
+
+
+@unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+class TestStrongTierGatewayRequest(unittest.TestCase):
+    def build(self, tier, env, preflight=True):
+        from backend.shared import model_router, twt_provenance
+
+        clean = {"CODER_MODEL": "", "CODER_STRONG_MODEL": "", **env}
+        with (
+            mock.patch.dict("os.environ", clean, clear=True),
+            mock.patch.object(model_router, "_twt_spec", return_value=dict(TWT_SPEC)),
+            mock.patch.object(
+                twt_provenance, "query_gateway_models", return_value=CATALOG
+            ) as query,
+        ):
+            model, spec = coder.build_model(coder.tier_model(tier))
+            body = model._get_request_payload([{"role": "user", "content": "hi"}])
+        return body, spec, query
+
+    base = {"NEBIUS_ONLY": "1", "S5_LOCAL_ONLY": "0", "OLLAMA_STRICT": "0"}
+
+    def test_fast_keeps_default_provider_models_strong_route_sends_none(self):
+        fast, _, _ = self.build("fast", self.base)
+        self.assertEqual(fast["model"], "default")
+        self.assertIn("provider_models", fast["extra_body"])
+        self.assertIn("provider_reasoning_effort", fast["extra_body"])
+        strong, spec, _ = self.build(
+            "strong", dict(self.base, CODER_STRONG_MODEL="route:strong")
+        )
+        self.assertEqual(strong["model"], "route:strong")
+        self.assertNotIn("provider_models", strong.get("extra_body") or {})
+        self.assertNotIn("provider_reasoning_effort", strong.get("extra_body") or {})
+        self.assertNotIn("provider_models", spec)
+
+    def test_concrete_strong_sends_no_fast_selection(self):
+        body, spec, _ = self.build(
+            "strong",
+            dict(self.base, CODER_MODEL="fast-m", CODER_STRONG_MODEL="nebius/big-m"),
+        )
+        self.assertEqual(body["model"], "nebius/big-m")
+        self.assertEqual(body.get("extra_body") or {}, {})
+        self.assertNotIn("provider_models", spec)
+
+    def test_preflight_missing_concrete_strong_id_raises_before_inference(self):
+        from backend.shared import twt_provenance
+
+        env = dict(
+            self.base, CODER_STRONG_MODEL="nebius/nope", TWT_PREFLIGHT_REQUIRED="1"
+        )
+        with self.assertRaisesRegex(
+            twt_provenance.TwTPreflightError, "CODER_STRONG_MODEL.*nebius/big-m"
+        ):
+            self.build("strong", env)
+        body, _, query = self.build(
+            "strong", dict(env, CODER_STRONG_MODEL="nebius/big-m")
+        )
+        self.assertEqual(body["model"], "nebius/big-m")
+        query.assert_called_once()
+
+    def test_preflight_route_strong_validates_gateway_strong_map(self):
+        from backend.shared import twt_provenance
+
+        env = dict(
+            self.base, CODER_STRONG_MODEL="route:strong", TWT_PREFLIGHT_REQUIRED="1"
+        )
+        body, _, _ = self.build("strong", env)
+        self.assertEqual(body["model"], "route:strong")
+        good = dict(env, TWT_STRONG_MODELS='{"nebius": "big-m"}')
+        self.assertEqual(self.build("strong", good)[0]["model"], "route:strong")
+        for bad in (
+            '{"nebius": "missing"}',
+            "not json",
+            "[]",
+            "{}",
+            '{"nebius": ""}',
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(twt_provenance.TwTPreflightError):
+                    self.build("strong", dict(env, TWT_STRONG_MODELS=bad))
+
+    def test_unset_strong_model_still_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            self.build("strong", dict(self.base, TWT_PREFLIGHT_REQUIRED="1"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
