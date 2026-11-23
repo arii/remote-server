@@ -334,7 +334,17 @@ def plan_path_hints(worktree, brief):
         score = len(words & terms)
         if score:
             matches.append((-score, path))
-    return "\n".join(path for _, path in sorted(matches)[:30])
+    paths = []
+    for _, path in sorted(matches):
+        try:
+            target = active_checkout_path(worktree, path)
+        except ValueError:
+            continue
+        if os.path.isfile(target):
+            paths.append(path)
+            if len(paths) == 30:
+                break
+    return "\n".join(paths)
 
 
 def parse_args(argv):
