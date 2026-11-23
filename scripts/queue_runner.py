@@ -410,11 +410,12 @@ class QueueLedger:
         try:
             ledger_write(LEDGER_AGENT, note, state, link)
         except Exception as error:
-            ledger_log(f"post failed, queued for one retry: {type(error).__name__}")
-            self.status.setdefault("ledger_pending", []).append(
-                {"note": note, "status": state, "link": link}
-            )
-            write_json(self.status_path, self.status)
+            self.defer({"note": note, "status": state, "link": link}, error)
+
+    def defer(self, row, error):
+        ledger_log(f"post failed, queued for one retry: {type(error).__name__}")
+        self.status.setdefault("ledger_pending", []).append(row)
+        write_json(self.status_path, self.status)
 
     def boundary(self, merges=False):
         """Retry queued posts once (a second failure is dropped), then confirm merges."""
@@ -423,7 +424,12 @@ class QueueLedger:
             write_json(self.status_path, self.status)
         for row in pending:
             try:
-                ledger_write(LEDGER_AGENT, row["note"], row["status"], row["link"])
+                if "claim" in row:
+                    ledger_module("ledger_post").post_claim_row(
+                        row["claim"], row["run_id"]
+                    )
+                else:
+                    ledger_write(LEDGER_AGENT, row["note"], row["status"], row["link"])
             except Exception as error:
                 ledger_log(f"retry failed, dropped: {type(error).__name__}")
         if not merges:
@@ -473,7 +479,11 @@ class QueueLedger:
         return f"fresh Act claim by {source[:40]} ({shown})"
 
     def claim(self, key):
-        self.post(f"claimed by queue run {self.run_id}", "Act", self.url(key))
+        link = self.url(key)
+        try:
+            ledger_module("ledger_post").post_claim_row(link, self.run_id)
+        except Exception as error:
+            self.defer({"claim": link, "run_id": self.run_id}, error)
 
     def result(self, key, summary, limit_hit=False):
         link = self.url(key)

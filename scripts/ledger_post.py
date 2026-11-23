@@ -32,6 +32,13 @@ def post_out_of_scope_finding(
     return post_entry(agent, note, status="Act", link=link or row["issue"])
 
 
+def post_claim_row(issue_url: str, run_id: str) -> int:
+    """Post an Act claim row keyed by the issue URL (Link column)."""
+    return post_entry(
+        "S5-Queue", f"claimed by queue run {run_id}", status="Act", link=issue_url
+    )
+
+
 def post_entry(agent: str, note: str, status: str = "Act", link: str = "") -> int:
     payload = {
         ENTRY_MAP["agent"]: agent,

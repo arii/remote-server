@@ -80,6 +80,15 @@ class OutOfScopeFindingTests(unittest.TestCase):
         self.assertIn("Problem:", calls["note"])
         self.assertEqual(calls["status"], "Act")
 
+    def test_claim_row_posts_act_keyed_by_issue_url(self):
+        url = "https://github.com/arii/remote-server/issues/1537"
+        with mock.patch.object(ledger_post, "post_entry", return_value=200) as post:
+            rc = ledger_post.post_claim_row(url, "run123")
+        self.assertEqual(rc, 200)
+        post.assert_called_once_with(
+            "S5-Queue", "claimed by queue run run123", status="Act", link=url
+        )
+
 
 class RetryWorktreeTests(unittest.TestCase):
     def git(self, repo, *args):
@@ -1387,6 +1396,16 @@ class LedgerTests(unittest.TestCase):
             patcher = mock.patch.object(runner, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # post_claim_row writes through ledger_post.post_entry, not runner.ledger_write
+        patcher = mock.patch.object(
+            ledger_post,
+            "post_entry",
+            lambda agent, note, status="Act", link="": self.write(
+                agent, note, status, link
+            ),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for patcher in (
             mock.patch.object(runner.signal, "signal"),
             mock.patch.object(runner.time, "time", lambda: self.now),
