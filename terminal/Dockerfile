@@ -16,6 +16,10 @@
 #   boomtick CLI tags: `git ls-remote --tags https://github.com/arii/boomtick.git`
 #   muse installer: curl -fsSL https://dev.meta.ai/install.sh, review the diff,
 #     then replace terminal/muse-install.sh
+#   kiro installer: curl -fsSL https://cli.kiro.dev/install, review the diff,
+#     then replace terminal/kiro-install.sh (checksum manifest is verified
+#     by the script itself per downloaded package; pin KIRO_CLI_VERSION,
+#     the float defaults to latest and would drift the image)
 # TTYD_VERSION / ZELLIJ_VERSION also flow in from .env via compose build
 # args; overriding them without updating the hashes below fails loud.
 
@@ -27,6 +31,8 @@ ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
 ARG COPILOT_VERSION=1.0.109
+# Kiro CLI stable at time of wiring (manifest https://prod.download.cli.kiro.dev/stable/latest/manifest.json).
+ARG KIRO_CLI_VERSION=3.5.0
 # v0.20.2 + unreleased workflows/MCP changes; no compatible release yet.
 ARG BOOMTICK_CLI_REF=3e970a570aee0a550ec6409de769c201c9a5b900
 
@@ -39,13 +45,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Vendored muse installer (#523): no pipe-to-bash at build time. The script
 # self-verifies the launcher it fetches (x-content-sha256 when advertised).
 COPY terminal/muse-install.sh /tmp/muse-install.sh
+# Vendored Kiro CLI installer (#523): no pipe-to-bash at build time. The
+# script verifies each downloaded package against the channel manifest's
+# sha256 before installing; VERSION is pinned via KIRO_CLI_VERSION above.
+COPY terminal/kiro-install.sh /tmp/kiro-install.sh
 COPY terminal/requirements.txt /tmp/terminal/requirements.txt
 COPY deep-agent/requirements.txt /tmp/deep-agent/requirements.txt
 # pnpm store cache mount: the vendored boomtick install below
 # reuses package content across terminal image rebuilds.
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store apt-get update \
  && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl git gnupg htop less nano openssh-client procps python3 python3-pip python3-venv tmux vim xz-utils \
+      bash ca-certificates curl git gnupg htop less nano openssh-client procps python3 python3-pip python3-venv tmux unzip vim xz-utils \
  && install -m 0755 -d /etc/apt/keyrings \
  && curl -fsSL https://download.docker.com/linux/debian/gpg \
       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
@@ -110,6 +120,10 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store apt-get update \
  && rm -f /tmp/muse-install.sh \
  && test -x /root/.local/bin/muse \
  && /root/.local/bin/muse --version \
+ && KIRO_CLI_NO_MODIFY_PATH=1 bash /tmp/kiro-install.sh --version "${KIRO_CLI_VERSION}" \
+ && rm -f /tmp/kiro-install.sh \
+ && test -x /root/.local/bin/kiro-cli \
+ && /root/.local/bin/kiro-cli --version \
  && python3 --version \
  && python3 -m venv /tmp/venv-smoke \
  && /tmp/venv-smoke/bin/python --version \
