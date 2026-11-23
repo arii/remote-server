@@ -282,7 +282,9 @@ def _nebius_spec():
 
 
 def _twt_spec():
-    return _remote_spec("twt", TWT_DEFAULT_MODEL, _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL))
+    return _remote_spec(
+        "twt", TWT_DEFAULT_MODEL, _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL)
+    )
 
 
 def _validate_openrouter_model(model):

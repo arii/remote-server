@@ -203,8 +203,9 @@ class TestTwtStageModels(unittest.TestCase):
         concrete = "nebius/Qwen/Qwen3-235B-A22B-Instruct-2507"
         cases = (("default", True), (concrete, False))
         for model_id, expects_controls in cases:
-            with self.subTest(model=model_id), mock.patch.dict(
-                os.environ, {}, clear=True
+            with (
+                self.subTest(model=model_id),
+                mock.patch.dict(os.environ, {}, clear=True),
             ):
                 model, spec = model_router.build_chat_model(
                     spec=dict(base, model=model_id), stage="coder"
