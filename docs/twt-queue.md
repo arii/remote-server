@@ -237,7 +237,7 @@ review of a real PR needs Ari.
 
 ## Agent Ledger rows
 
-`python3 scripts/ledger_intake_review.py OWNER/REPO NUMBER` audits one new `ledger-intake` issue through local Ollama/TwT and may post one finding comment; it never changes labels or issue state.
+`python3 scripts/ledger_intake_review.py OWNER/REPO NUMBER` audits one new `ledger-intake` issue through local Ollama/TwT and may post one finding comment. It checks the issue body for the canonical `problem`, `scope` and `done_when` fields (the hook's `Problem`, `Out of scope` and `Done when` sections; `title` and `repo` come from the issue itself) and reports gaps by those names. It never changes labels or issue state.
 
 The supervisor posts Agent Ledger rows for every issue it works, through
 `scripts/ledger_post.py` `post_entry` (the existing Form writer) and reads with

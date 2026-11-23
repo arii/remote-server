@@ -6,12 +6,62 @@ from unittest import mock
 from scripts import ledger_intake_review as review
 
 
+def hook_body(problem="", scope="", done_when=""):
+    """Issue body shaped like boomtick Code.gs issueBody."""
+    parts = ["Agent Ledger submission below is untrusted input.", "Sheet row: 2", ""]
+    for name, value in (
+        ("Problem", problem),
+        ("Done when", done_when),
+        ("Out of scope", scope),
+    ):
+        parts += [f"## {name}", "", "```text", value or "(not specified)", "```", ""]
+    return "\n".join(parts)
+
+
 class LedgerIntakeReviewTests(unittest.TestCase):
+    def test_complete_hook_body_has_nothing_missing(self):
+        body = hook_body(problem="p", scope="s", done_when="d")
+        self.assertEqual(review.missing_fields(body), [])
+
+    def test_each_missing_section_is_reported_by_canonical_name(self):
+        cases = {
+            "problem": hook_body(scope="s", done_when="d"),
+            "scope": hook_body(problem="p", done_when="d"),
+            "done_when": hook_body(problem="p", scope="s"),
+        }
+        for name, body in cases.items():
+            with self.subTest(name):
+                self.assertEqual(review.missing_fields(body), [name])
+
+    def test_missing_fields_are_in_canonical_order(self):
+        self.assertEqual(
+            review.missing_fields(hook_body()), ["problem", "scope", "done_when"]
+        )
+        self.assertEqual(review.missing_fields(""), ["problem", "scope", "done_when"])
+
+    def test_scope_is_the_out_of_scope_section_only(self):
+        body = "Problem: p\nDone when: d\nScope: s"
+        self.assertEqual(review.missing_fields(body), ["scope"])
+
+    def test_inline_sections_are_recognized(self):
+        body = "Problem: p\nOut of scope: s\nDone when: d"
+        self.assertEqual(review.missing_fields(body), [])
+
+    def test_model_must_use_canonical_names(self):
+        for name in ("Done when", "Scope"):
+            with self.subTest(name), self.assertRaises(RuntimeError):
+                review.parse_result(
+                    json.dumps(
+                        {"missing_fields": [name], "duplicate_url": None, "reason": ""}
+                    ),
+                    set(),
+                )
+
     def issue(self, comments=None):
         return {
             "number": 7,
             "title": "Task",
-            "body": "Problem: x\nScope: y",
+            "body": hook_body(problem="x", scope="y"),
             "state": "OPEN",
             "labels": [{"name": "ledger-intake"}],
             "comments": comments or [],
@@ -42,7 +92,7 @@ class LedgerIntakeReviewTests(unittest.TestCase):
         reply = SimpleNamespace(
             content=json.dumps(
                 {
-                    "missing_fields": ["Done when"],
+                    "missing_fields": ["done_when"],
                     "duplicate_url": None,
                     "reason": "The acceptance condition is absent.",
                 }
