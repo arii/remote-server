@@ -180,7 +180,6 @@ CODER_RULES = (
     """You are implementing the task below in the checkout at {worktree}. Rules:
 - File paths are repo-relative like frontend/src/views/NowView.tsx; never use absolute paths or a leading /.
 - Start filesystem discovery with ls(path="."). The worktree above is your sole filesystem root; never list the parent checkout even if task context names it.
-- Use search_code to quickly find relevant code snippets, symbol definitions, and documentation.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
 - Invoke tools through the function-calling interface. Never print JSON commands or pretend a prose command executed.
@@ -768,25 +767,6 @@ def coder_tool_middleware(*, repair=False):
         return result
 
     return bound_calls
-
-
-def build_search_tool(worktree):
-    """search_code tool for hybrid RAG search across the repo. Venv-only."""
-    from langchain_core.tools import tool  # noqa: E402
-    import retrieval  # noqa: E402
-
-    @tool
-    def search_code(query: str) -> str:
-        """Search the codebase and documentation using hybrid vector/keyword search.
-
-        Args:
-            query: Natural language or symbol query, e.g. 'AuditorGraph build_verdict' or 'route handler'.
-        """
-        if not query or not query.strip():
-            return "REJECTED: empty query"
-        return retrieval.search_td(query, worktree, top_k=5)
-
-    return search_code
 
 
 def build_agent(
