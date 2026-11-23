@@ -785,6 +785,7 @@ def build_agent(
     written_files=None,
     repair=False,
     repo=None,
+    planning=False,
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
@@ -827,13 +828,14 @@ def build_agent(
     if written_files is not None:
         middleware.append(implementation_tool_middleware())
     middleware.insert(0, coder_tool_middleware(repair=repair))
-    middleware.insert(
-        0,
-        ModelCallLimitMiddleware(
-            thread_limit=REPAIR_MODEL_LIMIT if repair else INITIAL_MODEL_LIMIT,
-            exit_behavior="error",
-        ),
-    )
+    if not planning:
+        middleware.insert(
+            0,
+            ModelCallLimitMiddleware(
+                thread_limit=REPAIR_MODEL_LIMIT if repair else INITIAL_MODEL_LIMIT,
+                exit_behavior="error",
+            ),
+        )
     if recorder is not None:
         import observe  # noqa: E402
 
@@ -913,6 +915,7 @@ def build_plan_agent(
             FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")
         ],
         spec=spec,
+        planning=True,
     )
 
 

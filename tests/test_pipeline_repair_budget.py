@@ -137,6 +137,90 @@ class TestRepairBudget(unittest.TestCase):
                 )
             self.assertLessEqual(model.i, 3)
 
+    def test_approved_plan_does_not_consume_implementation_model_budget(self):
+        from langchain.agents.middleware.model_call_limit import (
+            ModelCallLimitExceededError,
+        )
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langgraph.types import Command
+
+        import deep_chat
+        from tests.test_coder_outcome import LocalModel
+
+        with tempfile.TemporaryDirectory() as root:
+            saver = InMemorySaver()
+            config = {
+                "configurable": {"thread_id": "plan-implement"},
+                "recursion_limit": 128,
+            }
+            plan = coder.build_plan_agent(
+                root,
+                "plan",
+                checkpointer=saver,
+                model=LocalModel(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "propose_plan",
+                                    "args": {
+                                        "plan": "PLAN:\n1. Implement [files: result.txt] [checks: pytest]"
+                                    },
+                                    "id": "plan",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="Plan approved."),
+                    ]
+                ),
+            )
+            result = plan.invoke(
+                {"messages": [HumanMessage(content="plan")]}, config=config
+            )
+            self.assertTrue(result["__interrupt__"])
+            plan.invoke(
+                Command(
+                    resume=deep_chat.resume_payload(
+                        [deep_chat.decision_for_verdict("approve")]
+                    )
+                ),
+                config=config,
+            )
+            model = LocalModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {
+                                    "file_path": f"result-{n}.txt",
+                                    "content": "done",
+                                },
+                                "id": f"write-{n}",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                    for n in range(coder.INITIAL_MODEL_LIMIT - 1)
+                ]
+                + [AIMessage(content="DONE #1550")]
+            )
+            implementation = coder.build_agent(
+                root, "implement", model=model, checkpointer=saver
+            )
+            result = implementation.invoke(
+                {"messages": [HumanMessage(content="implement")]}, config=config
+            )
+            self.assertEqual(result["messages"][-1].content, "DONE #1550")
+            with self.assertRaises(ModelCallLimitExceededError):
+                implementation.invoke(
+                    {"messages": [HumanMessage(content="verify again")]}, config=config
+                )
+
     def test_real_agent_stops_repeated_grep_before_recursion_limit(self):
         from langchain_core.messages import AIMessage, HumanMessage
         from tests.test_coder_outcome import LocalModel
