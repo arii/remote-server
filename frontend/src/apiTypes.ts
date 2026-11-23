@@ -132,6 +132,7 @@ export interface LedgerResponse {
 }
 
 export interface LedgerIntakeRow extends LedgerEntry {
+  intake_id?: string;
   canonical_intake_id?: string;
   row_key?: string;
   title?: string;
@@ -141,4 +142,13 @@ export interface LedgerIntakeRow extends LedgerEntry {
   missing_fields?: string[];
   duplicate_of?: string;
   source_url?: string;
+  duplicate_candidate?: {
+    title?: string;
+    status?: string;
+    ts?: number;
+    at?: number | string;
+    canonical_intake_id?: string;
+    row_key?: string;
+    intake_id?: string;
+  };
 }

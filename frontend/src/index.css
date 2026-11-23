@@ -57,8 +57,39 @@
   font-weight: 700;
 }
 
+.ledger-duplicate-candidate {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 8px;
+}
+
+.ledger-duplicate-pair {
+  display: grid;
+  gap: 8px;
+}
+
+.ledger-duplicate-pane {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.ledger-duplicate-pane h3,
+.ledger-duplicate-pane p {
+  margin: 0;
+}
+
 @media (min-width: 700px) {
   .ledger-card-deck {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ledger-duplicate-pair {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

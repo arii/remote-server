@@ -9,6 +9,7 @@ vi.mock('../apiClient', async (original) => ({
   ...await original<typeof import('../apiClient')>(),
   fetchLedgerIntake: vi.fn(),
   approveLedgerIntake: vi.fn(),
+  mergeLedgerIntake: vi.fn(),
 }));
 
 let root: Root;
@@ -31,6 +32,10 @@ beforeEach(() => {
   vi.mocked(api.approveLedgerIntake).mockResolvedValue({
     ok: true,
     row: { kind: 'ledger-intake', canonical_intake_id: 'intake-1', status: 'READY' },
+  });
+  vi.mocked(api.mergeLedgerIntake).mockResolvedValue({
+    ok: true,
+    row: { kind: 'ledger-intake', intake_id: 'intake-new', status: 'DUPLICATE' },
   });
 });
 
@@ -58,5 +63,32 @@ describe('LedgerTriageView', () => {
     });
     expect(api.approveLedgerIntake).toHaveBeenCalledWith('intake-1', { scope: 'backend' });
     expect(host.textContent).not.toContain('Add retry policy');
+  });
+
+  it('shows the matched row and merges it without creating a READY card', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{
+        kind: 'ledger-intake',
+        intake_id: 'intake-new',
+        canonical_intake_id: 'intake-new',
+        status: 'SUSPECTED-DUPLICATE',
+        title: 'Retry policy',
+        duplicate_candidate: {
+          intake_id: 'intake-old',
+          canonical_intake_id: 'intake-old',
+          title: 'Retry policy',
+          status: 'READY',
+          ts: 1_700_000_000,
+        },
+      }],
+    });
+    await act(async () => root.render(<LedgerTriageView />));
+    expect(host.textContent).toContain('Possible match');
+    expect(host.textContent).toContain('READY');
+    await act(async () => {
+      host.querySelectorAll<HTMLButtonElement>('.btn-primary')[0].click();
+    });
+    expect(api.mergeLedgerIntake).toHaveBeenCalledWith('intake-new', 'intake-old', '');
+    expect(host.textContent).not.toContain('Retry policy');
   });
 });
