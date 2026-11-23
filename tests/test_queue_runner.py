@@ -1089,7 +1089,14 @@ class RunnerTests(unittest.TestCase):
                 if repo in failing:
                     raise runner.subprocess.CalledProcessError(1, command)
                 return json.dumps(listings.get(repo, []))
-            return json.dumps({"state": "open", "title": "Fix", "body": "scope"})
+            return json.dumps(
+                {
+                    "state": "open",
+                    "title": "Fix",
+                    "body": "scope",
+                    "labels": [{"name": "ready"}],
+                }
+            )
 
         return fake
 
@@ -1351,7 +1358,12 @@ class LedgerTests(unittest.TestCase):
                 runner.subprocess,
                 "check_output",
                 side_effect=lambda *a, **k: json.dumps(
-                    {"state": "open", "title": "Fix", "body": "scope"}
+                    {
+                        "state": "open",
+                        "title": "Fix",
+                        "body": "scope",
+                        "labels": [{"name": "ready"}],
+                    }
                 ),
             ),
         ):
