@@ -2,7 +2,7 @@
 // LocalForm AI - Background Service Worker (Manifest V3)
 // ============================================================================
 
-import { aliasMatches } from "./lib/matcher.js";
+import { aliasMatches, normalizeLabel } from "./lib/matcher.js";
 import { normalizeForDedup, valueAlreadyHeld } from "./lib/delta-guards.js";
 import { deduplicateVault } from "./lib/vault.js";
 import { isSensitiveLabel } from "./lib/sensitive.js";
@@ -15,6 +15,8 @@ import {
   recordCases,
   verifyProposal
 } from "./lib/learning.js";
+import { confirmMapping, learnFromOutcomes, learnedRows, removeMapping } from "./lib/mappings.js";
+import { buildOutcomeRecords, fillStats, recordOutcomes, shouldRecord } from "./lib/outcomes.js";
 import {
   applyDeltaApprove,
   applyDeltaApproveAll,
@@ -106,7 +108,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type && LEARNING_HANDLERS[message.type]) {
-    LEARNING_HANDLERS[message.type](message)
+    LEARNING_HANDLERS[message.type](message, sender)
       .then((res) => sendResponse(res))
       .catch((err) => sendResponse({ error: err.message }));
     return true;
@@ -224,6 +226,80 @@ const LEARNING_HANDLERS = {
       return { ok: true, caseCount: next.length };
     }),
 
+  // Fill outcomes (#1539). The content script sends values once, in this
+  // transient message; only classes and ids are stored. The sender tab's own
+  // hostname must be on observerDomainAllowlist, so a page cannot opt itself in.
+  "learning:recordOutcomes": (msg, sender) =>
+    enqueueMutation(async () => {
+      let host = "";
+      try {
+        host = new URL(sender?.tab?.url || "").hostname;
+      } catch {
+        return { ok: false, reason: "no-sender-host" };
+      }
+      const { observerDomainAllowlist = [], fillOutcomes = [] } = await chrome.storage.local.get([
+        "observerDomainAllowlist",
+        "fillOutcomes"
+      ]);
+      if (!shouldRecord(host, observerDomainAllowlist)) return { ok: false, reason: "not-allowlisted" };
+      const { userContextVault } = await readVaultState();
+      const records = buildOutcomeRecords({ fillId: msg.fillId, host, fields: msg.fields }, userContextVault);
+      if (records.length === 0) return { ok: true, recorded: 0 };
+      // Mappings (#1540) are updated in the same queued mutation.
+      const { learnedMappings = [] } = await chrome.storage.local.get(["learnedMappings"]);
+      await chrome.storage.local.set({
+        fillOutcomes: recordOutcomes(fillOutcomes, records),
+        learnedMappings: learnFromOutcomes(learnedMappings, records, userContextVault)
+      });
+      return { ok: true, recorded: records.length };
+    }),
+
+  "learning:getOutcomes": async () => {
+    const { fillOutcomes = [] } = await chrome.storage.local.get(["fillOutcomes"]);
+    return { ok: true, ...fillStats(fillOutcomes) };
+  },
+
+  "learning:getMappings": async () => {
+    const { learnedMappings = [] } = await chrome.storage.local.get(["learnedMappings"]);
+    const { learnedAliases } = await readLearningState();
+    // Raw mappings (matchField input) plus the flat rows for the Learned list.
+    return { ok: true, mappings: learnedMappings, rows: learnedRows(learnedAliases, learnedMappings) };
+  },
+
+  "learning:deleteMapping": (msg, sender) =>
+    enqueueMutation(async () => {
+      if (sender?.tab) return { ok: false, reason: "panel-only" };
+      const { learnedMappings = [] } = await chrome.storage.local.get(["learnedMappings"]);
+      await chrome.storage.local.set({ learnedMappings: removeMapping(learnedMappings, String(msg.sig)) });
+      return { ok: true };
+    }),
+
+  "learning:confirmMapping": (msg, sender) =>
+    enqueueMutation(async () => {
+      if (sender?.tab) return { ok: false, reason: "panel-only" };
+      const { learnedMappings = [] } = await chrome.storage.local.get(["learnedMappings"]);
+      await chrome.storage.local.set({ learnedMappings: confirmMapping(learnedMappings, String(msg.sig)) });
+      return { ok: true };
+    }),
+
+  // Delete an alias row: removes it from the entry's aliases and from the
+  // learned log. Vault values and keys are untouched.
+  "learning:deleteAlias": (msg, sender) =>
+    enqueueMutation(async () => {
+      if (sender?.tab) return { ok: false, reason: "panel-only" };
+      const state = await readVaultState();
+      const { learnedAliases } = await readLearningState();
+      const alias = normalizeLabel(msg.alias);
+      const vault = state.userContextVault.map((e) =>
+        e.id === msg.entryId ? { ...e, aliases: (e.aliases || []).filter((a) => normalizeLabel(a) !== alias) } : e
+      );
+      await chrome.storage.local.set({
+        userContextVault: vault,
+        learnedAliases: learnedAliases.filter((l) => !(l.entryId === msg.entryId && normalizeLabel(l.alias) === alias))
+      });
+      return { ok: true };
+    }),
+
   "learning:getProposals": async () => {
     const { userContextVault } = await readVaultState();
     const { learningCases, learnedAliases } = await readLearningState();
@@ -243,7 +319,7 @@ const LEARNING_HANDLERS = {
       const verdict = verifyProposal(proposal, learningCases, state.userContextVault);
       if (!verdict.ok) return { ok: false, reason: verdict.reason };
       const entry = state.userContextVault.find((e) => e.id === proposal.entryId);
-      const alias = String(proposal.alias).toLowerCase().replace(/\s+/g, " ").trim();
+      const alias = normalizeLabel(proposal.alias);
       const vault = promoteAlias(state.userContextVault, { ...proposal, alias });
       const log = [
         { label: proposal.label, alias, entryId: entry.id, entryKey: entry.key, ts: Date.now() },

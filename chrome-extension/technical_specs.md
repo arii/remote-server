@@ -34,6 +34,7 @@ Shared pure logic lives in `extension/lib/`:
   cvv, cvc, cc-number, card-number, ssn, social-security). The content script
   keeps a literal copy; `tests/learning.test.js` asserts the sources match.
 - `learning.js` — correction learning (§9).
+- `outcomes.js` — fill outcomes from user edits (§10).
 
 The content script cannot `import` ES modules (classic-script injection per
 `manifest.json`), so it consumes the matcher exclusively through the
@@ -42,7 +43,7 @@ The content script cannot `import` ES modules (classic-script injection per
 
 ## 2. Storage — keys and single owners
 
-All persistence is `chrome.storage.local`. Six keys, each with exactly one
+All persistence is `chrome.storage.local`. Seven keys, each with exactly one
 writer:
 
 | Key | Writer | Written by |
@@ -51,6 +52,8 @@ writer:
 | `pendingDeltas` | **service worker only** | `handleMutation` and `enqueueObserverMerge` — both inside the same serialized queue |
 | `learningCases` | **service worker only** | `handleMutation` (approve/discard), `learning:recordVerdicts` |
 | `learnedAliases` | **service worker only** | `learning:promote` |
+| `fillOutcomes` | **service worker only** | `learning:recordOutcomes` |
+| `learnedMappings` | **service worker only** | `learning:recordOutcomes` (same queued write as `fillOutcomes`), `learning:confirmMapping`, `learning:deleteMapping` |
 | `observerDomainAllowlist` | side panel only (Observer tab toggle, fail-closed read in content script) | single-owner, no contention |
 | `activeSessionContext` | side panel only (job-description capture) | single-owner, no contention |
 
@@ -59,7 +62,7 @@ messages (§3) and re-renders its vault/delta views after each mutation's
 response (the `renderVault()` calls that follow every `sendMessage`), plus on
 search input and category-filter changes. A grep-based
 regression test (`tests/single-writer.test.js`) fails the suite if any
-`chrome.storage.local.set` for `userContextVault`/`pendingDeltas`/`learningCases`/`learnedAliases` appears
+`chrome.storage.local.set` for `userContextVault`/`pendingDeltas`/`learningCases`/`learnedAliases`/`fillOutcomes`/`learnedMappings` appears
 outside `service-worker.js`.
 
 Vault entries: `{ id, category, key, aliases, value, tags, updatedAt }`. IDs are
@@ -97,6 +100,8 @@ observed delta — the lost-update race is structurally impossible.
 (returns `{proposals, learned, cases, vault}`), `learning:promote`
 (`proposal: {label, entryId, alias}` -> `{ok, alias, entryId}` or
 `{ok:false, reason}`). The two writers run inside the same mutation queue.
+`learning:recordOutcomes` (from the content script; `{fillId, host, fields}`, see §10) and
+`learning:getOutcomes` (returns `{last, keptRate, fills}`).
 
 **Content-script messages** (`action` field, not `type`):
 
@@ -132,6 +137,79 @@ All three contexts share these rules; there are no per-context variants.
 Golden tests (`tests/matcher.test.js`) run the waterfall against committed
 fixtures in `tests/fixtures/` — Ashby, Greenhouse, and Lever markup with
 `expected-matches.json` — and pin the short-alias and word-boundary cases above.
+
+4. **`fieldSignature({label, name, autocomplete, type})`** — the four
+   parts normalized with `normalizeLabel` and joined with `|`. The stable key
+   for a control across visits (used by the learned mappings in #1540).
+5. **`matchField(field, vault, {learned, host})`** — the one deterministic
+   vault match. `field` is `{label, autocomplete}`. For each vault entry in
+   order it tries the autocomplete token first (exact equality with the
+   entry's `autocomplete`, confidence 0.99), then `aliasMatches` over
+   `[key, ...aliases]` (0.98). Returns `{entry, pass: "autocomplete"|"alias",
+   confidence}` or `null`. The side panel's Stage 1 loop calls it for both
+   the essay and atomic branches (checkbox yes/no coercion stays in the side
+   panel). `learned` and `host` are accepted now and unused until the learned
+   mapping lookup lands. Verdict reporting is unchanged: `field.entryId` is
+   set on autocomplete matches and on the essay branch, not on atomic alias
+   matches.
+
+### 4.1 Offline fill-accuracy eval (`eval/run-eval.mjs`, #1538)
+
+`npm run eval` measures how often the deterministic matcher picks the right
+vault entry, with no network or model calls. It parses the committed fixtures
+with happy-dom, labels each control with `resolveLabel`, builds its
+`fieldSignature`, runs `matchField` against `eval/eval-vault.json`, and
+compares the matched entry key with the `fills` array in
+`tests/fixtures/expected-matches.json` (fixture, locator by `id` or `name`,
+expected entry key or `null`, optional `type` and `step`). All fixtures and
+vault values are synthetic (placeholder URLs, `example.com`, `555-01xx`).
+
+**Scoring.** Each fill gets exactly one outcome:
+
+| Outcome | Expected | Got |
+| --- | --- | --- |
+| correct fill | key K | K |
+| wrong fill | key K | a different key |
+| correct abstain | `null` (blank is correct) | `null` |
+| wrong abstain | key K | `null` |
+
+A fill where `null` was expected is also a wrong fill, so filling a field that
+should stay blank is penalized. `accuracy = (correct fill + correct abstain) /
+total`, rounded to 4 places. Output has per fixture, per case type and total
+counts (including the four outcome counts), a one-line JSON summary with the
+per-type accuracy, and `eval/last-run.json`. That file has no timestamps, so
+it is byte-stable and committed as the baseline.
+
+**Case types** (`type` on a `fills` entry; default `plain`):
+
+- `plain`: the Ashby, Greenhouse and Lever fixtures.
+- `ambiguous`: `ambiguous-fieldsets.html`, billing and shipping fieldsets with
+  identical `ZIP code`, street and city labels, plus aria-labelled variants.
+- `mismatch`: `mismatched-controls.html`, selects, radios and ARIA controls
+  whose visible text differs from the option value or the opaque `name`.
+- `dynamic`: `dynamic-multistep.html`, fields injected after a step.
+- `abstain`: `abstain.html`, prompts with no vault entry (favorite color,
+  maiden name, security question) where blank is correct.
+
+**Dynamic steps.** Elements marked `data-step=N` are detached when the
+document loads. A `fills` entry with `"step": N` re-attaches that step's
+elements to their original parent just before it is processed, then labels and
+matches them, mimicking the content script re-scan after a step renders. A
+control that is still detached throws, so a wrong `step` cannot pass silently.
+
+Baseline expectations are true to the fixtures, not tuned to pass: fieldset
+ZIP/street/city labels carry no billing or shipping word, so the deterministic
+matcher abstains there, and a `GitHub profile` label against the 6-character
+alias `github` also misses. #1540 learned mappings are meant to improve these.
+
+`tests/eval.test.js` fails when accuracy falls below the committed
+`last-run.json`, when the run no longer equals it, when a deliberately broken
+alias does not lower accuracy, when a wrongly filled abstain field does not
+lower accuracy, when a case type has no cases, or when a fixture contains
+email or phone strings other than `example.com` and `555-01xx`. To refresh the
+baseline after an intended improvement, run `npm run eval` and commit the new
+`last-run.json`. CI runs the eval as a step of the `extension` job, after the
+vitest run.
 
 ## 5. Verified-fill contract
 
@@ -247,3 +325,120 @@ deterministic proposals (no download is triggered).
 
 **Sensitive fields** are never recorded or proposed (`isSensitiveLabel` on the
 label and the entry key, in `recordCase`, `aggregateProposals`, `verifyProposal`).
+
+## 10. Fill outcomes (`lib/outcomes.js`)
+
+After a Form-Import++ fill, did the user keep what we filled? On submit the
+extension records, per filled field, whether it was kept, edited or cleared.
+
+**Decision: a new key `fillOutcomes`, not an extension of `learningCases`.**
+`learningCases` (§9) holds label -> vault-entry verdicts (approved, discarded,
+fill-pass, fill-fail) and feeds alias proposals; its records are keyed by label
+and entry and capped at 200. A fill outcome is a different thing: one record per
+filled field per submit, with the field signature, the pass that filled it and
+the user's reaction. Putting both in one array would mix two schemas and
+retention windows, and the 200-case cap would be consumed by whichever arrives
+faster. Boundary: `learningCases` answers "which entry does this label mean?";
+`fillOutcomes` answers "how often did a fill survive the user?". Neither reads
+the other.
+
+**Record** (`fillOutcomes`, newest last, cap 500, oldest dropped):
+`{fillId, ts, host, sig:{label,name,autocomplete,type}, entryKey|null, pass:"learned"|"autocomplete"|"alias"|"prompt", confidence, outcome:"kept"|"edited"|"cleared", remappedEntryId|null}`.
+Signature parts are normalized (`normalizeLabel`). **No field values are stored.**
+
+**Flow.** The panel tags matched fields with `entryId`, `entryKey` and `pass`
+(essays and pre-drafted cover letters are `prompt`) and hydrates with
+`options.trackFill` and one `fillId` per run (Stage 1 and the final essay
+hydrate; streaming partial hydrations do not track). The content script keeps an
+in-memory registry (element, filled value, signature). On submit, only if
+`isObserverEnabledForCurrentDomain()` (the `observerDomainAllowlist` check), it
+sends one transient `learning:recordOutcomes` message with the filled and
+submitted values and clears the registry. The worker re-checks that the sender
+tab's hostname is on the allowlist, skips sensitive fields (`sensitive.js`),
+classifies, and stores classes only.
+
+**Classifier.** `classifyOutcome`: empty submitted value -> `cleared`; equal after
+`normalizeLabel` (case and whitespace insensitive) -> `kept`; otherwise `edited`.
+For `edited`, `remapTarget` stores the id of a different non-sensitive vault
+entry whose value exactly equals the submitted value (else null).
+
+**Stats.** `fillStats`: "Last fill" counts the newest `fillId`; the kept-rate is
+kept / all recorded fields over the last 20 distinct `fillId`s. The Fill tab shows
+`Last fill: N kept, M edited, K cleared` and that rate.
+
+**Side effect.** The panel now tags alias-pass matches with `entryId` too (before,
+only autocomplete matches carried it), so `learning:recordVerdicts` also receives
+verdicts for alias-pass fills.
+
+## 11. Learned field mappings (`lib/mappings.js`, #1540)
+
+A re-map in the outcome log (the user edited a filled field to the value of a
+DIFFERENT vault entry, `remappedEntryId`) teaches `field signature -> vault entry`.
+
+**Three stores, three jobs.** `learningCases` (§9): label -> entry verdicts, feed
+alias proposals. `fillOutcomes` (§10): what happened to each fill, no behaviour.
+`learnedMappings`: signature-scoped rules the matcher can use. `learnedAliases`
+(§9) are label-global aliases that live on vault entries. Aliases are written
+only when the user clicks Add alias, so they are already user-confirmed: they are
+shown with origin "added by you" and never quarantined. Alias proposals are the
+quarantine for aliases (a proposal does nothing until clicked).
+
+**Record** (`learnedMappings`, cap 100, oldest `lastSeen` dropped):
+`{sig, entryId, entryKey, hosts[] (cap 10), hits, cleanUses, status:"quarantined"|"confirmed", lastSeen}`.
+`sig` is `fieldSignature` (normalized label|name|autocomplete|type). Ids, keys and
+counters only: no field values. Sensitive signatures, password fields and
+sensitive entries are never stored (`sensitive.js`). The vault is never changed.
+
+**Quarantine.** New records start `quarantined` and are never used to fill.
+- Clean use: a fill whose outcome was `kept`, where the quarantined rule's lookup
+  (host + signature, or signature alone on 2+ sites) gives the same `entryKey`
+  the fill used, or a re-correction to the mapped entry's value (the usual
+  case: a quarantined mapping is never applied, so the user keeps correcting).
+  It increments `cleanUses` without applying anything. At
+  `QUARANTINE_CLEAN_USES` (3) the record becomes `confirmed`.
+- The Confirm button on an unconfirmed row sets `confirmed` directly.
+- Demotion: the first user overwrite (`edited` to another value, or `cleared`)
+  on a field where a confirmed mapping applied or a quarantined one would have
+  applied deletes the record. Learning the same correction again starts over in
+  quarantine. (There is no "edited twice" rule.)
+- The same correction seen on another site adds that host, keeps the status
+  and counts as one agreeing submission. A different correction on a site
+  where the mapping did not apply leaves the record alone.
+- A correction whose value equals two or more vault entries (billing and
+  shipping ZIP) teaches nothing.
+- Radio groups are signed with the group label, name and `radio` on both the
+  content-script and side-panel sides.
+
+**Matching order** (`matchField(field, vault, {learned, host})`): confirmed
+mapping with exact host + signature, else the signature alone once `hosts.length
+>= 2` (pass `learned`, confidence 0.995); then per entry autocomplete token
+(0.99) then aliases (0.98); then the Prompt API passes. A mapping to a deleted
+entry is ignored.
+
+**Worker.** `learning:recordOutcomes` updates `learnedMappings` in the same
+queued mutation as `fillOutcomes` (it holds the quarantine state, so it computes
+the would-have-applied lookups). `learning:getMappings` returns the raw list and
+the flat rows; `learning:confirmMapping`, `learning:deleteMapping` and
+`learning:deleteAlias` (removes an alias from its entry and the log, values and
+keys untouched) are the other handlers.
+
+**UI.** One flat list in the queue's existing "Learned" section. Rows read
+`alias or field label -> vault field (origin)` with origin "added by you",
+"learned from your edit" or "learned, unconfirmed"; Delete on every row, Confirm
+only on unconfirmed rows; the existing Add alias button is the one Add control.
+No confidence scores, hit counts, regex editors, bulk tools or undo, and no
+second list in the Vault tab.
+
+**Eval.** `npm run eval` also replays `eval/replay-outcomes.json` (synthetic
+corrections) through these functions and records `replay` in `eval/last-run.json`:
+before, after learning (quarantined, must not change), and after confirmation
+(agreeing submissions, or Confirm for the listed fields). Each visit fills
+what `matchField` would fill with the mappings so far. The replay is an upper
+bound: outcomes exist only for fields the extension filled, so where the vault
+abstains it assumes the on-device model filled the field (`modeledLlmFills`).
+The plain baseline is untouched. CI fails if `eval/last-run.json` changes.
+
+**Open questions for Ari.** N = 3 clean uses; the 2-site threshold; the caps
+(500 outcomes / 100 mappings / 10 hosts); what counts as an edit versus a typo
+fix (today any normalized difference is an edit, and only an exact match to
+another entry's value teaches a mapping).

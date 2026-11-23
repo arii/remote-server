@@ -211,6 +211,12 @@ jobs:
         run: pnpm --filter localform-ai-extension run test:syntax
       - name: build
         run: pnpm --filter localform-ai-extension run build
+      - name: fill-accuracy eval
+        run: pnpm --filter localform-ai-extension run eval
+      - name: eval baseline is committed
+        # `eval` rewrites eval/last-run.json; a changed file means the
+        # committed baseline is stale or the matcher changed without review.
+        run: git diff --exit-code -- chrome-extension/eval/last-run.json
 
   backend:
     # Display name pinned by branch protection (required context

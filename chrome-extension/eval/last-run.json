@@ -1,0 +1,1195 @@
+{
+  "total": {
+    "correct": 42,
+    "expected": 53,
+    "accuracy": 0.7925,
+    "correctFill": 31,
+    "wrongFill": 0,
+    "correctAbstain": 11,
+    "wrongAbstain": 11
+  },
+  "byType": {
+    "plain": {
+      "correct": 23,
+      "expected": 27,
+      "accuracy": 0.8519,
+      "correctFill": 18,
+      "wrongFill": 0,
+      "correctAbstain": 5,
+      "wrongAbstain": 4
+    },
+    "ambiguous": {
+      "correct": 2,
+      "expected": 8,
+      "accuracy": 0.25,
+      "correctFill": 2,
+      "wrongFill": 0,
+      "correctAbstain": 0,
+      "wrongAbstain": 6
+    },
+    "mismatch": {
+      "correct": 6,
+      "expected": 7,
+      "accuracy": 0.8571,
+      "correctFill": 6,
+      "wrongFill": 0,
+      "correctAbstain": 0,
+      "wrongAbstain": 1
+    },
+    "dynamic": {
+      "correct": 6,
+      "expected": 6,
+      "accuracy": 1,
+      "correctFill": 5,
+      "wrongFill": 0,
+      "correctAbstain": 1,
+      "wrongAbstain": 0
+    },
+    "abstain": {
+      "correct": 5,
+      "expected": 5,
+      "accuracy": 1,
+      "correctFill": 0,
+      "wrongFill": 0,
+      "correctAbstain": 5,
+      "wrongAbstain": 0
+    }
+  },
+  "fixtures": {
+    "ashby-form.html": {
+      "correct": 6,
+      "expected": 7,
+      "accuracy": 0.8571,
+      "correctFill": 6,
+      "wrongFill": 0,
+      "correctAbstain": 0,
+      "wrongAbstain": 1
+    },
+    "greenhouse-form.html": {
+      "correct": 9,
+      "expected": 10,
+      "accuracy": 0.9,
+      "correctFill": 7,
+      "wrongFill": 0,
+      "correctAbstain": 2,
+      "wrongAbstain": 1
+    },
+    "lever-form.html": {
+      "correct": 7,
+      "expected": 9,
+      "accuracy": 0.7778,
+      "correctFill": 4,
+      "wrongFill": 0,
+      "correctAbstain": 3,
+      "wrongAbstain": 2
+    },
+    "ambiguous-fieldsets.html": {
+      "correct": 2,
+      "expected": 8,
+      "accuracy": 0.25,
+      "correctFill": 2,
+      "wrongFill": 0,
+      "correctAbstain": 0,
+      "wrongAbstain": 6
+    },
+    "mismatched-controls.html": {
+      "correct": 6,
+      "expected": 7,
+      "accuracy": 0.8571,
+      "correctFill": 6,
+      "wrongFill": 0,
+      "correctAbstain": 0,
+      "wrongAbstain": 1
+    },
+    "dynamic-multistep.html": {
+      "correct": 6,
+      "expected": 6,
+      "accuracy": 1,
+      "correctFill": 5,
+      "wrongFill": 0,
+      "correctAbstain": 1,
+      "wrongAbstain": 0
+    },
+    "abstain.html": {
+      "correct": 6,
+      "expected": 6,
+      "accuracy": 1,
+      "correctFill": 1,
+      "wrongFill": 0,
+      "correctAbstain": 5,
+      "wrongAbstain": 0
+    }
+  },
+  "results": [
+    {
+      "fixture": "ashby-form.html",
+      "field": {
+        "name": "firstname"
+      },
+      "sig": "first name|firstname||text",
+      "type": "plain",
+      "expected": "First Name",
+      "actual": "First Name",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "ashby-form.html",
+      "field": {
+        "name": "lastname"
+      },
+      "sig": "last name|lastname||text",
+      "type": "plain",
+      "expected": "Last Name",
+      "actual": "Last Name",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "ashby-form.html",
+      "field": {
+        "name": "email"
+      },
+      "sig": "email|email||email",
+      "type": "plain",
+      "expected": "Email Address",
+      "actual": "Email Address",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "ashby-form.html",
+      "field": {
+        "name": "phone"
+      },
+      "sig": "phone|phone||tel",
+      "type": "plain",
+      "expected": "Phone Number",
+      "actual": "Phone Number",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "ashby-form.html",
+      "field": {
+        "name": "location"
+      },
+      "sig": "where are you currently based?|location||text",
+      "type": "plain",
+      "expected": "Current Location",
+      "actual": "Current Location",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "ashby-form.html",
+      "field": {
+        "name": "currentCompany"
+      },
+      "sig": "company name|currentcompany||text",
+      "type": "plain",
+      "expected": "Current Company",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "ashby-form.html",
+      "field": {
+        "name": "linkedinUrl"
+      },
+      "sig": "linkedin profile|linkedinurl||url",
+      "type": "plain",
+      "expected": "LinkedIn",
+      "actual": "LinkedIn",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "first_name"
+      },
+      "sig": "first name|first_name||text",
+      "type": "plain",
+      "expected": "First Name",
+      "actual": "First Name",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "last_name"
+      },
+      "sig": "last name|last_name||text",
+      "type": "plain",
+      "expected": "Last Name",
+      "actual": "Last Name",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "email"
+      },
+      "sig": "email address|email||email",
+      "type": "plain",
+      "expected": "Email Address",
+      "actual": "Email Address",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "phone"
+      },
+      "sig": "phone number|phone||tel",
+      "type": "plain",
+      "expected": "Phone Number",
+      "actual": "Phone Number",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "location"
+      },
+      "sig": "current location|location||text",
+      "type": "plain",
+      "expected": "Current Location",
+      "actual": "Current Location",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "linkedin_profile_url"
+      },
+      "sig": "link to your linkedin profile|linkedin_profile_url||text",
+      "type": "plain",
+      "expected": "LinkedIn",
+      "actual": "LinkedIn",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "github_url"
+      },
+      "sig": "link to your github profile|github_url||text",
+      "type": "plain",
+      "expected": "GitHub",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "cover_letter"
+      },
+      "sig": "cover letter (paste your text cover letter here)|cover_letter||textarea",
+      "type": "plain",
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "years_experience"
+      },
+      "sig": "how many years of software engineering experience do you have?|years_experience||select-one",
+      "type": "plain",
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "greenhouse-form.html",
+      "field": {
+        "id": "portfolio_url"
+      },
+      "sig": "personal website or portfolio|portfolio_url||text",
+      "type": "plain",
+      "expected": "Portfolio",
+      "actual": "Portfolio",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "name"
+      },
+      "sig": "name|name|name|text",
+      "type": "plain",
+      "expected": "Full Name",
+      "actual": "Full Name",
+      "pass": "autocomplete",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "email"
+      },
+      "sig": "email|email|email|email",
+      "type": "plain",
+      "expected": "Email Address",
+      "actual": "Email Address",
+      "pass": "autocomplete",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "phone"
+      },
+      "sig": "phone (optional)|phone||tel",
+      "type": "plain",
+      "expected": "Phone Number",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "location"
+      },
+      "sig": "where are you currently based?|location||text",
+      "type": "plain",
+      "expected": "Current Location",
+      "actual": "Current Location",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "layoutsContainer"
+      },
+      "sig": "linkedin profile|urls[linkedin]||url",
+      "type": "plain",
+      "expected": "LinkedIn",
+      "actual": "LinkedIn",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "github-urls"
+      },
+      "sig": "github profile|urls[github]||url",
+      "type": "plain",
+      "expected": "GitHub",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "other-urls"
+      },
+      "sig": "other website|urls[other]||url",
+      "type": "plain",
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "source"
+      },
+      "sig": "how did you hear about this job?|card||select-one",
+      "type": "plain",
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "lever-form.html",
+      "field": {
+        "id": "resume"
+      },
+      "sig": "resume|resume||file",
+      "type": "plain",
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "bill_street"
+      },
+      "sig": "street address|bill_street||text",
+      "type": "ambiguous",
+      "expected": "Billing Street",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "bill_city"
+      },
+      "sig": "city|bill_city||text",
+      "type": "ambiguous",
+      "expected": "Billing City",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "bill_zip"
+      },
+      "sig": "zip code|bill_zip||text",
+      "type": "ambiguous",
+      "expected": "Billing ZIP",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "ship_street"
+      },
+      "sig": "street address|ship_street||text",
+      "type": "ambiguous",
+      "expected": "Shipping Street",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "ship_city"
+      },
+      "sig": "city|ship_city||text",
+      "type": "ambiguous",
+      "expected": "Shipping City",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "ship_zip"
+      },
+      "sig": "zip code|ship_zip||text",
+      "type": "ambiguous",
+      "expected": "Shipping ZIP",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "bill_postal"
+      },
+      "sig": "billing postal code|bill_postal||text",
+      "type": "ambiguous",
+      "expected": "Billing ZIP",
+      "actual": "Billing ZIP",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "ambiguous-fieldsets.html",
+      "field": {
+        "id": "ship_postal"
+      },
+      "sig": "shipping postal code|ship_postal||text",
+      "type": "ambiguous",
+      "expected": "Shipping ZIP",
+      "actual": "Shipping ZIP",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "mismatched-controls.html",
+      "field": {
+        "id": "country"
+      },
+      "sig": "country|country||select-one",
+      "type": "mismatch",
+      "expected": "Country",
+      "actual": "Country",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "mismatched-controls.html",
+      "field": {
+        "id": "work_auth"
+      },
+      "sig": "are you authorized to work here?|work_auth||select-one",
+      "type": "mismatch",
+      "expected": "Work Authorization",
+      "actual": "Work Authorization",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "mismatched-controls.html",
+      "field": {
+        "id": "pref_mail"
+      },
+      "sig": "email me|contact_pref||radio",
+      "type": "mismatch",
+      "expected": "Contact Preference",
+      "actual": null,
+      "pass": null,
+      "outcome": "wrongAbstain",
+      "ok": false
+    },
+    {
+      "fixture": "mismatched-controls.html",
+      "field": {
+        "id": "aria_email"
+      },
+      "sig": "email address|f_7731||text",
+      "type": "mismatch",
+      "expected": "Email Address",
+      "actual": "Email Address",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "mismatched-controls.html",
+      "field": {
+        "id": "aria_github"
+      },
+      "sig": "github|f_7732||text",
+      "type": "mismatch",
+      "expected": "GitHub",
+      "actual": "GitHub",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "mismatched-controls.html",
+      "field": {
+        "id": "aria_site"
+      },
+      "sig": "personal website|f_7733||text",
+      "type": "mismatch",
+      "expected": "Portfolio",
+      "actual": "Portfolio",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "mismatched-controls.html",
+      "field": {
+        "id": "aria_hidden_first"
+      },
+      "sig": "given name|f_7734||text",
+      "type": "mismatch",
+      "expected": "First Name",
+      "actual": "First Name",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "dynamic-multistep.html",
+      "field": {
+        "id": "s1_name"
+      },
+      "sig": "full name|s1_name||text",
+      "type": "dynamic",
+      "step": 1,
+      "expected": "Full Name",
+      "actual": "Full Name",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "dynamic-multistep.html",
+      "field": {
+        "id": "s1_email"
+      },
+      "sig": "email address|s1_email||text",
+      "type": "dynamic",
+      "step": 1,
+      "expected": "Email Address",
+      "actual": "Email Address",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "dynamic-multistep.html",
+      "field": {
+        "id": "s2_phone"
+      },
+      "sig": "phone number|s2_phone||text",
+      "type": "dynamic",
+      "step": 2,
+      "expected": "Phone Number",
+      "actual": "Phone Number",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "dynamic-multistep.html",
+      "field": {
+        "id": "s2_company"
+      },
+      "sig": "current company|s2_company||text",
+      "type": "dynamic",
+      "step": 2,
+      "expected": "Current Company",
+      "actual": "Current Company",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "dynamic-multistep.html",
+      "field": {
+        "id": "s3_linkedin"
+      },
+      "sig": "linkedin|s3_linkedin||text",
+      "type": "dynamic",
+      "step": 3,
+      "expected": "LinkedIn",
+      "actual": "LinkedIn",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    },
+    {
+      "fixture": "dynamic-multistep.html",
+      "field": {
+        "id": "s3_why"
+      },
+      "sig": "why do you want to work here?|s3_why||text",
+      "type": "dynamic",
+      "step": 3,
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "abstain.html",
+      "field": {
+        "id": "color"
+      },
+      "sig": "favorite color|color||text",
+      "type": "abstain",
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "abstain.html",
+      "field": {
+        "id": "maiden"
+      },
+      "sig": "mother's maiden name|maiden||text",
+      "type": "abstain",
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "abstain.html",
+      "field": {
+        "id": "secq"
+      },
+      "sig": "security question: name of your first pet|secq||text",
+      "type": "abstain",
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "abstain.html",
+      "field": {
+        "id": "pronouns"
+      },
+      "sig": "preferred pronouns|pronouns||text",
+      "type": "abstain",
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "abstain.html",
+      "field": {
+        "id": "shirt"
+      },
+      "sig": "t-shirt size|shirt||text",
+      "type": "abstain",
+      "expected": null,
+      "actual": null,
+      "pass": null,
+      "outcome": "correctAbstain",
+      "ok": true
+    },
+    {
+      "fixture": "abstain.html",
+      "field": {
+        "id": "email_abs"
+      },
+      "sig": "email address|email_abs||text",
+      "type": "plain",
+      "expected": "Email Address",
+      "actual": "Email Address",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
+    }
+  ],
+  "replay": {
+    "corrections": 11,
+    "confirmed": 11,
+    "modeledLlmFills": 11,
+    "before": {
+      "total": {
+        "correct": 42,
+        "expected": 53,
+        "accuracy": 0.7925,
+        "correctFill": 31,
+        "wrongFill": 0,
+        "correctAbstain": 11,
+        "wrongAbstain": 11
+      },
+      "byType": {
+        "plain": {
+          "correct": 23,
+          "expected": 27,
+          "accuracy": 0.8519,
+          "correctFill": 18,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 4
+        },
+        "ambiguous": {
+          "correct": 2,
+          "expected": 8,
+          "accuracy": 0.25,
+          "correctFill": 2,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 6
+        },
+        "mismatch": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "dynamic": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain": {
+          "correct": 5,
+          "expected": 5,
+          "accuracy": 1,
+          "correctFill": 0,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      },
+      "fixtures": {
+        "ashby-form.html": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "greenhouse-form.html": {
+          "correct": 9,
+          "expected": 10,
+          "accuracy": 0.9,
+          "correctFill": 7,
+          "wrongFill": 0,
+          "correctAbstain": 2,
+          "wrongAbstain": 1
+        },
+        "lever-form.html": {
+          "correct": 7,
+          "expected": 9,
+          "accuracy": 0.7778,
+          "correctFill": 4,
+          "wrongFill": 0,
+          "correctAbstain": 3,
+          "wrongAbstain": 2
+        },
+        "ambiguous-fieldsets.html": {
+          "correct": 2,
+          "expected": 8,
+          "accuracy": 0.25,
+          "correctFill": 2,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 6
+        },
+        "mismatched-controls.html": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "dynamic-multistep.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 1,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      }
+    },
+    "quarantined": {
+      "total": {
+        "correct": 42,
+        "expected": 53,
+        "accuracy": 0.7925,
+        "correctFill": 31,
+        "wrongFill": 0,
+        "correctAbstain": 11,
+        "wrongAbstain": 11
+      },
+      "byType": {
+        "plain": {
+          "correct": 23,
+          "expected": 27,
+          "accuracy": 0.8519,
+          "correctFill": 18,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 4
+        },
+        "ambiguous": {
+          "correct": 2,
+          "expected": 8,
+          "accuracy": 0.25,
+          "correctFill": 2,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 6
+        },
+        "mismatch": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "dynamic": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain": {
+          "correct": 5,
+          "expected": 5,
+          "accuracy": 1,
+          "correctFill": 0,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      },
+      "fixtures": {
+        "ashby-form.html": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "greenhouse-form.html": {
+          "correct": 9,
+          "expected": 10,
+          "accuracy": 0.9,
+          "correctFill": 7,
+          "wrongFill": 0,
+          "correctAbstain": 2,
+          "wrongAbstain": 1
+        },
+        "lever-form.html": {
+          "correct": 7,
+          "expected": 9,
+          "accuracy": 0.7778,
+          "correctFill": 4,
+          "wrongFill": 0,
+          "correctAbstain": 3,
+          "wrongAbstain": 2
+        },
+        "ambiguous-fieldsets.html": {
+          "correct": 2,
+          "expected": 8,
+          "accuracy": 0.25,
+          "correctFill": 2,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 6
+        },
+        "mismatched-controls.html": {
+          "correct": 6,
+          "expected": 7,
+          "accuracy": 0.8571,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 1
+        },
+        "dynamic-multistep.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 1,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      }
+    },
+    "after": {
+      "total": {
+        "correct": 53,
+        "expected": 53,
+        "accuracy": 1,
+        "correctFill": 42,
+        "wrongFill": 0,
+        "correctAbstain": 11,
+        "wrongAbstain": 0
+      },
+      "byType": {
+        "plain": {
+          "correct": 27,
+          "expected": 27,
+          "accuracy": 1,
+          "correctFill": 22,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        },
+        "ambiguous": {
+          "correct": 8,
+          "expected": 8,
+          "accuracy": 1,
+          "correctFill": 8,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 0
+        },
+        "mismatch": {
+          "correct": 7,
+          "expected": 7,
+          "accuracy": 1,
+          "correctFill": 7,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 0
+        },
+        "dynamic": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain": {
+          "correct": 5,
+          "expected": 5,
+          "accuracy": 1,
+          "correctFill": 0,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      },
+      "fixtures": {
+        "ashby-form.html": {
+          "correct": 7,
+          "expected": 7,
+          "accuracy": 1,
+          "correctFill": 7,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 0
+        },
+        "greenhouse-form.html": {
+          "correct": 10,
+          "expected": 10,
+          "accuracy": 1,
+          "correctFill": 8,
+          "wrongFill": 0,
+          "correctAbstain": 2,
+          "wrongAbstain": 0
+        },
+        "lever-form.html": {
+          "correct": 9,
+          "expected": 9,
+          "accuracy": 1,
+          "correctFill": 6,
+          "wrongFill": 0,
+          "correctAbstain": 3,
+          "wrongAbstain": 0
+        },
+        "ambiguous-fieldsets.html": {
+          "correct": 8,
+          "expected": 8,
+          "accuracy": 1,
+          "correctFill": 8,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 0
+        },
+        "mismatched-controls.html": {
+          "correct": 7,
+          "expected": 7,
+          "accuracy": 1,
+          "correctFill": 7,
+          "wrongFill": 0,
+          "correctAbstain": 0,
+          "wrongAbstain": 0
+        },
+        "dynamic-multistep.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 5,
+          "wrongFill": 0,
+          "correctAbstain": 1,
+          "wrongAbstain": 0
+        },
+        "abstain.html": {
+          "correct": 6,
+          "expected": 6,
+          "accuracy": 1,
+          "correctFill": 1,
+          "wrongFill": 0,
+          "correctAbstain": 5,
+          "wrongAbstain": 0
+        }
+      }
+    },
+    "accuracyRise": 0.2075
+  }
+}
