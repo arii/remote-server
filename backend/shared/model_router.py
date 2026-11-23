@@ -66,6 +66,8 @@ DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 DEFAULT_TWT_BASE_URL = "http://127.0.0.1:8000/v1"
+# The TwT gateway accepts provider_models only on this route.
+TWT_DEFAULT_MODEL = "default"
 PIPELINE_MAX_TOKENS = 8192
 PIPELINE_HISTORY_CHARS = 64000
 
@@ -280,7 +282,9 @@ def _nebius_spec():
 
 
 def _twt_spec():
-    return _remote_spec("twt", "default", _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL))
+    return _remote_spec(
+        "twt", TWT_DEFAULT_MODEL, _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL)
+    )
 
 
 def _validate_openrouter_model(model):
@@ -545,7 +549,11 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
     base_url = spec.get("base_url") or _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL)
     uds = spec.get("uds") or (_env("TWT_UDS") or None)
     provider_models = dict(spec.get("provider_models") or {})
-    if stage is not None and not provider_models:
+    if (
+        stage is not None
+        and not provider_models
+        and spec.get("model") == TWT_DEFAULT_MODEL
+    ):
         provider_models = {
             "nvidia": _env(
                 f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
@@ -577,7 +585,11 @@ def build_chat_model(
     spec = dict(spec) if spec else resolve_llm()
     if stage is not None and stage not in STAGE_NEBIUS_MODELS:
         raise ValueError(f"unknown pipeline model stage: {stage}")
-    if spec.get("provider") == "twt" and stage is not None:
+    if (
+        spec.get("provider") == "twt"
+        and stage is not None
+        and spec.get("model") == TWT_DEFAULT_MODEL
+    ):
         provider_models = {
             "nvidia": _env(
                 f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
