@@ -268,7 +268,7 @@ class FixtureTd:
 
 def _plan(brief, worktree_root, context):
     return {
-        "plan": f"Fix per brief: {brief[:80]}",
+        "plan": "1. Fix calculator behavior [files: calc.py]",
         "allowed_files": ["calc.py"],
         "verification_commands": ["pytest test_calc.py -q"],
     }

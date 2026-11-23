@@ -306,9 +306,13 @@ def validate_plan(plan):
     return True, "PLAN recorded:\n" + plan.strip()
 
 
+def marked_plan_files(plan):
+    return files_named(*re.findall(r"\[files:\s*([^\]]+)\]", plan, re.I))
+
+
 def first_edit_targets(worktree, plan, *, exclude=()):
     """Use the plan's file list, not incidental paths in its prose."""
-    paths = files_named(*re.findall(r"\[files:\s*([^\]]+)\]", plan, re.I))
+    paths = marked_plan_files(plan)
     targets = {}
     for path in paths:
         path = os.path.normpath(path)

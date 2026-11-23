@@ -67,22 +67,27 @@ def clean_allowed_file_urls(text):
     return "".join(lines)
 
 
-def explicit_allowed_paths(text):
-    paths = []
+def allowed_file_entries(text):
+    paths = {}
     allowed = False
     for line in clean_allowed_file_urls(text).splitlines():
         heading = re.match(r"^\s*#{1,6}\s+(.+)", line)
         if heading:
             allowed = heading[1].lower().startswith(("allowed files", "allowed paths"))
         elif allowed:
-            match = re.match(r"^\s*[-*+]\s+`?([^`\s]+)", line)
+            match = re.match(r"^\s*[-*+]\s+`?([^`\s]+)`?(.*)", line)
             if match:
                 path = match[1]
                 while path.startswith("./"):
                     path = path[2:]
-                if ("/" in path or "." in path) and path not in paths:
-                    paths.append(path)
+                if "/" in path or "." in path:
+                    create = bool(re.search(r"\(CREATE\)", match[2], re.I))
+                    paths[path] = paths.get(path, False) or create
     return paths
+
+
+def explicit_allowed_paths(text):
+    return list(allowed_file_entries(text))
 
 
 class InvestigationTruncated(RuntimeError):
@@ -332,8 +337,10 @@ class IssueGeneratorGraph:
         max_spec_turns=None,
         max_spec_tool_calls=None,
         preseed_fn=None,
+        spec_path=None,
     ):
         self.repo_root = os.path.abspath(repo_root or os.getcwd())
+        self.spec_path = spec_path
         self.model_fn = model_fn
         self.investigate_fn = investigate_fn
         self.td_runner = td_runner or _run_td
@@ -460,6 +467,46 @@ class IssueGeneratorGraph:
             return False, (payload.get("message") or out[:300] or f"exit {code}")
         return True, payload
 
+    def has_implementation_path(self, entries):
+        existing = []
+        for path, create in entries.items():
+            normalized = os.path.normpath(path)
+            artifact = (
+                normalized == self.spec_path
+                if self.spec_path is not None
+                else re.fullmatch(r"docs/specs/issue-\d+\.md", normalized)
+            )
+            if artifact or path.startswith("/") or ".." in path.split("/"):
+                continue
+            try:
+                target = Path(active_checkout_path(self.repo_root, path))
+            except ValueError:
+                continue
+            if target.is_file():
+                existing.append(path)
+            elif create and not os.path.lexists(target):
+                return True
+        if not existing:
+            return False
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                self.repo_root,
+                "--literal-pathspecs",
+                "ls-files",
+                "-z",
+                "--",
+                *existing,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0 and not set(existing).isdisjoint(
+            result.stdout.split("\0")
+        )
+
     def validate_spec(self, spec_text):
         """Validate citation-free scope text, preserving commands and stored links."""
         handle = tempfile.NamedTemporaryFile(
@@ -498,7 +545,8 @@ class IssueGeneratorGraph:
             errors = list(data.get("errors") or [])
             if code != 0 and not errors:
                 errors = [(data.get("message") or out[:300] or f"exit {code}")]
-            paths = explicit_allowed_paths(spec_text)
+            entries = allowed_file_entries(spec_text)
+            paths = list(entries)
             scope_error = re.compile(
                 r"^allowed path not in checkout: (.+?) \(mark with"
             )
@@ -515,6 +563,13 @@ class IssueGeneratorGraph:
             # instructions retain a string its acceptance criteria
             # forbid must redraft before coding, not code the conflict.
             errors.extend(literal_checks.spec_contradictions(spec_text))
+            if not errors and not self.has_implementation_path(entries):
+                errors.append(
+                    "Allowed Files must contain at least one implementation path, "
+                    "not the generated spec itself. Use one Markdown bullet per "
+                    "repo-relative file (not a table); choose an existing tracked "
+                    "file or mark an intended new file (CREATE)."
+                )
             valid = bool(data.get("valid") or original_errors) and not errors
             data.update(allowed_files=paths, valid=valid, errors=errors)
             return valid, data, errors
@@ -633,8 +688,10 @@ class IssueGeneratorGraph:
             "tracked paths or repository evidence below. Quote only code "
             "actually shown in the repository evidence; do not invent "
             "paths, symbols, or excerpts and present them as existing. "
-            "For a proposed new file, label it (CREATE) on the same line "
-            "as its path in Allowed Files and describe it as new, not as "
+            "In Allowed Files, use one Markdown bullet per implementation "
+            "path, not a table, and do not list the generated spec itself. "
+            "For a proposed new file, label it (CREATE) on the same bullet "
+            "as its path and describe it as new, not as "
             "evidence of current behavior. If the evidence does not show "
             "the implementation, say so and ask any blocking questions "
             "in a trailing bulleted list.\n\n"

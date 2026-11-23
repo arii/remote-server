@@ -18,6 +18,8 @@ class TestExplicitScope(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             Path(root, "backend").mkdir()
             Path(root, "backend/repair_worker.py").write_text("pass\n")
+            subprocess.run(["git", "init", "-q", root], check=True)
+            subprocess.run(["git", "-C", root, "add", "backend"], check=True)
             graph = issue_generator.IssueGeneratorGraph(root)
             for path, expected in (
                 ("./backend/repair_worker.py", True),
@@ -60,8 +62,71 @@ class TestExplicitScope(unittest.TestCase):
         )
         self.assertEqual(graph.validate_spec("")[2], ["missing required section: Goal"])
 
+    def test_only_tracked_or_create_implementation_paths_satisfy_scope(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "runner.py").touch()
+            Path(root, "untracked.py").touch()
+            subprocess.run(["git", "init", "-q", root], check=True)
+            subprocess.run(["git", "-C", root, "add", "runner.py"], check=True)
+            graph = issue_generator.IssueGeneratorGraph(
+                root,
+                td_runner=lambda _: (0, '{"valid": true}'),
+                spec_path="docs/specs/issue-1570.md",
+            )
+            for lines, expected in (
+                (
+                    "| Modify | `runner.py` |\n- `docs/specs/issue-1570.md` (CREATE)",
+                    False,
+                ),
+                ("- `untracked.py`", False),
+                ("- `untracked.py` (CREATE)", False),
+                ("- `missing.py`\n## References\n(CREATE)", False),
+                ("- `runner.py`", True),
+                ("- `missing.py` (CREATE)", True),
+            ):
+                with self.subTest(lines=lines):
+                    valid, _, errors = graph.validate_spec(
+                        "### Allowed Files\n" + lines
+                    )
+                    self.assertEqual(valid, expected, errors)
+                    if not expected:
+                        self.assertIn("at least one implementation path", errors[0])
+
 
 class TestSpecResume(unittest.TestCase):
+    @unittest.skipUnless(
+        importlib.util.find_spec("langgraph"), "agent dependencies not installed"
+    )
+    def test_1570_scope_error_redrafts_with_tracked_paths(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "runner.py").touch()
+            subprocess.run(["git", "init", "-q", root], check=True)
+            subprocess.run(["git", "-C", root, "add", "runner.py"], check=True)
+            model = mock.Mock()
+            model.invoke.side_effect = [
+                "### Allowed Files\n| Modify | `runner.py` |\n"
+                "- `docs/specs/issue-1570.md` (CREATE)\n",
+                "### Allowed Files\n- `runner.py`\n",
+            ]
+            graph = issue_generator.IssueGeneratorGraph(
+                root,
+                model_fn=lambda: model,
+                investigate_fn=lambda *_: "runner.py:1 evidence",
+                td_runner=lambda _: (0, '{"status": "ready", "valid": true}'),
+                spec_path="docs/specs/issue-1570.md",
+                preseed_fn=lambda _: "",
+            )
+            with mock.patch("backend.shared.ledger.record"):
+                state = graph.run("Fix runner behavior")
+            self.assertTrue(state["valid"], state["errors"])
+            self.assertEqual(state["attempts"], 2)
+            prompt = model.invoke.call_args.args[0]
+            self.assertIn("at least one implementation path", prompt)
+            self.assertIn(
+                "Relevant tracked paths in the active checkout:\nrunner.py", prompt
+            )
+            self.assertIn("not a table", prompt)
+
     @unittest.skipUnless(
         importlib.util.find_spec("langgraph"), "langgraph not installed"
     )
@@ -91,7 +156,7 @@ class TestSpecResume(unittest.TestCase):
                 mock.patch.object(
                     issue_generator.IssueGeneratorGraph,
                     "draft_text",
-                    return_value=f"### Allowed Files\n- `widget.py`\n- {question}",
+                    return_value=f"### Allowed Files\n- `new_widget.py` (CREATE)\n- {question}",
                 ),
                 mock.patch("backend.shared.ledger.record"),
             ):
