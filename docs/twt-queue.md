@@ -119,6 +119,12 @@ systemctl --user start twt-queue.service
 the supervisor lock, requires exactly one eligible manifest entry and a failed
 summary without a saved worker halt, and runs canonical receipt reconciliation
 before moving the old run directory to `state_dir/archive/ISSUE-TIMESTAMP`.
+The runtime also moves a registered `.worktrees/issue-N` into the same repo's
+`.worktrees/.queue-retry/ISSUE-TIMESTAMP`, renaming its branch to
+`queue-retry/ISSUE-TIMESTAMP`. Dirty and untracked files survive. The archived
+run's `worktree-archive.json` links the old path, preserved branch/HEAD and new
+path. Both archive operations resume from durable intent after interruption;
+the retry is not eligible until both complete. No worktree is deleted.
 Logs, journals, ledger and summary are preserved after reconciliation (journal ledger paths
 still describe the original run location). It removes only that issue from
 `completed`, records the archive in `status.json`, and prioritizes its next attempt

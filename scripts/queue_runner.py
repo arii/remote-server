@@ -513,7 +513,94 @@ def reconcile_job(config, source, directory, runtime_directory):
     return read_json(recovery)
 
 
-def finish_retry(root, status_path, status):
+def archive_issue_worktree(directory):
+    directory = Path(directory).resolve()
+    job = read_json(directory / "job.json")
+    repo = Path(job["checkout"]).resolve()
+    source = repo / ".worktrees" / f"issue-{job['issue']['number']}"
+    destination = source.parent / ".queue-retry" / directory.name
+    manifest = directory / "worktree-archive.json"
+    owner = (directory.stat().st_uid, directory.stat().st_gid)
+
+    def git(*args, cwd=repo):
+        return subprocess.check_output(
+            ["git", "-C", str(cwd), *args], text=True
+        ).strip()
+
+    if manifest.exists():
+        record = read_json(manifest)
+        if record["source"] != str(source) or record["destination"] != str(destination):
+            raise SafetyStop("retry worktree archive differs from saved intent")
+    else:
+        if destination.exists() or source.is_symlink():
+            raise SafetyStop("unexpected retry worktree archive or symlink")
+        record = {"source": str(source), "destination": str(destination)}
+        if not source.exists():
+            record["absent"] = True
+        else:
+            common = (
+                source / git("rev-parse", "--git-common-dir", cwd=source)
+            ).resolve()
+            if common != (repo / git("rev-parse", "--git-common-dir")).resolve():
+                raise SafetyStop("retry worktree belongs to another repository")
+            if (
+                Path(git("rev-parse", "--show-toplevel", cwd=source)).resolve()
+                != source
+            ):
+                raise SafetyStop("retry source is not a worktree root")
+            branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=source)
+            if branch in ("main", "master"):
+                raise SafetyStop("refusing to rename a primary branch during retry")
+            record.update(
+                branch=None if branch == "HEAD" else branch,
+                archive_branch="queue-retry/" + directory.name,
+                head=git("rev-parse", "HEAD", cwd=source),
+            )
+        write_json(manifest, record, owner)
+    if record.get("absent"):
+        if source.exists() or destination.exists():
+            raise SafetyStop("worktree appeared after an absent archive intent")
+        return 0
+    if source.exists():
+        if destination.exists() or source.is_symlink():
+            raise SafetyStop("retry worktree source and archive conflict")
+        branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=source)
+        if record["branch"] and branch == record["branch"]:
+            git("branch", "-m", record["archive_branch"], cwd=source)
+        elif branch != (record["archive_branch"] if record["branch"] else "HEAD"):
+            raise SafetyStop("retry worktree branch changed during archival")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        git("worktree", "move", str(source), str(destination))
+    if not destination.is_dir():
+        raise SafetyStop("retry worktree source and archive missing")
+    if destination.is_symlink():
+        raise SafetyStop("retry worktree archive is a symlink")
+    git("worktree", "repair", str(destination))
+    if git("rev-parse", "HEAD", cwd=destination) != record["head"]:
+        raise SafetyStop("archived worktree HEAD differs from saved evidence")
+    if git("rev-parse", "--abbrev-ref", "HEAD", cwd=destination) != (
+        record["archive_branch"] if record["branch"] else "HEAD"
+    ):
+        raise SafetyStop("archived worktree branch differs from saved evidence")
+    record["complete"] = True
+    write_json(manifest, record, owner)
+    return 0
+
+
+def archive_retry_worktree(config, root, archive):
+    runtime = Path(config["runtime_state_dir"]) / archive.relative_to(root)
+    with (archive / "worktree-archive.log").open("a") as log:
+        subprocess.run(
+            worker_command(config, "--archive-worktree", runtime),
+            input=Path(__file__).read_text(),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=True,
+        )
+
+
+def finish_retry(root, status_path, status, config):
     intent = status.get("retry_intent")
     if not intent:
         return
@@ -529,6 +616,7 @@ def finish_retry(root, status_path, status):
         directory.rename(archive)
     elif not archive.is_dir():
         raise SafetyStop("retry source and archive missing; inspect evidence")
+    archive_retry_worktree(config, root, archive)
     status["completed"] = [item for item in status["completed"] if item != key]
     status.get("skipped", {}).pop(key, None)
     status.update(retry=key, done=False)
@@ -557,7 +645,7 @@ def retry_issue(config_path, key):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status_path = root / "status.json"
         status = read_json(status_path)
-        finish_retry(root, status_path, status)
+        finish_retry(root, status_path, status, config)
         if status.get("current") or status.get("retry"):
             raise SafetyStop("resolve the current or pending retry before retrying")
         saved = read_json(directory / "job.json")["issue"]
@@ -602,7 +690,7 @@ def retry_issue(config_path, key):
             "prior_spend_usd": spent,
         }
         write_json(status_path, status)
-        finish_retry(root, status_path, status)
+        finish_retry(root, status_path, status, config)
         print(f"REQUEUED {key} archive={archive} prior_spend_usd={spent:.8f}")
     return 0
 
@@ -626,7 +714,7 @@ def supervise(config_path, *, clear_halt=False):
     with (root / "queue.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status = read_json(status_path) if status_path.exists() else {"completed": []}
-        finish_retry(root, status_path, status)
+        finish_retry(root, status_path, status, config)
         if status.get("current"):
             current = status["current"]
             try:
@@ -830,6 +918,7 @@ def main():
     )
     group.add_argument("--worker", type=Path)
     group.add_argument("--reconcile", type=Path)
+    group.add_argument("--archive-worktree", type=Path)
     parser.add_argument(
         "--retry",
         metavar="REPO#ISSUE",
@@ -842,17 +931,19 @@ def main():
     )
     args = parser.parse_args()
     if args.retry:
-        if args.worker or args.reconcile or args.clear_halt:
+        if args.worker or args.reconcile or args.archive_worktree or args.clear_halt:
             parser.error(
                 "--retry requires supervisor configuration without --clear-halt"
             )
         return retry_issue(args.config, args.retry)
-    directory = args.worker or args.reconcile
+    directory = args.worker or args.reconcile or args.archive_worktree
     if directory:
         if args.clear_halt:
             parser.error("--clear-halt requires supervisor configuration")
         with (directory / "worker.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if args.archive_worktree:
+                return archive_issue_worktree(directory)
             return worker(directory) if args.worker else recover(directory)
     return supervise(args.config, clear_halt=args.clear_halt)
 
