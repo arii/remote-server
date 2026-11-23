@@ -533,6 +533,93 @@ class TestCoderBackend(unittest.TestCase):
             self.assertFalse(Path(root, "new.py").exists())
             self.assertEqual(written.mutations, 0)
 
+    def test_notifier_rewrites_preserve_imported_names_until_importers_change(self):
+        file_path = "backend/notify/prefs_state.py"
+        budget = "backend/notify/budget.py"
+        router = "backend/notify/router.py"
+        exports = '__all__ = ["send_notification"]\n'
+        removed = (
+            "notifier_lock: object = object()\n"
+            "def load_notifier_state():\n"
+            "    return {}\n" + exports
+        )
+        kept = "class State:\n    pass\n\nasync def send_notification():\n    pass\n"
+        original = removed + kept
+        proposal = kept + "\ndef classify_runner_state():\n    return 'idle'\n"
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, file_path)
+            target.parent.mkdir(parents=True)
+            target.write_text(original)
+            Path(root, budget).write_text(
+                "from backend.notify.prefs_state import (\n"
+                "    load_notifier_state,\n"
+                "    notifier_lock,\n"
+                ")\n"
+            )
+            Path(root, router).write_text(
+                "from . import prefs_state as prefs\n"
+                "prefs.send_notification()\n"
+                "import backend.notify.prefs_state\n"
+                "backend.notify.prefs_state.notifier_lock\n"
+            )
+            Path(root, "untracked.py").write_text(
+                "from backend.notify.prefs_state import notifier_lock\n"
+            )
+            subprocess.run(["git", "init", "-q", root], check=True)
+            subprocess.run(
+                ["git", "-C", root, "add", "--", file_path, budget, router],
+                check=True,
+            )
+            backend = coder.build_filesystem_backend(root)
+            edit = coder.build_edit_tool(backend)
+            replace = coder.build_replace_lines_tool(backend, {file_path: True})
+            written = coder.WriteTracker()
+            results = (
+                self.tool_call(
+                    root,
+                    "write_file",
+                    {"file_path": file_path, "content": proposal},
+                    written,
+                ),
+                edit.invoke(
+                    dict(
+                        name=edit.name,
+                        id="edit",
+                        type="tool_call",
+                        args=dict(
+                            file_path=file_path, old_string=removed, new_string=""
+                        ),
+                    )
+                ),
+                replace.invoke(
+                    dict(
+                        name=replace.name,
+                        id="replace",
+                        type="tool_call",
+                        args=dict(
+                            file_path=file_path, start_line=1, end_line=4, new_text=""
+                        ),
+                    )
+                ),
+            )
+            for result in results:
+                self.assertEqual(result.status, "error")
+                self.assertIn(f"No changes written: {file_path}:", result.content)
+                self.assertIn(f"load_notifier_state: {budget}:2", result.content)
+                self.assertIn(f"notifier_lock: {budget}:3, {router}:4", result.content)
+                self.assertIn(f"send_notification: {router}:2", result.content)
+                self.assertIn("update the importers in the plan", result.content)
+                self.assertNotIn("untracked.py", result.content)
+            self.assertEqual(target.read_text(), original)
+            self.assertEqual(written.mutations, 0)
+
+            Path(root, budget).write_text("from elsewhere import notifier_lock\n")
+            Path(root, router).write_text(
+                "from elsewhere import prefs_state\nprefs_state.send_notification()\n"
+            )
+            self.assertIsNone(backend.write(file_path, proposal).error)
+            self.assertEqual(target.read_text(), proposal)
+
     def test_invalid_typescript_write_uses_transpiler(self):
         from backend.ast_validator import _ts_lib_dir
 
