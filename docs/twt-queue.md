@@ -268,12 +268,14 @@ claims, and other statuses do not block. The supervisor reads the response
 Sheet through Drive CSV export, not the hourly JSONL snapshot. It interprets
 timestamps as UTC.
 
-On main, a read failure logs `LEDGER read failed, not blocking ...` and the
-issue proceeds. [PR #1619](https://github.com/arii/remote-server/pull/1619) is
-open: it proposes skipping the issue when the ledger cannot be read and
-removing the Google client library dependency. The PR's S5 system-Python read
-probe does not prove the queue fix is deployed. Do not treat a read error as
-proof an issue is unclaimed.
+If the ledger cannot be read, the check fails closed: the issue is skipped and
+recorded in `ledger_skipped` as `ledger unreadable (<ErrorType>), failing closed`.
+The next run checks it again. The reader is standard library only, so the
+service's `/usr/bin/python3` can run it. On the S5 host set `GOOGLE_TOKEN_FILE` in
+`~/.config/twt-queue/environment` to the host path of
+`gdocs-access/token.json`, because the default is the container path.
+[PR #1619](https://github.com/arii/remote-server/pull/1619) merged; its S5
+system-Python read probe does not prove deployment or live skip behavior.
 
 A failed post never fails the run. The row is saved in `status.json`
 `ledger_pending`, retried once at the next boundary (the start of the next

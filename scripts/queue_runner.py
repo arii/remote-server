@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zoneinfo
 
 
 class SafetyStop(RuntimeError):
@@ -345,6 +346,8 @@ def checked_cap(value):
 
 LEDGER_AGENT = "S5-Queue"
 LEDGER_STALE_HOURS = 6
+# Form timestamps are naive, in the Agent Ledger Sheet's timezone.
+LEDGER_TIMEZONE = "America/Los_Angeles"
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 STATUS_CODE = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
 
@@ -378,7 +381,8 @@ def ledger_age_hours(stamp, now):
             then = datetime.datetime.strptime(stamp.strip(), form)
         except ValueError:
             continue
-        return (now - then.replace(tzinfo=datetime.timezone.utc)).total_seconds() / 3600
+        zone = zoneinfo.ZoneInfo(LEDGER_TIMEZONE)
+        return (now - then.replace(tzinfo=zone)).total_seconds() / 3600
     return None
 
 
@@ -387,7 +391,8 @@ def is_spend_cap(result):
 
 
 class QueueLedger:
-    """Agent Ledger rows for queue runs. A ledger outage never fails the run.
+    """Agent Ledger rows for queue runs. A failed post never fails the run; a
+    failed read skips the issue, because an unchecked claim may be someone else's.
 
     Rows are keyed by Link = issue URL, because ledger_read folds the latest row
     per Link. The PR URL goes in the note so the key stays stable.
@@ -456,13 +461,14 @@ class QueueLedger:
                 write_json(self.status_path, self.status)
 
     def claimed_elsewhere(self, key):
-        """Return a skip reason when another source holds a fresh Act claim."""
+        """Return a skip reason when another source holds a fresh Act claim or
+        the ledger cannot be read."""
         link = self.url(key)
         try:
             rows = [r for r in ledger_rows() if (r.get("Link") or "").strip() == link]
         except Exception as error:
-            ledger_log(f"read failed, not blocking {key}: {type(error).__name__}")
-            return None
+            ledger_log(f"read failed, skipping {key}: {type(error).__name__}")
+            return f"ledger unreadable ({type(error).__name__}), failing closed"
         if not rows:
             return None
         latest = rows[-1]
@@ -1225,6 +1231,10 @@ def supervise(config_path, *, clear_halt=False):
                 status.setdefault("ledger_skipped", {})[key] = held
                 write_json(status_path, status)
                 continue
+            if stopping or (root / "STOP").exists():
+                status.update(stopped=True, current=None)
+                write_json(status_path, status)
+                return 0
             directory.mkdir(mode=0o700)
             runtime_directory = runtime_root / name
             tier, tier_reason = start_tier(
