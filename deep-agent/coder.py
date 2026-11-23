@@ -74,6 +74,8 @@ CODER_DB = os.path.join(HERE, ".coder_threads", "coder.db")
 DEFAULT_TIMEOUT = 1800
 EXISTING_FILE_EDITS = frozenset({"edit_file", "replace_lines"})
 MUTATING_TOOLS = EXISTING_FILE_EDITS | {"write_file", "delete"}
+SYNTAX_CHECKED_SUFFIXES = frozenset({".py", ".ts", ".tsx"})
+SYNTAX_REJECTION = "No changes written"
 DEFAULT_VERIFY_ROUNDS = 2
 REPAIR_TOOL_LIMIT = 20
 NEXT_OFFSET_RE = re.compile(r"\bnext offset (\d+)")
@@ -628,6 +630,39 @@ def worktree_file_key(worktree, path):
     return path.lstrip("/")
 
 
+def numbered_lines(lines, start, end):
+    return "\n".join(f"{i + 1} | {lines[i]}" for i in range(start, end))
+
+
+def proposed_syntax_error(file_path, content):
+    suffix = os.path.splitext(file_path)[1].lower()
+    if suffix == ".py":
+        try:
+            compile(content, file_path, "exec", dont_inherit=True)
+        except SyntaxError as exc:
+            line, message = exc.lineno, f"SyntaxError: {exc.msg}"
+        else:
+            return None
+    elif suffix in SYNTAX_CHECKED_SUFFIXES:
+        from backend.ast_validator import validate_source_syntax
+
+        result = validate_source_syntax(file_path, content)
+        if result.get("degraded"):
+            return f"{SYNTAX_REJECTION}: TypeScript syntax checker unavailable for {file_path}."
+        if result["valid"]:
+            return None
+        line, message = result["line"], result["error"]
+    else:
+        return None
+    line = max(1, line or 1)
+    lines = content.splitlines()
+    excerpt = numbered_lines(lines, max(0, line - 3), min(line + 2, len(lines)))
+    return (
+        f"{SYNTAX_REJECTION}: {file_path}:{line}: {message}\n"
+        "Proposed content (current file unchanged):\n" + excerpt
+    )
+
+
 def build_filesystem_backend(worktree):
     from deepagents.backends import FilesystemBackend
 
@@ -646,6 +681,40 @@ def build_filesystem_backend(worktree):
                     f"under {self.cwd}"
                 ) from exc
             return super()._resolve_path(key)
+
+        def write(self, file_path, content):
+            from deepagents.backends.protocol import WriteResult
+
+            error = proposed_syntax_error(file_path, content)
+            if error:
+                return WriteResult(error=error)
+            return super().write(file_path, content)
+
+        def edit(self, file_path, old_string, new_string, replace_all=False):
+            from deepagents.backends.protocol import EditResult
+            from deepagents.backends.utils import perform_string_replacement
+
+            if os.path.splitext(file_path)[1].lower() not in SYNTAX_CHECKED_SUFFIXES:
+                return super().edit(file_path, old_string, new_string, replace_all)
+            source = edit_source(self, file_path)
+            if source is None:
+                return EditResult(
+                    error=f"Error: Cannot read file '{file_path}' as UTF-8"
+                )
+            source, old_string, new_string = (
+                part.replace("\r\n", "\n").replace("\r", "\n")
+                for part in (source, old_string, new_string)
+            )
+            proposal = perform_string_replacement(
+                source, old_string, new_string, replace_all
+            )
+            if isinstance(proposal, str):
+                return EditResult(error=proposal)
+            content, occurrences = proposal
+            result = self.write(file_path, content)
+            if result.error:
+                return EditResult(error=result.error)
+            return EditResult(path=file_path, occurrences=occurrences)
 
     return CoderFilesystemBackend(root_dir=worktree, virtual_mode=True)
 
@@ -818,9 +887,7 @@ def closest_edit_region(source, old_string):
             best_start, best_score = start, score
             if score == 1:
                 break
-    return "\n".join(
-        f"{i + 1} | {lines[i]}" for i in range(best_start, best_start + width)
-    )
+    return numbered_lines(lines, best_start, best_start + width)
 
 
 def build_edit_tool(backend):
@@ -835,6 +902,8 @@ def build_edit_tool(backend):
             )
         result = backend.edit(file_path, old_string, new_string)
         if result.error:
+            if result.error.startswith(SYNTAX_REJECTION):
+                raise ToolException(result.error)
             if result.error.startswith("Error: String not found in file:"):
                 source = edit_source(backend, file_path)
                 region = closest_edit_region(source, old_string) if source else ""
@@ -888,8 +957,10 @@ def build_replace_lines_tool(backend, planned_files):
         )
         if updated == source:
             raise ToolException("Replacement would not change the file.")
-        result = backend.upload_files([(file_path, updated.encode("utf-8"))])[0]
+        result = backend.write(file_path, updated)
         if result.error:
+            if result.error.startswith(SYNTAX_REJECTION):
+                raise ToolException(result.error)
             raise ToolException(f"Cannot replace lines in {file_path}: {result.error}")
         return f"Replaced lines {start_line}–{end_line} in {file_path}."
 

@@ -1,6 +1,7 @@
 import asyncio
 import ast
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -447,6 +448,109 @@ class TestCoderBackend(unittest.TestCase):
             )
             self.assertEqual(choices, ["required", "required", None])
             self.assertEqual(result["messages"][-1].content, "BLOCKED #1")
+
+    def test_viewer_repair_rejects_invalid_edits_before_writing(self):
+        file_path = "backend/tests/test_viewer_empty_state.py"
+        docstring = '"""Viewer status row + empty state.\n\nThe live pill clipped.\n"""'
+        original = docstring + "\n\nimport unittest\n"
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, file_path)
+            path.parent.mkdir(parents=True)
+            path.write_text(original)
+            backend = coder.build_filesystem_backend(root)
+            replace_lines = coder.build_replace_lines_tool(backend, {file_path: True})
+            edit_file = coder.build_edit_tool(backend)
+            escaped = docstring.replace("\n", r"\n") + r"\n\n# Import for test coverage"
+            cases = (
+                (
+                    replace_lines,
+                    dict(
+                        file_path=file_path, start_line=1, end_line=4, new_text=escaped
+                    ),
+                    "unexpected character after line continuation character",
+                    f"1 | {escaped}",
+                ),
+                (
+                    edit_file,
+                    dict(
+                        file_path=file_path,
+                        old_string="import unittest",
+                        new_string='"""',
+                    ),
+                    "unterminated triple-quoted string literal",
+                    '6 | """',
+                ),
+            )
+            for tool, args, error, excerpt in cases:
+                with self.subTest(tool=tool.name):
+                    result = tool.invoke(
+                        dict(name=tool.name, id="repair", type="tool_call", args=args)
+                    )
+                    self.assertEqual(result.status, "error")
+                    self.assertIn(f"No changes written: {file_path}:", result.content)
+                    self.assertIn(error, result.content)
+                    self.assertIn(excerpt, result.content)
+                    self.assertEqual(path.read_text(), original)
+
+            result = self.tool_call(
+                root,
+                "edit_file",
+                dict(
+                    file_path=file_path,
+                    old_string="import unittest",
+                    new_string="if True:",
+                ),
+            )
+            self.assertEqual(result.status, "error")
+            self.assertIn(f"{file_path}:6: SyntaxError:", result.content)
+            self.assertEqual(path.read_text(), original)
+            result = self.tool_call(
+                root,
+                "edit_file",
+                dict(
+                    file_path=file_path,
+                    old_string="import unittest",
+                    new_string="import sys",
+                ),
+            )
+            self.assertEqual(result.status, "success", result.content)
+            self.assertEqual(path.read_text(), original.replace("unittest", "sys"))
+
+    def test_invalid_python_write_does_not_create_or_track_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            written = coder.WriteTracker()
+            result = self.tool_call(
+                root,
+                "write_file",
+                dict(file_path="new.py", content="return 0\n"),
+                written,
+            )
+            self.assertEqual(result.status, "error")
+            self.assertIn(
+                "new.py:1: SyntaxError: 'return' outside function", result.content
+            )
+            self.assertIn("1 | return 0", result.content)
+            self.assertFalse(Path(root, "new.py").exists())
+            self.assertEqual(written.mutations, 0)
+
+    def test_invalid_typescript_write_uses_transpiler(self):
+        from backend.ast_validator import _ts_lib_dir
+
+        if not shutil.which("node") or not _ts_lib_dir():
+            self.skipTest("requires TypeScript compiler")
+        with tempfile.TemporaryDirectory() as root:
+            backend = coder.build_filesystem_backend(root)
+            for path, invalid, valid in (
+                ("test.ts", "const foo = ;", "const foo: number = 1;"),
+                ("test.tsx", "const foo = <div>{}</span>;", "const foo = <div />;"),
+            ):
+                with self.subTest(path=path):
+                    result = backend.write(path, invalid)
+                    self.assertIn(f"No changes written: {path}:1:", result.error)
+                    self.assertIn(f"1 | {invalid}", result.error)
+                    self.assertFalse(Path(root, path).exists())
+                    self.assertIsNone(backend.write(path, valid).error)
+                    self.assertEqual(Path(root, path).read_text(), valid)
 
     def test_host_absolute_paths_inside_worktree_are_normalized(self):
         with tempfile.TemporaryDirectory() as root:
