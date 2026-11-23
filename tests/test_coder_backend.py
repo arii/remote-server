@@ -1,8 +1,10 @@
 import asyncio
 import ast
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import coder
 
@@ -16,6 +18,143 @@ except ImportError:
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderBackend(unittest.TestCase):
+    def run_completion(self, root, steps, rounds):
+        import deep_chat
+        import observe
+        from backend.shared import ledger
+        from langchain_core.messages import AIMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+        from tests.test_coder_outcome import LocalModel
+
+        prompts = []
+
+        class Model(LocalModel):
+            def _generate(self, messages, *args, **kwargs):
+                if messages[-1].type == "human":
+                    prompts.append(messages[-1].content)
+                return super()._generate(messages, *args, **kwargs)
+
+        replies = []
+        for i, step in enumerate(steps):
+            if isinstance(step, str):
+                replies.append(AIMessage(content=step))
+            else:
+                name, args = step
+                replies.append(
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": name,
+                                "args": args,
+                                "id": str(i),
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                )
+        with (
+            mock.patch.object(
+                coder,
+                "build_model",
+                return_value=(
+                    Model(responses=replies),
+                    {"provider": "twt", "model": "test"},
+                ),
+            ),
+            mock.patch.object(coder, "verify_rounds", return_value=rounds),
+            mock.patch.object(
+                deep_chat,
+                "open_checkpointer",
+                return_value=(InMemorySaver(), False, None),
+            ),
+            mock.patch.object(
+                observe,
+                "default_trace_path",
+                return_value=str(Path(root, "trace.jsonl")),
+            ),
+            mock.patch.object(ledger, "record"),
+        ):
+            result = coder.run_coder(root, "Implement #1570", "system", "thread", 10)
+        return result, prompts
+
+    def test_failed_self_check_is_sent_back_for_a_fix(self):
+        path = "tests/test_runner_status.py"
+        bad_import = "from nonexistent_runner import runner_state"
+        test = "import unittest\nclass TestRunner(unittest.TestCase):\n    def test_state(self):\n        self.assertEqual(runner_state, 'idle')\n"
+        command = "python3 -m unittest tests.test_runner_status"
+        check = ("run_check", {"command": command})
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "tests").mkdir()
+            (Path(root) / "tests/__init__.py").touch()
+            subprocess.run(["git", "init", "-q", root], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    root,
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-qm",
+                    "baseline",
+                    "--allow-empty",
+                ],
+                check=True,
+            )
+            result, prompts = self.run_completion(
+                root,
+                [
+                    (
+                        "write_file",
+                        {"file_path": path, "content": bad_import + "\n" + test},
+                    ),
+                    "Wrote the test.\nDONE #1570",
+                    check,
+                    "DONE #1570",
+                    (
+                        "edit_file",
+                        {
+                            "file_path": path,
+                            "old_string": bad_import,
+                            "new_string": "runner_state = 'idle'",
+                        },
+                    ),
+                    check,
+                    "Fixed the import.\nDONE #1570",
+                ],
+                rounds=2,
+            )
+            self.assertNotIn(bad_import, Path(root, path).read_text())
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual(prompts[1], coder.VERIFY_NUDGE)
+        self.assertIn(
+            f"Latest failed run_check: {command}",
+            prompts[2],
+        )
+        self.assertIn(
+            "ModuleNotFoundError: No module named 'nonexistent_runner'", prompts[2]
+        )
+        self.assertTrue(result[6])
+        self.assertEqual(result[7], 2)
+
+    def test_missing_terminal_line_asks_once_and_uses_reply(self):
+        with tempfile.TemporaryDirectory() as root:
+            result, prompts = self.run_completion(
+                root,
+                [
+                    ("write_file", {"file_path": "result.txt", "content": "done"}),
+                    "Changed result.txt.",
+                    "Changed result.txt.\nDONE #1570",
+                ],
+                rounds=0,
+            )
+        self.assertEqual(prompts, ["Implement #1570", coder.TERMINAL_NUDGE])
+        self.assertEqual(result[0], "Changed result.txt.\nDONE #1570")
+        self.assertFalse(result[6])
+
     def test_1570_recorded_inspections_replay_to_first_edit(self):
         """Replay calls from fa2e25a6cb54, then simulate the prompted correction."""
         from langchain_core.messages import AIMessage, HumanMessage
