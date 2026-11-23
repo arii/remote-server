@@ -62,6 +62,7 @@ TEST_COMMANDS = (
     ("python3", "-m", "pytest"),
     ("python3", "-m", "unittest"),
     ("pnpm", "exec", "vitest"),
+    s5tools.FRONTEND_VITEST_PREFIX,
     ("pnpm", "test"),
     ("npm", "test"),
     ("go", "test"),

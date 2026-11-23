@@ -2091,18 +2091,11 @@ class RunStorePersistenceTest(unittest.TestCase):
         self.assertIn(rid, reg.runs)
 
     def test_runs_store_path_env_override(self):
-        import os
-
-        old = os.environ.get("BUTTONS_JOBS_RUNS_PATH")
-        os.environ["BUTTONS_JOBS_RUNS_PATH"] = self.path
-        try:
+        with mock.patch.dict(os.environ, {"BUTTONS_JOBS_RUNS_PATH": self.path}):
             self.assertEqual(engine.runs_store_path(), self.path)
-        finally:
-            if old is None:
-                os.environ.pop("BUTTONS_JOBS_RUNS_PATH", None)
-            else:
-                os.environ["BUTTONS_JOBS_RUNS_PATH"] = old
-        self.assertEqual(engine.runs_store_path(), engine.DEFAULT_RUNS_PATH)
+        with mock.patch.dict(os.environ):
+            os.environ.pop("BUTTONS_JOBS_RUNS_PATH", None)
+            self.assertEqual(engine.runs_store_path(), engine.DEFAULT_RUNS_PATH)
 
     def test_jobs_view_survives_restart(self):
         import backend.api.routers.jobs as jobs_router
