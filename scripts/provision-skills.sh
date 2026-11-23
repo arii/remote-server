@@ -9,7 +9,7 @@
 # NOTE: this deliberately does NOT use `npx skills experimental_install`.
 # That tool computes directory digests and refuses our lock ("swarm has
 # changed since skills-lock.json was written") even though
-# verify-skills.sh --check-upstream proves all 25 hashes match upstream
+# verify-skills.sh --check-upstream proves all locked hashes match upstream
 # HEAD. Our lock pins raw SKILL.md SHA-256 (written by `muse skills`);
 # the npx tool uses incompatible lock semantics and would rewrite it.
 #

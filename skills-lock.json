@@ -1,13 +1,6 @@
 {
   "version": 1,
   "skills": {
-    "ari-workspace-quickstart": {
-      "source": "arii/skills",
-      "sourceType": "github",
-      "skillPath": "skills/ari-workspace-quickstart/SKILL.md",
-      "computedHash": "92447f8c4f0ac4d1e023ca818811aea10aebf7e4ecfb61346e15d74df866ffc3",
-      "ref": "1e1c05ac5dae1ff386814f8de65af8bb3e0a741a"
-    },
     "deep-agents-core": {
       "source": "langchain-ai/langchain-skills",
       "sourceType": "github",
@@ -196,13 +189,6 @@
       "skillPath": "config/skills/managed-deep-agents/SKILL.md",
       "computedHash": "2d36944c6bf05e4be3e522fc2ed983c95bfee06db740fbeec584f75c1f3b8b23",
       "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "remote-server-computer-browser": {
-      "source": "arii/skills",
-      "sourceType": "github",
-      "skillPath": "skills/remote-server-computer-browser/SKILL.md",
-      "computedHash": "b77614c452930d694d0ea24746ed220563b7537a9a6d5d26d03d386021d97836",
-      "ref": "1e1c05ac5dae1ff386814f8de65af8bb3e0a741a"
     },
     "td-tools": {
       "source": "arii/skills",

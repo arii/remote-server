@@ -15,7 +15,7 @@ Nothing here has been deleted. Any removal from `main` happens only after the ex
 
 ## 11. Multi-agent lane orchestration (`.agents/skills`)
 
-- **What:** `lane-coder`, `lane-orchestrator`, `swarm`, `talker-*`, `td-tools`, `audit-*`, `independent-tests`.
+- **What:** `lane-coder`, `lane-orchestrator`, `swarm`, `td-tools`, `audit-gemini-talker`, `independent-tests`.
 - **Extraction boundary:** reusable, cross-repo skills move to the private `arii/skills` repository. `remote-server` keeps only repo-specific hooks.
 - **Archived at:** [`archive/pre-cleanup`](https://github.com/arii/remote-server/tree/archive/pre-cleanup) ([`7f3a2cc`](https://github.com/arii/remote-server/commit/7f3a2cc9db42156a9549145839ff99819cacce78)).
 - **Next step:** list which skills are reusable and which are repo-specific.
