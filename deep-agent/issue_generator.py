@@ -27,7 +27,7 @@ from threading import Lock
 
 import skills_registry
 import literal_checks
-from coder import DEFAULT_TOOL_OUTPUT_LIMIT, _truncate_tool_output
+from coder import DEFAULT_TOOL_OUTPUT_LIMIT, _truncate_tool_output, plan_path_hints
 from backend.shared.s5tools import active_checkout_path, verification_guidance
 
 REQUIRED_SECTIONS = (
@@ -622,19 +622,26 @@ class IssueGeneratorGraph:
     def draft_text(self, brief, context, errors, answers):
         """One draft pass (LLM). Tests inject model_fn."""
         model = self._model()
+        tracked_paths = plan_path_hints(self.repo_root, brief)
         prompt = (
             "Write a design spec for this task. Follow the repo spec "
             "format exactly (Problem Statement, Goal, Scope, "
             "Definition of Done, Scope & File Boundaries with Allowed "
             "Files, Implementation Plan, Acceptance Criteria checklist, "
             "Verification Commands fenced block).\n"
-            "First step, before any other action: ground the spec in "
-            "the pre-seeded repository context below and quote the "
-            "excerpted repo file — a spec that cites no repo file is "
-            "rejected outright. Ask any blocking questions as a "
-            "trailing bulleted list of questions.\n\n"
+            "Ground the spec in existing repo-relative paths shown in the "
+            "tracked paths or repository evidence below. Quote only code "
+            "actually shown in the repository evidence; do not invent "
+            "paths, symbols, or excerpts and present them as existing. "
+            "For a proposed new file, label it (CREATE) on the same line "
+            "as its path in Allowed Files and describe it as new, not as "
+            "evidence of current behavior. If the evidence does not show "
+            "the implementation, say so and ask any blocking questions "
+            "in a trailing bulleted list.\n\n"
             f"{verification_guidance()}\n\n"
             f"Task: {brief}\n\n"
+            "Relevant tracked paths in the active checkout:\n"
+            f"{tracked_paths or '(no matching tracked files)'}\n\n"
             "Pre-seeded repository context (gathered deterministically):\n"
             f"{self.preseed_context_pack(brief)}\n\n"
             f"Context:\n{context}\n"
