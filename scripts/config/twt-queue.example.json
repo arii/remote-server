@@ -6,7 +6,7 @@
   "pipeline_checkout": "/absolute/remote-server",
   "repo_paths": {"arii/remote-server": "/absolute/remote-server"},
   "runtime_command": [],
-  "worker_python": "/absolute/remote-server/deep-agent/.venv/bin/python",
+  "worker_python": "/opt/venvs/td/bin/python",
   "cap_usd": 0.5,
   "max_common_failures": 3,
   "inter_issue_delay_seconds": 60,

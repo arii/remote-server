@@ -182,10 +182,6 @@ def _safe_positional(token):
     return bool(_SAFE_PATH_RE.fullmatch(token))
 
 
-def _positionals_safe(args):
-    return all(_safe_positional(a) for a in args)
-
-
 def _args_with_flags(args, flags, value_flags=None, prefix_values=None):
     """Walk args: exact flags, `flag value` pairs, `--opt=value` forms and
     positionals. Everything unknown is rejected."""
