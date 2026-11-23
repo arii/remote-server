@@ -553,7 +553,11 @@ class TestRunRepoCommand(unittest.TestCase):
                 marker = os.path.join(d, key + ".ran")
                 script = os.path.join(d, key + ".sh")
                 with open(script, "w") as fh:
-                    fh.write('#!/bin/sh\ntouch %s\ncat "$1" 2>/dev/null\n' % marker)
+                    # Touch only: never read stdin. A hook that reads
+                    # stdin (e.g. `cat "$1"` with no $1) deadlocks
+                    # `git status`, which keeps the hook's stdin open
+                    # while waiting for it to exit (#1623).
+                    fh.write("#!/bin/sh\ntouch %s\n" % marker)
                 os.chmod(script, 0o755)
                 git("config", cfg, script)
                 markers[key] = marker
@@ -565,14 +569,16 @@ class TestRunRepoCommand(unittest.TestCase):
                 any(os.path.exists(m) for m in markers.values()),
                 "control: helper config should fire on plain git",
             )
-            for m in markers.values():
-                if os.path.exists(m):
-                    os.remove(m)
             for cmd in ("git diff", "git log -p -1", "git status"):
+                for m in markers.values():
+                    if os.path.exists(m):
+                        os.remove(m)
                 out = s5tools.run_repo_command(repo, cmd)
                 self.assertTrue(out.startswith("exit=0"), (cmd, out[:200]))
-            for m in markers.values():
-                self.assertFalse(os.path.exists(m), m)
+                # Check after each command so a failure names the
+                # command that ran the helper (#1623).
+                for m in markers.values():
+                    self.assertFalse(os.path.exists(m), (cmd, m))
 
     def test_exec_argv_only_touches_git(self):
         self.assertEqual(s5tools.exec_argv(["pytest", "-q"]), ["pytest", "-q"])
