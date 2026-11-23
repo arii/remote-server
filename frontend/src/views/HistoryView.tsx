@@ -59,7 +59,7 @@ function filterByKind(entries: LedgerEntry[], kind: string): LedgerEntry[] {
 // summary names a skip hide by default behind a toggle. Failed
 // rows never count as skips — they always stay visible.
 export function isSkipRow(r: HistoryRow): boolean {
-  return r.tone !== 'bad' && /skipped/i.test(r.summary);
+  return r.kind !== 'pipeline-run' && r.tone !== 'bad' && /skipped/i.test(r.summary);
 }
 
 // Agent-run noise filter (#1014): failure-free agent-turn/cli-turn
@@ -284,6 +284,11 @@ export function RowsList({
                 </span>
                 <span className="row-meta">
                   {kindBadge(r.kind)} · {r.at}
+                  {r.submitUrl && (
+                    <> · <a href={r.submitUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+                      PR #{r.submitUrl.split('/').pop()}
+                    </a></>
+                  )}
                   {advice && <> · Recovery: {advice}</>}
                 </span>
               </summary>

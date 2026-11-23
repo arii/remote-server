@@ -25,6 +25,25 @@ function row(over: Partial<HistoryRow> = {}): HistoryRow {
   };
 }
 
+describe('pipeline outcomes (issue #1576)', () => {
+  it('keeps each run visible with its own result, tests, and ledger count', () => {
+    const failure = { kind: 'pipeline-run', status: 'CHANGES_REQUESTED', ledger_rows: 0 } as const;
+    const opened = 'https://github.com/arii/remote-server/pull/42';
+    const rows = toHistoryRows([], [
+      { kind: 'pipeline-run', prompt: 'Fix #1576', status: 'APPROVED', submit_url: opened, test_status: 'passed', ledger_rows: 2, ts: 3 },
+      { ...failure, test_status: 'failed', ts: 2 },
+      { ...failure, test_status: 'failed', ts: 1 },
+    ]);
+    expect(rows.map((r) => [r.summary, r.tone, r.submitUrl])).toEqual([
+      ['Fix #1576 · PR opened · tests passed · 2 ledger rows', 'ok', opened],
+      ['Failed · tests failed · 0 ledger rows', 'bad', undefined],
+      ['Failed · tests failed · 0 ledger rows', 'bad', undefined],
+    ]);
+    expect(historyRowMatches(rows[0], '/pull/42')).toBe(true);
+    expect(rowInFacet(rows[0], 'agents')).toBe(true);
+  });
+});
+
 describe('history facets (issue #839)', () => {
   const rows = [
     row({ key: 'a', kind: 'run', tone: 'bad' }),
