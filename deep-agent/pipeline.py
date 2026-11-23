@@ -275,7 +275,10 @@ class Pipeline:
             else int(os.environ.get("S5_MAX_REPAIR_CYCLES", MAX_REPAIR_CYCLES_DEFAULT))
         )
         self.max_escalations = max_escalations
-        self.current_model_tier = "fast"
+        self.start_model_tier = os.environ.get("S5_START_MODEL_TIER") or "fast"
+        if self.start_model_tier not in ("fast", "strong"):
+            raise ValueError("S5_START_MODEL_TIER must be 'fast' or 'strong'")
+        self.current_model_tier = self.start_model_tier
         self.escalations_used = 0
         self.thread_id = thread_id or f"pipeline-{int(time.time())}"
         self.verification_commands = list(verification_commands or [])
@@ -730,6 +733,16 @@ class Pipeline:
             self.log("pipeline", f"EXC {type(exc).__name__}: {exc}")
             return self._result(BLOCKED, "", f"pipeline error: {exc}", 0, started)
 
+    def _next_tier(self, attempt, failure_class):
+        """choose_model_tier, except a strong start never drops back to fast."""
+        tier, used = choose_model_tier(
+            attempt=attempt,
+            failure_class=failure_class,
+            escalations_used=self.escalations_used,
+            max_escalations=self.max_escalations,
+        )
+        return ("strong" if self.start_model_tier == "strong" else tier), used
+
     def _run(self, started):
         ok, reason = self.stage_init()
         if not ok:
@@ -793,11 +806,8 @@ class Pipeline:
                         started,
                         repair_cycles=repair_cycles,
                     )
-                self.current_model_tier, self.escalations_used = choose_model_tier(
-                    attempt=repair_cycles + 1,
-                    failure_class=failure_class,
-                    escalations_used=self.escalations_used,
-                    max_escalations=self.max_escalations,
+                self.current_model_tier, self.escalations_used = self._next_tier(
+                    repair_cycles + 1, failure_class
                 )
                 detail = f"Pre-audit {failure_class} failure:\n{reason}"
                 continue
@@ -830,11 +840,8 @@ class Pipeline:
                     started,
                     repair_cycles=repair_cycles,
                 )
-            self.current_model_tier, self.escalations_used = choose_model_tier(
-                attempt=repair_cycles + 1,
-                failure_class="audit_semantic",
-                escalations_used=self.escalations_used,
-                max_escalations=self.max_escalations,
+            self.current_model_tier, self.escalations_used = self._next_tier(
+                repair_cycles + 1, "audit_semantic"
             )
 
         receipts = twt_receipts.current.get()
