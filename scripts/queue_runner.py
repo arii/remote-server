@@ -8,8 +8,10 @@ No provider credentials belong in configuration or issue manifests.
 
 import argparse
 import collections
+import datetime
 import fcntl
 import functools
+import importlib
 import json
 import math
 import os
@@ -19,6 +21,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 
 
 class SafetyStop(RuntimeError):
@@ -265,6 +268,171 @@ def checked_cap(value):
     ):
         raise ValueError("cap_usd must be finite, positive, and at most $0.50")
     return float(value)
+
+
+LEDGER_AGENT = "S5-Queue"
+LEDGER_STALE_HOURS = 6
+PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
+STATUS_CODE = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
+
+
+def ledger_module(name):
+    """Import a sibling script, as a package module or as a top-level script."""
+    return importlib.import_module(f"{__package__}.{name}" if __package__ else name)
+
+
+def ledger_write(agent, note, status, link):
+    return ledger_module("ledger_post").post_entry(
+        agent, note, status=status, link=link
+    )
+
+
+def ledger_rows():
+    reader = ledger_module("ledger_read")
+    return reader.read_ledger(
+        os.environ.get("AGENT_LEDGER_SHEET_ID", reader.DEFAULT_SHEET_ID),
+        os.environ.get("GOOGLE_TOKEN_FILE", reader.DEFAULT_TOKEN_PATH),
+    )
+
+
+def ledger_log(message):
+    print("LEDGER " + message, flush=True)
+
+
+def ledger_age_hours(stamp, now):
+    for form in ("%m/%d/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            then = datetime.datetime.strptime(stamp.strip(), form)
+        except ValueError:
+            continue
+        return (now - then.replace(tzinfo=datetime.timezone.utc)).total_seconds() / 3600
+    return None
+
+
+def is_spend_cap(result):
+    return "recorded spend cap reached" in str(result.get("detail") or "")
+
+
+class QueueLedger:
+    """Agent Ledger rows for queue runs. A ledger outage never fails the run.
+
+    Rows are keyed by Link = issue URL, because ledger_read folds the latest row
+    per Link. The PR URL goes in the note so the key stays stable.
+    """
+
+    def __init__(self, config, status, status_path):
+        self.stale_hours = config.get("ledger_stale_hours", LEDGER_STALE_HOURS)
+        if not isinstance(self.stale_hours, (int, float)) or self.stale_hours <= 0:
+            raise ValueError("ledger_stale_hours must be positive")
+        self.gh = config.get("gh_command", ["gh"])
+        self.status, self.status_path = status, status_path
+        self.run_id = uuid.uuid4().hex[:12]
+
+    @staticmethod
+    def url(key):
+        repo, number = key.rsplit("#", 1)
+        return f"https://github.com/{repo}/issues/{number}"
+
+    def post(self, note, state, link):
+        try:
+            ledger_write(LEDGER_AGENT, note, state, link)
+        except Exception as error:
+            ledger_log(f"post failed, queued for one retry: {type(error).__name__}")
+            self.status.setdefault("ledger_pending", []).append(
+                {"note": note, "status": state, "link": link}
+            )
+            write_json(self.status_path, self.status)
+
+    def boundary(self, merges=False):
+        """Retry queued posts once (a second failure is dropped), then confirm merges."""
+        pending = self.status.pop("ledger_pending", [])
+        if pending:
+            write_json(self.status_path, self.status)
+        for row in pending:
+            try:
+                ledger_write(LEDGER_AGENT, row["note"], row["status"], row["link"])
+            except Exception as error:
+                ledger_log(f"retry failed, dropped: {type(error).__name__}")
+        if not merges:
+            return
+        for key, entry in list(self.status.get("ledger_open_prs", {}).items()):
+            try:
+                view = json.loads(
+                    subprocess.check_output(
+                        self.gh
+                        + ["pr", "view", entry["pr"], "--json", "state,mergeCommit"],
+                        text=True,
+                    )
+                )
+            except Exception as error:
+                ledger_log(f"merge check failed for {key}: {type(error).__name__}")
+                continue
+            if view.get("state") == "MERGED":
+                sha = str((view.get("mergeCommit") or {}).get("oid") or "")[:7]
+                self.post(
+                    f"merged {sha or 'unknown'} {entry['pr']}", "Done", entry["issue"]
+                )
+            if view.get("state") in ("MERGED", "CLOSED"):
+                self.status["ledger_open_prs"].pop(key)
+                write_json(self.status_path, self.status)
+
+    def claimed_elsewhere(self, key):
+        """Return a skip reason when another source holds a fresh Act claim."""
+        link = self.url(key)
+        try:
+            rows = [r for r in ledger_rows() if (r.get("Link") or "").strip() == link]
+        except Exception as error:
+            ledger_log(f"read failed, not blocking {key}: {type(error).__name__}")
+            return None
+        if not rows:
+            return None
+        latest = rows[-1]
+        source = (latest.get("Agent / Source") or "").strip()
+        if (latest.get("Status") or "").strip() != "Act" or source == LEDGER_AGENT:
+            return None
+        age = ledger_age_hours(
+            latest.get("Timestamp") or "",
+            datetime.datetime.fromtimestamp(time.time(), datetime.timezone.utc),
+        )
+        if age is not None and age >= self.stale_hours:
+            return None
+        shown = "unknown age" if age is None else f"{age:.1f}h old"
+        return f"fresh Act claim by {source[:40]} ({shown})"
+
+    def claim(self, key):
+        self.post(f"claimed by queue run {self.run_id}", "Act", self.url(key))
+
+    def result(self, key, summary, limit_hit=False):
+        link = self.url(key)
+        run = f"queue run {self.run_id}"
+        if summary is None:
+            return self.post(f"Later: queue_halted, {run}", "Later", link)
+        result = summary.get("result") or {}
+        code = str(result.get("status") or "UNKNOWN")
+        code = code if STATUS_CODE.fullmatch(code) else "UNKNOWN"
+        pr = str(result.get("submit_url") or "")
+        recon = summary.get("reconciliation") or {}
+        if not summary.get("exit_code") and code == "APPROVED" and PR_URL.fullmatch(pr):
+            cost = recon.get("cost_usd")
+            spend = f"${cost:.4f}" if type(cost) in (int, float) else "unknown"
+            basis = recon.get("cost_basis") or "unknown"
+            basis = basis if basis in ("upper_bound", "reported") else "unknown"
+            self.status.setdefault("ledger_open_prs", {})[key] = {
+                "issue": link,
+                "pr": pr,
+            }
+            write_json(self.status_path, self.status)
+            return self.post(
+                f"PR {pr} opened, {run}, cost {spend} ({basis}), tests pass",
+                "Act",
+                link,
+            )
+        if is_spend_cap(result):
+            return self.post(
+                f"Needs Okay: spend cap reached, {run}", "Needs Okay", link
+            )
+        reason = "max_common_failures" if limit_hit else code
+        self.post(f"Later: {reason}, {run}", "Later", link)
 
 
 def coverage(state):
@@ -811,6 +979,8 @@ def supervise(config_path, *, clear_halt=False):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status = read_json(status_path) if status_path.exists() else {"completed": []}
         finish_retry(root, status_path, status, config)
+        ledger = QueueLedger(config, status, status_path)
+        ledger.boundary(merges=True)
         if status.get("current"):
             current = status["current"]
             try:
@@ -922,6 +1092,13 @@ def supervise(config_path, *, clear_halt=False):
                 )
                 write_json(status_path, status)
                 return 2
+            ledger.boundary()
+            held = ledger.claimed_elsewhere(key)
+            if held:
+                ledger_log(f"skip {key}: {held}")
+                status.setdefault("ledger_skipped", {})[key] = held
+                write_json(status_path, status)
+                continue
             directory.mkdir(mode=0o700)
             runtime_directory = runtime_root / name
             job = {
@@ -941,6 +1118,7 @@ def supervise(config_path, *, clear_halt=False):
             if status.get("retry") == key:
                 status.pop("retry")
             write_json(status_path, status)
+            ledger.claim(key)
             print("START " + key, flush=True)
             with (directory / "run.log").open("w") as log:
                 process = subprocess.Popen(
@@ -959,6 +1137,7 @@ def supervise(config_path, *, clear_halt=False):
                     current=key,
                 )
                 write_json(status_path, status)
+                ledger.result(key, None)
                 return 2
             summary = read_json(summary_path)
             if summary["halt_queue"] or not summary["reconciliation"]["reconciled"]:
@@ -966,6 +1145,7 @@ def supervise(config_path, *, clear_halt=False):
                     halted=True, reason=summary.get("halt_reasons"), current=key
                 )
                 write_json(status_path, status)
+                ledger.result(key, None)
                 return 2
             if process.returncode != summary.get("exit_code"):
                 status.update(
@@ -974,6 +1154,7 @@ def supervise(config_path, *, clear_halt=False):
                     current=key,
                 )
                 write_json(status_path, status)
+                ledger.result(key, None)
                 return 2
             status["completed"].append(key)
             status.update(last=summary, current=None)
@@ -994,6 +1175,7 @@ def supervise(config_path, *, clear_halt=False):
                 "FINISH " + key + " " + summary["result"].get("status", "UNKNOWN"),
                 flush=True,
             )
+            ledger.result(key, summary, status["consecutive_failures"] >= failure_limit)
             if status["consecutive_failures"] >= failure_limit:
                 status.update(
                     halted=True, reason="consecutive failures with a common blocker"
