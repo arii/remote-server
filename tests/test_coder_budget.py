@@ -398,6 +398,7 @@ class TestRealGraphResume(unittest.TestCase):
         )
         self.assertIsNone(error)
         self.assertEqual(result[0], "DONE #1")
+        self.assertEqual(meter.pop("trace").rsplit("/", 1)[-1], "thread.jsonl")
         self.assertEqual(meter, {"calls": 25, "continuations": 1})
         self.assertEqual(floors, [0, 20])
         self.assertEqual(threads, {"thread"})
@@ -407,6 +408,7 @@ class TestRealGraphResume(unittest.TestCase):
             self.model(writes=60, finish=False), continuations=1, call_budget=60
         )
         self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
+        self.assertEqual(meter.pop("trace").rsplit("/", 1)[-1], "thread.jsonl")
         self.assertEqual(meter, {"calls": 40, "continuations": 1})
         self.assertEqual(floors, [0, 20])
 
