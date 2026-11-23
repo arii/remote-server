@@ -42,15 +42,49 @@ class TestRecorder(unittest.TestCase):
                     "model_response",
                     "tool_call",
                     "tool_call",
+                    "termination",
                     "run_end",
                 ],
             )
+            self.assertEqual(lines[5]["reason"], "success")
             self.assertTrue(all("ts" in e for e in lines))
             self.assertEqual(lines[2]["usage"]["input_tokens"], 10)
             self.assertEqual(lines[2]["usage"]["output_tokens"], 0)
             self.assertTrue(lines[3]["ok"])
             self.assertFalse(lines[4]["ok"])
             self.assertEqual(lines[4]["error"], "boom")
+
+    def test_step_cost_input_tokens_and_call_hash(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "t.jsonl")
+            rec = observe.TraceRecorder(path)
+            rec.model_response({"input_tokens": 7, "reported_cost_usd": 0.25})
+            rec.model_response({"input_tokens": 3})
+            rec.tool_call("run_check", {"cmd": "make  test"}, 0, True, result="")
+            rec.tool_call("run_check", {"cmd": "make test"}, 0, True, result="")
+            rec.tool_call("run_check", {"cmd": "make lint"}, 0, True, result="")
+            rec.close()
+            ev = [json.loads(line) for line in open(path)]
+            self.assertEqual((ev[0]["input_tokens"], ev[0]["cost_usd"]), (7, 0.25))
+            self.assertIsNone(ev[1]["cost_usd"])
+            self.assertEqual(ev[2]["call_hash"], ev[3]["call_hash"])
+            self.assertNotEqual(ev[2]["call_hash"], ev[4]["call_hash"])
+
+    def test_termination_reason_is_validated_and_recorded(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "t.jsonl")
+            rec = observe.TraceRecorder(path)
+            with self.assertRaises(ValueError):
+                rec.termination("bored")
+            for reason in observe.TERMINATION_REASONS[:-1]:
+                rec.termination(reason)
+            rec.run_end(False)
+            rec.close()
+            ev = [json.loads(line) for line in open(path)]
+            self.assertEqual(
+                [e["reason"] for e in ev if e["type"] == "termination"],
+                list(observe.TERMINATION_REASONS[:-1]),
+            )
 
     def test_preview_truncates(self):
         with tempfile.TemporaryDirectory() as d:
@@ -116,7 +150,8 @@ class TestUniqueTracePath(unittest.TestCase):
             e2 = [json.loads(line) for line in open(p2)]
             for events in (e1, e2):
                 self.assertEqual(
-                    [e["type"] for e in events], ["run_start", "tool_call", "run_end"]
+                    [e["type"] for e in events],
+                    ["run_start", "tool_call", "termination", "run_end"],
                 )
             self.assertIn("one", e1[1]["result_preview"])
             self.assertIn("two", e2[1]["result_preview"])
