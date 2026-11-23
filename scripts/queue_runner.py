@@ -879,6 +879,7 @@ def worker_command(config, mode, directory):
         "env",
         "PYTHONPATH=" + os.pathsep.join((str(source / "deep-agent"), str(source))),
         config["worker_python"],
+        "-P",
         "-",
         mode,
         str(directory),

@@ -1179,6 +1179,7 @@ class RunnerTests(unittest.TestCase):
                         "env",
                         "PYTHONPATH=/pipeline/deep-agent:/pipeline",
                         "/runtime/venv/bin/python",
+                        "-P",
                         "-",
                         "--worker",
                     ],
@@ -1397,9 +1398,19 @@ class RunnerTests(unittest.TestCase):
     ):
         with tempfile.TemporaryDirectory() as root:
             config_path, state = self.fixture(root)
+            target_repo = Path(root) / "target"
+            target_backend = target_repo / "backend"
+            target_backend.mkdir(parents=True)
+            (target_backend / "__init__.py").write_text(
+                "raise AssertionError('imported backend from target repo')\n"
+            )
+            (target_repo / "observe.py").write_text(
+                "raise AssertionError('imported observe from target repo')\n"
+            )
             checkout = Path(root) / "checkout"
             agent = checkout / "deep-agent"
             agent.mkdir(parents=True)
+            (agent / "observe.py").touch()
             modules = checkout / "backend" / "shared"
             modules.mkdir(parents=True)
             (checkout / "backend" / "__init__.py").write_text("")
@@ -1436,7 +1447,7 @@ class RunnerTests(unittest.TestCase):
                 "        return {'status': 'DONE'}\n"
             )
             (modules / "cli.py").write_text(
-                "import pipeline\n"
+                "import observe, pipeline\n"
                 "def main(argv):\n"
                 "    assert '--submit-pr' in argv and '--keep-worktree' in argv\n"
                 "    pipeline.Pipeline().run()\n"
@@ -1448,10 +1459,11 @@ class RunnerTests(unittest.TestCase):
                 worker_python=sys.executable,
                 runtime_state_dir=str(state),
                 pipeline_checkout=str(checkout),
-                repo_paths={"owner/repo": str(checkout)},
+                repo_paths={"owner/repo": str(target_repo)},
             )
             runner.write_json(config_path, config)
-            self.assertEqual(runner.supervise(config_path), 0)
+            with mock.patch.dict(os.environ, {"PYTHONSAFEPATH": ""}):
+                self.assertEqual(runner.supervise(config_path), 0)
             directory = state / "owner_repo-7"
             summary = runner.read_json(directory / "summary.json")
             self.assertTrue(summary["reconciliation"]["reconciled"])

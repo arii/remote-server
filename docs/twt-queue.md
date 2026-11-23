@@ -44,17 +44,19 @@ Devin session. `pipeline_checkout` and `repo_paths` are paths **inside the worke
 `state_dir` is the supervisor's path and `runtime_state_dir` is the worker's path
 to the **same persistent directory**. The worker source travels over stdin. The
 launcher declares the configured checkout and its `deep-agent` directory in
-`PYTHONPATH` before starting `worker_python`; no module mutates `sys.path`.
+`PYTHONPATH` before starting `worker_python`. Python's `-P` prevents the target
+repository's working directory from taking precedence over those import paths.
 
 `worker_python` is the container interpreter `/opt/venvs/td/bin/python` (the `td`
 venv that both Dockerfiles build). The old `deep-agent/.venv` no longer exists, so
 a config that still names it fails at launch. Prerequisite: the interpreter must be
 able to import `backend.shared` (for example `backend.shared.twt_receipts`). The
 launcher runs `env PYTHONPATH=<pipeline_checkout>/deep-agent:<pipeline_checkout>
-<worker_python> - <mode> <dir>`, so the checkout root is on `PYTHONPATH` and no
-working-directory setting is needed; `pipeline_checkout` must be the repo root.
-Check with `<runtime_command> env PYTHONPATH=<checkout> /opt/venvs/td/bin/python -c
-"import backend.shared.twt_receipts"`. The $0.50 `cap_usd`, fail-closed
+<worker_python> -P - <mode> <dir>`, so the checkout root is on `PYTHONPATH` and
+no working-directory setting is needed; `pipeline_checkout` must be the repo root.
+Check with `<runtime_command> env PYTHONPATH=<checkout>/deep-agent:<checkout>
+/opt/venvs/td/bin/python -P -c "from backend.shared import model_router; import
+observe; print(model_router.__file__, observe.__file__)"`. The $0.50 `cap_usd`, fail-closed
 reconciliation and completed-issue state are unchanged by the interpreter change.
 
 For a container, `runtime_command` can be
