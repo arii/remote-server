@@ -182,6 +182,67 @@ def ordered_issues(issues):
     )
 
 
+DISCOVERY_LIMIT = 100
+
+
+def discover_ready(config, issues, completed):
+    """Return open `ready` issues from `discover_repos` that the manifest lacks.
+
+    Read-only: lists with `gh`, never edits labels or the manifest. A repo whose
+    listing fails is logged and skipped; nothing from it is dispatched.
+    """
+    known = {(issue["repo"], issue["number"]) for issue in issues}
+    found = []
+    for repo in config.get("discover_repos", []):
+        try:
+            listed = json.loads(
+                subprocess.check_output(
+                    config.get("gh_command", ["gh"])
+                    + [
+                        "issue",
+                        "list",
+                        "--repo",
+                        repo,
+                        "--state",
+                        "open",
+                        "--label",
+                        "ready",
+                        "--json",
+                        "number,title,createdAt,labels",
+                        "--limit",
+                        str(DISCOVERY_LIMIT),
+                    ],
+                    text=True,
+                )
+            )
+            if not isinstance(listed, list):
+                raise ValueError("gh issue list did not return a list")
+        except (subprocess.CalledProcessError, OSError, ValueError) as error:
+            print(f"DISCOVERY {repo} skipped: {error}", flush=True)
+            continue
+        if len(listed) >= DISCOVERY_LIMIT:
+            print(f"DISCOVERY {repo} hit the {DISCOVERY_LIMIT} issue limit", flush=True)
+        for item in listed:
+            if "ready" not in {label.get("name") for label in item.get("labels", [])}:
+                continue
+            issue = {
+                "repo": repo,
+                "number": item["number"],
+                "created_at": item["createdAt"],
+            }
+            ordered_issues([issue])
+            key = (repo, issue["number"])
+            if (
+                key in known
+                or f"{repo}#{issue['number']}" in completed
+                or skip_reason(issue)
+            ):
+                continue
+            known.add(key)
+            found.append(issue)
+    return sorted(found, key=lambda issue: issue["created_at"])
+
+
 def skip_reason(issue):
     if issue["number"] in (2, 23, 26):
         return "global operator hold"
@@ -351,6 +412,18 @@ def worker(job_dir):
             and preflight is not None
         ):
             preflight(stage="coder")
+        from scripts import slop_review
+
+        slop = {}
+        pipeline.Pipeline.stage_submit = slop_review.gated_submit(
+            pipeline.Pipeline.stage_submit,
+            slop,
+            root=slop_review.checkout_root(),
+            gh=["gh"],
+            model_factory=lambda: slop_review.default_model(
+                f"slop-{job['issue']['number']}"
+            ),
+        )
         for stage in ("init", "spec", "code", "audit", "submit", "cleanup"):
             original = getattr(pipeline.Pipeline, "stage_" + stage)
 
@@ -387,7 +460,7 @@ def worker(job_dir):
 
         @functools.wraps(original_run)
         def capture_result(instance):
-            value = original_run(instance)
+            value = slop_review.override_result(original_run(instance), slop)
             result.update(value)
             save("pipeline-result.json", value)
             return value
@@ -729,6 +802,9 @@ def supervise(config_path, *, clear_halt=False):
     pipeline_checkout = Path(config["pipeline_checkout"])
     if not pipeline_checkout.is_absolute():
         raise ValueError("pipeline_checkout must be absolute")
+    for repo in config.get("discover_repos", []):
+        if repo not in config["repo_paths"]:
+            raise ValueError("discover_repos entry has no repo_paths checkout: " + repo)
     source = Path(__file__).read_text()
     status_path = root / "status.json"
     with (root / "queue.lock").open("a") as lock:
@@ -790,6 +866,7 @@ def supervise(config_path, *, clear_halt=False):
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         issues = ordered_issues(read_json(config["issues_file"]))
+        issues += discover_ready(config, issues, status["completed"])
         issues.sort(
             key=lambda issue: (
                 f"{issue['repo']}#{issue['number']}" != status.get("retry")
