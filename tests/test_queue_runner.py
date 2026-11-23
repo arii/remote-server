@@ -1,6 +1,7 @@
 import json
 import fcntl
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,7 +15,209 @@ from backend.shared import twt_receipts
 from scripts import queue_runner as runner
 
 
+class RetryWorktreeTests(unittest.TestCase):
+    def git(self, repo, *args):
+        return subprocess.check_output(
+            ["git", "-C", str(repo), *args], text=True, stderr=subprocess.PIPE
+        ).strip()
+
+    def fixture(self, root, detached=False):
+        root = Path(root)
+        repo = root / "repo"
+        repo.mkdir()
+        self.git(repo, "init", "-b", "main")
+        (repo / "tracked.txt").write_text("original")
+        self.git(repo, "add", "tracked.txt")
+        self.git(
+            repo,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "base",
+        )
+        worktree = repo / ".worktrees/issue-7"
+        worktree.parent.mkdir()
+        args = ["--detach"] if detached else ["-b", "issue-7"]
+        self.git(repo, "worktree", "add", *args, str(worktree))
+        (worktree / "tracked.txt").write_text("dirty evidence")
+        (worktree / "evidence.txt").write_text("untracked evidence")
+        archive = root / "archive-7"
+        archive.mkdir()
+        runner.write_json(
+            archive / "job.json",
+            {"checkout": str(repo), "issue": {"repo": "owner/repo", "number": 7}},
+        )
+        return repo, worktree, archive
+
+    def test_preserves_worktree_and_branch_and_allows_a_fresh_worktree(self):
+        for detached in (False, True):
+            with self.subTest(detached=detached), tempfile.TemporaryDirectory() as root:
+                repo, worktree, archive = self.fixture(root, detached)
+                self.assertEqual(runner.archive_issue_worktree(archive), 0)
+                saved = runner.read_json(archive / "worktree-archive.json")
+                destination = Path(saved["destination"])
+                self.assertFalse(worktree.exists())
+                self.assertEqual(
+                    (destination / "evidence.txt").read_text(), "untracked evidence"
+                )
+                self.assertEqual(
+                    (destination / "tracked.txt").read_text(), "dirty evidence"
+                )
+                self.assertTrue(saved["complete"])
+                if not detached:
+                    self.assertEqual(
+                        self.git(repo, "rev-parse", saved["archive_branch"]),
+                        saved["head"],
+                    )
+                args = ["--detach"] if detached else ["-b", "issue-7"]
+                self.git(repo, "worktree", "add", *args, str(worktree))
+
+    def test_host_dispatches_archival_in_the_configured_runtime(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, worktree, archive = self.fixture(root)
+            config = {
+                "runtime_state_dir": root,
+                "runtime_command": [],
+                "pipeline_checkout": os.getcwd(),
+                "worker_python": sys.executable,
+            }
+            runner.archive_retry_worktree(config, Path(root), archive)
+            self.assertTrue(
+                runner.read_json(archive / "worktree-archive.json")["complete"]
+            )
+            self.assertFalse(worktree.exists())
+
+    def test_branch_ref_rename_before_head_update_resumes(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo, worktree, archive = self.fixture(root)
+            original = runner.subprocess.check_output
+
+            def command(args, **kwargs):
+                if args[3:5] == ["branch", "-m"]:
+                    self.git(repo, "update-ref", "refs/heads/" + args[-1], "HEAD")
+                    self.git(repo, "update-ref", "-d", "refs/heads/issue-7")
+                    raise OSError("interrupted before worktree HEAD update")
+                return original(args, **kwargs)
+
+            with (
+                mock.patch.object(
+                    runner.subprocess, "check_output", side_effect=command
+                ),
+                self.assertRaises(OSError),
+            ):
+                runner.archive_issue_worktree(archive)
+            self.assertEqual(runner.archive_issue_worktree(archive), 0)
+            saved = runner.read_json(archive / "worktree-archive.json")
+            self.assertEqual(
+                self.git(Path(saved["destination"]), "rev-parse", "HEAD"), saved["head"]
+            )
+            self.assertEqual(
+                (Path(saved["destination"]) / "tracked.txt").read_text(),
+                "dirty evidence",
+            )
+
+    def test_missing_worktree_is_an_idempotent_noop(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo, worktree, archive = self.fixture(root)
+            self.git(repo, "worktree", "remove", "--force", str(worktree))
+            for _ in range(2):
+                self.assertEqual(runner.archive_issue_worktree(archive), 0)
+            self.assertTrue(
+                runner.read_json(archive / "worktree-archive.json")["absent"]
+            )
+
+    def test_interrupted_branch_move_and_final_write_resume_safely(self):
+        for failure in ("move", "metadata", "status"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as root:
+                repo, worktree, archive = self.fixture(root)
+                original = runner.subprocess.check_output
+                write = runner.write_json
+
+                def command(args, **kwargs):
+                    if args[3:5] == ["worktree", "move"]:
+                        if failure == "move":
+                            raise OSError("interrupted move")
+                        if failure == "metadata":
+                            worktree.rename(Path(args[-1]))
+                            raise OSError("interrupted metadata update")
+                    return original(args, **kwargs)
+
+                def persist(path, value, owner=None):
+                    if failure == "status" and value.get("complete"):
+                        raise OSError("interrupted final write")
+                    write(path, value, owner)
+
+                with (
+                    mock.patch.object(
+                        runner.subprocess, "check_output", side_effect=command
+                    ),
+                    mock.patch.object(runner, "write_json", side_effect=persist),
+                    self.assertRaises(OSError),
+                ):
+                    runner.archive_issue_worktree(archive)
+                self.assertEqual(runner.archive_issue_worktree(archive), 0)
+                saved = runner.read_json(archive / "worktree-archive.json")
+                self.assertEqual(
+                    (Path(saved["destination"]) / "evidence.txt").read_text(),
+                    "untracked evidence",
+                )
+                self.assertFalse(worktree.exists())
+
+    def test_conflicting_archive_and_unregistered_directory_fail_closed(self):
+        for conflict in (True, False):
+            with self.subTest(conflict=conflict), tempfile.TemporaryDirectory() as root:
+                repo, worktree, archive = self.fixture(root)
+                if conflict:
+                    (worktree.parent / ".queue-retry" / archive.name).mkdir(
+                        parents=True
+                    )
+                else:
+                    self.git(repo, "worktree", "remove", "--force", str(worktree))
+                    worktree.mkdir()
+                    (worktree / "evidence.txt").write_text("unregistered evidence")
+                with self.assertRaises(
+                    (runner.SafetyStop, subprocess.CalledProcessError)
+                ):
+                    runner.archive_issue_worktree(archive)
+                self.assertTrue((worktree / "evidence.txt").exists())
+
+
 class RunnerTests(unittest.TestCase):
+    def setUp(self):
+        archive = mock.patch.object(runner, "archive_retry_worktree")
+        self.archive_worktree = archive.start()
+        self.addCleanup(archive.stop)
+
+    def test_retry_worktree_failure_keeps_durable_intent_and_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, state, directory = self.failed_run(root)
+            self.archive_worktree.side_effect = OSError("interrupted worktree archive")
+            with (
+                mock.patch.object(
+                    runner.subprocess,
+                    "Popen",
+                    return_value=self.retry_process(directory),
+                ),
+                self.assertRaisesRegex(OSError, "interrupted worktree"),
+            ):
+                runner.retry_issue(config, "owner/repo#7")
+            saved = runner.read_json(state / "status.json")
+            intent = saved["retry_intent"]
+            self.assertIn("owner/repo#7", saved["completed"])
+            self.assertTrue((Path(intent["directory"]) / "ledger.jsonl").exists())
+            self.archive_worktree.side_effect = None
+            runner.finish_retry(
+                state, state / "status.json", saved, runner.read_json(config)
+            )
+            self.assertEqual(self.archive_worktree.call_count, 2)
+            self.assertNotIn(
+                "owner/repo#7", runner.read_json(state / "status.json")["completed"]
+            )
+
     def test_receipts_normal_empty_and_local_missing(self):
         self.assertEqual(runner.receipt_total([], [], []), 0)
         self.assertEqual(runner.receipt_total(["local"], ["local"], []), 0)
@@ -284,6 +487,7 @@ class RunnerTests(unittest.TestCase):
             ) as spawn:
                 self.assertEqual(runner.retry_issue(config, "owner/repo#7"), 0)
             self.assertIn("--reconcile", spawn.call_args.args[0])
+            self.archive_worktree.assert_called_once()
             self.assertFalse(directory.exists())
             status = runner.read_json(state / "status.json")
             archive = Path(status["retry_archives"][0]["directory"])

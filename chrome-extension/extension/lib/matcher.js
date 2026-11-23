@@ -122,3 +122,52 @@ export function resolveLabel(el, doc = globalThis.document) {
   // Priority 7: name or id fallback
   return cleanLabelText(el.name || el.id) || "Unnamed Field";
 }
+
+// Stable signature for a form control: normalized label, name, autocomplete
+// token and type joined with "|". Same input shape the content script reads
+// off the element, so a mapping learned on one visit matches the next.
+export function fieldSignature({ label, name, autocomplete, type } = {}) {
+  return [label, name, autocomplete, type].map(normalizeLabel).join("|");
+}
+
+// Learned-mapping lookup (#1540). `mappings` is the stored learnedMappings
+// list. Order: exact hostname + signature first, then the signature alone once
+// it has been seen on 2 or more sites. Quarantined records are skipped unless
+// `status` asks for them: only confirmed mappings are ever used for filling.
+const MIN_MAPPING_SITES = 2;
+export function lookupMapping(mappings, sig, host, { status = "confirmed" } = {}) {
+  if (!Array.isArray(mappings) || !sig) return null;
+  const live = mappings.filter((m) => m && m.sig === sig && (status === "any" || m.status === status));
+  const onHost = host ? live.find((m) => Array.isArray(m.hosts) && m.hosts.includes(host)) : null;
+  if (onHost) return onHost;
+  return live.find((m) => Array.isArray(m.hosts) && m.hosts.length >= MIN_MAPPING_SITES) || null;
+}
+
+// Deterministic vault match, extracted from the sidepanel Stage 1 loop so the
+// side panel and the offline eval (eval/run-eval.mjs) share one path.
+// `field` is {label, autocomplete, name, type}. Order:
+//   1. learned mapping (#1540, confirmed only) for fieldSignature(field) on
+//      `host`, confidence 0.995, pass "learned";
+//   2. per vault entry: autocomplete token (0.99), then aliasMatches over
+//      [key, ...aliases] (0.98).
+// Returns {entry, pass, confidence} or null. A mapping whose vault entry no
+// longer exists is ignored.
+export function matchField(field, vault, { learned = null, host = "" } = {}) {
+  const query = field?.label || "";
+  const autoAttr = field?.autocomplete;
+  if (learned && learned.length) {
+    const m = lookupMapping(learned, fieldSignature(field), host);
+    const entry = m && (vault || []).find((e) => e.id === m.entryId);
+    if (entry) return { entry, pass: "learned", confidence: 0.995 };
+  }
+  for (const entry of vault || []) {
+    if (autoAttr && entry.autocomplete && entry.autocomplete === autoAttr) {
+      return { entry, pass: "autocomplete", confidence: 0.99 };
+    }
+    const aliases = [entry.key, ...(entry.aliases || [])];
+    if (aliases.some((a) => aliasMatches(query, a))) {
+      return { entry, pass: "alias", confidence: 0.98 };
+    }
+  }
+  return null;
+}

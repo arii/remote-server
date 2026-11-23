@@ -1,0 +1,21 @@
+[
+  { "id": "basics.first_name", "key": "First Name", "value": "Ada", "aliases": ["first name", "given name"], "autocomplete": "given-name" },
+  { "id": "basics.last_name", "key": "Last Name", "value": "Lovelace", "aliases": ["last name", "surname", "family name"], "autocomplete": "family-name" },
+  { "id": "basics.full_name", "key": "Full Name", "value": "Ada Lovelace", "aliases": ["full name", "name"], "autocomplete": "name" },
+  { "id": "basics.email", "key": "Email Address", "value": "ada@example.com", "aliases": ["email address", "email"], "autocomplete": "email" },
+  { "id": "basics.phone", "key": "Phone Number", "value": "555-0100", "aliases": ["phone number", "phone", "mobile number"], "autocomplete": "tel" },
+  { "id": "basics.location", "key": "Current Location", "value": "London, UK", "aliases": ["current location", "currently based"] },
+  { "id": "professional.company", "key": "Current Company", "value": "Analytical Engines Ltd", "aliases": ["current company", "employer"] },
+  { "id": "social.linkedin", "key": "LinkedIn", "value": "https://linkedin.com/in/ada", "aliases": ["linkedin"] },
+  { "id": "social.github", "key": "GitHub", "value": "https://github.com/ada", "aliases": ["github"] },
+  { "id": "social.portfolio", "key": "Portfolio", "value": "https://ada.example.com", "aliases": ["portfolio", "personal website"] },
+  {"id": "billing.street", "key": "Billing Street", "value": "1 Example Row", "aliases": ["billing street address", "billing street"]},
+  {"id": "billing.city", "key": "Billing City", "value": "London", "aliases": ["billing city"]},
+  {"id": "billing.zip", "key": "Billing ZIP", "value": "N1 0AA", "aliases": ["billing zip", "billing postal code"]},
+  {"id": "shipping.street", "key": "Shipping Street", "value": "2 Sample Lane", "aliases": ["shipping street address", "shipping street"]},
+  {"id": "shipping.city", "key": "Shipping City", "value": "Leeds", "aliases": ["shipping city"]},
+  {"id": "shipping.zip", "key": "Shipping ZIP", "value": "LS1 0AA", "aliases": ["shipping zip", "shipping postal code"]},
+  {"id": "prefs.country", "key": "Country", "value": "United Kingdom", "aliases": ["country"]},
+  {"id": "prefs.work_auth", "key": "Work Authorization", "value": "Yes", "aliases": ["work authorization", "authorized to work"]},
+  {"id": "prefs.contact", "key": "Contact Preference", "value": "Email", "aliases": ["contact preference"]}
+]

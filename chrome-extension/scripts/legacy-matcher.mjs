@@ -24,7 +24,10 @@ export const LEGACY_EXPORTS = [
   "normalizeLabel",
   "aliasMatches",
   "cleanLabelText",
-  "resolveLabel"
+  "resolveLabel",
+  "fieldSignature",
+  "matchField",
+  "lookupMapping"
 ];
 
 export function toClassicMatcher(src) {

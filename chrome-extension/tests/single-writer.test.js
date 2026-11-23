@@ -54,7 +54,7 @@ function extractRemoveKeys(source) {
   return keys;
 }
 
-const PROTECTED_KEYS = ["userContextVault", "pendingDeltas", "learningCases", "learnedAliases"];
+const PROTECTED_KEYS = ["userContextVault", "pendingDeltas", "learningCases", "learnedAliases", "fillOutcomes", "learnedMappings"];
 
 describe("single-writer boundary (source guard)", () => {
   it("never writes or removes userContextVault/pendingDeltas from the side panel", () => {
@@ -303,6 +303,80 @@ describe("worker mutation handler", () => {
     expect(pending.some((d) => d.proposedValue === "found@corp.example")).toBe(true);
   });
 
+  it("records fill outcomes only for an allowlisted sender host and stores no values", async () => {
+    const mock = makeChromeMock();
+    mock.store.set("userContextVault", [{ id: "identity.email", key: "Email", value: "ada@example.test" }]);
+    mock.store.set("observerDomainAllowlist", ["ok.test"]);
+    const listener = await loadWorker(mock);
+    const msg = {
+      type: "learning:recordOutcomes",
+      fillId: "f1",
+      host: "ok.test",
+      fields: [
+        {
+          sig: { label: "Email", name: "email", autocomplete: "email", type: "email" },
+          filled: "ada@example.test",
+          submitted: "other@example.test",
+          entryKey: "Email",
+          entryId: "identity.email",
+          pass: "autocomplete",
+          confidence: 0.99
+        }
+      ]
+    };
+
+    const denied = await sendUpdate(listener, msg, { tab: { id: 1, url: "https://evil.test/form" } });
+    expect(denied.ok).toBe(false);
+    expect(mock.store.has("fillOutcomes")).toBe(false);
+
+    const ok = await sendUpdate(listener, msg, { tab: { id: 1, url: "https://ok.test/form" } });
+    expect(ok.recorded).toBe(1);
+    const stored = mock.store.get("fillOutcomes");
+    expect(stored[0].outcome).toBe("edited");
+    expect(JSON.stringify(stored)).not.toMatch(/example\.test/);
+
+    const stats = await sendUpdate(listener, { type: "learning:getOutcomes" });
+    expect(stats.last).toEqual({ kept: 0, edited: 1, cleared: 0 });
+  });
+
+  it("learning handlers: getMappings, confirm, delete mapping and delete alias are panel-only writes", async () => {
+    const mock = makeChromeMock();
+    mock.store.set("userContextVault", [
+      { id: "billing.zip", key: "Billing ZIP", value: "N1 0AA", aliases: ["postcode", "zip"] }
+    ]);
+    mock.store.set("learnedAliases", [{ label: "postcode", alias: "postcode", entryId: "billing.zip", entryKey: "Billing ZIP", ts: 1 }]);
+    mock.store.set("learnedMappings", [
+      { sig: "zip||text", entryId: "billing.zip", entryKey: "Billing ZIP", hosts: ["a.test"], hits: 1, cleanUses: 0, status: "quarantined", lastSeen: 1 }
+    ]);
+    const listener = await loadWorker(mock);
+    const tab = { tab: { id: 1, url: "https://evil.test/" } };
+    const panel = {}; // the side panel has no sender.tab
+
+    const got = await sendUpdate(listener, { type: "learning:getMappings" }, panel);
+    expect(got.rows.map((r) => r.origin)).toEqual(["added by you", "learned, unconfirmed"]);
+
+    // A content-script sender cannot lift quarantine or delete anything.
+    for (const msg of [
+      { type: "learning:confirmMapping", sig: "zip||text" },
+      { type: "learning:deleteMapping", sig: "zip||text" },
+      { type: "learning:deleteAlias", entryId: "billing.zip", alias: "postcode" }
+    ]) {
+      expect((await sendUpdate(listener, msg, tab)).ok).toBe(false);
+    }
+    expect(mock.store.get("learnedMappings")[0].status).toBe("quarantined");
+    expect(mock.store.get("userContextVault")[0].aliases).toEqual(["postcode", "zip"]);
+
+    expect((await sendUpdate(listener, { type: "learning:confirmMapping", sig: "zip||text" }, panel)).ok).toBe(true);
+    expect(mock.store.get("learnedMappings")[0].status).toBe("confirmed");
+
+    expect((await sendUpdate(listener, { type: "learning:deleteAlias", entryId: "billing.zip", alias: "postcode" }, panel)).ok).toBe(true);
+    expect(mock.store.get("userContextVault")[0]).toMatchObject({ value: "N1 0AA", aliases: ["zip"] });
+    expect(mock.store.get("learnedAliases")).toEqual([]);
+
+    expect((await sendUpdate(listener, { type: "learning:deleteMapping", sig: "zip||text" }, panel)).ok).toBe(true);
+    expect(mock.store.get("learnedMappings")).toEqual([]);
+  });
+
   it("leaves storage untouched for an unrecognized message type (same as before D3)", async () => {
     const mock = makeChromeMock();
     mock.store.set("userContextVault", [{ id: "a" }]);
@@ -319,10 +393,10 @@ describe("worker mutation handler", () => {
 // The worker's FORM_SUBMIT_DETECTED branch keeps the channel open (returns
 // true) and resolves via sendResponse — route both shapes through one helper
 // that only resolves once a response arrives.
-function sendUpdate(listener, message) {
+function sendUpdate(listener, message, sender = { tab: { id: 1 } }) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`no response for ${message.type || message.action}`)), 1000);
-    const maybe = listener(message, { tab: { id: 1 } }, (res) => {
+    const maybe = listener(message, sender, (res) => {
       clearTimeout(timer);
       resolve(res);
     });
