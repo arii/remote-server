@@ -20,7 +20,7 @@
     "lint": "bash -n scripts/*.sh && (command -v shellcheck >/dev/null 2>&1 && shellcheck -S warning scripts/*.sh || true) && npm run compile-check && npm run lint:python && pnpm --filter frontend lint && pnpm --filter buttons-pair lint",
     "build": "pnpm --filter frontend build",
     "test:backend": "PYTHONPATH=./deep-agent python3 -m unittest discover -s backend/tests",
-    "test:root": "PYTHONPATH=./deep-agent python3 -m unittest discover -s tests",
+    "test:root": "PYTHONPATH=./deep-agent python3 -m scripts.run_root_tests discover -s tests",
     "test:extension": "pnpm --filter localform-ai-extension test && pnpm --filter buttons-pair test",
     "test": "npm run test:backend && pnpm --filter frontend test && npm run test:extension",
     "clean": "docker compose down --remove-orphans",
