@@ -749,6 +749,17 @@ class RepairBudgetExceeded(CoderBudgetExceeded):
     pass
 
 
+def issuing_message(request):
+    """The newest model response holding request's tool call, or None."""
+    state = getattr(request, "state", None)
+    messages = state.get("messages", []) if isinstance(state, dict) else []
+    for message in reversed(messages):
+        calls = getattr(message, "tool_calls", None) or ()
+        if any(c.get("id") == request.tool_call["id"] for c in calls):
+            return message
+    return None
+
+
 def coder_tool_middleware(*, repair=False, planning=False):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
@@ -757,6 +768,7 @@ def coder_tool_middleware(*, repair=False, planning=False):
     earlier = {}
     calls = 0
     explored = 0
+    nudged = None
     bound_exploring = not (repair or planning)
     lock = threading.Lock()
     limit = REPAIR_TOOL_LIMIT if repair else INITIAL_TOOL_LIMIT
@@ -765,7 +777,7 @@ def coder_tool_middleware(*, repair=False, planning=False):
 
     @wrap_tool_call
     def bound_calls(request, handler):
-        nonlocal calls, explored
+        nonlocal calls, explored, nudged
         call = request.tool_call
         key = (call["name"], json.dumps(call["args"], sort_keys=True))
         with lock:
@@ -773,13 +785,18 @@ def coder_tool_middleware(*, repair=False, planning=False):
             if calls > limit:
                 raise error(f"BLOCKED: {label} tool budget exhausted ({limit} calls)")
             if bound_exploring and call["name"] in INSPECTION_TOOLS:
-                explored += 1
-                if explored >= EXPLORE_LIMIT:
-                    raise error(
-                        f"BLOCKED: {label} made {explored} inspection calls "
-                        "without editing"
-                    )
+                # Calls batched with the nudged one get the nudge too, so the
+                # model sees it before the hard stop.
+                message = issuing_message(request)
+                if nudged is None or message is not nudged:
+                    explored += 1
+                    if explored >= EXPLORE_LIMIT:
+                        raise error(
+                            f"BLOCKED: {label} made {explored} inspection calls "
+                            "without editing"
+                        )
                 if explored == EXPLORE_NUDGE:
+                    nudged = nudged or message
                     return ToolMessage(
                         content=(
                             f"{explored} inspection calls without an edit. You have "
@@ -816,6 +833,7 @@ def coder_tool_middleware(*, repair=False, planning=False):
             with lock:
                 seen.clear()
                 explored = 0
+                nudged = None
         return result
 
     return bound_calls
