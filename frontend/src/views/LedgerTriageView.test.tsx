@@ -236,6 +236,16 @@ describe('LedgerTriageView review markers', () => {
     expect(count()).toBe('2 unreviewed');
   });
 
+  it('still approves when browser storage refuses the write', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError');
+    });
+    await act(async () => root.render(<LedgerTriageView />));
+    await act(async () => host.querySelector<HTMLButtonElement>('.btn-primary')!.click());
+    expect(api.approveLedgerIntake).toHaveBeenCalledWith('intake-1', {}, false);
+    expect(count()).toBe('0 unreviewed');
+  });
+
   it('counts a dismissed row as reviewed', async () => {
     await act(async () => root.render(<LedgerTriageView />));
     expect(count()).toBe('1 unreviewed');
