@@ -22,6 +22,9 @@ NO_PROVIDER = "TwT no provider available"
 REPEAT = "Coder repeat loop"
 READ_ONLY = "Coder read-only run"
 OUTSIDE = "Coder write outside worktree"
+LOOP_DETECTED = "Coder loop detected"
+GAVE_UP = "Coder gave up"
+TERMINATION_CAUSES = {"loop_detected": LOOP_DETECTED, "gave_up": GAVE_UP}
 WRITE_TOOLS = {"write_file", "edit_file", "delete"}
 PROVIDER_ID = r"[a-z0-9_-]{1,40}"
 ATTEMPT_REASONS = {
@@ -63,16 +66,21 @@ def coder_cause(event):
     if event.get("type") == "coder_verdict" and event.get("ok") is False:
         if "no written files for implementation" in event.get("reason", ""):
             return READ_ONLY
+    if event.get("type") == "termination":
+        return TERMINATION_CAUSES.get(event.get("reason"))
     if event.get("type") != "tool_call":
         return None
     error = event.get("error", "")
     result = event.get("result_preview", "")
+    # result_preview drops the tail where run_check appends the warning;
+    # older events lack check_output.
+    check_output = event.get("check_output", result)
     if error.startswith("BLOCKED:") and "repeated unchanged" in error:
         return REPEAT
     if re.match(r"BLOCKED: .* made \d+ inspection calls without editing", error):
         return READ_ONLY
     if event.get("name") == "run_check" and re.search(
-        r"(?m)^DITHERING: this exact command has ", result
+        r"(?m)^DITHERING: this exact command has ", check_output
     ):
         return REPEAT
     if event.get("name") in WRITE_TOOLS and (error or result).startswith(
@@ -87,12 +95,20 @@ def trace_counts(root):
     for parent in (root, root / "archive"):
         for path in parent.glob("*/state/traces/coder*.jsonl"):
             with path.open(encoding="utf-8") as stream:
-                causes = {
-                    coder_cause(event)
+                events = [
+                    event
                     for line in stream
                     if line.strip() and line.endswith("\n")
                     if isinstance(event := json.loads(line), dict)
-                }
+                ]
+            causes = {coder_cause(event) for event in events}
+            # Infra failures are classified first: a run that died on infra
+            # says nothing about model capability.
+            if any(
+                e.get("type") == "termination" and e.get("reason") == "infra_error"
+                for e in events
+            ):
+                causes -= set(TERMINATION_CAUSES.values())
             counts.update(causes - {None})
     return counts
 
@@ -170,7 +186,14 @@ def intake_note(cause):
 def known_cause(entry):
     cause, _, url = entry.partition("=")
     provider = re.fullmatch(rf"TwT {PROVIDER_ID} (.+)", cause)
-    valid = cause in {NO_PROVIDER, REPEAT, READ_ONLY, OUTSIDE} or (
+    valid = cause in {
+        NO_PROVIDER,
+        REPEAT,
+        READ_ONLY,
+        OUTSIDE,
+        LOOP_DETECTED,
+        GAVE_UP,
+    } or (
         provider is not None
         and (
             provider[1] in ATTEMPT_REASONS

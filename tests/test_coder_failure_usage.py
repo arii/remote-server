@@ -126,6 +126,37 @@ class TestFailedCoderUsage(unittest.TestCase):
                 self.assertEqual(rows[0]["cost_usd"], 0.0123)
                 self.assertIn(type(error).__name__, rows[0]["extra"]["error"])
 
+    def reasons_for(self, error):
+        seen = []
+        real = observe.TraceRecorder.termination
+
+        def spy(rec, reason):
+            seen.append(reason)
+            return real(rec, reason)
+
+        with mock.patch.object(observe.TraceRecorder, "termination", spy):
+            self.scenario(error=error)
+        return seen
+
+    def test_failed_runs_record_termination_reason(self):
+        self.assertEqual(self.reasons_for(None), ["gave_up"])
+        self.assertEqual(self.reasons_for(TimeoutError()), ["infra_error"])
+        self.assertEqual(self.reasons_for(ValueError("gateway 502")), ["infra_error"])
+        self.assertEqual(
+            self.reasons_for(
+                coder.CoderBudgetExceeded(
+                    "BLOCKED: Initial tool budget exhausted (9 calls)"
+                )
+            ),
+            ["budget_calls"],
+        )
+        self.assertEqual(
+            self.reasons_for(
+                coder.CoderBudgetExceeded("BLOCKED: repeated unchanged read of a.py")
+            ),
+            ["loop_detected"],
+        )
+
     def test_empty_setup_failure_is_not_dispatched_and_free(self):
         result, rows = self.scenario(setup_error=True)
         self.assertIsInstance(result, ValueError)

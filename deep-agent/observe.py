@@ -12,15 +12,23 @@ agent session sends the API owner — shapes below are that contract).
 Event shapes (one JSON object per line, `ts` epoch seconds always):
   run_start  {script, thread, model}
   model_request  {n_messages}
-  model_response {usage: {input_tokens, output_tokens, total_tokens}}
-  tool_call  {name, args_preview, duration_s, ok, result_preview|error}
+  model_response {usage: {input_tokens, output_tokens, total_tokens},
+                  input_tokens, cost_usd (null when unreported)}
+  tool_call  {name, call_hash, args_preview, duration_s, ok,
+              result_preview|error}
+  termination {reason}  reason in TERMINATION_REASONS
   run_end    {duration_s, ok}
+
+`call_hash` is a stable hash of the tool name and whitespace-normalized
+args, so identical repeated calls share one hash. `termination` is
+recorded explicitly (a successful run_end records `success` itself).
 
 Previews are capped at 2000 chars; run_check also retains 4000 chars
 of bounded head/tail evidence. The recorder never raises:
 observability must not break runs.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -30,7 +38,38 @@ import time
 from backend.shared import ledger
 
 PREVIEW_LIMIT = 2000
+TERMINATION_REASONS = (
+    "gave_up",
+    "loop_detected",
+    "budget_cost",
+    "budget_calls",
+    "infra_error",
+    "success",
+)
+_COST_MARKERS = ("budget", "402", "spend limit", "insufficient credit")
 _THREAD_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def classify_termination(error):
+    """Map a run-ending exception to a TERMINATION_REASONS value.
+
+    Call caps and tool-call budgets are budget_calls; repeated-action
+    blocks are loop_detected; spend refusals are budget_cost; anything
+    else (timeouts, 429/5xx, resets, crashes) is infra_error.
+    """
+    names = {c.__name__ for c in type(error).__mro__}
+    msg = str(error).lower()
+    if "ModelCallLimitExceededError" in names or "tool budget exhausted" in msg:
+        return "budget_calls"
+    if "BudgetExceeded" in " ".join(names) or msg.startswith("blocked:"):
+        if "repeated" in msg or "dithering" in msg:
+            return "loop_detected"
+        if "names no usable" in msg:
+            return "gave_up"
+        return "budget_calls"
+    if any(m in msg for m in _COST_MARKERS):
+        return "budget_cost"
+    return "infra_error"
 
 
 def _preview(value):
@@ -42,6 +81,24 @@ def _preview(value):
     if len(text) > PREVIEW_LIMIT:
         return text[:PREVIEW_LIMIT] + "…[truncated]"
     return text
+
+
+def call_hash(name, args):
+    """Stable short hash of a tool call; whitespace in strings is normalized."""
+
+    def norm(value):
+        if isinstance(value, str):
+            return " ".join(value.split())
+        if isinstance(value, dict):
+            return {str(k): norm(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [norm(v) for v in value]
+        return value
+
+    text = json.dumps(
+        [name, norm(args)], sort_keys=True, default=str, ensure_ascii=False
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def default_trace_path(script, thread_id):
@@ -78,6 +135,7 @@ class TraceRecorder:
         self._cost_complete = True
         self._responses = 0
         self._twt_trace_ids = set()
+        self._terminated = False
         try:
             self._fh = open(path, "a", encoding="utf-8")
         except OSError:
@@ -111,13 +169,19 @@ class TraceRecorder:
             k: (usage or {}).get(k, 0) or 0
             for k in ("input_tokens", "output_tokens", "total_tokens")
         }
-        self.event("model_response", usage=snap)
+        self.event(
+            "model_response",
+            usage=snap,
+            input_tokens=snap["input_tokens"],
+            cost_usd=(usage or {}).get("reported_cost_usd"),
+        )
         for k in self._usage:
             self._usage[k] += snap[k]
 
     def tool_call(self, name, args, duration_s, ok, result=None, error=None):
         payload = {
             "name": name,
+            "call_hash": call_hash(name, args or ""),
             "args_preview": _preview(args or ""),
             "duration_s": round(duration_s, 3),
             "ok": ok,
@@ -154,7 +218,20 @@ class TraceRecorder:
         except Exception:  # noqa: BLE001 - totals must never break a run
             return ({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, [])
 
+    @property
+    def terminated(self):
+        return self._terminated
+
+    def termination(self, reason):
+        """Record why the run ended; reason must be in TERMINATION_REASONS."""
+        if reason not in TERMINATION_REASONS:
+            raise ValueError(f"unknown termination reason: {reason!r}")
+        self._terminated = True
+        self.event("termination", reason=reason)
+
     def run_end(self, ok=True):
+        if ok and not self._terminated:
+            self.termination("success")
         self.event("run_end", duration_s=round(time.time() - self.started, 3), ok=ok)
 
     def close(self):
