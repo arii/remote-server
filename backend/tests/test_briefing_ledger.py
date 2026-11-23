@@ -558,6 +558,32 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("scope", response.json()["detail"])
 
+    def test_risk_from_approval_time_field_is_named_in_400(self):
+        self._flagged_row(
+            canonical_intake_id="intake-typed",
+            status="NEEDS_INFO",
+            title="Tidy docs",
+            problem="",
+            missing_fields=["problem"],
+        )
+        body = {"fields": {"problem": "migrate the prod DB"}}
+        response = self.client.post(
+            "/api/ledger-intake/intake-typed/approve", json=body
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("confirmation required", response.json()["detail"])
+        self.assertIn("production_mutation", response.json()["detail"])
+        response = self.client.post(
+            "/api/ledger-intake/intake-typed/approve",
+            json={
+                **body,
+                "intent": "ledger-intake-approve-high-risk",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["row"]["status"], "READY")
+
     def test_unflagged_approval_needs_no_confirm(self):
         self._flagged_row(status="NEW", title="Tidy docs")
         response = self.client.post(

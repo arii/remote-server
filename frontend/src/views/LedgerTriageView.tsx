@@ -49,6 +49,7 @@ export default function LedgerTriageView(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [serverRisks, setServerRisks] = useState<Record<string, string[]>>({});
   const [mergeNotes, setMergeNotes] = useState<Record<string, string>>({});
 
   async function load() {
@@ -75,17 +76,31 @@ export default function LedgerTriageView(): ReactElement {
     }));
   }
 
+  function rowRisks(row: LedgerIntakeRow): string[] {
+    return Array.from(new Set([...riskList(row), ...(serverRisks[rowId(row)] || [])]));
+  }
+
   async function approve(row: LedgerIntakeRow) {
     const id = rowId(row);
     if (!id || busy) return;
     setBusy(id);
     setNotice(null);
     try {
-      await approveLedgerIntake(id, values[id] || {}, riskList(row).length > 0);
+      await approveLedgerIntake(id, values[id] || {}, rowRisks(row).length > 0);
       setRows((current) => current.filter((candidate) => rowId(candidate) !== id));
       setNotice('Marked READY.');
     } catch (err) {
-      setNotice(`Could not approve: ${err instanceof Error ? err.message : String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      // The server re-derives risk from fields typed here. Switch this row to the
+      // confirm control so the reviewer can retry.
+      const found = /confirmation required: high blast radius \(([^)]*)\)/.exec(message);
+      if (found) {
+        const names = found[1].split(',').map((name) => name.trim()).filter(Boolean);
+        setServerRisks((current) => ({ ...current, [id]: names }));
+        setNotice('This row touches a high blast radius area. Confirm to approve.');
+      } else {
+        setNotice(`Could not approve: ${message}`);
+      }
     } finally {
       setBusy(null);
     }
@@ -146,7 +161,7 @@ export default function LedgerTriageView(): ReactElement {
         {rows.map((row) => {
           const id = rowId(row);
           const missing = (row.missing_fields || []).map(String);
-          const risks = riskList(row).map((name) => RISK_LABELS[name] || name);
+          const risks = rowRisks(row).map((name) => RISK_LABELS[name] || name);
           return (
             <article className="ledger-triage-card" key={id} tabIndex={0}>
               <div className="ledger-card-head">

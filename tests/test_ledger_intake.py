@@ -169,6 +169,27 @@ class HighBlastRadiusLockTests(unittest.TestCase):
                 with self.subTest(title=title):
                     self.assertIn(category, risk_categories({"title": title}))
 
+    def test_common_phrasings_are_detected(self):
+        samples = {
+            "redeploy to prod": "production_mutation",
+            "Roll out to production": "production_mutation",
+            "we will roll it out on Friday": "production_mutation",
+            "force push to main": "production_mutation",
+            "git push --force": "production_mutation",
+            "delete the prod database": "production_mutation",
+            "Rotate the API key": "billing_permission",
+            "ntfy the team": "external_comms",
+            "update IAM": "billing_permission",
+        }
+        for title, category in samples.items():
+            with self.subTest(title=title):
+                self.assertIn(category, risk_categories({"title": title}))
+
+    def test_short_tokens_match_whole_words_only(self):
+        for title in ("iambic parser", "ntfyx helper", "Pliam notes"):
+            with self.subTest(title=title):
+                self.assertEqual(risk_categories({"title": title}), [])
+
     def test_other_fields_are_scanned(self):
         self.assertEqual(
             risk_categories({"done_when": "customers receive an email"}),

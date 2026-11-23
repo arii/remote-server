@@ -411,7 +411,15 @@ def approve_ledger_intake(intake_id: str, body: IntakeApproval) -> dict:
     categories = _row_risk_categories(row, fields)
     if categories or str(row.get("status", "")).upper() == "NEEDS_APPROVAL":
         # High-blast-radius rows need an explicit confirm (#1586).
-        require_confirm(body, HIGH_RISK_APPROVE_INTENT)
+        try:
+            require_confirm(body, HIGH_RISK_APPROVE_INTENT)
+        except HTTPException as exc:
+            # Name the categories so the UI can switch to its confirm control
+            # when the risk came from fields typed at approval time.
+            raise HTTPException(
+                status_code=400,
+                detail=f"{exc.detail}: high blast radius ({', '.join(categories)})",
+            ) from exc
     updated = {
         **row,
         **fields,
