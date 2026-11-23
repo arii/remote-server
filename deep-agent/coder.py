@@ -719,6 +719,11 @@ def implementation_tool_middleware():
     return GroundImplementation()
 
 
+def is_call_cap(error):
+    """True for langchain's ModelCallLimitExceededError, without importing it."""
+    return any(c.__name__ == "ModelCallLimitExceededError" for c in type(error).__mro__)
+
+
 class CoderBudgetExceeded(RuntimeError):
     pass
 

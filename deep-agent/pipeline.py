@@ -557,10 +557,6 @@ class Pipeline:
                     )
                     if os.path.normpath(path) != os.path.normpath(spec_path)
                 ]
-            from langchain.agents.middleware.model_call_limit import (
-                ModelCallLimitExceededError,
-            )
-
             meter = {}
             try:
                 result = coder.run_coder(
@@ -580,13 +576,16 @@ class Pipeline:
                     meter=meter,
                     **kwargs,
                 )
-            except ModelCallLimitExceededError as exc:
-                self.stage_exhausted = True
-                raise RuntimeError(
-                    f"coder model-call budget exhausted after {meter.get('calls', 0)} "
-                    f"calls in this turn ({meter.get('continuations', 0)} continuations)"
-                ) from exc
-            except RuntimeError as exc:
+            except Exception as exc:
+                if coder.is_call_cap(exc):
+                    self.stage_exhausted = True
+                    raise RuntimeError(
+                        "coder model-call budget exhausted after "
+                        f"{meter.get('calls', 0)} calls in this turn "
+                        f"({meter.get('continuations', 0)} continuations)"
+                    ) from exc
+                if not isinstance(exc, RuntimeError):
+                    raise
                 if kwargs.get("repair") and errors and coder.NO_WRITES in str(exc):
                     # Still fail closed, but keep the deterministic gate
                     # failure that triggered the repair visible (#1372).
