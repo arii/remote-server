@@ -581,6 +581,29 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(runner.SafetyStop):
                 runner.retry_issue(config, "owner/repo#7")
 
+    def test_retry_accepts_budget_exhausted_as_operator_approval(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, state, directory = self.failed_run(root)
+            runner.write_json(
+                directory / "summary.json",
+                {
+                    "exit_code": 1,
+                    "halt_queue": False,
+                    "result": {"status": "BUDGET_EXHAUSTED"},
+                    "budget": {"parent": {"calls_used": 60, "exhausted": True}},
+                },
+            )
+            with mock.patch.object(
+                runner.subprocess, "Popen", return_value=self.retry_process(directory)
+            ):
+                self.assertEqual(runner.retry_issue(config, "owner/repo#7"), 0)
+            status = runner.read_json(state / "status.json")
+            self.assertEqual(status["retry"], "owner/repo#7")
+            self.assertNotIn("owner/repo#7", status["completed"])
+            # The archived run (with its spent budget.json) is gone from the
+            # job dir, so the retried run starts a fresh parent budget.
+            self.assertFalse((directory / "summary.json").exists())
+
     def test_retry_refuses_active_supervisor(self):
         with tempfile.TemporaryDirectory() as root:
             config, state, directory = self.failed_run(root)
@@ -1509,6 +1532,33 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(self.posts[-1][2], "Needs Okay")
         self.assertEqual(self.posts[-1][3], ISSUE_URL)
 
+    def test_budget_exhausted_posts_needs_okay_without_escalation(self):
+        summary = {
+            "exit_code": 1,
+            "result": {"status": "BUDGET_EXHAUSTED", "detail": "cap"},
+        }
+        code, status, _config = self.run_one(summary)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.posts[-1][2], "Needs Okay")
+        self.assertIn("Needs Okay: BUDGET_EXHAUSTED, queue run", self.posts[-1][1])
+        self.assertNotIn("BUDGET_EXHAUSTED", runner.COUNTED_STATUSES)
+        self.assertNotIn("owner/repo#7", status.get("tier_failures", {}))
+        self.assertEqual(status["completed"], ["owner/repo#7"])
+
+    def test_budget_exhausted_does_not_reset_tier_failures(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            state.mkdir()
+            runner.write_json(
+                state / "status.json",
+                {"completed": [], "tier_failures": {"owner/repo#7": 1}},
+            )
+            summary = {"exit_code": 1, "result": {"status": "BUDGET_EXHAUSTED"}}
+            with self.spawn(state, summary):
+                runner.supervise(config)
+            status = runner.read_json(state / "status.json")
+        self.assertEqual(status["tier_failures"], {"owner/repo#7": 1})
+
     def test_fresh_foreign_act_claim_skips_the_issue(self):
         self.rows = [self.foreign(hours=1)]
         with tempfile.TemporaryDirectory() as root:
@@ -1943,6 +1993,66 @@ class AccountingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BudgetReportTests(unittest.TestCase):
+    def job(self, root, name, calls=None, verified=False, exhausted=False):
+        directory = Path(root) / name
+        directory.mkdir()
+        budget = None
+        if calls is not None:
+            budget = {
+                "parent": {
+                    "calls_used": calls,
+                    "max_calls": 60,
+                    "exhausted": exhausted,
+                    "verified": verified,
+                },
+                "sub_briefs": [],
+            }
+        runner.write_json(directory / "summary.json", {"budget": budget})
+        return directory
+
+    def test_report_buckets_rates_and_exhaustion(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.job(root, "a", 3, verified=True)
+            self.job(root, "b", 8, verified=True)
+            self.job(root, "c", 19, verified=False)
+            self.job(root, "d", 30, verified=True)
+            self.job(root, "e", 60, exhausted=True)
+            self.job(root, "f", None)
+            (Path(root) / "g").mkdir()
+            report = runner.budget_report(root)
+        lines = report.splitlines()
+        self.assertEqual(lines[1].split(), ["1-5", "1", "1", "100%"])
+        self.assertEqual(lines[2].split(), ["6-10", "1", "1", "100%"])
+        self.assertEqual(lines[3].split(), ["11-20", "1", "0", "0%"])
+        self.assertEqual(lines[4].split(), ["21-40", "1", "1", "100%"])
+        self.assertEqual(lines[5].split(), [">40", "1", "0", "0%"])
+        self.assertIn("runs=5 verified=3 calls_per_verified=13.7", report)
+        self.assertIn("budget_exhaustion_rate=20% (1/5)", report)
+
+    def test_report_empty_input(self):
+        with tempfile.TemporaryDirectory() as root:
+            report = runner.budget_report(root)
+        self.assertIn("runs=0 verified=0 calls_per_verified=n/a", report)
+        self.assertIn("budget_exhaustion_rate=n/a (0/0)", report)
+
+    def test_budget_report_flag_reads_state_dir(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root) / "state"
+            state.mkdir()
+            self.job(state, "a", 4, verified=True)
+            runner.write_json(Path(root) / "c.json", {"state_dir": str(state)})
+            out = io.StringIO()
+            with (
+                mock.patch.object(
+                    sys, "argv", ["q", "--config", f"{root}/c.json", "--budget-report"]
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                self.assertEqual(runner.main(), 0)
+        self.assertIn("runs=1 verified=1 calls_per_verified=4.0", out.getvalue())
 
 
 class StrongRoutingTests(unittest.TestCase):

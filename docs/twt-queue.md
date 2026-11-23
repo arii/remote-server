@@ -325,6 +325,35 @@ Where to read the tier: the supervisor prints
 per attempt. Known gaps: the plan and resume coder paths still call
 `build_model(CODER_MODEL)` without a tier, and ledger rows carry no tier tag.
 
+## Coder call budget, splitting and resume
+
+The per-turn coder limits (`INITIAL_MODEL_LIMIT` 20, `REPAIR_MODEL_LIMIT` 12) are not raised. Instead the pipeline fits work to the budget and bounds recovery.
+
+**Size budget and split rule** (`deep-agent/pipeline.py`). A brief over `BRIEF_LINE_BUDGET` (60 non-blank lines) or `BRIEF_FILE_BUDGET` (4 distinct files, an unvalidated guess) is split deterministically (no model call) from its acceptance / done-when items into at most `SPLIT_MAX_PARTS` (3) sequential sub-briefs, each with its own acceptance list. Sub-briefs run in the same worktree. Each must be coder-verified and pass `pre_audit_check` before the next starts. One audit and one PR cover the whole diff, only when every sub-brief is done. An over-budget brief with fewer than 2 acceptance items ends as `BUDGET_UNSPLITTABLE` with no PR.
+
+**Shared state.** The worker sets `S5_BUDGET_STATE=<job_dir>/budget.json`. Shape: `{parent:{calls_used,max_calls,exhausted,verified}, sub_briefs:[{id,title,acceptance,status,calls,continuations,verified,verification}]}`. It is written atomically after each sub-brief transition and copied into `summary.json["budget"]`. Small briefs get a one-entry record. The `code` entry in `stages.json` carries `calls` (parent total).
+
+**Resume and caps.** When a coder turn hits its call limit, it continues once on the same checkpointed thread with a fresh per-turn budget (`MAX_CONTINUATIONS_PER_SUBBRIEF` = 1). Total model calls per parent task stop at `MAX_CALLS_PER_PARENT` (60 = 3 x 20, above the 21-40 bucket on purpose). The cap is checked before every new model-call turn. Continuation is never unbounded.
+
+**Exhaustion.** The run ends `BUDGET_EXHAUSTED` (exit nonzero, no PR, worktree kept, `result["partial"]` lists done and not_done acceptance items). It is not in `COUNTED_STATUSES`: it does not bump or reset `tier_failures`, so it never triggers auto-escalation. The ledger gets `Needs Okay: BUDGET_EXHAUSTED, queue run <id>` with state `Needs Okay`. The supervisor does not requeue it. Operator options:
+
+- split the issue by hand into smaller issues with explicit done-when items;
+- `--retry owner/repo#N`, which is the explicit approval and starts a fresh parent budget (the old job dir, including `budget.json`, is archived);
+- add the `model:strong` label to start on the strong tier.
+
+**Reading `--budget-report`.** `python3 scripts/queue_runner.py --config <config> --budget-report` reads every job's `summary.json["budget"]` under `state_dir` and prints, offline, runs and verified completion rate per call bucket, calls per verified completion, and the budget-exhaustion rate. Sample from fixtures:
+
+```
+bucket  runs  verified  rate
+1-5        1         1  100%
+6-10       1         1  100%
+11-20      1         0  0%
+21-40      1         1  100%
+>40        1         0  0%
+runs=5 verified=3 calls_per_verified=13.7
+budget_exhaustion_rate=20% (1/5)
+```
+
 ## User service
 
 Install `scripts/twt-queue.service` in `~/.config/systemd/user/`. Create a mode-0600

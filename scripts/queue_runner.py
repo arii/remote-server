@@ -504,6 +504,8 @@ class QueueLedger:
             return self.post(
                 f"Needs Okay: spend cap reached, {run}", "Needs Okay", link
             )
+        if code == "BUDGET_EXHAUSTED":
+            return self.post(f"Needs Okay: BUDGET_EXHAUSTED, {run}", "Needs Okay", link)
         reason = "max_common_failures" if limit_hit else code
         self.post(f"Later: {reason}, {run}", "Later", link)
 
@@ -623,6 +625,7 @@ def worker(job_dir):
         S5_ISSUE_PROVIDER="twt",
         S5_LOCAL_ONLY="0",
         OLLAMA_STRICT="0",
+        S5_BUDGET_STATE=str(directory / "budget.json"),
     )
     for key in ("CODER_MODEL", "S5_AUDIT_MODEL", "S5_START_MODEL_TIER"):
         os.environ.pop(key, None)
@@ -689,6 +692,10 @@ def worker(job_dir):
                     try:
                         output = original(instance, *args, **kwargs)
                         entry["outcome"] = output[0]
+                        if stage == "code" and (directory / "budget.json").exists():
+                            entry["calls"] = read_json(directory / "budget.json")[
+                                "parent"
+                            ]["calls_used"]
                         if stage == "audit" and isinstance(output[1], dict):
                             entry["audit"] = {
                                 key: output[1].get(key)
@@ -755,6 +762,7 @@ def worker(job_dir):
         "strong_model": strong_model,
         "budget_stop": bool(stops),
         "result": result,
+        "budget": result.get("budget"),
         "stages": stages,
         "reconciliation": reconciliation,
         "halt_queue": bool(fatal),
@@ -1315,6 +1323,55 @@ def supervise(config_path, *, clear_halt=False):
     return 0
 
 
+BUDGET_BUCKETS = ((1, 5), (6, 10), (11, 20), (21, 40))
+
+
+def budget_bucket(calls):
+    for low, high in BUDGET_BUCKETS:
+        if low <= calls <= high:
+            return f"{low}-{high}"
+    return ">40"
+
+
+def budget_report(root):
+    """Plain-text call-budget metrics from each job's summary.json['budget'].
+
+    root is the queue state dir (one job dir per issue) or an iterable of job dirs.
+    """
+    if isinstance(root, (str, Path)):
+        root = sorted(path for path in Path(root).iterdir() if path.is_dir())
+    labels = [budget_bucket(n) for n in (1, 6, 11, 21, 41)]
+    buckets = {label: [0, 0] for label in labels}
+    runs = verified = exhausted = calls_verified = 0
+    for directory in root:
+        path = Path(directory) / "summary.json"
+        try:
+            parent = (read_json(path).get("budget") or {}).get("parent")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if not isinstance(parent, dict) or type(parent.get("calls_used")) is not int:
+            continue
+        done = bool(parent.get("verified"))
+        calls = parent["calls_used"]
+        bucket = buckets[budget_bucket(calls)]
+        bucket[0] += 1
+        runs += 1
+        exhausted += bool(parent.get("exhausted"))
+        if done:
+            bucket[1] += 1
+            verified += 1
+            calls_verified += calls
+    lines = ["bucket  runs  verified  rate"]
+    for label, (count, ok) in buckets.items():
+        rate = f"{ok / count:.0%}" if count else "n/a"
+        lines.append(f"{label:<7} {count:>4}  {ok:>8}  {rate}")
+    per = f"{calls_verified / verified:.1f}" if verified else "n/a"
+    rate = f"{exhausted / runs:.0%}" if runs else "n/a"
+    lines.append(f"runs={runs} verified={verified} calls_per_verified={per}")
+    lines.append(f"budget_exhaustion_rate={rate} ({exhausted}/{runs})")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     default_config = os.environ.get("QUEUE_CONFIG")
@@ -1331,11 +1388,21 @@ def main():
         help="archive a reconciled failed run and prioritize one retry; queue must be idle",
     )
     parser.add_argument(
+        "--budget-report",
+        action="store_true",
+        help="print verified completion rate per coder call bucket and exit",
+    )
+    parser.add_argument(
         "--clear-halt",
         action="store_true",
         help="acknowledge saved halts after successful reconciliation and resume",
     )
     args = parser.parse_args()
+    if args.budget_report:
+        if args.worker or args.reconcile or args.archive_worktree or args.retry:
+            parser.error("--budget-report requires supervisor configuration only")
+        print(budget_report(Path(read_json(args.config)["state_dir"])))
+        return 0
     if args.retry:
         if args.worker or args.reconcile or args.archive_worktree or args.clear_halt:
             parser.error(
