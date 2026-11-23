@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 0
 
       - name: Automated AI Code Review
-        uses: arii/boomtick@59989e17ecb5a2c685a90ca73cf9fffb572dd386 # boomtick feat/review-verdict-gate, re-pin to the boomtick main merge commit after the boomtick PR merges
+        uses: arii/boomtick@8a413b25a47cf251f6472c46becfeeba7fbb3e67 # boomtick feat/review-verdict-gate, re-pin to the boomtick main merge commit after the boomtick PR merges
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
