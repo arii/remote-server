@@ -61,6 +61,7 @@ deep-agent/*
 !deep-agent/impact.py
 !deep-agent/ux_audit.py
 !deep-agent/auditor.py
+!deep-agent/cli_fallback.py
 !deep-agent/pipeline.py
 !deep-agent/eval_pipeline.py
 !deep-agent/skills_registry.py
