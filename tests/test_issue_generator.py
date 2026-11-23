@@ -303,7 +303,9 @@ class TestValidateSpec(unittest.TestCase):
 
     def test_valid(self):
         gen = self._gen(_valid_td)
-        valid, data, errors = gen.validate_spec("# T\n\nbody\n")
+        valid, data, errors = gen.validate_spec(
+            "# T\n\nbody\n### Allowed Files\n- `new_widget.py` (CREATE)\n"
+        )
         self.assertTrue(valid)
         self.assertEqual(errors, [])
         self.assertEqual(data["verification_commands"], ["make check"])
@@ -352,7 +354,7 @@ class TestGraphLoop(unittest.TestCase):
         def model_fn():
             class FakeModel:
                 def invoke(self, prompt):
-                    return "Draft spec body.\n\n- What files are in scope?\n"
+                    return "Draft spec body.\n\n- What files are in scope?\n\n### Allowed Files\n- `new_widget.py` (CREATE)\n"
 
             return FakeModel()
 
@@ -421,7 +423,7 @@ class TestGraphLoop(unittest.TestCase):
         def model_fn():
             class FakeModel:
                 def invoke(self, prompt):
-                    return "Draft spec body, no questions."
+                    return "Draft spec body, no questions.\n### Allowed Files\n- `new_widget.py` (CREATE)\n"
 
             return FakeModel()
 
@@ -535,6 +537,7 @@ class TestValidateSpecLiteralContradiction(unittest.TestCase):
             "- [ ] zero occurrences of `wrapper_name` in the repo\n\n"
             "## Definition of Done\n"
             "- Verified: no occurrences of `wrapper_name` remain\n"
+            "### Allowed Files\n- `new_widget.py` (CREATE)\n"
         )
         valid, _data, errors = self._gen().validate_spec(spec)
         self.assertTrue(valid)
@@ -544,6 +547,7 @@ class TestValidateSpecLiteralContradiction(unittest.TestCase):
         spec = (
             "# T\n\n## Acceptance Criteria\n"
             "- [ ] zero occurrences of `wrapper_name` in the repo\n\n"
+            "### Allowed Files\n- `new_widget.py` (CREATE)\n"
             "## Investigation Evidence\n"
             "docs/CLAIMS.md still mentions `wrapper_name` in a why record\n"
         )

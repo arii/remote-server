@@ -212,7 +212,7 @@ class TestScopeURLs(unittest.TestCase):
             return 0, json.dumps({"valid": True, "errors": []})
 
         graph = issue_generator.IssueGeneratorGraph("/tmp", td_runner=td)
-        text = "## References\nhttps://github.com/org/repo\n## Verification Commands\n```bash\ncurl https://example.org/status\n```\n"
+        text = "### Allowed Files\n- `new_widget.py` (CREATE)\n## References\nhttps://github.com/org/repo\n## Verification Commands\n```bash\ncurl https://example.org/status\n```\n"
         self.assertTrue(graph.validate_spec(text)[0])
         self.assertNotIn("github.com", captured[0])
         self.assertIn("curl https://example.org/status", captured[0])
@@ -222,6 +222,8 @@ class TestScopeURLs(unittest.TestCase):
     def test_real_validator_ignores_citations_but_rejects_missing_files(self):
         with tempfile.TemporaryDirectory() as root:
             Path(root, "widget.py").write_text("pass\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", root], check=True)
+            subprocess.run(["git", "-C", root, "add", "widget.py"], check=True)
             graph = issue_generator.IssueGeneratorGraph(root)
             for path, expected in (("widget.py", True), ("missing.py", False)):
                 text = (
@@ -518,7 +520,12 @@ class TestPipelineContracts(unittest.TestCase):
 
         def factory(**kwargs):
             gen = original(**kwargs)
-            gen.draft_text = mock.Mock(side_effect=["initial draft", "redrafted spec"])
+            gen.draft_text = mock.Mock(
+                side_effect=[
+                    "initial draft",
+                    "redrafted spec\n### Allowed Files\n- `new_widget.py` (CREATE)\n",
+                ]
+            )
 
             def investigate(brief, draft):
                 gen.investigation_truncated = True
@@ -640,6 +647,40 @@ class TestPipelineContracts(unittest.TestCase):
                 self.assertEqual(graph.implement_fn("task", "plan", root, []), "done")
                 executor.assert_called_once()
                 self.assertEqual(executor.call_args.args[0], root)
+
+    def test_1570_bare_plan_reprompts_once_before_implementation(self):
+        bare = "1. backend/notify/prefs_state.py\n2. backend/server.py"
+        marked = "1. Update server [files: backend/server.py]"
+        spec = (
+            "### Allowed Files\n- `backend/server.py`\n"
+            "- `docs/specs/issue-1570.md` (new)\n"
+        )
+        for response in (marked, bare):
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as root:
+                model = mock.Mock()
+                model.invoke.side_effect = [bare, response]
+                with mock.patch.object(coder, "build_model", return_value=(model, {})):
+                    graph = pipeline.Pipeline(root, "fix", issue_id=1570).make_coder(
+                        spec
+                    )
+                    if response == marked:
+                        result = graph.plan_fn("Fix status", root, {"errors": []})
+                        self.assertEqual(result["plan"], marked)
+                        self.assertNotIn(
+                            "backend/notify/prefs_state.py", result["allowed_files"]
+                        )
+                    else:
+                        with self.assertRaisesRegex(
+                            coder.CoderBudgetExceeded, "after one retry"
+                        ):
+                            graph.plan_fn("Fix status", root, {"errors": []})
+                self.assertEqual(model.invoke.call_count, 2)
+                prompt = model.invoke.call_args.args[0]
+                self.assertIn("[files: path1, path2]", prompt)
+                self.assertIn(
+                    "Spec Allowed Files (excluding its artifact): backend/server.py.",
+                    prompt,
+                )
 
     def test_unverified_implementation_is_not_success(self):
         """A run_coder result without verification fails the implementation."""
