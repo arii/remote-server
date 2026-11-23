@@ -677,13 +677,20 @@ class TestTrivialTrace(unittest.TestCase):
             events = self._events(trace_path)
         self.assertEqual(
             [e["type"] for e in events],
-            ["run_start", "model_request", "model_response", "run_end"],
+            [
+                "run_start",
+                "model_request",
+                "model_response",
+                "termination",
+                "run_end",
+            ],
         )
         self.assertEqual(events[0]["model"], "ollama:qwen3:8b")
         self.assertEqual(events[0]["thread"], "t-trivial")
         self.assertEqual(events[1]["n_messages"], 2)
         self.assertEqual(events[2]["usage"]["total_tokens"], 17)
-        self.assertTrue(events[3]["ok"])
+        self.assertEqual(events[3]["reason"], "success")
+        self.assertTrue(events[4]["ok"])
         self.assertEqual(
             [d["why"] for d in seen["extra"]["decisions"]],
             ["trivial greeting, fast path"],
