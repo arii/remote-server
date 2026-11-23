@@ -633,6 +633,7 @@ class Pipeline:
 
         gen = issue_generator.IssueGeneratorGraph(
             repo_root=self.repo,
+            spec_path=self.spec_path,
             investigate_fn=self.investigate_fn,
             model_fn=self.spec_model_fn,
             td_runner=lambda args: self.td_run(list(args), self.repo),
@@ -673,6 +674,7 @@ class Pipeline:
         import issue_generator
 
         spec_path = self.spec_path
+        spec_allowed = issue_generator.explicit_allowed_paths(brief)
 
         def implement(task, plan, root, errors):
             prompt = (
@@ -689,7 +691,7 @@ class Pipeline:
                     for path in dict.fromkeys(
                         [
                             *coder.files_named(plan),
-                            *issue_generator.explicit_allowed_paths(brief),
+                            *spec_allowed,
                         ]
                     )
                     if os.path.normpath(path) != os.path.normpath(spec_path)
@@ -783,13 +785,27 @@ class Pipeline:
                 context["repair_notes"] = repair_notes
             if self._repo_slug():
                 context.setdefault("repo", self._repo_slug())
-            result = (self.plan_fn or coder._default_plan_fn)(task, root, context)
-            result = dict(result)
+            planner = self.plan_fn or coder._default_plan_fn
+            result = dict(planner(task, root, context))
+            if not coder.marked_plan_files(result.get("plan", "")):
+                paths = ", ".join(path for path in spec_allowed if path != spec_path)
+                retry = (
+                    "The previous reply did not name files in [files: ...] markers. "
+                    "Return numbered implementation steps with [files: path1, path2] "
+                    "on each step, not a bare file list. "
+                    f"Spec Allowed Files (excluding its artifact): {paths or '(none)'}."
+                )
+                context["errors"] = [*context.get("errors", []), retry]
+                result = dict(planner(task, root, context))
+                if not coder.marked_plan_files(result.get("plan", "")):
+                    raise coder.CoderBudgetExceeded(
+                        "BLOCKED: coder plan still has no [files: ...] markers after one retry"
+                    )
             result["allowed_files"] = list(
                 dict.fromkeys(
                     [
                         *result.get("allowed_files", []),
-                        *issue_generator.explicit_allowed_paths(brief),
+                        *spec_allowed,
                     ]
                 )
             )
