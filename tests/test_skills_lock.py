@@ -108,17 +108,23 @@ class RepoLockTest(unittest.TestCase):
         lock = skills_lock.load_lock(REPO_LOCK)
         self.assertEqual(
             sorted(lock["skills"]),
-            ["architectural_audit_rubric", "co_browsing_state_takeover",
-             "cobrowse_handoff_specialist", "coder_root_cause_analysis",
-             "dispatch_brief", "repo_review", "shared_browser_access",
-             "tmux_send_keys", "write_spec_issue"],
+            [
+                "architectural_audit_rubric",
+                "co_browsing_state_takeover",
+                "cobrowse_handoff_specialist",
+                "coder_root_cause_analysis",
+                "dispatch_brief",
+                "repo_review",
+                "shared_browser_access",
+                "tmux_send_keys",
+                "write_spec_issue",
+            ],
         )
 
     def test_lock_matches_tree(self):
         # CI enforcement: the committed pins must match the files or
         # the lock is stale and must be re-pinned in the same PR.
-        self.assertEqual(
-            skills_lock.verify_skills(REPO_SKILLS, REPO_LOCK), [])
+        self.assertEqual(skills_lock.verify_skills(REPO_SKILLS, REPO_LOCK), [])
 
 
 @unittest.skipUnless(HAS_SERVER, "fastapi not installed")
@@ -141,8 +147,7 @@ class LifespanWiringTest(unittest.TestCase):
         real = live.verify_skills
         live.verify_skills = lambda *a, **k: ["skill 'x': hash mismatch"]
         try:
-            self.assertEqual(
-                self._run_lifespan(), ["skill 'x': hash mismatch"])
+            self.assertEqual(self._run_lifespan(), ["skill 'x': hash mismatch"])
         finally:
             live.verify_skills = real
 
