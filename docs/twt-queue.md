@@ -171,10 +171,13 @@ The worker always runs with `NEBIUS_ONLY=1` and no `CODER_MODEL`, so an ordinary
 attempt uses TwT model `default`, which TwT routes local-first and can burn its
 whole timeout on a hard issue. A **strong** attempt instead sends the explicit
 `CODER_STRONG_MODEL` to TwT from the first coder call. No local attempt is made
-and the `default` route is never used, so the bounded fallback above (it fires
-only for the `default` route) cannot double-escalate a strong attempt. That
-fallback stays as the in-attempt safety net for ordinary attempts. The tier chosen
-here is only the starting tier; once strong, pipeline repair cycles stay strong.
+for the coder call and it never uses the `default` route, so the bounded fallback
+above (it fires only for the `default` route) cannot double-escalate a strong
+attempt. That fallback stays as the in-attempt safety net for ordinary attempts.
+Only the coder call is strong-routed: the spec stage and the audit model still
+use the router default (TwT `default`, local-first), so a strong attempt can make
+a local-first call before the coder. The tier chosen here is only the starting
+tier; once strong, pipeline repair cycles stay strong.
 
 Starting tier is decided per attempt by the supervisor:
 
@@ -188,14 +191,17 @@ Starting tier is decided per attempt by the supervisor:
 Counted failures are finished runs with a nonzero exit, no halt, no budget stop,
 and result status `BLOCKED_DETERMINISTIC` or `CHANGES_REQUESTED`. Not counted:
 `CONFIG_ERROR`, `STRONG_BUDGET_INSUFFICIENT`, `PAUSED_BY_USER`, `RUNNER_ERROR`,
-worker halts, budget or STOP interruptions. A successful run clears the counter;
-uncounted outcomes leave it unchanged. The counter is `status.json`
+worker halts, budget or STOP interruptions. Every `BLOCKED_DETERMINISTIC` result
+counts, including init and spec-stage failures that are not coder failures. The
+rule is failures since the last success, not strictly consecutive: a successful
+run clears the counter and uncounted outcomes leave it unchanged. The counter is `status.json`
 `tier_failures["owner/repo#N"]`, so it survives restarts and `--retry`.
 
 Spend: strong attempts use the same per-issue cap (`NEBIUS_SPEND_CAP_USD` is set
 from the remaining issue budget) and the same `install_budget_guard`; there is
 no second cap. Before the pipeline starts, the worker reads recorded spend and
-refuses the attempt with `STRONG_BUDGET_INSUFFICIENT` if less than $0.05 is left.
+refuses the attempt with `STRONG_BUDGET_INSUFFICIENT` if less than $0.05 (a fixed
+floor, `STRONG_MIN_BUDGET_USD`) is left.
 That attempt makes no model call, does not fall back to local, and does not
 count toward escalation.
 
