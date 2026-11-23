@@ -543,6 +543,11 @@ class RunCoderWiringTests(unittest.TestCase):
     def _stub_langchain_cap(self):
         import types
 
+        # patch.dict snapshots sys.modules and restores it on cleanup, so
+        # the stubs cannot leak into later tests (e.g. real langchain imports).
+        patcher = mock.patch.dict(sys.modules)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for name in ("langchain", "langchain.agents", "langchain.agents.middleware"):
             sys.modules.setdefault(name, types.ModuleType(name))
         cap = types.ModuleType("langchain.agents.middleware.model_call_limit")
