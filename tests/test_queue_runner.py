@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.request import HTTPSHandler
 
 import backend.shared as shared
 from backend.shared import ledger
@@ -17,6 +18,11 @@ from backend.shared import runs
 from backend.shared import twt_receipts
 from scripts import queue_runner as runner
 from scripts import ledger_post
+from scripts.run_root_tests import block_google_docs_requests
+
+
+def setUpModule():
+    unittest.enterModuleContext(block_google_docs_requests())
 
 
 class ClaimsPrValidTests(unittest.TestCase):
@@ -88,6 +94,16 @@ class OutOfScopeFindingTests(unittest.TestCase):
         post.assert_called_once_with(
             "S5-Queue", "claimed by queue run run123", status="Act", link=url
         )
+
+
+class LedgerNetworkGuardTests(unittest.TestCase):
+    def test_real_claim_post_fails_before_https_even_if_error_is_caught(self):
+        with mock.patch.object(HTTPSHandler, "https_open", autospec=True) as https_open:
+            with self.assertRaisesRegex(AssertionError, r"docs\.google\.com"):
+                with block_google_docs_requests():
+                    with contextlib.suppress(AssertionError):
+                        ledger_post.post_claim_row(ISSUE_URL, "fixture")
+            https_open.assert_not_called()
 
 
 class RetryWorktreeTests(unittest.TestCase):
@@ -263,6 +279,9 @@ class RetryWorktreeTests(unittest.TestCase):
 
 class RunnerTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(
+            mock.patch.object(ledger_post, "post_entry", return_value=200)
+        )
         for name, value in (
             ("ledger_write", mock.Mock(return_value=200)),
             ("ledger_rows", mock.Mock(return_value=[])),
@@ -2113,6 +2132,8 @@ class StrongRoutingTests(unittest.TestCase):
 
         out = io.StringIO()
         with (
+            mock.patch.object(ledger_post, "post_entry", return_value=200),
+            mock.patch.object(runner, "ledger_rows", return_value=[]),
             mock.patch.object(runner.signal, "signal"),
             mock.patch.object(
                 runner.subprocess, "check_output", return_value=json.dumps(payload)
@@ -2211,7 +2232,11 @@ class StrongRoutingTests(unittest.TestCase):
             self.failed(budget_stop=True),
         ]
         for summary in cases:
-            with self.subTest(summary=summary), tempfile.TemporaryDirectory() as root:
+            with (
+                self.subTest(summary=summary),
+                tempfile.TemporaryDirectory() as root,
+                block_google_docs_requests(),
+            ):
                 status, _j, _o = self.run_one(
                     root,
                     summary,
