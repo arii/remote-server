@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import fcntl
 import os
@@ -8,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import backend.shared as shared
 from backend.shared import ledger
 from backend.shared import model_router
 from backend.shared import runs
@@ -679,10 +682,17 @@ class RunnerTests(unittest.TestCase):
                     {"repo": "owner/repo", "number": 7},
                 ],
             )
+            seeded = runner.read_json(state / "status.json")
+            seeded["tier_failures"] = {"owner/repo#7": 2}
+            runner.write_json(state / "status.json", seeded)
             with mock.patch.object(
                 runner.subprocess, "Popen", return_value=self.retry_process(directory)
             ):
                 runner.retry_issue(config, "owner/repo#7")
+            self.assertEqual(
+                runner.read_json(state / "status.json")["tier_failures"],
+                {"owner/repo#7": 2},
+            )
             dispatched = []
 
             def spawn(command, **_kwargs):
@@ -691,6 +701,9 @@ class RunnerTests(unittest.TestCase):
                 job = runner.read_json(state / name / "job.json")
                 self.assertAlmostEqual(
                     job["cap_usd"], 0.4 if name.endswith("-7") else 0.5
+                )
+                self.assertEqual(
+                    job["model_tier"], "strong" if name.endswith("-7") else "default"
                 )
                 process = mock.Mock(returncode=0)
                 process.communicate.side_effect = lambda _: runner.write_json(
@@ -1930,3 +1943,255 @@ class AccountingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StrongRoutingTests(unittest.TestCase):
+    fixture = RunnerTests.fixture
+
+    def run_one(self, root, summary, labels=(), seed=None, config_extra=None):
+        """Dispatch issue 7 once with a stubbed worker; return (status, job, out)."""
+        config, state = self.fixture(root)
+        if config_extra:
+            runner.write_json(config, {**runner.read_json(config), **config_extra})
+        if seed:
+            state.mkdir(exist_ok=True)
+            runner.write_json(state / "status.json", seed)
+        payload = {
+            "state": "open",
+            "title": "Fix",
+            "body": "scope",
+            "labels": [{"name": name} for name in labels],
+        }
+
+        def spawn(command, **_kwargs):
+            directory = state / Path(command[-1]).name
+            process = mock.Mock(returncode=summary["exit_code"])
+            process.communicate.side_effect = lambda _: runner.write_json(
+                directory / "summary.json",
+                {
+                    "halt_queue": False,
+                    "reconciliation": {"reconciled": True},
+                    **summary,
+                },
+            )
+            return process
+
+        out = io.StringIO()
+        with (
+            mock.patch.object(runner.signal, "signal"),
+            mock.patch.object(
+                runner.subprocess, "check_output", return_value=json.dumps(payload)
+            ),
+            mock.patch.object(runner.subprocess, "Popen", side_effect=spawn),
+            contextlib.redirect_stdout(out),
+        ):
+            runner.supervise(config)
+        return (
+            runner.read_json(state / "status.json"),
+            runner.read_json(state / "owner_repo-7" / "job.json"),
+            out.getvalue(),
+        )
+
+    def failed(self, status="BLOCKED_DETERMINISTIC", **extra):
+        return {"exit_code": 1, "result": {"status": status, "detail": "x"}, **extra}
+
+    def test_label_routes_strong_from_the_first_attempt(self):
+        with tempfile.TemporaryDirectory() as root:
+            status, job, out = self.run_one(
+                root, self.failed(), labels=("bug", "model:strong")
+            )
+        self.assertEqual(
+            (job["model_tier"], job["tier_reason"]),
+            ("strong", "label:model:strong"),
+        )
+        self.assertIn("START owner/repo#7 tier=strong reason=label:model:strong", out)
+        self.assertEqual(
+            status["attempts"]["owner/repo#7"][0]["tier"],
+            "strong",
+        )
+
+    def test_unlabeled_first_attempt_stays_on_the_default_route(self):
+        with tempfile.TemporaryDirectory() as root:
+            status, job, out = self.run_one(root, self.failed(), labels=("bug",))
+        self.assertEqual(
+            (job["model_tier"], job["tier_reason"]), ("default", "default")
+        )
+        self.assertIn("START owner/repo#7 tier=default reason=default", out)
+        self.assertEqual(status["tier_failures"], {"owner/repo#7": 1})
+
+    def test_default_threshold_is_two_failures(self):
+        for failures, tier in ((1, "default"), (2, "strong"), (5, "strong")):
+            with self.subTest(failures=failures), tempfile.TemporaryDirectory() as root:
+                _status, job, _out = self.run_one(
+                    root,
+                    self.failed(),
+                    seed={"completed": [], "tier_failures": {"owner/repo#7": failures}},
+                )
+                self.assertEqual(job["model_tier"], tier)
+                if tier == "strong":
+                    self.assertEqual(job["tier_reason"], f"auto-escalation:{failures}")
+
+    def test_threshold_is_configurable_and_validated(self):
+        seed = {"completed": [], "tier_failures": {"owner/repo#7": 1}}
+        with tempfile.TemporaryDirectory() as root:
+            _s, job, _o = self.run_one(
+                root,
+                self.failed(),
+                seed=seed,
+                config_extra={"strong_after_failures": 1},
+            )
+            self.assertEqual(job["model_tier"], "strong")
+        for bad in (0, True, "2"):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as root:
+                with self.assertRaisesRegex(ValueError, "strong_after_failures"):
+                    self.run_one(
+                        root, self.failed(), config_extra={"strong_after_failures": bad}
+                    )
+
+    def test_counter_increments_on_coder_failures_and_success_resets_it(self):
+        key = "owner/repo#7"
+        for status_name in ("BLOCKED_DETERMINISTIC", "CHANGES_REQUESTED"):
+            with self.subTest(status_name), tempfile.TemporaryDirectory() as root:
+                status, _j, _o = self.run_one(
+                    root,
+                    self.failed(status_name),
+                    seed={"completed": [], "tier_failures": {key: 1}},
+                )
+                self.assertEqual(status["tier_failures"][key], 2)
+        with tempfile.TemporaryDirectory() as root:
+            status, _j, _o = self.run_one(
+                root,
+                {"exit_code": 0, "result": {"status": "APPROVED"}},
+                seed={"completed": [], "tier_failures": {key: 2}},
+            )
+        self.assertNotIn(key, status["tier_failures"])
+
+    def test_non_coder_outcomes_do_not_count(self):
+        key = "owner/repo#7"
+        cases = [
+            self.failed("CONFIG_ERROR"),
+            self.failed("STRONG_BUDGET_INSUFFICIENT"),
+            self.failed("PAUSED_BY_USER"),
+            self.failed("RUNNER_ERROR"),
+            self.failed(budget_stop=True),
+        ]
+        for summary in cases:
+            with self.subTest(summary=summary), tempfile.TemporaryDirectory() as root:
+                status, _j, _o = self.run_one(
+                    root,
+                    summary,
+                    seed={"completed": [], "tier_failures": {key: 1}},
+                )
+                self.assertEqual(status["tier_failures"][key], 1)
+
+    def test_summary_status_and_job_record_tier_and_reason(self):
+        with tempfile.TemporaryDirectory() as root:
+            status, job, _o = self.run_one(
+                root,
+                self.failed(tier="strong", tier_reason="label:model:strong"),
+                labels=("model:strong",),
+            )
+            entry = status["attempts"]["owner/repo#7"][-1]
+        self.assertEqual(entry["reason"], "label:model:strong")
+        self.assertEqual(status["last"]["tier"], "strong")
+        self.assertEqual(job["model_tier"], "strong")
+
+    def test_strong_start_requires_model_and_budget(self):
+        fatal = []
+        with mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": " "}):
+            with self.assertRaises(runner.StrongRefused) as caught:
+                runner.check_strong_start(0.5, fatal)
+        self.assertEqual(caught.exception.status, "CONFIG_ERROR")
+        self.assertIn("CODER_STRONG_MODEL", fatal[0])
+        with (
+            mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": "big"}),
+            mock.patch.object(runner, "refresh_spend", return_value=0.47),
+        ):
+            with self.assertRaises(runner.StrongRefused) as caught:
+                runner.check_strong_start(0.5, [])
+            self.assertEqual(caught.exception.status, "STRONG_BUDGET_INSUFFICIENT")
+        with (
+            mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": "big"}),
+            mock.patch.object(runner, "refresh_spend", return_value=0.5),
+        ):
+            with self.assertRaises(runner.StrongRefused) as caught:
+                runner.check_strong_start(0.5, [])
+            self.assertEqual(caught.exception.status, "STRONG_BUDGET_INSUFFICIENT")
+        with (
+            mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": "big"}),
+            mock.patch.object(runner, "refresh_spend", return_value=0.1),
+        ):
+            self.assertEqual(runner.check_strong_start(0.5, []), "big")
+
+    def worker_job(self, root, tier, environment):
+        directory = Path(root) / "job"
+        directory.mkdir()
+        runner.write_json(
+            directory / "job.json",
+            {
+                "issue": {"repo": "owner/repo", "number": 7, "title": "t", "body": ""},
+                "cap_usd": 0.5,
+                "checkout": str(root),
+                "environment": environment,
+                "model_tier": tier,
+                "tier_reason": "label:model:strong",
+            },
+        )
+        return directory
+
+    def run_worker(self, root, tier, environment, spend=0.0):
+        directory = self.worker_job(root, tier, environment)
+        cli = mock.Mock(main=mock.Mock(return_value=0))
+        original = os.getcwd()
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.object(runner, "install_budget_guard"),
+            mock.patch.object(runner, "refresh_spend", return_value=spend),
+            mock.patch.object(runner, "coverage", return_value={"reconciled": True}),
+            mock.patch.dict(sys.modules, {"pipeline": mock.MagicMock()}),
+            mock.patch.object(shared, "cli", cli, create=True),
+            mock.patch.object(shared, "runs", mock.MagicMock(), create=True),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            os.environ.pop("CODER_STRONG_MODEL", None)
+            try:
+                code = runner.worker(directory)
+                seen = os.environ.get("S5_START_MODEL_TIER")
+                cli_calls = cli.main.call_count
+            finally:
+                os.chdir(original)
+        return code, runner.read_json(directory / "summary.json"), seen, cli_calls
+
+    def test_worker_strong_exports_tier_and_runs_pipeline(self):
+        with tempfile.TemporaryDirectory() as root:
+            code, summary, seen, calls = self.run_worker(
+                root, "strong", {"CODER_STRONG_MODEL": "big"}
+            )
+        self.assertEqual((code, seen, calls), (0, "strong", 1))
+        self.assertEqual(
+            (summary["tier"], summary["tier_reason"], summary["strong_model"]),
+            ("strong", "label:model:strong", "big"),
+        )
+
+    def test_worker_default_exports_no_strong_tier(self):
+        with tempfile.TemporaryDirectory() as root:
+            _c, summary, seen, _n = self.run_worker(root, "default", {})
+        self.assertIsNone(seen)
+        self.assertEqual(summary["tier"], "default")
+
+    def test_worker_without_strong_model_fails_before_the_pipeline_and_halts(self):
+        with tempfile.TemporaryDirectory() as root:
+            code, summary, _s, calls = self.run_worker(root, "strong", {})
+        self.assertEqual((code, calls), (2, 0))
+        self.assertEqual(summary["result"]["status"], "CONFIG_ERROR")
+        self.assertTrue(summary["halt_queue"])
+        self.assertIn("CODER_STRONG_MODEL", summary["halt_reasons"][0])
+
+    def test_worker_with_insufficient_budget_does_not_start_strong(self):
+        with tempfile.TemporaryDirectory() as root:
+            code, summary, _s, calls = self.run_worker(
+                root, "strong", {"CODER_STRONG_MODEL": "big"}, spend=0.48
+            )
+        self.assertEqual((code, calls), (1, 0))
+        self.assertEqual(summary["result"]["status"], "STRONG_BUDGET_INSUFFICIENT")
+        self.assertFalse(summary["halt_queue"])

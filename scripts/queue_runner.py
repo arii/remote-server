@@ -28,6 +28,14 @@ class SafetyStop(RuntimeError):
     llm_not_dispatched = True
 
 
+class StrongRefused(RuntimeError):
+    """A strong-tier attempt that must not start; carries the result status."""
+
+    def __init__(self, status, detail):
+        super().__init__(detail)
+        self.status = status
+
+
 class BudgetStop(RuntimeError):
     llm_not_dispatched = True
 
@@ -137,6 +145,56 @@ def refresh_spend(scope):
     return total["spent"] + unowned_cost
 
 
+STRONG_LABEL = "model:strong"
+STRONG_MIN_BUDGET_USD = 0.05
+# Result statuses that count as a coder failure toward auto-escalation.
+# Everything else (CONFIG_ERROR, STRONG_BUDGET_INSUFFICIENT, PAUSED_BY_USER,
+# RUNNER_ERROR, halts, budget stops) is an operator or infrastructure event.
+COUNTED_STATUSES = ("BLOCKED_DETERMINISTIC", "CHANGES_REQUESTED")
+
+
+def start_tier(fresh, failures, threshold):
+    """Starting model tier and reason for one attempt: label, then failures."""
+    labels = {
+        label.get("name") if isinstance(label, dict) else label
+        for label in fresh.get("labels", [])
+    }
+    if STRONG_LABEL in labels:
+        return "strong", "label:" + STRONG_LABEL
+    if failures >= threshold:
+        return "strong", f"auto-escalation:{failures}"
+    return "default", "default"
+
+
+def counts_toward_escalation(summary):
+    return (
+        summary["exit_code"] != 0
+        and not summary["halt_queue"]
+        and not summary.get("budget_stop")
+        and summary["result"].get("status") in COUNTED_STATUSES
+    )
+
+
+def check_strong_start(cap, fatal):
+    """Refuse a strong attempt without CODER_STRONG_MODEL or enough budget."""
+    strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip()
+    if not strong:
+        detail = "tier strong requires CODER_STRONG_MODEL in the queue environment"
+        fatal.append(detail)
+        raise StrongRefused("CONFIG_ERROR", detail)
+    try:
+        remaining = cap - check_budget(None, cap)
+    except BudgetStop as error:
+        raise StrongRefused("STRONG_BUDGET_INSUFFICIENT", str(error)) from error
+    if remaining < STRONG_MIN_BUDGET_USD:
+        raise StrongRefused(
+            "STRONG_BUDGET_INSUFFICIENT",
+            f"${remaining:.4f} left under the ${cap:.2f} cap; "
+            f"strong tier needs ${STRONG_MIN_BUDGET_USD:.2f}",
+        )
+    return strong
+
+
 def check_budget(scope, cap):
     paid = refresh_spend(scope)
     if paid >= checked_cap(cap):
@@ -144,18 +202,22 @@ def check_budget(scope, cap):
     return paid
 
 
-def install_budget_guard(cap, directory, fatal):
+def install_budget_guard(cap, directory, fatal, stops=None):
     from backend.shared import model_router
     from backend.shared import twt_receipts
 
     def guard():
         if (directory.parent / "STOP").exists():
+            if stops is not None:
+                stops.append("stop")
             raise BudgetStop("queue stop requested before dispatch")
         if fatal:
             raise SafetyStop(fatal[0])
         try:
             check_budget(twt_receipts.current.get(), cap)
         except BudgetStop:
+            if stops is not None:
+                stops.append("cap")
             raise
         except Exception as error:
             fatal.append(str(error))
@@ -562,12 +624,17 @@ def worker(job_dir):
         S5_LOCAL_ONLY="0",
         OLLAMA_STRICT="0",
     )
-    for key in ("CODER_MODEL", "S5_AUDIT_MODEL"):
+    for key in ("CODER_MODEL", "S5_AUDIT_MODEL", "S5_START_MODEL_TIER"):
         os.environ.pop(key, None)
+    tier = job.get("model_tier", "default")
+    if tier == "strong":
+        os.environ["S5_START_MODEL_TIER"] = "strong"
     os.chdir(repo)
     result = {}
     stages = []
     fatal = []
+    stops = []
+    strong_model = None
     started = time.time()
 
     def save(name, value):
@@ -578,7 +645,15 @@ def worker(job_dir):
         import pipeline
         from backend.shared import runs
 
-        install_budget_guard(cap, directory, fatal)
+        install_budget_guard(cap, directory, fatal, stops)
+        if tier == "strong":
+            strong_model = check_strong_start(cap, fatal)
+        print(
+            f"tier={tier} reason={job.get('tier_reason', 'default')}"
+            + (f" model={strong_model}" if strong_model else ""),
+            file=sys.stderr,
+            flush=True,
+        )
         try:
             from backend.shared import model_router
 
@@ -660,6 +735,9 @@ def worker(job_dir):
                 "--keep-worktree",
             ]
         )
+    except StrongRefused as error:
+        code = 1
+        result.update(status=error.status, detail=str(error))
     except BaseException as error:
         code = 1
         result.update(status="RUNNER_ERROR", detail=f"{type(error).__name__}: {error}")
@@ -672,6 +750,10 @@ def worker(job_dir):
         "issue": job["issue"]["number"],
         "repo": job["issue"]["repo"],
         "exit_code": code,
+        "tier": tier,
+        "tier_reason": job.get("tier_reason", "default"),
+        "strong_model": strong_model,
+        "budget_stop": bool(stops),
         "result": result,
         "stages": stages,
         "reconciliation": reconciliation,
@@ -973,6 +1055,9 @@ def supervise(config_path, *, clear_halt=False):
     failure_limit = config.get("max_common_failures", 3)
     if type(failure_limit) is not int or failure_limit < 1:
         raise ValueError("max_common_failures must be a positive integer")
+    strong_after = config.get("strong_after_failures", 2)
+    if type(strong_after) is not int or strong_after < 1:
+        raise ValueError("strong_after_failures must be a positive integer")
     root = Path(config["state_dir"]).resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     runtime_root = Path(config["runtime_state_dir"])
@@ -1124,6 +1209,9 @@ def supervise(config_path, *, clear_halt=False):
                 continue
             directory.mkdir(mode=0o700)
             runtime_directory = runtime_root / name
+            tier, tier_reason = start_tier(
+                fresh, status.get("tier_failures", {}).get(key, 0), strong_after
+            )
             job = {
                 "issue": {
                     "repo": issue["repo"],
@@ -1135,6 +1223,8 @@ def supervise(config_path, *, clear_halt=False):
                 "checkout": config["repo_paths"][issue["repo"]],
                 "pipeline_checkout": config["pipeline_checkout"],
                 "environment": config.get("environment", {}),
+                "model_tier": tier,
+                "tier_reason": tier_reason,
             }
             write_json(directory / "job.json", job)
             status.update(current=key, started_at=time.time())
@@ -1142,7 +1232,8 @@ def supervise(config_path, *, clear_halt=False):
                 status.pop("retry")
             write_json(status_path, status)
             ledger.claim(key)
-            print("START " + key, flush=True)
+            print(f"START {key} tier={tier} reason={tier_reason}", flush=True)
+            print(f"START {key} tier={tier} reason={tier_reason}", flush=True)
             with (directory / "run.log").open("w") as log:
                 process = subprocess.Popen(
                     worker_command(config, "--worker", runtime_directory),
@@ -1181,6 +1272,19 @@ def supervise(config_path, *, clear_halt=False):
                 return 2
             status["completed"].append(key)
             status.update(last=summary, current=None)
+            failures = status.setdefault("tier_failures", {})
+            if counts_toward_escalation(summary):
+                failures[key] = failures.get(key, 0) + 1
+            elif summary["exit_code"] == 0:
+                failures.pop(key, None)
+            status.setdefault("attempts", {}).setdefault(key, []).append(
+                {
+                    "tier": tier,
+                    "reason": tier_reason,
+                    "status": summary["result"].get("status"),
+                    "exit_code": summary["exit_code"],
+                }
+            )
             if summary["exit_code"]:
                 blocker = {
                     key: summary["result"].get(key) for key in ("status", "detail")
