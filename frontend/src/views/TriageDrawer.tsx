@@ -8,11 +8,12 @@ import ReviewView from './ReviewView';
 import JobsView from './JobsView';
 import QueueView from './QueueView';
 import BriefingView from './BriefingView';
+import LedgerTriageView from './LedgerTriageView';
 import { isRollupRepo } from '../components/RepoPicker';
 import { RollupGate } from '../components/RollupGate';
 import Dialog from '../components/Dialog';
 
-export type TriageSection = 'review' | 'jobs' | 'queue' | 'briefing';
+export type TriageSection = 'review' | 'jobs' | 'queue' | 'briefing' | 'ledger';
 
 interface TriageDrawerProps {
   open: boolean;
@@ -104,6 +105,7 @@ export default function TriageDrawer({
         )
       )}
       {section === 'queue' && <QueueView repo={repo} />}
+      {section === 'ledger' && <LedgerTriageView />}
       {section === 'briefing' && (
         isRollupRepo(repo) ? (
           <RollupGate view="Briefing" />

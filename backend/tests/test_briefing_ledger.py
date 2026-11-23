@@ -363,6 +363,56 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(entries[0]["kind"], "agent-turn")
         self.assertEqual(entries[0]["session_id"], "s1")
 
+    def test_ledger_intake_returns_only_latest_pending_row(self):
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "canonical_intake_id": "intake-1",
+                "status": "NEW",
+                "title": "First",
+            }
+        )
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "canonical_intake_id": "intake-1",
+                "status": "READY",
+                "title": "Approved",
+            }
+        )
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "canonical_intake_id": "intake-2",
+                "status": "NEEDS_INFO",
+                "missing_fields": ["scope"],
+            }
+        )
+        response = self.client.get("/api/ledger-intake")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [row["canonical_intake_id"] for row in response.json()["rows"]],
+            ["intake-2"],
+        )
+
+    def test_ledger_intake_approval_appends_ready_row(self):
+        ledger.append(
+            {
+                "kind": "ledger-intake",
+                "canonical_intake_id": "intake-1",
+                "status": "NEEDS_INFO",
+                "missing_fields": ["scope"],
+                "title": "Needs scope",
+            }
+        )
+        response = self.client.post(
+            "/api/ledger-intake/intake-1/approve",
+            json={"fields": {"scope": "backend"}},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["row"]["status"], "READY")
+        self.assertEqual(self.client.get("/api/ledger-intake").json()["rows"], [])
+
     def test_ledger_since_filter(self):
         now = time.time()
         rows = [

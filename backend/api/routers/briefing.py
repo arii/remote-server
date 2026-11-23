@@ -33,7 +33,7 @@ from backend.core.env_config import (
 from backend.core.validation import validate_repo_name
 from backend.exec import turn_engine
 from backend.exec.engine import stack_dir
-from backend.ledger import LEDGER_KINDS, clear as ledger_clear
+from backend.ledger import LEDGER_KINDS, append as ledger_append, clear as ledger_clear
 from backend.ledger import read as ledger_read
 
 router = APIRouter(prefix="/api", tags=["briefing"])
@@ -157,6 +157,63 @@ class BackendStatus(BaseModel):
     runs: list = Field(default_factory=list)
     webhooks: dict = Field(default_factory=dict)
     health: dict = Field(default_factory=dict)
+
+
+class IntakeApproval(BaseModel):
+    fields: dict[str, str] = Field(default_factory=dict)
+
+
+def _intake_rows() -> list[dict]:
+    latest: dict[str, dict] = {}
+    for row in ledger_read("ledger-intake", 200):
+        key = str(row.get("canonical_intake_id") or row.get("row_key") or "")
+        if key and key not in latest:
+            latest[key] = row
+    return [
+        row
+        for row in latest.values()
+        if str(row.get("status", "")).upper()
+        in {"NEW", "NEEDS_INFO", "DUPLICATE", "SUSPECTED-DUPLICATE"}
+    ]
+
+
+@router.get("/ledger-intake")
+def ledger_intake() -> dict:
+    return {"rows": _intake_rows()}
+
+
+@router.post("/ledger-intake/{intake_id}/approve")
+def approve_ledger_intake(intake_id: str, body: IntakeApproval) -> dict:
+    row = next(
+        (
+            candidate
+            for candidate in _intake_rows()
+            if str(candidate.get("canonical_intake_id") or candidate.get("row_key"))
+            == intake_id
+        ),
+        None,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="intake row not found")
+    fields = {
+        key: value.strip()
+        for key, value in body.fields.items()
+        if isinstance(value, str) and value.strip()
+    }
+    missing = row.get("missing_fields") or []
+    if not isinstance(missing, list):
+        missing = []
+    unresolved = [
+        name for name in missing if not fields.get(str(name)) and not row.get(name)
+    ]
+    if unresolved:
+        raise HTTPException(
+            status_code=400,
+            detail=f"missing required fields: {', '.join(map(str, unresolved))}",
+        )
+    updated = {**row, **fields, "status": "READY", "approved": True}
+    ledger_append({"kind": "ledger-intake", **updated})
+    return {"ok": True, "row": updated}
 
 
 class LedgerList(BaseModel):
