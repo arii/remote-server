@@ -93,7 +93,11 @@ export default function LedgerTriageView(): ReactElement {
     if (!id || reviewed.has(id)) return;
     const next = new Set(reviewed).add(id);
     setReviewed(next);
-    localStorage.setItem(REVIEWED_KEY, JSON.stringify([...next]));
+    try {
+      localStorage.setItem(REVIEWED_KEY, JSON.stringify([...next]));
+    } catch {
+      // Storage can be full or blocked; the marker still clears for this visit.
+    }
   }
 
   async function load() {
