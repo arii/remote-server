@@ -285,7 +285,9 @@ export default function LedgerTriageView(): ReactElement {
                 </>
               )}
               {sourceUrl && /^https?:\/\//i.test(sourceUrl) && (
-                <p className="row-meta"><a href={sourceUrl}>{sourceUrl}</a></p>
+                <p className="row-meta">
+                  <a href={sourceUrl} target="_blank" rel="noopener noreferrer">{sourceUrl}</a>
+                </p>
               )}
               {row.duplicate_of && (
                 <p className="row-meta">

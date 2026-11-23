@@ -91,7 +91,10 @@ describe('LedgerTriageView', () => {
     const card = host.querySelector('.ledger-triage-card')!;
     expect(card.querySelector('h3')?.textContent).toBe('Fix unreadable triage cards');
     expect(card.textContent).toContain('The issue link is missing on phones.');
-    expect(card.querySelector('a')?.getAttribute('href')).toBe(sourceUrl);
+    const source = card.querySelector('a');
+    expect(source?.getAttribute('href')).toBe(sourceUrl);
+    expect(source?.target).toBe('_blank');
+    expect(source?.relList.contains('noopener')).toBe(true);
     expect(card.querySelector('.ledger-card-head')?.textContent).toContain('NEW');
     expect(card.querySelector('details')).toBeNull();
   });
