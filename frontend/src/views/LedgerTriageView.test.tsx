@@ -147,6 +147,25 @@ describe('LedgerTriageView', () => {
     expect(source.getAttribute('href')).toBe(sourceUrl);
   });
 
+  it('shows a chevron on the fold and keeps expanding from marking the card reviewed', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{ ...duplicateRows.rows[0], problem: 'y'.repeat(300) }],
+    });
+
+    await act(async () => root.render(<LedgerTriageView />));
+    const summary = host.querySelector<HTMLElement>('.ledger-card-problem summary')!;
+    expect(summary.querySelector('.ledger-chevron')?.getAttribute('aria-hidden')).toBe('true');
+    await act(async () => summary.click());
+    for (const key of ['Enter', ' ']) {
+      await act(async () => {
+        summary.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      });
+    }
+    expect(tap('unreviewed-intake-new')).not.toBeNull();
+    expect(host.querySelector('[data-testid="ledger-unreviewed-count"]')!.textContent).toBe('1 unreviewed');
+    expect(localStorage.getItem('ledgerTriage.reviewed')).toBeNull();
+  });
+
   it('does not link a non-web source URL', async () => {
     vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
       rows: [{ ...duplicateRows.rows[0], source_url: 'javascript:void(0)' }],
