@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from backend import ledger as history_ledger
 from backend.shared import ledger
 import pipeline as pipeline_mod
 from backend.shared import twt_receipts
@@ -154,6 +155,61 @@ class TestPreviewUrlThreading(unittest.TestCase):
 
 
 class TestRouting(AgentControlTestCase):
+    def test_history_records_final_outcomes_and_verification_for_each_run(self):
+        for status, submit_url, test_status in (
+            (
+                pipeline_mod.APPROVED,
+                "https://github.com/arii/remote-server/pull/42",
+                "passed",
+            ),
+            (pipeline_mod.CHANGES_REQUESTED, "", "failed"),
+            (pipeline_mod.BLOCKED, "", "not run"),
+        ):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as root:
+                pipe = ScriptedPipeline(
+                    [pipeline_mod.APPROVED],
+                    repo="/srv/remote-server",
+                    intent="Fix arii/remote-server#1576",
+                    submit_pr=True,
+                    max_repair_cycles=1,
+                )
+
+                def code(*args, **kwargs):
+                    ledger.record("coder.py", "", f"{pipe.thread_id}-edit", [], 0)
+                    ledger.record("coder.py", "", "another-run", [], 0)
+                    if test_status != "not run":
+                        pipe.verification_evidence = [
+                            {"command": "pnpm test", "passed": test_status == "passed"},
+                            {"command": "pnpm run lint", "passed": False},
+                        ]
+                    return test_status != "not run", {}, "/tmp/wt-1"
+
+                with (
+                    mock.patch.dict(
+                        os.environ,
+                        {"BUTTONS_LEDGER_PATH": str(Path(root, "history.jsonl"))},
+                    ),
+                    mock.patch.object(
+                        ledger, "LEDGER", str(Path(root, "job-ledger.jsonl"))
+                    ),
+                    mock.patch.object(pipe, "_save_budget"),
+                    mock.patch.object(pipe, "stage_code", side_effect=code),
+                    mock.patch.object(
+                        pipe,
+                        "stage_submit",
+                        return_value=(bool(submit_url), submit_url or "submit failed"),
+                    ),
+                ):
+                    self.assertEqual(pipe.run()["status"], status)
+                    rows = history_ledger.read(kind="pipeline-run")
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["repo"], "remote-server")
+                self.assertEqual(rows[0]["prompt"], "Fix arii/remote-server#1576")
+                self.assertEqual(rows[0]["status"], status)
+                self.assertEqual(rows[0]["test_status"], test_status)
+                self.assertEqual(rows[0]["submit_url"], submit_url)
+                self.assertEqual(rows[0]["ledger_rows"], 1)
+
     def test_receipts_settle_before_publication_and_cleanup(self):
         original = twt_receipts.ReceiptRun.reconcile
         for mode in ("complete", "missing", "error"):

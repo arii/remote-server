@@ -75,6 +75,21 @@ describe('history filter chip (issue #931)', () => {
   });
 });
 
+describe('pipeline PRs (issue #1576)', () => {
+  it('shows a PR link in the collapsed row and leaves finished successes visible by default', () => {
+    const url = 'https://github.com/arii/remote-server/pull/42';
+    const [row] = toHistoryRows([], [
+      { kind: 'pipeline-run', prompt: 'Fix skipped checks', status: 'APPROVED', submit_url: url, test_status: 'passed', ledger_rows: 1 },
+    ]);
+    expect(isQuietAgentRow(row)).toBe(false);
+    expect(isSkipRow(row)).toBe(false);
+    const html = renderToStaticMarkup(<RowsList rows={[row]} filtering={false} />);
+    const summary = html.slice(html.indexOf('<summary'), html.indexOf('</summary>'));
+    expect(summary).toContain('PR opened · tests passed · 1 ledger row');
+    expect(summary).toContain(`href="${url}"`);
+  });
+});
+
 describe('history inspector (issue #839)', () => {
   function historyRow(): HistoryRow {
     return {

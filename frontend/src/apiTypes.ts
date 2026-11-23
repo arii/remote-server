@@ -89,6 +89,9 @@ export interface LedgerEntry {
   ts?: number;
   ok?: boolean;
   status?: string;
+  test_status?: 'passed' | 'failed' | 'not run';
+  submit_url?: string;
+  ledger_rows?: number | null;
   error?: string;
   detail?: string;
   session_id?: string;
