@@ -36,6 +36,54 @@ class TestRepairBudget(unittest.TestCase):
             guard(call, handler)
         self.assertEqual(handler.call_count, 2)
 
+    def test_1627_repeat_warning_carries_the_earlier_result(self):
+        from langchain_core.messages import ToolMessage
+
+        for repair in (False, True):
+            with self.subTest(repair=repair):
+                guard = coder.coder_tool_middleware(repair=repair).wrap_tool_call
+                handler = mock.Mock(
+                    return_value=ToolMessage(
+                        content="/backend/tests/test_queue.py", tool_call_id="probe"
+                    )
+                )
+                call = self.call("ls", path="backend/tests")
+                guard(call, handler)
+                warning = guard(call, handler)
+                self.assertIn("Already called", warning.content)
+                self.assertIn("/backend/tests/test_queue.py", warning.content)
+                self.assertEqual(warning.status, "error")
+                self.assertEqual(handler.call_count, 1)
+
+    def test_1627_grep_on_a_file_defaults_to_content(self):
+        from langchain_core.messages import ToolMessage
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "docs").mkdir()
+            Path(root, "docs/queue.md").write_text("STOP sentinel\n")
+            guard = coder.worktree_file_middleware(root, None).wrap_tool_call
+            sent = []
+
+            def handler(request):
+                sent.append(request.tool_call["args"])
+                return ToolMessage(content="ok", tool_call_id="probe")
+
+            def request(**args):
+                return SimpleNamespace(
+                    tool_call={"name": "grep", "args": args, "id": "probe"},
+                    override=lambda tool_call: SimpleNamespace(tool_call=tool_call),
+                )
+
+            guard(request(path="docs/queue.md", pattern="STOP"), handler)
+            guard(request(path="docs", pattern="STOP"), handler)
+            guard(
+                request(path="docs/queue.md", pattern="STOP", output_mode="count"),
+                handler,
+            )
+            self.assertEqual(
+                [args.get("output_mode") for args in sent], ["content", None, "count"]
+            )
+
     def test_successful_edit_allows_rechecking_but_failed_edit_does_not(self):
         from langchain_core.messages import ToolMessage
 

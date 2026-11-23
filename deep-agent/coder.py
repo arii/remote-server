@@ -626,6 +626,13 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
                         status="error",
                     )
                 args[key] = relative
+            # files_with_matches on a single file only echoes its path back.
+            if (
+                call["name"] == "grep"
+                and "output_mode" not in args
+                and os.path.isfile(os.path.join(worktree, args.get("path") or ""))
+            ):
+                args["output_mode"] = "content"
             call = {**call, "args": args}
             request = request.override(tool_call=call)
         result = handler(request)
@@ -737,6 +744,7 @@ def coder_tool_middleware(*, repair=False):
     from langchain_core.messages import ToolMessage
 
     seen = {}
+    earlier = {}
     calls = 0
     lock = threading.Lock()
     limit = REPAIR_TOOL_LIMIT if repair else INITIAL_TOOL_LIMIT
@@ -759,13 +767,21 @@ def coder_tool_middleware(*, repair=False):
                         f"BLOCKED: {label} repeated unchanged tool call: {key[0]} {key[1]}"
                     )
                 if seen[key] > 1:
+                    content = (
+                        "Already called with these args without a successful edit. "
+                        "Use the earlier result, fix the code, or finish with the blocker."
+                    )
+                    if key in earlier:
+                        content += "\nEarlier result:\n" + earlier[key]
                     return ToolMessage(
-                        content="Already called with these args without a successful edit. "
-                        "Use the earlier result, fix the code, or finish with the blocker.",
+                        content=content,
                         tool_call_id=call["id"],
                         status="error",
                     )
         result = handler(request)
+        if isinstance(getattr(result, "content", None), str):
+            with lock:
+                earlier[key] = result.content
         if call["name"] in MUTATING_TOOLS and result.status == "success":
             with lock:
                 seen.clear()
