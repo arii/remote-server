@@ -400,6 +400,42 @@ class TestCoderDefaults(unittest.TestCase):
 
 
 class TestReadCacheAndTruncation(unittest.TestCase):
+    @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langchain_core)")
+    def test_empty_reads_are_bounded_but_failed_reads_are_not_cached(self):
+        from langchain_core.messages import ToolMessage
+
+        for status in ("success", "error"):
+            with self.subTest(status=status):
+                guard = coder.worktree_file_middleware("/tmp/wt", set()).wrap_tool_call
+                request = mock.Mock(
+                    tool_call={
+                        "id": "read",
+                        "name": "read_file",
+                        "args": {"file_path": "a.py"},
+                    }
+                )
+                request.override.side_effect = lambda **kwargs: types.SimpleNamespace(
+                    **kwargs
+                )
+                handler = mock.Mock(
+                    return_value=ToolMessage(
+                        content="",
+                        tool_call_id="read",
+                        name="read_file",
+                        status=status,
+                    )
+                )
+                guard(request, handler)
+                second = guard(request, handler)
+                if status == "success":
+                    self.assertIn("UNCHANGED", second.content)
+                    with self.assertRaisesRegex(
+                        coder.CoderBudgetExceeded, "BLOCKED.*unchanged read"
+                    ):
+                        guard(request, handler)
+                else:
+                    self.assertEqual(guard(request, handler).status, "error")
+
     def test_truncate_tool_output_short_and_exact(self):
         self.assertEqual(coder._truncate_tool_output("short", limit=4000), "short")
         exact = "x" * 100
@@ -494,6 +530,19 @@ class TestReadCacheAndTruncation(unittest.TestCase):
         )
         self.assertIn("[UNCHANGED: a.py", res2.content)
         self.assertIn("already in context. Do not re-read.]", res2.content)
+
+        with self.assertRaisesRegex(
+            coder.CoderBudgetExceeded, "BLOCKED.*unchanged read"
+        ):
+            call_mw(
+                req2,
+                lambda r: ToolMessage(
+                    content="print('hello')",
+                    tool_call_id="call_2",
+                    name="read_file",
+                    status="success",
+                ),
+            )
 
         # 3. Edit file -> invalidates cache
         req_edit = FakeRequest(

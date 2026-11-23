@@ -73,6 +73,8 @@ DEFAULT_VERIFY_ROUNDS = 2
 REPAIR_TOOL_LIMIT = 20
 REPAIR_REPEAT_LIMIT = 3
 REPAIR_MODEL_LIMIT = 12
+INITIAL_MODEL_LIMIT = 20
+INITIAL_TOOL_LIMIT = 32
 # Middleware adds graph steps beyond the model and tool calls themselves.
 RECURSION_LIMIT = int(
     os.environ.get(
@@ -568,6 +570,8 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
 
     if read_cache is None:
         read_cache = ReadCache()
+    unchanged_reads = {}
+    cache_lock = threading.Lock()
 
     @wrap_tool_call
     def guard_file_call(request, handler):
@@ -617,7 +621,9 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
             target_file = call["args"].get("file_path") or call["args"].get("path")
             if target_file:
                 rel = worktree_file_key(worktree, target_file)
-                read_cache.invalidate(rel)
+                with cache_lock:
+                    read_cache.invalidate(rel)
+                    unchanged_reads.pop(rel, None)
             if written_files is not None and target_file:
                 written_files.add(call["args"].get("file_path", target_file))
                 try:
@@ -634,7 +640,17 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
             target_file = call["args"].get("file_path") or call["args"].get("path")
             if target_file:
                 rel = worktree_file_key(worktree, target_file)
-                is_dup, digest = read_cache.check_and_update(rel, result.content)
+                with cache_lock:
+                    is_dup, digest = read_cache.check_and_update(rel, result.content)
+                    if is_dup:
+                        if unchanged_reads.get(rel) == digest:
+                            raise CoderBudgetExceeded(
+                                f"BLOCKED: repeated unchanged read of {rel} "
+                                "after the already-in-context warning"
+                            )
+                        unchanged_reads[rel] = digest
+                    else:
+                        unchanged_reads.pop(rel, None)
                 if is_dup:
                     sentinel = f"[UNCHANGED: {rel} (sha256:{digest}) already in context. Do not re-read.]"
                     return ToolMessage(
@@ -686,48 +702,54 @@ def implementation_tool_middleware():
     return GroundImplementation()
 
 
-class RepairBudgetExceeded(RuntimeError):
+class CoderBudgetExceeded(RuntimeError):
     pass
 
 
-def repair_tool_middleware():
+class RepairBudgetExceeded(CoderBudgetExceeded):
+    pass
+
+
+def coder_tool_middleware(*, repair=False):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
 
     seen = {}
     calls = 0
     lock = threading.Lock()
+    limit = REPAIR_TOOL_LIMIT if repair else INITIAL_TOOL_LIMIT
+    label = "Repair" if repair else "Initial implementation"
+    error = RepairBudgetExceeded if repair else CoderBudgetExceeded
 
     @wrap_tool_call
-    def bound_repair(request, handler):
+    def bound_calls(request, handler):
         nonlocal calls
         call = request.tool_call
         key = (call["name"], json.dumps(call["args"], sort_keys=True))
         with lock:
             calls += 1
-            if calls > REPAIR_TOOL_LIMIT:
-                raise RepairBudgetExceeded(
-                    f"Repair tool budget exhausted ({REPAIR_TOOL_LIMIT} calls)"
-                )
-            seen[key] = seen.get(key, 0) + 1
-            if seen[key] >= REPAIR_REPEAT_LIMIT:
-                raise RepairBudgetExceeded(
-                    f"Repair repeated unchanged tool call: {key[0]} {key[1]}"
-                )
-            if seen[key] > 1:
-                return ToolMessage(
-                    content="Already called with these args without a successful edit. "
-                    "Use the earlier result, fix the code, or finish with the blocker.",
-                    tool_call_id=call["id"],
-                    status="error",
-                )
+            if calls > limit:
+                raise error(f"BLOCKED: {label} tool budget exhausted ({limit} calls)")
+            if call["name"] != "run_check" and (repair or call["name"] != "read_file"):
+                seen[key] = seen.get(key, 0) + 1
+                if seen[key] >= REPAIR_REPEAT_LIMIT:
+                    raise error(
+                        f"BLOCKED: {label} repeated unchanged tool call: {key[0]} {key[1]}"
+                    )
+                if seen[key] > 1:
+                    return ToolMessage(
+                        content="Already called with these args without a successful edit. "
+                        "Use the earlier result, fix the code, or finish with the blocker.",
+                        tool_call_id=call["id"],
+                        status="error",
+                    )
         result = handler(request)
         if call["name"] in MUTATING_TOOLS and result.status == "success":
             with lock:
                 seen.clear()
         return result
 
-    return bound_repair
+    return bound_calls
 
 
 def build_agent(
@@ -743,6 +765,7 @@ def build_agent(
     written_files=None,
     repair=False,
     repo=None,
+    planning=False,
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
@@ -757,6 +780,7 @@ def build_agent(
     """
     from deepagents import create_deep_agent  # noqa: E402
     from deepagents.middleware.filesystem import FilesystemMiddleware
+    from langchain.agents.middleware import ModelCallLimitMiddleware
 
     from backend.shared import model_router  # noqa: E402
 
@@ -783,14 +807,13 @@ def build_agent(
     ]
     if written_files is not None:
         middleware.append(implementation_tool_middleware())
-    if repair:
-        from langchain.agents.middleware import ModelCallLimitMiddleware
-
-        middleware.insert(0, repair_tool_middleware())
+    middleware.insert(0, coder_tool_middleware(repair=repair))
+    if not planning:
         middleware.insert(
             0,
             ModelCallLimitMiddleware(
-                thread_limit=REPAIR_MODEL_LIMIT, exit_behavior="error"
+                thread_limit=REPAIR_MODEL_LIMIT if repair else INITIAL_MODEL_LIMIT,
+                exit_behavior="error",
             ),
         )
     if recorder is not None:
@@ -872,6 +895,7 @@ def build_plan_agent(
             FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")
         ],
         spec=spec,
+        planning=True,
     )
 
 
