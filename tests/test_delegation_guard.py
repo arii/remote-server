@@ -90,6 +90,7 @@ def _recording_stubs():
             before_model=lambda f: f,
             after_model=lambda f: f,
             wrap_tool_call=lambda f: f,
+            ModelCallLimitMiddleware=_Dummy,
         ),
         "langchain.agents.middleware.types": _stub_module(
             "langchain.agents.middleware.types", AgentMiddleware=object
@@ -203,6 +204,10 @@ class TestCoderImplementGate(_StubbedCase):
             [getattr(t, "__name__", "") for t in kwargs["tools"]], ["run_check"]
         )
         self.assertNotIn("subagents", kwargs)
+        self.assertEqual(
+            kwargs["middleware"][0].kwargs,
+            {"thread_limit": coder.INITIAL_MODEL_LIMIT, "exit_behavior": "error"},
+        )
 
 
 class TestCoderPlanGate(_StubbedCase):
