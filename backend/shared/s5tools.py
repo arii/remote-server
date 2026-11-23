@@ -605,6 +605,21 @@ def _inside(root, full):
     return full == root or full.startswith(root + os.sep)
 
 
+def active_checkout_path(checkout, path):
+    """Resolve a path inside the checkout, not one of its nested worktrees."""
+    base = os.path.abspath(checkout)
+    root = os.path.realpath(checkout)
+    joined = os.path.join(checkout, path)
+    candidate = os.path.abspath(joined)
+    full = os.path.realpath(joined)
+    if not _inside(base, candidate) or not _inside(root, full):
+        raise ValueError("path escapes the checkout")
+    for parent, target in ((base, candidate), (root, full)):
+        if ".worktrees" in os.path.relpath(target, parent).split(os.sep):
+            raise ValueError("path is in a nested worktree")
+    return full
+
+
 def list_dir(checkout, path="", limit=200):
     """List names in a checkout directory. Returns newline-separated
     names or an error string (routine outcomes, not exceptions)."""
@@ -629,9 +644,10 @@ def read_repo_file(checkout, path, limit=3000, offset=0):
     root = _checkout_root(checkout)
     if root is None:
         return "REJECTED: bad checkout"
-    full = os.path.realpath(os.path.join(root, path or ""))
-    if not _inside(root, full):
-        return "REJECTED: path escapes the checkout"
+    try:
+        full = active_checkout_path(checkout, path or "")
+    except ValueError as exc:
+        return f"REJECTED: {exc}"
     if not os.path.isfile(full):
         return "not found: no such file"
     try:
@@ -660,6 +676,7 @@ def grep_repo(checkout, pattern, limit=2000):
                 "-m",
                 "20",
                 "--exclude-dir=.git",
+                "--exclude-dir=.worktrees",
                 "--exclude-dir=node_modules",
                 "--exclude-dir=.pnpm-store",
                 "--exclude-dir=.pnpm",

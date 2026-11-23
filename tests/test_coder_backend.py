@@ -373,6 +373,28 @@ class TestCoderBackend(unittest.TestCase):
             self.assertIn("run_check", bound)
             self.assertNotIn("execute", bound)
 
+    def test_filesystem_search_skips_nested_worktree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory, ".worktrees", "issue-1570")
+            archive = checkout / ".worktrees/.queue-retry/previous"
+            archive.mkdir(parents=True)
+            (archive / "old.py").write_text("last_heartbeat ARCHIVED\n")
+            (checkout / "active.py").write_text("last_heartbeat ACTIVE\n")
+            (checkout / "alias.py").symlink_to(archive / "old.py")
+            backend = coder.build_filesystem_backend(str(checkout))
+            self.assertEqual(
+                [entry["path"] for entry in backend.ls("/").entries], ["/active.py"]
+            )
+            self.assertEqual(
+                [entry["path"] for entry in backend.glob("**/*.py").matches],
+                ["/active.py"],
+            )
+            self.assertEqual(
+                [entry["path"] for entry in backend.grep("last_heartbeat").matches],
+                ["/active.py"],
+            )
+            self.assertIsNotNone(backend.read("/alias.py").error)
+
     def test_discovered_virtual_paths_can_be_read_and_edited(self):
         with tempfile.TemporaryDirectory() as root:
             Path(root, "src").mkdir()

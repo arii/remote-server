@@ -456,6 +456,18 @@ class TestSpecBounds(unittest.TestCase):
             pack = graph.preseed_context_pack("vague brief with no file")
             self.assertIn("Repo top level:", pack)
 
+    def test_preseed_does_not_excerpt_archived_retry(self):
+        with tempfile.TemporaryDirectory() as root:
+            archived = Path(root, ".worktrees/.queue-retry/run/old.py")
+            archived.parent.mkdir(parents=True)
+            archived.write_text("old runner implementation\n")
+            Path(root, "alias.py").symlink_to(archived)
+            graph = issue_generator.IssueGeneratorGraph(root)
+            with mock.patch("retrieval.search_td", return_value="no doc hits"):
+                pack = graph.preseed_context_pack("fix alias.py")
+            self.assertNotIn("old runner implementation", pack)
+            self.assertNotIn(".worktrees", pack)
+
     def test_draft_prompt_carries_preseed_pack(self):
         prompts = []
 

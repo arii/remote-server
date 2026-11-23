@@ -57,6 +57,7 @@ from backend.shared.s5tools import (  # noqa: E402,F401
     CHECK_PREFIXES,
     CHECK_TIMEOUT,
     TEST_FILE_RE,
+    active_checkout_path,
     allowed_commands_text,
     check_allowed,
     check_env,
@@ -619,10 +620,14 @@ def build_filesystem_backend(worktree):
     from deepagents.backends import FilesystemBackend
 
     class CoderFilesystemBackend(FilesystemBackend):
+        def _to_virtual_path(self, path):
+            active_checkout_path(self.cwd, path)
+            return super()._to_virtual_path(path)
+
         def _resolve_path(self, key):
             try:
                 key = worktree_file_key(worktree, key)
-                assert_inside(worktree, key)
+                active_checkout_path(self.cwd, key)
             except ValueError as exc:
                 raise PermissionError(
                     "outside_worktree_root: use worktree-relative paths "
@@ -671,7 +676,7 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
                     continue
                 try:
                     relative = worktree_file_key(worktree, path)
-                    target = assert_inside(worktree, relative)
+                    target = active_checkout_path(worktree, relative)
                     if (
                         os.path.isabs(path)
                         and path != "/"

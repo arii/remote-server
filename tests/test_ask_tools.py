@@ -8,6 +8,7 @@ failed live when the tool shelled to `rg`, which is not installed).
 import importlib.util
 import json
 import os
+from pathlib import Path
 import subprocess
 import tempfile
 import unittest
@@ -46,6 +47,43 @@ class TestAskTools(unittest.TestCase):
     def test_grep_excludes_git(self):
         out = ai.grep_repo.invoke({"pattern": "needle"})
         self.assertNotIn(".git", out)
+
+    def test_1570_investigation_ignores_archived_retry(self):
+        root = Path(self.tmp.name)
+        archive = root / ".worktrees/.queue-retry/arii_remote-server-1570"
+        old_spec = archive / "docs/specs/issue-1570.md"
+        old_test = archive / "backend/tests/test_runner_status.py"
+        for path in (old_spec, old_test):
+            path.parent.mkdir(parents=True)
+            path.write_text("last_heartbeat ARCHIVED\n")
+        live = root / "runner.py"
+        live.write_text("last_heartbeat ACTIVE\n")
+        alias = root / "old-spec.md"
+        alias.symlink_to(old_spec)
+
+        grep = ai.grep_repo.invoke({"pattern": "last_heartbeat"})
+        self.assertIn("runner.py:1:last_heartbeat ACTIVE", grep)
+        self.assertNotIn("ARCHIVED", grep)
+        self.assertNotIn(".queue-retry", grep)
+        for path in (old_spec.relative_to(root), alias.relative_to(root)):
+            self.assertIn("REJECTED", ai.read_repo_file.invoke({"path": str(path)}))
+        self.assertEqual(
+            ai.read_repo_file.invoke({"path": "runner.py"}), "last_heartbeat ACTIVE\n"
+        )
+
+        with mock.patch.object(
+            ai.retrieval,
+            "query_td_repo",
+            return_value=[
+                {"filepath": str(old_spec), "content": "ARCHIVED", "start_line": 1},
+                {"filepath": "old-spec.md", "content": "ARCHIVED", "start_line": 1},
+                {"filepath": "runner.py", "content": "ACTIVE", "start_line": 1},
+            ],
+        ):
+            self.assertEqual(
+                ai.search_docs.invoke({"query": "last_heartbeat"}),
+                "[runner.py:1] ACTIVE",
+            )
 
     def test_grep_no_match(self):
         self.assertEqual(
