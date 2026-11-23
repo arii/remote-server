@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -456,6 +457,18 @@ class TestSpecBounds(unittest.TestCase):
             pack = graph.preseed_context_pack("vague brief with no file")
             self.assertIn("Repo top level:", pack)
 
+    def test_preseed_does_not_excerpt_archived_retry(self):
+        with tempfile.TemporaryDirectory() as root:
+            archived = Path(root, ".worktrees/.queue-retry/run/old.py")
+            archived.parent.mkdir(parents=True)
+            archived.write_text("old runner implementation\n")
+            Path(root, "alias.py").symlink_to(archived)
+            graph = issue_generator.IssueGeneratorGraph(root)
+            with mock.patch("retrieval.search_td", return_value="no doc hits"):
+                pack = graph.preseed_context_pack("fix alias.py")
+            self.assertNotIn("old runner implementation", pack)
+            self.assertNotIn(".worktrees", pack)
+
     def test_draft_prompt_carries_preseed_pack(self):
         prompts = []
 
@@ -471,6 +484,64 @@ class TestSpecBounds(unittest.TestCase):
         self.assertEqual(text, "draft")
         self.assertEqual(len(prompts), 1)
         self.assertIn("PACK-CONTENTS", prompts[0])
+
+    def test_1570_redraft_uses_tracked_paths_instead_of_invented_excerpts(self):
+        brief = (
+            "Fix arii/remote-server#1570: Runner idle, stalled, and down all look "
+            "the same\n\nConsole distinguishes idle (heartbeat fresh, nothing "
+            "claimed), stalled (claimed, no activity past threshold), and runner "
+            "down (heartbeat missing). Each state names the operator next action."
+        )
+        recorded_draft = (
+            "The relevant source code that renders the runner status lives in "
+            "**`backend/console/runner_status.py`** (excerpt shown below).\n"
+            "```python\n# backend/console/runner_status.py\n"
+            'class RunnerState(Enum):\n    IDLE = "idle"\n```'
+        )
+        grounded_draft = (
+            "Inspect `scripts/queue_runner.py` for the current queue behavior; "
+            "the supplied evidence does not show a runner status renderer.\n\n"
+            "### Allowed Files\n- `scripts/queue_runner.py`\n"
+            "- `scripts/runner_status.py` (CREATE)\n"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            runner = Path(root, "scripts/queue_runner.py")
+            runner.parent.mkdir()
+            runner.write_text("pass\n")
+            deleted = runner.with_name("runner_deleted.py")
+            deleted.touch()
+            subprocess.run(["git", "init", "-q", root], check=True)
+            subprocess.run(["git", "-C", root, "add", "scripts"], check=True)
+            deleted.unlink()
+            runner.with_name("runner_untracked.py").touch()
+
+            def replay(prompt):
+                hints = prompt.partition(
+                    "Relevant tracked paths in the active checkout:\n"
+                )[2].partition("\n\n")[0]
+                if hints != "scripts/queue_runner.py" or "(CREATE)" not in prompt:
+                    return recorded_draft
+                self.assertIn("Quote only code actually shown", prompt)
+                return grounded_draft
+
+            model = mock.Mock()
+            model.invoke.side_effect = replay
+            graph = issue_generator.IssueGeneratorGraph(
+                root,
+                model_fn=lambda: model,
+                preseed_fn=lambda _: "[README.md:1] unrelated documentation",
+            )
+            actual = graph.draft_text(
+                brief,
+                "Investigation evidence:\nNo runner status renderer found.",
+                [],
+                {},
+            )
+            self.assertEqual(actual, grounded_draft)
+            self.assertEqual(
+                issue_generator.evidence_cites_repo_file(actual, root),
+                ["scripts/queue_runner.py"],
+            )
 
 
 @unittest.skipUnless(

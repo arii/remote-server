@@ -27,8 +27,8 @@ from threading import Lock
 
 import skills_registry
 import literal_checks
-from coder import DEFAULT_TOOL_OUTPUT_LIMIT, _truncate_tool_output
-from backend.shared.s5tools import verification_guidance
+from coder import DEFAULT_TOOL_OUTPUT_LIMIT, _truncate_tool_output, plan_path_hints
+from backend.shared.s5tools import active_checkout_path, verification_guidance
 
 REQUIRED_SECTIONS = (
     "Problem Statement",
@@ -384,17 +384,24 @@ class IssueGeneratorGraph:
         if brief in self._preseed_cache:
             return self._preseed_cache[brief]
         parts = []
-        candidates = evidence_cites_repo_file(brief, self.repo_root)
+        candidates = {}
+        for rel in evidence_cites_repo_file(brief, self.repo_root):
+            try:
+                candidates[rel] = active_checkout_path(self.repo_root, rel)
+            except ValueError:
+                continue
+            if len(candidates) == 3:
+                break
         try:
             top = sorted(os.listdir(self.repo_root))
-            top = [e for e in top if e != ".git"][:40]
+            top = [e for e in top if e not in {".git", ".worktrees"}][:40]
             parts.append("Repo top level: " + ", ".join(top))
         except OSError as exc:
             parts.append(f"Repo tree unavailable: {exc}")
-        for rel in candidates[:3]:
+        for rel, path in candidates.items():
             try:
                 with open(
-                    os.path.join(self.repo_root, rel),
+                    path,
                     encoding="utf-8",
                     errors="replace",
                 ) as handle:
@@ -418,7 +425,7 @@ class IssueGeneratorGraph:
             try:
                 proc = subprocess.run(
                     ["git", "-C", self.repo_root, "log", "--oneline", "-5", "--"]
-                    + candidates[:3],
+                    + list(candidates),
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -615,19 +622,26 @@ class IssueGeneratorGraph:
     def draft_text(self, brief, context, errors, answers):
         """One draft pass (LLM). Tests inject model_fn."""
         model = self._model()
+        tracked_paths = plan_path_hints(self.repo_root, brief)
         prompt = (
             "Write a design spec for this task. Follow the repo spec "
             "format exactly (Problem Statement, Goal, Scope, "
             "Definition of Done, Scope & File Boundaries with Allowed "
             "Files, Implementation Plan, Acceptance Criteria checklist, "
             "Verification Commands fenced block).\n"
-            "First step, before any other action: ground the spec in "
-            "the pre-seeded repository context below and quote the "
-            "excerpted repo file — a spec that cites no repo file is "
-            "rejected outright. Ask any blocking questions as a "
-            "trailing bulleted list of questions.\n\n"
+            "Ground the spec in existing repo-relative paths shown in the "
+            "tracked paths or repository evidence below. Quote only code "
+            "actually shown in the repository evidence; do not invent "
+            "paths, symbols, or excerpts and present them as existing. "
+            "For a proposed new file, label it (CREATE) on the same line "
+            "as its path in Allowed Files and describe it as new, not as "
+            "evidence of current behavior. If the evidence does not show "
+            "the implementation, say so and ask any blocking questions "
+            "in a trailing bulleted list.\n\n"
             f"{verification_guidance()}\n\n"
             f"Task: {brief}\n\n"
+            "Relevant tracked paths in the active checkout:\n"
+            f"{tracked_paths or '(no matching tracked files)'}\n\n"
             "Pre-seeded repository context (gathered deterministically):\n"
             f"{self.preseed_context_pack(brief)}\n\n"
             f"Context:\n{context}\n"

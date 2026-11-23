@@ -477,6 +477,7 @@ class Pipeline:
         pre_audit_fn=None,
         max_repair_cycles=None,
         max_escalations=MAX_ESCALATIONS_DEFAULT,
+        cli_fallback=None,
     ):
         self.repo = os.path.abspath(repo)
         self.intent = intent
@@ -514,6 +515,14 @@ class Pipeline:
         self.preview_url = preview_url
         self.events = []
         self.budget = None
+        # Opt-in CLI fallback (issue #1610): off by default, enabled
+        # only when the operator constructs an enabled config (or the
+        # PIPELINE_CLI_FALLBACK env switch is set).
+        if cli_fallback is None:
+            import cli_fallback
+
+            cli_fallback = cli_fallback.CliFallbackConfig()
+        self.cli_fallback = cli_fallback
         self._current_sub = None
         self.budget_path = budget_state_path(self.thread_id)
         # Per stage_code run; implement (or a test double) fills these.
@@ -646,6 +655,15 @@ class Pipeline:
                     ),
                     call_budget=self.calls_left(),
                     meter=meter,
+                    cli_fallback=self.cli_fallback,
+                    issue=(
+                        f"{self._repo_slug()}#{self.issue_id}"
+                        if self.issue_id and self._repo_slug()
+                        else None
+                    ),
+                    run_id=self.thread_id,
+                    stage="code",
+                    cli_verify_fn=self.pre_audit_check,
                     **kwargs,
                 )
             except Exception as exc:
