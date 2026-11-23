@@ -387,7 +387,8 @@ def is_spend_cap(result):
 
 
 class QueueLedger:
-    """Agent Ledger rows for queue runs. A ledger outage never fails the run.
+    """Agent Ledger rows for queue runs. A failed post never fails the run; a
+    failed read skips the issue, because an unchecked claim may be someone else's.
 
     Rows are keyed by Link = issue URL, because ledger_read folds the latest row
     per Link. The PR URL goes in the note so the key stays stable.
@@ -456,13 +457,14 @@ class QueueLedger:
                 write_json(self.status_path, self.status)
 
     def claimed_elsewhere(self, key):
-        """Return a skip reason when another source holds a fresh Act claim."""
+        """Return a skip reason when another source holds a fresh Act claim or
+        the ledger cannot be read."""
         link = self.url(key)
         try:
             rows = [r for r in ledger_rows() if (r.get("Link") or "").strip() == link]
         except Exception as error:
-            ledger_log(f"read failed, not blocking {key}: {type(error).__name__}")
-            return None
+            ledger_log(f"read failed, skipping {key}: {type(error).__name__}")
+            return f"ledger unreadable ({type(error).__name__}), failing closed"
         if not rows:
             return None
         latest = rows[-1]

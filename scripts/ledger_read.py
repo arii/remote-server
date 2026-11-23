@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """ledger_read.py - Headless reader for the Agent Ledger via Google Drive API.
 
-Reads the private Agent Ledger Google Sheet directly using the authenticated
-OAuth credentials at /srv/remote-server/gdocs-access/token.json.
+Reads the private Agent Ledger Google Sheet directly using the authorized-user
+OAuth token at /srv/remote-server/gdocs-access/token.json (override with
+GOOGLE_TOKEN_FILE). Standard library only, so any python3 can run it.
 Zero browser required, runs in ~1.5s.
 
 Usage:
@@ -18,32 +19,46 @@ import io
 import json
 import os
 import sys
+import urllib.parse
+import urllib.request
 
 DEFAULT_SHEET_ID = "1UGejaFVAPUhNaJS34pBFgfp5m2Lz_n4DkD64EMFzm0U"
 DEFAULT_TOKEN_PATH = "/srv/remote-server/gdocs-access/token.json"
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
+EXPORT_URL = "https://www.googleapis.com/drive/v3/files/{}/export?mimeType=text/csv"
+TIMEOUT_SECONDS = 30
 
 
-def get_drive_service(token_path: str):
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
-
-    if not os.path.exists(token_path):
-        raise FileNotFoundError(f"OAuth token file not found: {token_path}")
-
-    creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    return build("drive", "v3", credentials=creds)
+def access_token(token_path: str) -> str:
+    """Mint a fresh access token from the refresh token in an authorized-user file."""
+    with open(token_path) as handle:
+        info = json.load(handle)
+    body = urllib.parse.urlencode(
+        {
+            "client_id": info["client_id"],
+            "client_secret": info["client_secret"],
+            "refresh_token": info["refresh_token"],
+            "grant_type": "refresh_token",
+        }
+    ).encode()
+    request = urllib.request.Request(
+        info.get("token_uri") or DEFAULT_TOKEN_URI, data=body, method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        token = json.load(response).get("access_token")
+    if not token:
+        raise RuntimeError("token refresh returned no access_token")
+    return token
 
 
 def read_ledger(sheet_id: str, token_path: str):
-    service = get_drive_service(token_path)
-    csv_bytes = service.files().export(fileId=sheet_id, mimeType="text/csv").execute()
-    csv_text = csv_bytes.decode("utf-8")
-    reader = csv.DictReader(io.StringIO(csv_text))
-    return list(reader)
+    request = urllib.request.Request(
+        EXPORT_URL.format(urllib.parse.quote(sheet_id, safe="")),
+        headers={"Authorization": f"Bearer {access_token(token_path)}"},
+    )
+    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        csv_text = response.read().decode("utf-8")
+    return list(csv.DictReader(io.StringIO(csv_text)))
 
 
 def fold_latest_per_key(rows):
@@ -91,7 +106,7 @@ def main():
 
     try:
         rows = read_ledger(args.sheet_id, args.token_file)
-    except (OSError, RuntimeError, ValueError) as e:
+    except (OSError, RuntimeError, ValueError, KeyError) as e:
         print(f"Error reading Agent Ledger: {e}", file=sys.stderr)
         sys.exit(1)
 

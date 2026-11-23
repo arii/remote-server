@@ -19,6 +19,13 @@ from scripts import queue_runner as runner
 from scripts import ledger_post
 
 
+def setUpModule():
+    # Supervisor runs post claim rows; without this they reach the live Form.
+    guard = mock.patch.object(ledger_post, "post_entry", return_value=200)
+    guard.start()
+    unittest.addModuleCleanup(guard.stop)
+
+
 class ClaimsPrValidTests(unittest.TestCase):
     def test_valid_pr(self):
         ok, reason = runner.claims_pr_valid(
@@ -1628,14 +1635,25 @@ class LedgerTests(unittest.TestCase):
         self.run_one(self.SUCCESS)
         self.assertTrue(self.posts)
 
-    def test_reader_outage_does_not_block_the_issue(self):
+    def test_reader_outage_fails_closed(self):
         def broken():
-            raise FileNotFoundError("no token")
+            raise ModuleNotFoundError("no google client")
 
-        with mock.patch.object(runner, "ledger_rows", broken):
-            code, _status, _config = self.run_one(self.SUCCESS)
-        self.assertEqual(code, 0)
-        self.assertTrue(self.posts[0][1].startswith("claimed"))
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            with (
+                mock.patch.object(runner, "ledger_rows", broken),
+                mock.patch.object(runner.subprocess, "Popen") as popen,
+            ):
+                self.assertEqual(runner.supervise(config), 0)
+            popen.assert_not_called()
+            saved = runner.read_json(state / "status.json")
+        self.assertEqual(self.posts, [])
+        self.assertIn(
+            "ledger unreadable (ModuleNotFoundError)",
+            saved["ledger_skipped"]["owner/repo#7"],
+        )
+        self.assertNotIn("owner/repo#7", saved["completed"])
 
     def test_post_failure_keeps_run_green_retries_once_then_drops(self):
         self.fail_posts = 3
@@ -2118,6 +2136,7 @@ class StrongRoutingTests(unittest.TestCase):
                 runner.subprocess, "check_output", return_value=json.dumps(payload)
             ),
             mock.patch.object(runner.subprocess, "Popen", side_effect=spawn),
+            mock.patch.object(runner, "ledger_rows", return_value=[]),
             contextlib.redirect_stdout(out),
         ):
             runner.supervise(config)
