@@ -10,6 +10,8 @@ FORM_RESPONSE_URL = (
     "1FAIpQLSeYyysgPaLfgYTUWb7uDGlnqppQgkZXuT2WINzhzOxzy7FxNQ/formResponse"
 )
 
+CONFIRMATION = "recorded"  # "Your response has been recorded."
+
 ENTRY_MAP = {
     "agent": "entry.421540333",  # Agent / Source
     "note": "entry.526880121",  # Item / Note
@@ -54,6 +56,12 @@ def post_entry(agent: str, note: str, status: str = "Act", link: str = "") -> in
         headers={"User-Agent": "Mozilla/5.0 (compatible; AgentLedgerBot/1.0)"},
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
+        body = resp.read().decode("utf-8", "replace")
+        # A closed or redirected Form can answer 200 without storing the row.
+        if resp.status != 200 or CONFIRMATION not in body:
+            raise RuntimeError(
+                f"ledger form did not confirm the row (HTTP {resp.status})"
+            )
         return resp.status
 
 
