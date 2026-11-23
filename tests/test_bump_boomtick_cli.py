@@ -17,6 +17,12 @@ FILES = (
     ".github/workflows/ai-review.yml",
     "tests/e2e/run.sh",
 )
+VERSIONED_FILES = (
+    "Dockerfile",
+    "terminal/Dockerfile",
+    ".github/workflows/e2e.yml",
+    "tests/e2e/run.sh",
+)
 SHA = "a" * 40
 
 
@@ -94,7 +100,8 @@ exit 99
         for name in FILES:
             self.assertNotEqual(before[name], after[name])
             self.assertIn(SHA, after[name])
-        self.assertIn("# v9.0.0", after[".github/workflows/e2e.yml"])
+        for name in VERSIONED_FILES:
+            self.assertIn("# v9.0.0", after[name])
 
     def test_old_or_identical_release_keeps_pins(self):
         for status in ("behind", "identical"):
@@ -106,7 +113,8 @@ exit 99
     def test_subsequent_release_updates_version_comments(self):
         result, _, after = self.run_bump(released=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("# v9.0.0", after[".github/workflows/e2e.yml"])
+        for name in VERSIONED_FILES:
+            self.assertIn("# v9.0.0", after[name])
         for content in after.values():
             self.assertNotIn("# v1.0.0", content)
 
