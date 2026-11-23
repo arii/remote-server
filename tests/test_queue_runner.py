@@ -369,7 +369,8 @@ class RunnerTests(unittest.TestCase):
 
     def test_cap_validation(self):
         self.assertEqual(runner.checked_cap(0.5), 0.5)
-        for value in (True, 0, -1, 0.51, float("nan"), float("inf"), "0.5"):
+        self.assertEqual(runner.checked_cap(1), 1.0)
+        for value in (True, 0, -1, 1.01, float("nan"), float("inf"), "0.5"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 runner.checked_cap(value)
 
@@ -711,7 +712,7 @@ class RunnerTests(unittest.TestCase):
             (-1, True),
             (float("nan"), True),
             (True, True),
-            (0.5, True),
+            (1.0, True),
         ):
             with (
                 self.subTest(cost=cost, reconciled=reconciled),
@@ -775,7 +776,7 @@ class RunnerTests(unittest.TestCase):
                 dispatched.append(name)
                 job = runner.read_json(state / name / "job.json")
                 self.assertAlmostEqual(
-                    job["cap_usd"], 0.4 if name.endswith("-7") else 0.5
+                    job["cap_usd"], 0.9 if name.endswith("-7") else 1.0
                 )
                 self.assertEqual(
                     job["model_tier"], "strong" if name.endswith("-7") else "default"
@@ -838,13 +839,13 @@ class RunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             config, state, directory = self.failed_run(root)
             status = runner.read_json(state / "status.json")
-            status["retry_spend"] = {"owner/repo#7": 0.3}
+            status["retry_spend"] = {"owner/repo#7": 0.7}
             runner.write_json(state / "status.json", status)
             with (
                 mock.patch.object(
                     runner.subprocess,
                     "Popen",
-                    return_value=self.retry_process(directory, cost=0.2),
+                    return_value=self.retry_process(directory, cost=0.3),
                 ),
                 self.assertRaises(runner.BudgetStop),
             ):

@@ -11,7 +11,7 @@
   "discover_repos": ["arii/remote-server", "arii/boomtick"],
   "runtime_command": [],
   "worker_python": "/opt/venvs/td/bin/python",
-  "cap_usd": 0.5,
+  "cap_usd": 1.0,
   "max_common_failures": 3,
   "strong_after_failures": 2,
   "inter_issue_delay_seconds": 60,

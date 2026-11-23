@@ -27,7 +27,7 @@ example absolute paths with persistent paths in your deployment:
   "discover_repos": ["arii/remote-server", "arii/boomtick"],
   "runtime_command": [],
   "worker_python": "/opt/venvs/td/bin/python",
-  "cap_usd": 0.5,
+  "cap_usd": 1.0,
   "max_common_failures": 3,
   "strong_after_failures": 2,
   "inter_issue_delay_seconds": 60,
@@ -56,8 +56,8 @@ launcher runs `env PYTHONPATH=<pipeline_checkout>/deep-agent:<pipeline_checkout>
 no working-directory setting is needed; `pipeline_checkout` must be the repo root.
 Check with `<runtime_command> env PYTHONPATH=<checkout>/deep-agent:<checkout>
 /opt/venvs/td/bin/python -P -c "from backend.shared import model_router; import
-observe; print(model_router.__file__, observe.__file__)"`. The $0.50 `cap_usd`, fail-closed
-reconciliation and completed-issue state are unchanged by the interpreter change.
+observe; print(model_router.__file__, observe.__file__)"`. Receipt reconciliation
+remains fail-closed and completed-issue state is preserved.
 
 For a container, `runtime_command` can be
 `["docker", "exec", "-i", "CONTAINER"]`, with `worker_python` set to the
@@ -117,8 +117,9 @@ Closed issues are marked completed without dispatch.
 - An incomplete, valid `upper_bound` receipt reserves that amount. It counts
   against the cap and passes reconciliation without being called an actual bill.
   Missing hosted receipts and unbounded or malformed costs still halt the queue.
-- The cap is positive and at most **$0.50 per issue**. Checks happen before each
-  subsequent model call: the last dispatched call can cross the cap. This is a
+- The cap defaults to **$1.00 per issue** and must be positive and at most $1.00.
+  Checks happen before each subsequent model call: the last dispatched call can
+  cross the cap. This is a
   recorded-spend gate, not a prediction of the next call's eventual charge.
 - Shutdown requires automatic settlement, exactly one owner per receipt, and
   matching ledger/receipt totals. A worker exit inconsistent with its summary halts.
@@ -179,7 +180,7 @@ an unfinished/current run, a successful run, or unresolved receipt costs prevent
 retry. Only one retry can be pending at a time.
 
 Prior reconciled spend, including reservations, reduces the next attempt's budget;
-retry does not grant a fresh $0.50 allowance. Exhausted budgets cannot be retried.
+retry does not grant a fresh allowance. Exhausted budgets cannot be retried.
 Initial implementation keeps its 20-model/32-tool limit. If the TwT default
 route exhausts the model limit, the coder makes at most one additional attempt
 with a fresh 20-model/32-tool budget and checkpoint thread, preserving prior

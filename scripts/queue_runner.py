@@ -25,6 +25,9 @@ import uuid
 import zoneinfo
 
 
+ISSUE_CAP_USD = 1.0
+
+
 class SafetyStop(RuntimeError):
     llm_not_dispatched = True
 
@@ -341,9 +344,11 @@ def checked_cap(value):
     if (
         type(value) not in (int, float)
         or not math.isfinite(value)
-        or not 0 < value <= 0.5
+        or not 0 < value <= ISSUE_CAP_USD
     ):
-        raise ValueError("cap_usd must be finite, positive, and at most $0.50")
+        raise ValueError(
+            f"cap_usd must be finite, positive, and at most ${ISSUE_CAP_USD:.2f}"
+        )
     return float(value)
 
 
@@ -1043,7 +1048,7 @@ def retry_issue(config_path, key):
     issue = {"repo": repo, "number": int(number)}
     ordered_issues([issue])
     config = read_json(config_path)
-    cap = checked_cap(config.get("cap_usd", 0.5))
+    cap = checked_cap(config.get("cap_usd", ISSUE_CAP_USD))
     issues = read_json(config["issues_file"])
     matches = [i for i in issues if (i["repo"], i["number"]) == (repo, issue["number"])]
     if len(matches) != 1 or skip_reason(matches[0]):
@@ -1107,7 +1112,7 @@ def retry_issue(config_path, key):
 
 def supervise(config_path, *, clear_halt=False):
     config = read_json(config_path)
-    cap = checked_cap(config.get("cap_usd", 0.5))
+    cap = checked_cap(config.get("cap_usd", ISSUE_CAP_USD))
     failure_limit = config.get("max_common_failures", 3)
     if type(failure_limit) is not int or failure_limit < 1:
         raise ValueError("max_common_failures must be a positive integer")
