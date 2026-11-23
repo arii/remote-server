@@ -305,6 +305,21 @@ Root tests run behind a network guard for `docs.google.com`
 ([#1617](https://github.com/arii/remote-server/pull/1617)). Stub ledger reads
 and writes in queue tests; never point a test at the live Form.
 
+### Human confirm for intake rows (#1584)
+
+Agents flag intake rows; a human decides. Duplicate detection (exact hash or fuzzy title match) and `ledger_intake_review.py` only flag. They never link, merge, reset or delete a row.
+
+Gated actions on the Ledger triage screen, each a two-step tap and each rejected with 400 by the backend unless the body carries `confirmed: true` and the matching intent:
+
+| Action | Endpoint | Intent |
+| --- | --- | --- |
+| Merge duplicate (links `canonical_intake_id`, appends notes) | `POST /api/ledger-intake/{id}/merge` | `ledger-intake-merge` |
+| Not a duplicate (resets to `NEW`, never `READY`, drops the link, remembers the pair so it is not flagged again) | `POST /api/ledger-intake/{id}/distinct` | `ledger-intake-distinct` |
+
+Merge always needs the confirm, for exact-hash and fuzzy matches alike. This overrides the one-tap Merge in #1583. The hook may still set `DUPLICATE` on an exact dedupe hash at submit, because that is a status and not a link. Those rows stay in triage until a human merges or marks them distinct.
+
+Nothing hard-deletes intake rows. The only path that removes them is `POST /api/ledger/clear` (intent `ledger-clear`), which truncates the whole ledger including intake rows. `backend/tests/test_briefing_ledger.py` guards this in `test_ledger_intake_no_delete_path`. Only Ari adds `ready` to a `ledger-intake` issue.
+
 ## Strong-tier routing
 
 The worker always runs with `NEBIUS_ONLY=1` and no `CODER_MODEL`, so an ordinary

@@ -10,6 +10,7 @@ vi.mock('../apiClient', async (original) => ({
   fetchLedgerIntake: vi.fn(),
   approveLedgerIntake: vi.fn(),
   mergeLedgerIntake: vi.fn(),
+  distinctLedgerIntake: vi.fn(),
 }));
 
 let root: Root;
@@ -46,6 +47,31 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+const duplicateRows = {
+  rows: [{
+    kind: 'ledger-intake',
+    intake_id: 'intake-new',
+    canonical_intake_id: 'intake-new',
+    status: 'SUSPECTED-DUPLICATE',
+    title: 'Retry policy',
+    duplicate_candidate: {
+      intake_id: 'intake-old',
+      canonical_intake_id: 'intake-old',
+      title: 'Retry policy',
+      status: 'READY',
+      ts: 1_700_000_000,
+    },
+  }],
+};
+
+function tap(testid: string): HTMLButtonElement {
+  return host.querySelector<HTMLButtonElement>(`[data-testid="${testid}"]`)!;
+}
+
+function confirmButton(label: string): HTMLButtonElement {
+  return host.querySelector<HTMLButtonElement>(`button[aria-label^="Confirm ${label}"]`)!;
+}
+
 describe('LedgerTriageView', () => {
   it('shows only flagged fields and clears a card after approval', async () => {
     await act(async () => root.render(<LedgerTriageView />));
@@ -65,30 +91,30 @@ describe('LedgerTriageView', () => {
     expect(host.textContent).not.toContain('Add retry policy');
   });
 
-  it('shows the matched row and merges it without creating a READY card', async () => {
-    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
-      rows: [{
-        kind: 'ledger-intake',
-        intake_id: 'intake-new',
-        canonical_intake_id: 'intake-new',
-        status: 'SUSPECTED-DUPLICATE',
-        title: 'Retry policy',
-        duplicate_candidate: {
-          intake_id: 'intake-old',
-          canonical_intake_id: 'intake-old',
-          title: 'Retry policy',
-          status: 'READY',
-          ts: 1_700_000_000,
-        },
-      }],
-    });
+  it('shows the matched row and merges only after the confirm tap', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce(duplicateRows);
     await act(async () => root.render(<LedgerTriageView />));
     expect(host.textContent).toContain('Possible match');
     expect(host.textContent).toContain('READY');
-    await act(async () => {
-      host.querySelectorAll<HTMLButtonElement>('.btn-primary')[0].click();
-    });
+    await act(async () => tap('merge-intake-new').click());
+    expect(api.mergeLedgerIntake).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('Merge duplicate Retry policy?');
+    await act(async () => confirmButton('Merge duplicate').click());
     expect(api.mergeLedgerIntake).toHaveBeenCalledWith('intake-new', 'intake-old', '');
-    expect(host.textContent).not.toContain('Retry policy');
+    expect(host.textContent).not.toContain('Possible match');
+  });
+
+  it('marks distinct only after the confirm tap', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce(duplicateRows);
+    vi.mocked(api.distinctLedgerIntake).mockResolvedValue({
+      ok: true,
+      row: { kind: 'ledger-intake', intake_id: 'intake-new', status: 'NEW' },
+    });
+    await act(async () => root.render(<LedgerTriageView />));
+    await act(async () => tap('distinct-intake-new').click());
+    expect(api.distinctLedgerIntake).not.toHaveBeenCalled();
+    await act(async () => confirmButton('Not a duplicate').click());
+    expect(api.distinctLedgerIntake).toHaveBeenCalledWith('intake-new', 'intake-old');
+    expect(api.mergeLedgerIntake).not.toHaveBeenCalled();
   });
 });
