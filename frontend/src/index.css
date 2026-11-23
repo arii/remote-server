@@ -340,6 +340,7 @@ h1, h2, h3 { text-wrap: balance; }
   display: inline-block;
 }
 
+.ledger-link { display: inline-flex; align-items: center; min-height: 44px; max-width: 100%; }
 .row-meta { color: var(--muted); font-size: 0.85rem; margin: 0; }
 .row-title { display: block; font-weight: 650; font-size: 1rem; margin: 0; color: var(--text); }
 

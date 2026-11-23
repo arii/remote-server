@@ -35,6 +35,15 @@ function statusLabel(status: string | undefined): string {
     : status || 'Needs review';
 }
 
+const MAX_LINK_TEXT = 48;
+
+// Host plus path without query or hash, middle-truncated. The href keeps the full URL.
+function readableUrl(url: string): string {
+  const parsed = new URL(url);
+  const text = (parsed.host.replace(/^www\./, '') + parsed.pathname).replace(/\/$/, '');
+  return text.length > MAX_LINK_TEXT ? `${text.slice(0, 26)}…${text.slice(-20)}` : text;
+}
+
 const REVIEWED_KEY = 'ledgerTriage.reviewed';
 
 function rowTime(row: LedgerIntakeRow): number {
@@ -290,12 +299,12 @@ export default function LedgerTriageView(): ReactElement {
               )}
               {sourceUrl && /^https?:\/\//i.test(sourceUrl) && (
                 <p className="row-meta">
-                  <a href={sourceUrl} target="_blank" rel="noopener noreferrer">{sourceUrl}</a>
+                  <a className="ledger-link" href={sourceUrl} target="_blank" rel="noopener noreferrer" title={sourceUrl}>{readableUrl(sourceUrl)}</a>
                 </p>
               )}
-              {row.duplicate_of && (
+              {row.duplicate_of && /^https?:\/\//i.test(row.duplicate_of) && (
                 <p className="row-meta">
-                  Duplicate candidate: <a href={row.duplicate_of}>{row.duplicate_of}</a>
+                  Duplicate candidate: <a className="ledger-link" href={row.duplicate_of} title={row.duplicate_of}>{readableUrl(row.duplicate_of)}</a>
                 </p>
               )}
               {missing.map((field) => (
