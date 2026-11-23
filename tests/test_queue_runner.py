@@ -106,12 +106,16 @@ class PostEntryConfirmationTests(unittest.TestCase):
 
     def test_confirmed_row_returns_status(self):
         resp = self.response(200, "<p>Your response has been recorded.</p>")
-        with mock.patch.object(ledger_post.urllib.request, "urlopen", return_value=resp):
+        with mock.patch.object(
+            ledger_post.urllib.request, "urlopen", return_value=resp
+        ):
             self.assertEqual(ledger_post.post_entry("a", "n", "Act", "l"), 200)
 
     def test_unconfirmed_200_raises_so_the_row_is_retried(self):
         resp = self.response(200, "<p>This form is no longer accepting responses.</p>")
-        with mock.patch.object(ledger_post.urllib.request, "urlopen", return_value=resp):
+        with mock.patch.object(
+            ledger_post.urllib.request, "urlopen", return_value=resp
+        ):
             with self.assertRaisesRegex(RuntimeError, "did not confirm"):
                 ledger_post.post_entry("a", "n", "Act", "l")
 
