@@ -87,7 +87,7 @@ describe('LedgerTriageView', () => {
     await act(async () => {
       host.querySelector<HTMLButtonElement>('.btn-primary')!.click();
     });
-    expect(api.approveLedgerIntake).toHaveBeenCalledWith('intake-1', { scope: 'backend' });
+    expect(api.approveLedgerIntake).toHaveBeenCalledWith('intake-1', { scope: 'backend' }, false);
     expect(host.textContent).not.toContain('Add retry policy');
   });
 
@@ -126,5 +126,60 @@ describe('LedgerTriageView', () => {
     expect(host.textContent).not.toContain('Approve and mark READY');
     expect(host.textContent).toContain('before approving');
     expect(tap('merge-intake-new')).toBeTruthy();
+  });
+
+  it('names the risk categories and sends the confirm only after the inline confirm', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{
+        kind: 'ledger-intake',
+        canonical_intake_id: 'intake-risk',
+        status: 'NEEDS_APPROVAL',
+        title: 'Deploy the backend',
+        risk_categories: ['production_mutation'],
+      }],
+    });
+    await act(async () => root.render(<LedgerTriageView />));
+    expect(host.textContent).toContain('NEEDS_APPROVAL');
+    expect(host.textContent).toContain('production mutation');
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid^="approve-high-risk"]')!.click();
+    });
+    expect(api.approveLedgerIntake).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="tap-confirm"]')!.textContent).toContain('production mutation');
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button[aria-label^="Confirm"]')!.click();
+    });
+    expect(api.approveLedgerIntake).toHaveBeenCalledWith('intake-risk', {}, true);
+  });
+
+  it('switches to the inline confirm when the server flags a typed field', async () => {
+    vi.mocked(api.approveLedgerIntake)
+      .mockRejectedValueOnce(
+        new Error('confirmation required: high blast radius (production_mutation)'),
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        row: { kind: 'ledger-intake', canonical_intake_id: 'intake-1', status: 'READY' },
+      });
+    await act(async () => root.render(<LedgerTriageView />));
+    await act(async () => {
+      const input = host.querySelector('input')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'migrate the prod DB');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('.btn-primary')!.click();
+    });
+    expect(api.approveLedgerIntake).toHaveBeenLastCalledWith('intake-1', { scope: 'migrate the prod DB' }, false);
+    expect(host.textContent).toContain('production mutation');
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid^="approve-high-risk"]')!.click();
+    });
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button[aria-label^="Confirm"]')!.click();
+    });
+    expect(api.approveLedgerIntake).toHaveBeenLastCalledWith('intake-1', { scope: 'migrate the prod DB' }, true);
   });
 });

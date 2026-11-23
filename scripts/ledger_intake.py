@@ -10,8 +10,16 @@ import hashlib
 import re
 import unicodedata
 
+from backend.core.intake_risk import risk_categories
 
-STATUS_VALUES = ("NEW", "NEEDS_INFO", "DUPLICATE", "READY", "DISPATCHED")
+STATUS_VALUES = (
+    "NEW",
+    "NEEDS_INFO",
+    "DUPLICATE",
+    "NEEDS_APPROVAL",
+    "READY",
+    "DISPATCHED",
+)
 REQUIRED_FIELDS = ("title", "repo", "problem", "scope", "done_when")
 
 
@@ -45,6 +53,9 @@ def status_for(row, *, duplicate=False):
         return "DUPLICATE"
     if missing_fields(row):
         return "NEEDS_INFO"
+    if risk_categories(row):
+        # High-blast-radius rows wait for a human confirm (#1586).
+        return "NEEDS_APPROVAL"
     return "READY"
 
 
@@ -60,6 +71,7 @@ def build_row(row, *, duplicate=False):
         "canonical_intake_id": row.get("canonical_intake_id") or intake_id(title, repo),
         "agent_issue_url": str(row.get("agent_issue_url", "") or "").strip(),
         "missing_fields": ",".join(missing),
+        "risk_categories": ",".join(risk_categories(row)),
         "status": status_for(row, duplicate=duplicate),
     }
 

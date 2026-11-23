@@ -140,6 +140,7 @@ export interface LedgerIntakeRow extends LedgerEntry {
   scope?: string;
   done_when?: string;
   missing_fields?: string[];
+  risk_categories?: string[];
   duplicate_of?: string;
   source_url?: string;
   duplicate_candidate?: {
