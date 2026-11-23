@@ -1012,6 +1012,13 @@ class RunnerTests(unittest.TestCase):
                 "def _settled_trace_ids(): return set()\n"
                 "def ledger_receipts(ids, receipts): return receipts\n"
             )
+            (checkout / "scripts").mkdir()
+            (checkout / "scripts" / "slop_review.py").write_text(
+                "def gated_submit(original, state, **kwargs): return original\n"
+                "def override_result(value, state): return value\n"
+                "def checkout_root(): return None\n"
+                "def default_model(thread_id): raise AssertionError\n"
+            )
             (agent / "pipeline.py").write_text(
                 "class Pipeline:\n"
                 "    def stage_init(self): return True, {}\n"
