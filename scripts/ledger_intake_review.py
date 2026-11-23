@@ -153,7 +153,9 @@ def parse_result(text, candidate_urls):
 def format_comment(result):
     lines = [MARKER, "Ledger-intake review:"]
     if result["missing_fields"]:
-        lines.append("Missing task fields: " + ", ".join(result["missing_fields"]) + ".")
+        lines.append(
+            "Missing task fields: " + ", ".join(result["missing_fields"]) + "."
+        )
     if result["duplicate_url"]:
         lines.append("Likely duplicate: " + result["duplicate_url"])
     if result["reason"]:
@@ -208,11 +210,12 @@ def review(issue, candidates):
         model, spec = model_router.build_chat_model(
             spec=spec, max_tokens=1000, stage="audit"
         )
+        # NOTE: pass the prompt as a plain string, not a langchain message
+        # object — langchain-core is a deep-agent-only dependency and must
+        # stay out of backend scripts. Chat models wrap strings as HumanMessage.
         try:
             with twt_receipts.run(run_id):
-                from langchain_core.messages import HumanMessage
-
-                reply = model.invoke([HumanMessage(content=build_prompt(issue, candidates))])
+                reply = model.invoke(build_prompt(issue, candidates))
                 messages = [reply]
         finally:
             ledger.record(
