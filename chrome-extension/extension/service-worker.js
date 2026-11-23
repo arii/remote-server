@@ -5,6 +5,7 @@
 import { aliasMatches, normalizeLabel } from "./lib/matcher.js";
 import { normalizeForDedup, valueAlreadyHeld } from "./lib/delta-guards.js";
 import { deduplicateVault } from "./lib/vault.js";
+import { extractLinks, extractTitle, htmlToText, isPrivateHost } from "./lib/profile-ingest.js";
 import { isSensitiveLabel } from "./lib/sensitive.js";
 import {
   MAX_LEARNED_LOG,
@@ -107,6 +108,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.type === "source:fetch") {
+    fetchSource(message.url)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ error: err.message }));
+    return true;
+  }
+
   if (message.type && LEARNING_HANDLERS[message.type]) {
     LEARNING_HANDLERS[message.type](message, sender)
       .then((res) => sendResponse(res))
@@ -123,6 +131,56 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep message channel open for async response
   }
 });
+
+// --- Source fetch for "Learn from my sources" ---------------------------------
+// Read-only: fetches one http(s) page and returns text and followable links.
+// It never touches the vault; the panel feeds the text to the on-device model
+// and queues the results through the Review and Merge Queue.
+const SOURCE_MAX_BYTES = 500 * 1024;
+const SOURCE_TIMEOUT_MS = 15000;
+
+async function fetchSource(rawUrl) {
+  let url;
+  try {
+    url = new URL(String(rawUrl || ""));
+  } catch {
+    throw new Error("Invalid URL");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Only http and https URLs can be fetched");
+  }
+  if (isPrivateHost(url.hostname)) throw new Error("Local and private-network addresses cannot be fetched");
+  // Redirects are not followed: each hop would need the same host check, and a
+  // hostile page could otherwise steer the worker at internal addresses.
+  const res = await fetch(url.href, { signal: AbortSignal.timeout(SOURCE_TIMEOUT_MS), credentials: "omit", redirect: "manual" });
+  if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+    throw new Error("Redirects are not followed; use the final URL as the source");
+  }
+  if (!res.ok) throw new Error(`Fetch failed with status ${res.status}`);
+  const declared = Number(res.headers.get("content-length") || 0);
+  if (declared > SOURCE_MAX_BYTES) throw new Error("Response too large (limit 500KB)");
+
+  const reader = res.body.getReader();
+  const parts = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > SOURCE_MAX_BYTES) {
+      await reader.cancel();
+      throw new Error("Response too large (limit 500KB)");
+    }
+    parts.push(value);
+  }
+  const decoder = new TextDecoder();
+  const html = parts.map((p) => decoder.decode(p, { stream: true })).join("") + decoder.decode();
+  const type = res.headers.get("content-type") || "";
+  if (/html/i.test(type) || /^\s*<(!doctype|html)/i.test(html)) {
+    return { url: url.href, title: extractTitle(html), text: htmlToText(html), links: extractLinks(html, url.href) };
+  }
+  return { url: url.href, title: url.hostname, text: html.trim(), links: [] };
+}
 
 // --- Single-writer mutation pipeline -----------------------------------------
 // Every vault/delta write — the panel's typed mutations AND the observer's

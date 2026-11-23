@@ -5,6 +5,25 @@
 
 import { matchField } from "./lib/matcher.js";
 import { deduplicateVault } from "./lib/vault.js";
+import { MAX_CHUNKS_PER_PAGE, MAX_CHUNKS_PER_RUN, PROFILE_FACTS_SCHEMA, collectSourcePages, extractFactsFromText, htmlToText } from "./lib/profile-ingest.js";
+import {
+  buildAskPrompt,
+  formatTargetContext,
+  formatVaultFacts,
+  isReadableTabUrl,
+  selectVaultFacts
+} from "./lib/ask-context.js";
+import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
+import {
+  SUGGESTION_SCHEMA,
+  appendGuidanceLine,
+  applyGuidanceEdit,
+  normalizeGuidance,
+  parseGuidanceSuggestions,
+  proposeGuidanceRequest,
+  recordDeltaFeedback,
+  revertGuidance
+} from "./lib/prompt-guidance.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
 import {
   REFINEMENT_SCHEMA,
@@ -16,6 +35,30 @@ import {
 // Global state cache & pre-warmed AI pool
 let currentExportDoc = null;
 let baseWarmSession = null;
+let promptGuidance = normalizeGuidance(null);
+
+// Guidance is baked into the warm session's system prompt, so a change must
+// drop the warm session; the next getClonedSession() rebuilds it.
+function setPromptGuidance(next) {
+  const normalized = normalizeGuidance(next);
+  const changed = guidanceChanged(promptGuidance, normalized);
+  promptGuidance = normalized;
+  if (changed && baseWarmSession) {
+    baseWarmSession.destroy?.();
+    baseWarmSession = null;
+  }
+}
+
+chrome.storage.local.get(["promptGuidance"]).then((r) => {
+  setPromptGuidance(r.promptGuidance);
+  renderGuidanceCard();
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.promptGuidance) {
+    setPromptGuidance(changes.promptGuidance.newValue);
+    renderGuidanceCard();
+  }
+});
 
 async function getClonedSession() {
   const lmGlobal = self.LanguageModel || self.ai?.languageModel;
@@ -24,8 +67,7 @@ async function getClonedSession() {
     if (!baseWarmSession) {
       baseWarmSession = await lmGlobal.create({
         outputLanguage: "en",
-        systemPrompt:
-          "You are an expert career application assistant. Write tailored, concrete, first-person responses grounded ONLY in the candidate facts supplied in each prompt. Never invent employers, schools, or links."
+        systemPrompt: getPrompt("system", { guidance: promptGuidance })
       });
     }
     if (typeof baseWarmSession.clone === "function") {
@@ -461,6 +503,154 @@ document.getElementById("btn-bootstrap-model").addEventListener("click", async (
   }
 });
 
+// ----------------------------------------------------------------------------
+// ASK CARD: general questions answered from sources the user ticks.
+// Never writes to the vault; "Save answer as fact" goes through the review queue.
+// ----------------------------------------------------------------------------
+let lastAskAnswer = "";
+let lastAskSourceNote = "";
+
+async function renderAskTabList() {
+  const list = document.getElementById("ask-tab-list");
+  if (!list) return;
+  list.textContent = "";
+  const active = await getActiveTab();
+  const tabs = (await chrome.tabs.query({ currentWindow: true })).filter((t) => t.id !== active?.id);
+  if (!tabs.length) {
+    list.textContent = "No other tabs open.";
+    return;
+  }
+  for (const tab of tabs) {
+    const label = document.createElement("label");
+    label.className = "card-desc";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.tabId = String(tab.id);
+    box.dataset.title = tab.title || "";
+    box.dataset.url = tab.url || "";
+    box.disabled = !isReadableTabUrl(tab.url);
+    label.append(box, ` ${(tab.title || tab.url || "Untitled").slice(0, 60)}${box.disabled ? " (cannot be read)" : ""}`);
+    list.appendChild(label);
+  }
+}
+document.getElementById("ask-tabs-details")?.addEventListener("toggle", (e) => {
+  if (e.target.open) renderAskTabList();
+});
+
+async function gatherAskSources(notes) {
+  const sources = [];
+  const question = document.getElementById("ask-question").value;
+
+  if (document.getElementById("ask-src-page").checked) {
+    try {
+      const snap = await sendToActiveTab({ action: "CAPTURE_PAGE_SNAPSHOT" });
+      if (snap?.extractedText) sources.push({ kind: "page", title: snap.title, url: snap.url, text: snap.extractedText });
+      else notes.push("Current page: no readable text.");
+    } catch (err) {
+      notes.push(`Current page: could not be read (${err.message}).`);
+    }
+  }
+
+  for (const box of document.querySelectorAll("#ask-tab-list input[type=checkbox]:checked")) {
+    const name = box.dataset.title || box.dataset.url || `tab ${box.dataset.tabId}`;
+    try {
+      const snap = await chrome.tabs.sendMessage(Number(box.dataset.tabId), { action: "CAPTURE_PAGE_SNAPSHOT" }, { frameId: 0 });
+      if (snap?.extractedText) sources.push({ kind: "tab", title: snap.title, url: snap.url, text: snap.extractedText });
+      else notes.push(`Tab "${name}": no readable text.`);
+    } catch {
+      notes.push(`Tab "${name}": skipped, no content script (reload the tab and retry).`);
+    }
+  }
+
+  const needsStorage = document.getElementById("ask-src-vault").checked || document.getElementById("ask-src-target").checked;
+  const { userContextVault = [], activeSessionContext = null } = needsStorage
+    ? await chrome.storage.local.get(["userContextVault", "activeSessionContext"])
+    : {};
+  if (document.getElementById("ask-src-vault").checked) {
+    const facts = selectVaultFacts(question, userContextVault);
+    if (facts.length) sources.push({ kind: "vault", title: "Your saved facts", text: formatVaultFacts(facts) });
+    else notes.push("Vault: no relevant facts for this question.");
+  }
+  if (document.getElementById("ask-src-target").checked) {
+    const text = formatTargetContext(activeSessionContext);
+    if (text) sources.push({ kind: "target", title: activeSessionContext.sourceTitle || "Target context", text });
+    else notes.push("Target context: none captured yet.");
+  }
+  return { sources, question };
+}
+
+document.getElementById("btn-ask")?.addEventListener("click", async () => {
+  const askBtn = document.getElementById("btn-ask");
+  const stopBtn = document.getElementById("btn-ask-stop");
+  const saveBtn = document.getElementById("btn-ask-save");
+  const box = document.getElementById("ask-answer");
+  const usedEl = document.getElementById("ask-sources-used");
+  if (!document.getElementById("ask-question").value.trim()) return;
+
+  askBtn.disabled = true;
+  stopBtn.disabled = false;
+  saveBtn.style.display = "none";
+  box.style.display = "block";
+  box.textContent = "Reading sources...";
+  usedEl.textContent = "";
+  lastAskAnswer = "";
+  let session;
+  const signal = Telemetry.startTask("Ask: gathering sources...", 20);
+  try {
+    const notes = [];
+    const { sources, question } = await gatherAskSources(notes);
+    const { prompt, used } = buildAskPrompt({ question, sources, guidance: promptGuidance });
+    lastAskSourceNote = used.length
+      ? used.map((u) => `${u.kind}${u.title ? `: ${u.title}` : ""}${u.truncated ? " (truncated)" : ""}`).join("; ")
+      : "none";
+    usedEl.textContent = [`Sources used: ${lastAskSourceNote}`, ...notes].join("\n");
+    box.textContent = "Thinking on-device...";
+    session = await createPromptSession();
+    lastAskAnswer = await runObservablePrompt(session, prompt, {
+      label: "Ask",
+      signal,
+      onChunk: (text) => {
+        box.textContent = text;
+      }
+    });
+    box.textContent = lastAskAnswer;
+    if (lastAskAnswer.trim()) saveBtn.style.display = "";
+  } catch (err) {
+    box.textContent = signal.aborted ? "Stopped." : `Ask failed: ${err.message}`;
+  } finally {
+    session?.destroy();
+    Telemetry.endTask();
+    askBtn.disabled = false;
+    stopBtn.disabled = true;
+  }
+});
+
+document.getElementById("btn-ask-stop")?.addEventListener("click", () => {
+  Telemetry.activeAbortController?.abort();
+});
+
+document.getElementById("btn-ask-save")?.addEventListener("click", async () => {
+  const saveBtn = document.getElementById("btn-ask-save");
+  const question = document.getElementById("ask-question").value.trim();
+  const queued = await queueVerifiedDeltas(
+    [
+      {
+        key: question.slice(0, 60) || "Answer",
+        proposedValue: lastAskAnswer.trim(),
+        category: "custom",
+        evidenceSnippet: `Ask answer (${lastAskSourceNote})`,
+        confidence: 0.6
+      }
+    ],
+    "Ask answer",
+    ""
+  );
+  saveBtn.style.display = "none";
+  document.getElementById("ask-sources-used").textContent += queued
+    ? "\nQueued in the Review & Merge Queue on the Observer tab."
+    : "\nNot queued: an equal fact is already in the vault or queue.";
+});
+
 // Prompt API Sandbox Run
 document.getElementById("btn-run-sandbox").addEventListener("click", async () => {
   const input = document.getElementById("sandbox-prompt-input").value.trim();
@@ -473,7 +663,7 @@ document.getElementById("btn-run-sandbox").addEventListener("click", async () =>
   const startTime = performance.now();
   try {
     const session = await createPromptSession();
-    const result = await session.prompt(input);
+    const result = await session.prompt(getPrompt("ask", { guidance: promptGuidance, vars: { question: input } }));
     const elapsed = Math.round(performance.now() - startTime);
     box.textContent = `[${elapsed}ms local inference]\n\n${result}`;
     session.destroy();
@@ -481,6 +671,102 @@ document.getElementById("btn-run-sandbox").addEventListener("click", async () =>
     box.textContent = `Prompt Error: ${err.message}`;
   }
 });
+
+// ----------------------------------------------------------------------------
+// PROMPT GUIDANCE: user-editable guidance injected into every on-device prompt,
+// plus model-proposed improvements that need an explicit Accept.
+// ----------------------------------------------------------------------------
+function guidanceTargetText(target) {
+  return target === "global" ? promptGuidance.global : promptGuidance.perPrompt[target] || "";
+}
+
+function renderGuidanceCard() {
+  const select = document.getElementById("guidance-target");
+  const input = document.getElementById("guidance-input");
+  const preview = document.getElementById("guidance-preview");
+  if (!select || !input || !preview) return;
+  const target = select.value;
+  if (document.activeElement !== input) input.value = guidanceTargetText(target);
+  const previewId = target === "global" ? "ask" : target;
+  const sample = { categories: "...", known: "", chunk: "<page text>", field: "<field>", context: "<target context>", facts: "<vault facts>", org: "<org>", title: "<title>", url: "<url>", text: "<page text>", question: "<your question>" };
+  preview.textContent = getPrompt(previewId, { guidance: promptGuidance, vars: sample });
+  document.getElementById("btn-guidance-revert").disabled = promptGuidance.history.length === 0;
+}
+
+async function saveGuidance(next) {
+  setPromptGuidance(next);
+  await chrome.storage.local.set({ promptGuidance: next });
+  renderGuidanceCard();
+}
+
+(function initGuidanceCard() {
+  const select = document.getElementById("guidance-target");
+  if (!select) return;
+  for (const id of PROMPT_IDS) select.add(new Option(id, id));
+  select.addEventListener("change", renderGuidanceCard);
+  document.getElementById("btn-guidance-save").addEventListener("click", () =>
+    saveGuidance(applyGuidanceEdit(promptGuidance, select.value, document.getElementById("guidance-input").value))
+  );
+  document.getElementById("btn-guidance-revert").addEventListener("click", () => saveGuidance(revertGuidance(promptGuidance)));
+  document.getElementById("btn-guidance-suggest").addEventListener("click", suggestGuidanceImprovements);
+})();
+
+async function suggestGuidanceImprovements() {
+  const status = document.getElementById("guidance-suggest-status");
+  const list = document.getElementById("guidance-suggestions");
+  list.textContent = "";
+  const { fillOutcomes = [], deltaFeedback = {}, learnedAliases = [], userContextVault = [] } =
+    await chrome.storage.local.get(["fillOutcomes", "deltaFeedback", "learnedAliases", "userContextVault"]);
+  const request = proposeGuidanceRequest({
+    outcomes: fillOutcomes,
+    deltaFeedback,
+    learnedAliasCount: learnedAliases.length,
+    guidance: promptGuidance
+  });
+  if (!request) {
+    status.textContent = "Not enough usage yet. Fill some forms and review some suggested facts first.";
+    return;
+  }
+  status.textContent = "Asking the on-device model...";
+  let session;
+  try {
+    session = await createPromptSession();
+    const text = await session.prompt(request, { responseConstraint: SUGGESTION_SCHEMA });
+    const suggestions = parseGuidanceSuggestions(text, { vaultValues: userContextVault.map((v) => v.value) });
+    status.textContent = suggestions.length ? "Review each suggestion. Nothing changes until you accept." : "The model returned no usable suggestions.";
+    for (const sug of suggestions) {
+      const row = document.createElement("div");
+      row.className = "item-card";
+      const label = document.createElement("div");
+      label.style.cssText = "font-size:11px; margin-bottom:4px;";
+      label.textContent = `[${sug.promptId}] ${sug.guidance} (${sug.reason})`;
+      const row2 = document.createElement("div");
+      row2.className = "btn-row";
+      const accept = document.createElement("button");
+      accept.className = "btn btn-primary btn-sm";
+      accept.textContent = "Accept";
+      accept.addEventListener("click", async () => {
+        try {
+          await saveGuidance(appendGuidanceLine(promptGuidance, sug.promptId, sug.guidance, { source: "suggestion" }));
+          row.remove();
+        } catch (e) {
+          status.textContent = e.message;
+        }
+      });
+      const dismiss = document.createElement("button");
+      dismiss.className = "btn btn-subtle btn-sm";
+      dismiss.textContent = "Dismiss";
+      dismiss.addEventListener("click", () => row.remove());
+      row2.append(accept, dismiss);
+      row.append(label, row2);
+      list.append(row);
+    }
+  } catch (err) {
+    status.textContent = `Suggestion failed: ${err.message}`;
+  } finally {
+    session?.destroy?.();
+  }
+}
 
 // ----------------------------------------------------------------------------
 // PHASES 2 & 4: FORM-EXPORT & FORM-EXPORT++
@@ -726,20 +1012,22 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
             .map((v) => `${v.key}: ${v.value}`)
             .join("\n");
 
-          const prompt =
-            `Draft a tailored, first-person response for the form field: "${field.query}".\n` +
-            `TARGET CONTEXT:\n` +
-            `- Role: ${ctx.role || ctx.roleOrTopic || document.title}\n` +
-            `- Company: ${ctx.organization || "this organization"}\n` +
-            `- Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
-            `- Tech Stack: ${(ctx.techStack || ctx.keywords || []).join(", ")}\n\n` +
-            `CANDIDATE FACTS (from your local vault):\n${bioEntry}\n${expEntries}\n` +
-            (portfolioUrl ? `- Portfolio URL: ${portfolioUrl}\n` : "") +
-            (githubUrl ? `- GitHub URL: ${githubUrl}\n` : "") +
-            `\nINSTRUCTIONS:\n` +
-            `- DO NOT repeat the candidate bio word-for-word.\n` +
-            `- Explicitly connect the candidate's experience from CANDIDATE FACTS to ${ctx.organization || "the role"}'s specific tech stack and domain.\n` +
-            `- Output ONLY the final response text (no markdown headers, no placeholders, max 175 words).`;
+          const prompt = getPrompt("fill_answer", {
+            guidance: promptGuidance,
+            vars: {
+              field: field.query,
+              context:
+                `- Role: ${ctx.role || ctx.roleOrTopic || document.title}\n` +
+                `- Company: ${ctx.organization || "this organization"}\n` +
+                `- Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
+                `- Tech Stack: ${(ctx.techStack || ctx.keywords || []).join(", ")}`,
+              facts:
+                `${bioEntry}\n${expEntries}\n` +
+                (portfolioUrl ? `- Portfolio URL: ${portfolioUrl}\n` : "") +
+                (githubUrl ? `- GitHub URL: ${githubUrl}\n` : ""),
+              org: ctx.organization || "the role"
+            }
+          });
 
           let lastLiveUpdate = 0;
           const synthesized = await runObservablePrompt(session, prompt, {
@@ -1196,7 +1484,31 @@ async function renderObserverQueue() {
   });
 }
 
+// Counts approve/discard per category for the guidance suggester. Written by
+// the panel to its own key; the vault and pendingDeltas stay worker-only.
+let deltaFeedbackChain = Promise.resolve();
+function noteDeltaFeedback(deltaIds, decision) {
+  const run = deltaFeedbackChain.then(() => writeDeltaFeedback(deltaIds, decision));
+  deltaFeedbackChain = run.catch(() => {});
+  return run;
+}
+
+async function writeDeltaFeedback(deltaIds, decision) {
+  const { pendingDeltas = [], deltaFeedback = {} } = await chrome.storage.local.get(["pendingDeltas", "deltaFeedback"]);
+  let next = deltaFeedback;
+  for (const d of pendingDeltas) {
+    if (deltaIds.includes(d.deltaId)) next = recordDeltaFeedback(next, d.category, decision);
+  }
+  if (next !== deltaFeedback) await chrome.storage.local.set({ deltaFeedback: next });
+}
+
+async function pendingDeltaIds() {
+  const { pendingDeltas = [] } = await chrome.storage.local.get(["pendingDeltas"]);
+  return pendingDeltas.map((d) => d.deltaId);
+}
+
 async function approveDelta(deltaId) {
+  await noteDeltaFeedback([deltaId], "approved");
   // The worker applies the delta and dedupes the vault; the panel re-renders
   // from storage afterwards.
   await chrome.runtime.sendMessage({ type: "delta:approve", deltaId });
@@ -1205,17 +1517,20 @@ async function approveDelta(deltaId) {
 }
 
 async function discardDelta(deltaId) {
+  await noteDeltaFeedback([deltaId], "discarded");
   await chrome.runtime.sendMessage({ type: "delta:discard", deltaId });
   renderObserverQueue();
 }
 
 document.getElementById("btn-approve-all-deltas").addEventListener("click", async () => {
+  await noteDeltaFeedback(await pendingDeltaIds(), "approved");
   await chrome.runtime.sendMessage({ type: "delta:approveAll" });
   renderVault();
   renderObserverQueue();
 });
 
 document.getElementById("btn-discard-all-deltas").addEventListener("click", async () => {
+  await noteDeltaFeedback(await pendingDeltaIds(), "discarded");
   await chrome.runtime.sendMessage({ type: "delta:discardAll" });
   renderObserverQueue();
 });
@@ -1536,20 +1851,14 @@ document.getElementById("btn-capture-target-context")?.addEventListener("click",
     if (snapshot.extractedText && ("LanguageModel" in self || self.ai?.languageModel)) {
       try {
         const session = await createPromptSession();
-        const promptText = `Analyze this job posting / target page and extract the target context.
-Page Title: "${snapshot.title || ""}"
-URL: "${snapshot.url || ""}"
-Text Content:
-"${snapshot.extractedText.slice(0, 3500)}"
-
-Respond ONLY with a JSON object in this format:
-{
-  "role": "Title of the job, grant, or opportunity (e.g. Senior Software Engineer)",
-  "organization": "Company or organization name (e.g. Acme Robotics)",
-  "keyRequirements": ["requirement 1", "requirement 2"],
-  "techStack": ["tech 1", "tech 2"],
-  "missionSummary": "1-2 sentence overview of what the company/team does and what they need."
-}`;
+        const promptText = getPrompt("target_context", {
+          guidance: promptGuidance,
+          vars: {
+            title: snapshot.title || "",
+            url: snapshot.url || "",
+            text: snapshot.extractedText.slice(0, 3500)
+          }
+        });
         const aiResponse = await session.prompt(promptText);
         session.destroy();
 
@@ -1600,6 +1909,161 @@ Respond ONLY with a JSON object in this format:
   }
 });
 
+// Profile learning pipeline: chunk the text, one fresh session per chunk
+// (token budget), constrained JSON output, then the Review & Merge Queue.
+async function learnFactsFromText(text, title, url, { onProgress, maxChunks = MAX_CHUNKS_PER_PAGE } = {}) {
+  const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
+  const existingKeys = userContextVault.map((v) => v.key).filter(Boolean);
+  const signal = Telemetry.activeAbortController?.signal;
+  const t0 = performance.now();
+  const { facts, chunkCount, skippedChunks } = await extractFactsFromText(
+    text,
+    async (prompt) => {
+      const session = await createPromptSession();
+      try {
+        return await runObservablePrompt(session, prompt, {
+          label: "Extract Profile Facts",
+          signal,
+          responseConstraint: PROFILE_FACTS_SCHEMA
+        });
+      } finally {
+        session.destroy();
+      }
+    },
+    { existingKeys, guidance: promptGuidance, signal, onProgress, maxChunks }
+  );
+  Telemetry.logTrace({
+    type: "SCAN",
+    title: "Profile Fact Extraction",
+    durationMs: Math.round(performance.now() - t0),
+    details: { url, chunks: chunkCount, skippedChunks, facts: facts.length }
+  });
+  await queueVerifiedDeltas(facts, title, url);
+  return { count: facts.length, chunks: chunkCount, skipped: skippedChunks };
+}
+
+// --- Learn from my sources ---------------------------------------------------
+async function getProfileSources() {
+  const { profileSources = [] } = await chrome.storage.local.get(["profileSources"]);
+  return profileSources;
+}
+
+async function renderProfileSources() {
+  const list = document.getElementById("source-list");
+  if (!list) return;
+  const sources = await getProfileSources();
+  list.textContent = "";
+  for (const url of sources) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex; justify-content:space-between; gap:6px; margin-bottom:3px;";
+    const label = document.createElement("span");
+    label.textContent = url;
+    label.style.cssText = "overflow:hidden; text-overflow:ellipsis; white-space:nowrap;";
+    const rm = document.createElement("button");
+    rm.className = "btn btn-danger";
+    rm.textContent = "Remove";
+    rm.style.cssText = "width:auto; padding:1px 8px; font-size:10px; margin:0;";
+    rm.addEventListener("click", async () => {
+      await chrome.storage.local.set({ profileSources: (await getProfileSources()).filter((u) => u !== url) });
+      renderProfileSources();
+    });
+    row.append(label, rm);
+    list.append(row);
+  }
+}
+
+document.getElementById("btn-add-source")?.addEventListener("click", async () => {
+  const input = document.getElementById("source-url-input");
+  const progress = document.getElementById("source-progress");
+  let url;
+  try {
+    url = new URL(input.value.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("scheme");
+  } catch {
+    progress.textContent = "Enter a full http(s) URL.";
+    return;
+  }
+  const sources = await getProfileSources();
+  if (!sources.includes(url.href)) await chrome.storage.local.set({ profileSources: [...sources, url.href] });
+  input.value = "";
+  progress.textContent = "";
+  renderProfileSources();
+});
+
+document.getElementById("source-file-input")?.addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  const progress = document.getElementById("source-progress");
+  if (!file) return;
+  if (/\.pdf$/i.test(file.name)) {
+    progress.textContent = "PDF files are not supported. Open the PDF, copy its text and paste it into the text box.";
+    e.target.value = "";
+    return;
+  }
+  const raw = await file.text();
+  const text = /\.html?$/i.test(file.name) ? htmlToText(raw) : raw;
+  const box = document.getElementById("source-pasted-text");
+  box.value = box.value ? `${box.value}\n\n${text}` : text;
+  progress.textContent = `Loaded ${file.name} (${text.length} characters).`;
+  e.target.value = "";
+});
+
+async function fetchSourcePage(url) {
+  const res = await chrome.runtime.sendMessage({ type: "source:fetch", url });
+  if (!res || res.error) throw new Error(res?.error || "No response from service worker");
+  return res;
+}
+
+document.getElementById("btn-learn-sources")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-learn-sources");
+  const progress = document.getElementById("source-progress");
+  if (!("LanguageModel" in self || self.ai?.languageModel)) {
+    progress.textContent = "On-device AI is not available.";
+    return;
+  }
+  btn.disabled = true;
+  let total = 0;
+  const failures = [];
+  try {
+    const pages = [];
+    const pasted = document.getElementById("source-pasted-text").value.trim();
+    if (pasted) pages.push({ title: "Pasted resume/bio", url: "", text: pasted });
+    const follow = document.getElementById("chk-follow-links")?.checked;
+    const fetched = await collectSourcePages(
+      await getProfileSources(),
+      (url) => {
+        progress.textContent = `Fetching ${url}...`;
+        return fetchSourcePage(url);
+      },
+      { follow }
+    );
+    pages.push(...fetched.pages);
+    failures.push(...fetched.failures);
+    let chunksLeft = MAX_CHUNKS_PER_RUN;
+    let skipped = 0;
+    for (let i = 0; i < pages.length; i++) {
+      const p = pages[i];
+      const r = await learnFactsFromText(p.text, p.title, p.url, {
+        maxChunks: Math.min(MAX_CHUNKS_PER_PAGE, chunksLeft),
+        onProgress: (n, of) => {
+          progress.textContent = `Source ${i + 1}/${pages.length}: chunk ${n}/${of} (run cap ${MAX_CHUNKS_PER_RUN} chunks)`;
+        }
+      });
+      total += r.count;
+      skipped += r.skipped;
+      chunksLeft -= r.chunks;
+    }
+    renderObserverQueue();
+    progress.textContent =
+      `Queued ${total} candidate facts from ${pages.length} source(s) for review.` +
+      (skipped ? ` Skipped ${skipped} chunk(s) over the cap (${MAX_CHUNKS_PER_PAGE} per page, ${MAX_CHUNKS_PER_RUN} per run).` : "") +
+      (failures.length ? ` Failed: ${failures.join("; ")}` : "");
+  } catch (err) {
+    progress.textContent = `Learning stopped: ${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // Action 2: Extract My Profile Facts (Permanent User Identity -> Review & Merge Queue)
 document.getElementById("btn-snapshot-user-facts")?.addEventListener("click", async () => {
   const btn = document.getElementById("btn-snapshot-user-facts");
@@ -1627,23 +2091,7 @@ document.getElementById("btn-snapshot-user-facts")?.addEventListener("click", as
     // Extract user profile facts via on-device LanguageModel strictly for personal portfolio/resume
     if (snapshot.extractedText && ("LanguageModel" in self || self.ai?.languageModel)) {
       try {
-        const session = await createPromptSession();
-        const promptText = `Extract 1-3 personal profile facts about the user/author (such as full name, email, phone number, location, GitHub URL, portfolio, or current employer) from this portfolio or resume text. Text: "${snapshot.extractedText.slice(0, 2000)}". Respond ONLY with a JSON array of objects with "key", "proposedValue", "category".`;
-        const aiResponse = await runObservablePrompt(session, promptText, {
-          label: "Extract Profile Facts",
-          signal: Telemetry.activeAbortController?.signal
-        });
-        session.destroy();
-
-        try {
-          const match = aiResponse.match(/\[[\s\S]*\]/);
-          if (match) {
-            const parsedFacts = JSON.parse(match[0]);
-            await queueVerifiedDeltas(parsedFacts, snapshot.title || "portfolio/resume", snapshot.url || "");
-          }
-        } catch (parseErr) {
-          console.warn("AI fact parse notice:", parseErr);
-        }
+        await learnFactsFromText(snapshot.extractedText, snapshot.title || "portfolio/resume", snapshot.url || "");
       } catch (aiErr) {
         console.warn("LanguageModel snapshot extraction error:", aiErr);
       }
@@ -1678,6 +2126,7 @@ async function init() {
   renderVault();
   renderObserverQueue();
   renderSessionContext();
+  renderProfileSources();
   renderObserverDomainToggle();
 }
 init();
