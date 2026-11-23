@@ -72,8 +72,16 @@ function LedgerProblem({ problem }: { problem?: string }) {
   if (!problem) return null;
   if (problem.length <= PROBLEM_PREVIEW_LENGTH) return <p>{problem}</p>;
   return (
-    <details className="ledger-card-problem">
-      <summary>{problem.slice(0, PROBLEM_PREVIEW_LENGTH).trimEnd()}…</summary>
+    // Expanding is not a card action: keep clicks and keys from reaching the card handlers.
+    <details
+      className="ledger-card-problem"
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <summary>
+        <span className="ledger-chevron" aria-hidden="true" />
+        <span>{problem.slice(0, PROBLEM_PREVIEW_LENGTH).trimEnd()}…</span>
+      </summary>
       <p>{problem}</p>
     </details>
   );
