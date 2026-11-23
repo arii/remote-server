@@ -46,6 +46,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 from backend.shared import cli
 
@@ -58,6 +59,7 @@ from backend.shared.s5tools import (  # noqa: E402,F401
     CHECK_OUTPUT_LIMIT,
     CHECK_PREFIXES,
     CHECK_TIMEOUT,
+    FRONTEND_VITEST_PREFIX,
     TEST_FILE_RE,
     active_checkout_path,
     allowed_commands_text,
@@ -540,7 +542,98 @@ def _inject_replanner_skills():
         return ""
 
 
-def build_check_tool(worktree, written_files=None, repo=None):
+def targeted_checks(worktree, files, repo):
+    if repo != "arii/remote-server":
+        return []
+    root = Path(worktree)
+    tests = set()
+
+    def existing(path):
+        try:
+            return Path(active_checkout_path(worktree, str(path))).is_file()
+        except ValueError:
+            return False
+
+    for name in sorted(files):
+        path = Path(name)
+        parts = path.parts
+        if not parts or path.is_absolute() or ".." in parts:
+            continue
+        if parts[0] == "frontend" and path.suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            if re.search(r"\.(?:test|spec)\.", path.name):
+                tests.add(path)
+            else:
+                directory = root / path.parent
+                for kind in ("test", "spec"):
+                    tests.update(
+                        p.relative_to(root)
+                        for p in directory.glob(f"{path.stem}.{kind}.*")
+                    )
+        elif path.suffix == ".py":
+            if TEST_FILE_RE.fullmatch(path.as_posix()):
+                tests.add(path)
+            elif parts[0] in {"backend", "deep-agent", "scripts"}:
+                test_dir = Path("backend/tests" if parts[0] == "backend" else "tests")
+                for stem in (path.stem, *reversed(parts[1:-1])):
+                    candidate = test_dir / f"test_{stem}.py"
+                    if existing(candidate):
+                        tests.add(candidate)
+                        break
+                else:
+                    if parts[0] == "backend":
+                        module = re.escape(".".join(path.with_suffix("").parts))
+                        imports = re.compile(
+                            rf"(?m)^\s*(?:from {module} import |import {module}\b)"
+                        )
+                        for candidate in sorted((root / test_dir).glob("test_*.py")):
+                            relative = candidate.relative_to(root)
+                            if existing(relative):
+                                try:
+                                    if imports.search(
+                                        candidate.read_text(encoding="utf-8")
+                                    ):
+                                        tests.add(relative)
+                                except (OSError, UnicodeError):
+                                    continue
+
+    commands = []
+    for path in sorted(tests):
+        if not existing(path):
+            continue
+        if path.parts[0] == "frontend":
+            command = " ".join(
+                (*FRONTEND_VITEST_PREFIX, str(path.relative_to("frontend")))
+            )
+        else:
+            command = "python3 -m unittest " + ".".join(path.with_suffix("").parts)
+        if check_allowed(command.split(), repo):
+            commands.append(command)
+    return commands[:8]
+
+
+def check_hints(worktree, files, repo):
+    commands = targeted_checks(worktree, files, repo)
+    return (
+        "\n".join(["Targeted run_check commands for this change:", *commands])
+        if commands
+        else ""
+    )
+
+
+def missing_check_target(returncode, output):
+    return returncode == 127 or (
+        returncode != 0
+        and re.search(
+            r"(?m)Command [\"'][^\"'\n]+[\"'] not found|"
+            r"^ERROR: (?:file or directory not found|not found):|"
+            r"^ERROR: .* \(unittest\.loader\._FailedTest\)|"
+            r"^No test (?:files|suite) found\b",
+            output,
+        )
+    )
+
+
+def build_check_tool(worktree, written_files=None, repo=None, *, planned_files=()):
     """run_check tool: allowlisted verification commands in worktree."""
     from langchain_core.tools import tool  # noqa: E402
 
@@ -550,6 +643,16 @@ def build_check_tool(worktree, written_files=None, repo=None):
     # different command or a success with new output resets it, and
     # so does an actual edit observed through written_files.
     spin = {"last": None, "streak": 0, "last_out": None, "edits": 0}
+
+    def recovery(result):
+        if repo != "arii/remote-server":
+            return result
+        hints = check_hints(
+            worktree, set(planned_files) | set(written_files or ()), repo
+        )
+        if not hints:
+            hints = "Use an existing test module or test file; do not retry the same command."
+        return f"{result}\n\n{hints}"
 
     @tool
     def run_check(command: str) -> str:
@@ -562,7 +665,7 @@ def build_check_tool(worktree, written_files=None, repo=None):
         try:
             argv = parse_check_command(command, repo)
         except ValueError as exc:
-            return f"REJECTED: bad command line: {exc}"
+            return recovery(f"REJECTED: bad command line: {exc}")
         import subprocess  # noqa: E402
 
         try:
@@ -578,11 +681,12 @@ def build_check_tool(worktree, written_files=None, repo=None):
                 )
         except subprocess.TimeoutExpired:
             return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
+        except FileNotFoundError as exc:
+            return recovery(f"exec failed: {exc}")
         except OSError as exc:
             return f"exec failed: {exc}"
-        out = _truncate_tool_output(
-            (proc.stdout or "") + (proc.stderr or ""), limit=CHECK_OUTPUT_LIMIT
-        )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        out = _truncate_tool_output(output, limit=CHECK_OUTPUT_LIMIT)
         result = f"exit={proc.returncode}\n{out}"
         empty_success = proc.returncode == 0 and not out.strip()
         if written_files is None:
@@ -616,7 +720,11 @@ def build_check_tool(worktree, written_files=None, repo=None):
             else:
                 notice = DITHER_NOTICE
             result += "\n" + notice.format(streak=spin["streak"])
-        return result
+        return (
+            recovery(result)
+            if missing_check_target(proc.returncode, output)
+            else result
+        )
 
     run_check.description = run_check.description.format(allowed=allowed)
     return run_check
@@ -916,7 +1024,7 @@ class WriteTracker(set):
         self.mutations = 0
 
 
-def worktree_file_middleware(worktree, written_files, read_cache=None):
+def worktree_file_middleware(worktree, written_files, read_cache=None, *, repo=None):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
 
@@ -978,11 +1086,19 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
                     read_cache.invalidate(rel)
                     unchanged_reads.pop(rel, None)
             if written_files is not None and target_file:
-                written_files.add(call["args"].get("file_path", target_file))
+                path = call["args"].get("file_path", target_file)
+                first_write = path not in written_files
+                written_files.add(path)
                 try:
                     written_files.mutations += 1
                 except AttributeError:
                     pass
+                if first_write and isinstance(result.content, str):
+                    hints = check_hints(worktree, [path], repo)
+                    if hints:
+                        result = result.model_copy(
+                            update={"content": f"{result.content}\n\n{hints}"}
+                        )
 
         # Check ReadCache on read_file
         if (
@@ -1423,6 +1539,7 @@ def build_agent(
     thread_floor=0,
     call_cap=None,
     first_edit=None,
+    planned_files=(),
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
@@ -1464,7 +1581,7 @@ def build_agent(
                 "grep",
             ],
         ),
-        worktree_file_middleware(worktree, written_files),
+        worktree_file_middleware(worktree, written_files, repo=repo),
     ]
     if written_files is not None:
         middleware.append(implementation_tool_middleware(written_files, first_edit))
@@ -1492,8 +1609,11 @@ def build_agent(
         import observe  # noqa: E402
 
         middleware = observe.trace_middleware(recorder) + middleware
+    planned_files = set(planned_files) | set(first_edit or ())
     if tools is None:
-        default_tools = [build_check_tool(worktree, written_files, repo)]
+        default_tools = [
+            build_check_tool(worktree, written_files, repo, planned_files=planned_files)
+        ]
     else:
         default_tools = list(tools)
     if not planning:
@@ -1502,6 +1622,9 @@ def build_agent(
         )
     if first_edit is not None:
         default_tools.append(build_replace_lines_tool(backend, first_edit))
+    hints = check_hints(worktree, planned_files | set(written_files or ()), repo)
+    if hints:
+        system += "\n\n" + hints
     return create_deep_agent(
         model=model,
         tools=default_tools,
@@ -2228,6 +2351,7 @@ def _run_coder_attempt(
             thread_floor=thread_floor,
             call_cap=call_cap,
             first_edit=first_edit,
+            planned_files=repair_files,
         )
         config = {"configurable": {"thread_id": thread}}
 

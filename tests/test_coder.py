@@ -13,6 +13,7 @@ import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import coder
@@ -758,6 +759,76 @@ class TestUnchangedInspectionDither(unittest.TestCase):
                 for _ in range(4):
                     f.write(json.dumps(_check_call_event(self.CMD, 0, "1 file")) + "\n")
             self.assertFalse(coder.trace_has_dither(path))
+
+
+class TestTargetedChecks(unittest.TestCase):
+    def test_recovers_with_existing_planned_and_written_tests(self):
+        _install_fake_langchain(self)
+        with tempfile.TemporaryDirectory() as worktree:
+            root = Path(worktree)
+            for name, contents in {
+                "backend/tests/test_repair.py": "from backend.repair_worker import repair",
+                "frontend/src/View.test.tsx": "",
+            }.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(contents, encoding="utf-8")
+            written = set()
+            run_check = coder.build_check_tool(
+                worktree,
+                written,
+                "arii/remote-server",
+                planned_files=[
+                    "backend/repair_worker.py",
+                    "backend/tests/test_missing.py",
+                ],
+            )
+            planned = "python3 -m unittest backend.tests.test_repair"
+            frontend = "pnpm --filter frontend exec vitest run src/View.test.tsx"
+            rejected = run_check("npx tsc")
+            self.assertIn("REJECTED", rejected)
+            self.assertIn(planned, rejected)
+            self.assertNotIn("test_missing", rejected)
+            self.assertNotIn(frontend, rejected)
+            written.add("frontend/src/View.tsx")
+            for command, code, output in (
+                ("pnpm test", 127, "sh: command not found"),
+                ("pnpm exec vitest", 254, 'Command "vitest" not found'),
+                (
+                    planned + ".RepairTest.test_abort_after_ex",
+                    1,
+                    "ERROR: test_abort_after_ex (unittest.loader._FailedTest)\n"
+                    "AttributeError: type object 'RepairTest' has no attribute 'test_abort_after_ex'",
+                ),
+                (frontend, 1, "No test files found, exiting with code 1"),
+                (
+                    "pytest backend/tests/missing.py",
+                    4,
+                    "ERROR: file or directory not found: missing.py",
+                ),
+            ):
+                with (
+                    self.subTest(command=command),
+                    mock.patch(
+                        "subprocess.run",
+                        return_value=subprocess.CompletedProcess(
+                            command, code, "", output
+                        ),
+                    ),
+                ):
+                    result = run_check(command)
+                    self.assertIn(f"exit={code}", result)
+                    self.assertIn(planned, result)
+                    self.assertIn(frontend, result)
+            with mock.patch("subprocess.run", side_effect=FileNotFoundError("pnpm")):
+                self.assertIn(frontend, run_check(frontend))
+            with mock.patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    planned, 1, "", "AssertionError: real failure"
+                ),
+            ):
+                self.assertNotIn(frontend, run_check(planned))
 
 
 class TestUnchangedInspectionNotice(unittest.TestCase):

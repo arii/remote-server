@@ -56,7 +56,9 @@ CHECK_PREFIXES = (
 # repo; every other repo, and an unknown or missing repo, keeps CHECK_PREFIXES
 # unchanged (fail closed). Extra prefixes go through the same argument
 # grammar as the defaults.
+FRONTEND_VITEST_PREFIX = ("pnpm", "--filter", "frontend", "exec", "vitest", "run")
 REPO_CHECK_PREFIXES = {
+    "arii/remote-server": (FRONTEND_VITEST_PREFIX,),
     "arii/portfolio": (
         ("pnpm", "run", "test"),
         ("pnpm", "run", "build"),
@@ -274,6 +276,16 @@ def _check_args_safe(prefix, args):
             _VITEST_FLAGS,
             value_flags={"-t": lambda v: bool(_SAFE_VALUE_RE.fullmatch(v))},
         )
+    if prefix == FRONTEND_VITEST_PREFIX:
+        return (
+            len(args) == 1
+            and _safe_positional(args[0])
+            and bool(
+                re.fullmatch(
+                    r"(?:[\w.-]+/)*[\w.-]+\.(?:test|spec)\.[cm]?[jt]sx?", args[0]
+                )
+            )
+        )
     if prefix == ("go", "test"):
         return _args_with_flags(
             list(args),
@@ -298,10 +310,15 @@ def allowed_commands_text(repo=None):
 def verification_guidance(repo=None):
     heads = ", ".join(" ".join(p) for p in check_prefixes(repo))
     extra = ""
-    if repo in REPO_CHECK_PREFIXES:
+    if repo == "arii/portfolio":
         extra = (
             f"This repo ({repo}) is not Python-first: use its own pnpm scripts "
             "from the allowed heads instead of pytest/unittest. "
+        )
+    if repo == "arii/remote-server":
+        extra = (
+            f"For a frontend test use {' '.join(FRONTEND_VITEST_PREFIX)} "
+            "<path relative to frontend>, not root pnpm exec vitest. "
         )
     return (
         "Verification policy for run_check (overrides commands suggested in the issue):\n"
@@ -361,6 +378,8 @@ def verification_env(checkout):
             **check_env(checkout),
             "DEEP_AGENT_STATE_DIR": state,
             "EVAL_LEDGER": os.path.join(state, "ledger.jsonl"),
+            "BUTTONS_JOBS_RUNS_PATH": os.path.join(state, "jobs_runs.json"),
+            "BUTTONS_JOBS_SCHEDULE_PATH": os.path.join(state, "jobs_schedules.json"),
         }
         cur_bin = os.path.dirname(sys.executable)
         path = env.get("PATH", "")

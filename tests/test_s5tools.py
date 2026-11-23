@@ -1034,6 +1034,31 @@ class TestRepoVerifyProfiles(unittest.TestCase):
             argv = s5tools.parse_check_command(cmd, "arii/portfolio")
             self.assertTrue(s5tools.check_allowed(argv, "arii/portfolio"), cmd)
 
+    def test_remote_server_only_allows_fixed_filtered_vitest_file(self):
+        repo = "arii/remote-server"
+        prefix = "pnpm --filter frontend exec vitest run"
+        command = prefix + " src/views/NowView.test.tsx"
+        self.assertEqual(s5tools.parse_check_command(command, repo), command.split())
+        self.assertIn(prefix, s5tools.verification_guidance(repo))
+        for invalid, profile in (
+            (command, None),
+            (command, "arii/portfolio"),
+            (command.replace("frontend", "other"), repo),
+            (command.replace("vitest", "tsc"), repo),
+            (prefix, repo),
+            (prefix + " ../outside.test.ts", repo),
+            (prefix + " --config=evil.test.ts", repo),
+            (command + " --passWithNoTests", repo),
+        ):
+            with self.assertRaises(ValueError, msg=(invalid, profile)):
+                s5tools.parse_check_command(invalid, profile)
+
+    def test_verification_isolates_live_jobs_state(self):
+        with s5tools.verification_env(".") as env:
+            for key in ("BUTTONS_JOBS_RUNS_PATH", "BUTTONS_JOBS_SCHEDULE_PATH"):
+                self.assertEqual(os.path.dirname(env[key]), env["DEEP_AGENT_STATE_DIR"])
+                self.assertFalse(os.path.exists(env[key]))
+
     def test_defaults_unchanged_without_or_for_other_repo(self):
         for repo in (None, "", "arii/remote-server", "arii/unknown", 7):
             for cmd in self.SCRIPTS:
