@@ -36,6 +36,7 @@ plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 
 import argparse
 import contextvars
+import difflib
 import hashlib
 import json
 import os
@@ -71,7 +72,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CODER_DB = os.path.join(HERE, ".coder_threads", "coder.db")
 
 DEFAULT_TIMEOUT = 1800
-MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete"})
+EXISTING_FILE_EDITS = frozenset({"edit_file", "replace_lines"})
+MUTATING_TOOLS = EXISTING_FILE_EDITS | {"write_file", "delete"}
 DEFAULT_VERIFY_ROUNDS = 2
 REPAIR_TOOL_LIMIT = 20
 NEXT_OFFSET_RE = re.compile(r"\bnext offset (\d+)")
@@ -670,12 +672,9 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
     @wrap_tool_call
     def guard_file_call(request, handler):
         call = request.tool_call
-        if call["name"] in {
+        if call["name"] in MUTATING_TOOLS | {
             "ls",
             "read_file",
-            "write_file",
-            "edit_file",
-            "delete",
             "glob",
             "grep",
         }:
@@ -716,7 +715,7 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
 
         # Invalidate read cache on file mutations
         if (
-            call["name"] in {"write_file", "edit_file", "delete"}
+            call["name"] in MUTATING_TOOLS
             and getattr(result, "status", None) == "success"
         ):
             target_file = call["args"].get("file_path") or call["args"].get("path")
@@ -788,6 +787,42 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
     return guard_file_call
 
 
+def edit_source(backend, file_path):
+    result = backend.download_files([file_path])[0]
+    if result.content is None:
+        return None
+    try:
+        return result.content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def closest_edit_region(source, old_string):
+    lines = source.splitlines()
+    wanted = old_string.splitlines()
+    width = min(len(lines), len(wanted), 24)
+    if not width:
+        return ""
+
+    def sample(region):
+        return "\n".join(line[:120] for line in region)
+
+    matcher = difflib.SequenceMatcher(None, "", sample(wanted[:width]), autojunk=False)
+    best_start, best_score = 0, -1
+    for start in range(len(lines) - width + 1):
+        matcher.set_seq1(sample(lines[start : start + width]))
+        if matcher.quick_ratio() <= best_score:
+            continue
+        score = matcher.ratio()
+        if score > best_score:
+            best_start, best_score = start, score
+            if score == 1:
+                break
+    return "\n".join(
+        f"{i + 1} | {lines[i]}" for i in range(best_start, best_start + width)
+    )
+
+
 def build_edit_tool(backend):
     from langchain_core.tools import ToolException, tool
 
@@ -800,6 +835,17 @@ def build_edit_tool(backend):
             )
         result = backend.edit(file_path, old_string, new_string)
         if result.error:
+            if result.error.startswith("Error: String not found in file:"):
+                source = edit_source(backend, file_path)
+                region = closest_edit_region(source, old_string) if source else ""
+                message = (
+                    f"No exact match in {file_path}. Do not resend the same arguments. "
+                    "Copy a smaller block from the file (exclude line-number prefixes) "
+                    "to match exactly once, or use replace_lines on the planned file."
+                )
+                if region:
+                    message += "\nClosest region:\n" + region
+                raise ToolException(message)
             raise ToolException(
                 f"{result.error} Copy one exact block from the file, including "
                 "enough surrounding text to match exactly once."
@@ -808,6 +854,47 @@ def build_edit_tool(backend):
 
     edit_file.handle_tool_error = True
     return edit_file
+
+
+def build_replace_lines_tool(backend, planned_files):
+    from langchain_core.tools import ToolException, tool
+
+    @tool
+    def replace_lines(
+        file_path: str, start_line: int, end_line: int, new_text: str
+    ) -> str:
+        """Replace whole lines in a planned file, using 1-based inclusive line numbers.
+
+        Use the latest read or closest region to choose the range. Pass empty
+        new_text to delete the range; surrounding lines stay separate.
+        """
+        if planned_files.get(os.path.normpath(file_path)) is not True:
+            raise ToolException("replace_lines requires a planned existing file.")
+        source = edit_source(backend, file_path)
+        if source is None:
+            raise ToolException(f"Cannot read {file_path} as UTF-8.")
+        lines = source.splitlines(keepends=True)
+        if not 1 <= start_line <= end_line <= len(lines):
+            raise ToolException(
+                f"Invalid range: expected 1 <= start_line <= end_line <= {len(lines)}."
+            )
+        ending = re.search(r"(\r\n|\r|\n)$", lines[end_line - 1])
+        newline = ending[0] if ending else "\n"
+        replacement = re.sub(r"\r\n|\r|\n", lambda _: newline, new_text)
+        if replacement and ending and not replacement.endswith(newline):
+            replacement += newline
+        updated = (
+            "".join(lines[: start_line - 1]) + replacement + "".join(lines[end_line:])
+        )
+        if updated == source:
+            raise ToolException("Replacement would not change the file.")
+        result = backend.upload_files([(file_path, updated.encode("utf-8"))])[0]
+        if result.error:
+            raise ToolException(f"Cannot replace lines in {file_path}: {result.error}")
+        return f"Replaced lines {start_line}–{end_line} in {file_path}."
+
+    replace_lines.handle_tool_error = True
+    return replace_lines
 
 
 def implementation_tool_middleware(written_files=None, first_edit=None):
@@ -821,7 +908,9 @@ def implementation_tool_middleware(written_files=None, first_edit=None):
         if unread:
             return {"read_file"}
         return {
-            "edit_file" if exists else "write_file" for exists in first_edit.values()
+            name
+            for exists in first_edit.values()
+            for name in (EXISTING_FILE_EDITS if exists else {"write_file"})
         }
 
     def grounded_request(request):
@@ -861,17 +950,17 @@ def implementation_tool_middleware(written_files=None, first_edit=None):
                     permitted = (
                         name == "read_file" and path in unread
                         if unread
-                        else name in first_edit_tools()
-                        and path in first_edit
-                        and name == ("edit_file" if first_edit[path] else "write_file")
+                        else path in first_edit
+                        and name
+                        in (EXISTING_FILE_EDITS if first_edit[path] else {"write_file"})
                     )
                     if not permitted:
                         action = (
                             "Read each planned file once with read_file: "
                             + ", ".join(sorted(unread))
                             if unread
-                            else "Make the first planned edit now with edit_file for "
-                            "existing files or write_file for new files: "
+                            else "Make the first planned edit now with edit_file or "
+                            "replace_lines for existing files, or write_file for new files: "
                             + ", ".join(first_edit)
                         )
                         return ToolMessage(
@@ -975,6 +1064,11 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
                         "Use the earlier result, fix the code, or finish with the blocker."
                     )
                     if key in earlier:
+                        if (
+                            first_edit_writes is not None
+                            and call["name"] == "edit_file"
+                        ):
+                            content += "\nFor a planned existing file, use replace_lines instead."
                         content += "\nEarlier result:\n" + earlier[key]
                     return ToolMessage(
                         content=content,
@@ -1087,6 +1181,7 @@ def build_agent(
         default_tools = list(tools)
     if first_edit is not None:
         default_tools.append(build_edit_tool(backend))
+        default_tools.append(build_replace_lines_tool(backend, first_edit))
     return create_deep_agent(
         model=model,
         tools=default_tools,
@@ -1792,7 +1887,8 @@ def _run_coder_attempt(
             brief = (
                 "First edit: read each existing file below once, then immediately "
                 "apply one change with edit_file (one exact old_string/new_string "
-                "replacement) or write_file (new file). Do not discover other "
+                "replacement), replace_lines (whole lines, 1-based inclusive) "
+                "or write_file (new file). Do not discover other "
                 "files before the first edit. If you cannot safely edit, report "
                 "the blocker.\n" + targets + "\n\n" + brief
             )
