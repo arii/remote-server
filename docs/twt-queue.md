@@ -264,7 +264,12 @@ row from another source with status `Act` newer than `ledger_stale_hours`
 not marked completed, so the next run checks again. Rows from `S5-Queue`, older
 claims, and other statuses do not block. Sheet timestamps are read as UTC and
 the export lags about an hour, so keep the window well above that. If the
-ledger cannot be read, the issue proceeds.
+ledger cannot be read, the check fails closed: the issue is skipped and
+recorded in `ledger_skipped` as `ledger unreadable (<error>)`, and the next
+run checks again. The reader is standard library only, so the service's
+`/usr/bin/python3` can run it; on the S5 host set `GOOGLE_TOKEN_FILE` in
+`~/.config/twt-queue/environment` to the host path of
+`gdocs-access/token.json`, because the default is the container path.
 
 A failed post never fails the run. The row is saved in `status.json`
 `ledger_pending`, retried once at the next boundary (the start of the next

@@ -25,6 +25,13 @@ def setUpModule():
     unittest.enterModuleContext(block_google_docs_requests())
 
 
+def setUpModule():
+    # Supervisor runs post claim rows; without this they reach the live Form.
+    guard = mock.patch.object(ledger_post, "post_entry", return_value=200)
+    guard.start()
+    unittest.addModuleCleanup(guard.stop)
+
+
 class ClaimsPrValidTests(unittest.TestCase):
     def test_valid_pr(self):
         ok, reason = runner.claims_pr_valid(
@@ -1495,7 +1502,7 @@ class LedgerTests(unittest.TestCase):
 
     def foreign(self, status="Act", source="BoomTick", hours=1.0, link=ISSUE_URL):
         stamp = runner.datetime.datetime.fromtimestamp(
-            self.now - hours * 3600, runner.datetime.timezone.utc
+            self.now - hours * 3600, runner.zoneinfo.ZoneInfo(runner.LEDGER_TIMEZONE)
         )
         return {
             "Timestamp": stamp.strftime("%m/%d/%Y %H:%M:%S"),
@@ -1647,14 +1654,49 @@ class LedgerTests(unittest.TestCase):
         self.run_one(self.SUCCESS)
         self.assertTrue(self.posts)
 
-    def test_reader_outage_does_not_block_the_issue(self):
+    def test_reader_outage_fails_closed(self):
         def broken():
-            raise FileNotFoundError("no token")
+            raise ModuleNotFoundError("no google client")
 
-        with mock.patch.object(runner, "ledger_rows", broken):
-            code, _status, _config = self.run_one(self.SUCCESS)
-        self.assertEqual(code, 0)
-        self.assertTrue(self.posts[0][1].startswith("claimed"))
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            with (
+                mock.patch.object(runner, "ledger_rows", broken),
+                mock.patch.object(runner.subprocess, "Popen") as popen,
+            ):
+                self.assertEqual(runner.supervise(config), 0)
+            popen.assert_not_called()
+            saved = runner.read_json(state / "status.json")
+        self.assertEqual(self.posts, [])
+        self.assertIn(
+            "ledger unreadable (ModuleNotFoundError)",
+            saved["ledger_skipped"]["owner/repo#7"],
+        )
+        self.assertNotIn("owner/repo#7", saved["completed"])
+
+    def test_stop_during_ledger_read_does_not_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+
+            def slow_read():
+                (state / "STOP").touch()
+                return []
+
+            with (
+                mock.patch.object(runner, "ledger_rows", slow_read),
+                mock.patch.object(runner.subprocess, "Popen") as popen,
+            ):
+                self.assertEqual(runner.supervise(config), 0)
+            popen.assert_not_called()
+            saved = runner.read_json(state / "status.json")
+        self.assertTrue(saved["stopped"])
+        self.assertEqual(saved["completed"], [])
+
+    def test_ledger_timestamps_are_sheet_local_time(self):
+        now = runner.datetime.datetime(
+            2026, 11, 23, 12, 15, tzinfo=runner.datetime.timezone.utc
+        )
+        self.assertAlmostEqual(runner.ledger_age_hours("11/23/2026 3:15:00", now), 1.0)
 
     def test_post_failure_keeps_run_green_retries_once_then_drops(self):
         self.fail_posts = 3
@@ -2139,6 +2181,7 @@ class StrongRoutingTests(unittest.TestCase):
                 runner.subprocess, "check_output", return_value=json.dumps(payload)
             ),
             mock.patch.object(runner.subprocess, "Popen", side_effect=spawn),
+            mock.patch.object(runner, "ledger_rows", return_value=[]),
             contextlib.redirect_stdout(out),
         ):
             runner.supervise(config)
