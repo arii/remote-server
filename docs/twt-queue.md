@@ -180,6 +180,47 @@ with the existing `--clear-halt` recovery procedure before resuming; a plain ser
 start stays stopped. The usual held/closed issue checks still apply. Do not remove a completed
 entry or delete a run directory by hand to force a retry.
 
+## Slop review gate
+
+Each queue PR gets a hostile slop review (#1552) before it can reach review.
+`scripts/slop_review.py` wraps `Pipeline.stage_submit` in `queue_runner.worker()`,
+without editing `deep-agent/pipeline.py`. After `td agent submit-pr` opens the PR,
+the wrapper diffs `origin/main...HEAD` in the worktree, runs the review with the
+`.agents/skills/hostile-anti-slop-audit/SKILL.md` text read from `S5_CHECKOUT`
+(`arii/skills` stays the source of truth), and always posts one PR comment
+(`gh pr comment --body-file -`, capped at 3000 characters) before returning.
+
+The model is the `audit` stage model chosen by the router (local first, no spec
+override), limited to 2000 output tokens, under the same budget guard and
+`NEBIUS_SPEND_CAP_USD` as the rest of the run. Each model call writes one
+ledger row with script `slop_review.py`. The reply must be the strict verdict
+JSON from `deep-agent/verdicts.py`. `READY` and `APPROVE` pass; `NEEDS-WORK` and
+`BLOCK` fail. The review reports only and never edits the PR.
+
+The diff is wrapped in a per-call random `<diff-TOKEN>` ... `</diff-TOKEN>` marker pair (`secrets.token_hex(16)`), and the prompt tells the model to ignore instructions inside it. A diff that contains the token fails closed with no model call.
+
+Results appear in the PR comment and in the `status` of `pipeline-result.json`
+and `summary.json`:
+
+| Status | Cause |
+| --- | --- |
+| `SLOP_REVIEW_FAILED` | Failing verdict, malformed or missing model output, model or git error, comment not posted, or diff over 40000 characters |
+| `SLOP_REVIEW_CONFIG` | The skill file is missing or empty |
+
+Both fail closed: the wrapper returns a failed submit, so the pipeline result is
+never `APPROVED` and the PR is not handed to review. A diff over the limit is not
+partly reviewed. It fails with detail `diff too large` and makes no model call.
+These statuses are set after the repair loop and do not feed model tier
+escalation.
+
+Ordering with #1578: its `claims_pr_valid` is a deterministic check of the PR
+body and files that is not wired in yet. The two mechanisms share no state and
+both must pass. If #1578 wires its check into the same submit wrapper, it runs
+first because it is free, then the slop review.
+
+Tests use a fake model and fake `gh` (`tests/test_slop_review.py`). A live
+review of a real PR needs Ari.
+
 ## User service
 
 Install `scripts/twt-queue.service` in `~/.config/systemd/user/`. Create a mode-0600

@@ -412,6 +412,18 @@ def worker(job_dir):
             and preflight is not None
         ):
             preflight(stage="coder")
+        from scripts import slop_review
+
+        slop = {}
+        pipeline.Pipeline.stage_submit = slop_review.gated_submit(
+            pipeline.Pipeline.stage_submit,
+            slop,
+            root=slop_review.checkout_root(),
+            gh=["gh"],
+            model_factory=lambda: slop_review.default_model(
+                f"slop-{job['issue']['number']}"
+            ),
+        )
         for stage in ("init", "spec", "code", "audit", "submit", "cleanup"):
             original = getattr(pipeline.Pipeline, "stage_" + stage)
 
@@ -448,7 +460,7 @@ def worker(job_dir):
 
         @functools.wraps(original_run)
         def capture_result(instance):
-            value = original_run(instance)
+            value = slop_review.override_result(original_run(instance), slop)
             result.update(value)
             save("pipeline-result.json", value)
             return value
