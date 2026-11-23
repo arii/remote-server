@@ -82,7 +82,7 @@ class RetryWorktreeTests(unittest.TestCase):
             config = {
                 "runtime_state_dir": root,
                 "runtime_command": [],
-                "pipeline_checkout": str(Path(__file__).resolve().parents[1]),
+                "pipeline_checkout": os.getcwd(),
                 "worker_python": sys.executable,
             }
             runner.archive_retry_worktree(config, Path(root), archive)
