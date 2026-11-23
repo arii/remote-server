@@ -134,6 +134,16 @@ retry. Only one retry can be pending at a time.
 
 Prior reconciled spend, including reservations, reduces the next attempt's budget;
 retry does not grant a fresh $0.50 allowance. Exhausted budgets cannot be retried.
+Initial implementation keeps its 20-model/32-tool limit. If the TwT default
+route exhausts the model limit, the coder makes at most one additional attempt
+with a fresh 20-model/32-tool budget and checkpoint thread, preserving prior
+edits. `CODER_FALLBACK_MODEL` selects its TwT model ID (default
+`nebius/zai-org/GLM-5.3-Flash`); an empty value disables fallback. The explicit
+model is sent without stage-specific provider maps, so it does not route back
+through the free default waterfall. Both attempts share receipt accounting and
+the remaining issue budget; TwT still enforces its configured $5 daily budget.
+Repair, local-only execution and errors other than initial model-cap exhaustion
+do not trigger this paid attempt.
 The command does not clear STOP, explicit supervisor halts, or saved worker halts.
 If shutdown left STOP, or a supervisor halt remains, explicitly acknowledge it
 with the existing `--clear-halt` recovery procedure before resuming; a plain service

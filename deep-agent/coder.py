@@ -29,6 +29,8 @@ used when the pipeline escalates to model_tier 'strong'; required
 then), CODER_THINK=1
 (Ollama thinking traces), CODER_VERIFY_ROUNDS (verify re-prompts,
 default 2, 0 disables), CODER_PLAN (always|never|unset auto),
+CODER_FALLBACK_MODEL (explicit TwT model after initial default-route model-cap
+exhaustion; defaults to Nebius GLM-5.3-Flash, empty disables),
 plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 """
 
@@ -75,6 +77,7 @@ REPAIR_REPEAT_LIMIT = 3
 REPAIR_MODEL_LIMIT = 12
 INITIAL_MODEL_LIMIT = 20
 INITIAL_TOOL_LIMIT = 32
+DEFAULT_FALLBACK_MODEL = "nebius/zai-org/GLM-5.3-Flash"
 # Middleware adds graph steps beyond the model and tool calls themselves.
 RECURSION_LIMIT = int(
     os.environ.get(
@@ -331,6 +334,20 @@ def build_model(model_override=None):
         spec = dict(spec, model=model_override)
     think = os.environ.get("CODER_THINK", "") == "1"
     return model_router.build_chat_model(spec=spec, think=think, stage="coder")
+
+
+def build_fallback_model(model_name):
+    from backend.shared import model_router
+
+    spec = model_router.resolve_llm(prefer="twt")
+    if spec["provider"] != "twt":
+        raise RuntimeError("coder fallback requires TwT; local-only mode forbids it")
+    spec = dict(spec, model=model_name)
+    spec.pop("provider_models", None)
+    spec.pop("provider_reasoning_effort", None)
+    return model_router.build_chat_model(
+        spec=spec, think=os.environ.get("CODER_THINK", "") == "1"
+    )
 
 
 def _default_plan_fn(brief, worktree_root, context):
@@ -1246,6 +1263,60 @@ def run_coder(
     model_tier=None,
     repo=None,
 ):
+    """Code normally, then allow one TwT fallback on initial default-route model exhaustion."""
+    from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
+
+    from backend.shared import model_router
+
+    kwargs = dict(
+        repair_files=repair_files, repair=repair, model_tier=model_tier, repo=repo
+    )
+    try:
+        return _run_coder_attempt(worktree, brief, system, thread, timeout, **kwargs)
+    except ModelCallLimitExceededError as error:
+        spec = getattr(error, "coder_model_spec", {})
+        fallback = os.environ.get(
+            "CODER_FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL
+        ).strip()
+        if (
+            repair
+            or model_router.local_only()
+            or spec.get("provider") != "twt"
+            or spec.get("model") not in ("default", "route:default")
+            or error.thread_limit != INITIAL_MODEL_LIMIT
+            or error.thread_count < INITIAL_MODEL_LIMIT
+            or not fallback
+        ):
+            raise
+        prior_files = error.coder_written_files
+    return _run_coder_attempt(
+        worktree,
+        brief + "\n\nThe default-route attempt exhausted its model budget. "
+        "Its worktree changes are preserved. Inspect them, complete the task, "
+        "and verify before finishing.",
+        system,
+        thread + "-fallback",
+        timeout,
+        fallback_model=fallback,
+        prior_files=prior_files,
+        **kwargs,
+    )
+
+
+def _run_coder_attempt(
+    worktree,
+    brief,
+    system,
+    thread,
+    timeout,
+    *,
+    repair_files=(),
+    repair=False,
+    model_tier=None,
+    repo=None,
+    fallback_model=None,
+    prior_files=(),
+):
     """Invoke the coder with a verify gate.
 
     Returns (summary, usage, calls, started, label, trace, verified,
@@ -1263,13 +1334,19 @@ def run_coder(
 
     started = time.time()
     override = tier_model(model_tier)
+    model, spec = (
+        build_fallback_model(fallback_model)
+        if fallback_model
+        else build_model(override)
+    )
     recorder = observe.TraceRecorder(observe.default_trace_path("coder", thread))
-    model, spec = build_model(override)
     label = f"{spec['provider']}:{spec['model']}"
     marker = " (tier=strong)" if model_tier == "strong" else ""
     print(f"coder via {label}{marker}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label + marker)
     invocation_started = False
+    written_files = WriteTracker()
+    written_files.update(prior_files)
 
     def fail(error, reply=""):
         if not invocation_started:
@@ -1304,7 +1381,6 @@ def run_coder(
 
     try:
         saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
-        written_files = WriteTracker()
         agent = build_agent(
             worktree,
             system,
@@ -1375,6 +1451,8 @@ def run_coder(
         return reply, usage, calls, started, label, recorder.path, verified, rounds
     except BaseException as error:
         fail(error)
+        error.coder_model_spec = {key: spec.get(key) for key in ("provider", "model")}
+        error.coder_written_files = tuple(written_files)
         if isinstance(error, TimeoutError):
             raise RuntimeError(f"coder timed out after {timeout}s") from error
         raise

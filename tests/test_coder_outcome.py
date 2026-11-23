@@ -12,6 +12,7 @@ from unittest import mock
 import coder
 import deep_chat
 import observe
+from backend.shared import ledger, model_router, runs
 from backend.shared.cli import repo_root
 
 try:
@@ -30,6 +31,415 @@ if HAS_DEPS:
     class LocalModel(FakeMessagesListChatModel):
         def bind_tools(self, *args, **kwargs):
             return self
+
+
+@unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+class TestCoderFallback(unittest.TestCase):
+    def cap_error(self, provider="twt", model="default", limit=20):
+        from langchain.agents.middleware.model_call_limit import (
+            ModelCallLimitExceededError,
+        )
+
+        error = ModelCallLimitExceededError(limit, limit, limit, None)
+        error.coder_model_spec = {"provider": provider, "model": model}
+        error.coder_written_files = ("result.txt",)
+        return error
+
+    def test_only_default_route_initial_cap_exhaustion_gets_one_configured_attempt(
+        self,
+    ):
+        for model in ("default", "route:default"):
+            with (
+                self.subTest(model=model),
+                mock.patch.object(
+                    coder,
+                    "_run_coder_attempt",
+                    side_effect=[self.cap_error(model=model), "finished"],
+                ) as attempt,
+                mock.patch.dict(
+                    os.environ,
+                    {"S5_LOCAL_ONLY": "0", "CODER_FALLBACK_MODEL": "nebius/custom"},
+                ),
+            ):
+                self.assertEqual(
+                    coder.run_coder("/repo", "brief", "system", "thread", 5), "finished"
+                )
+                self.assertEqual(attempt.call_count, 2)
+                self.assertEqual(attempt.call_args.args[3], "thread-fallback")
+                self.assertEqual(
+                    attempt.call_args.kwargs["fallback_model"], "nebius/custom"
+                )
+                self.assertEqual(
+                    attempt.call_args.kwargs["prior_files"], ("result.txt",)
+                )
+
+    def test_noneligible_empty_disabled_and_nonbudget_failures_do_not_fallback(self):
+        cases = [
+            (self.cap_error(provider="ollama"), {}, {}),
+            (self.cap_error(model="nebius/explicit"), {}, {}),
+            (self.cap_error(limit=12), {"repair": True}, {}),
+            (self.cap_error(), {}, {"S5_LOCAL_ONLY": "1"}),
+            (self.cap_error(), {}, {"CODER_FALLBACK_MODEL": ""}),
+            (RuntimeError("BLOCKED: repeated unchanged read"), {}, {}),
+            (TimeoutError("timeout"), {}, {}),
+        ]
+        for error, kwargs, overrides in cases:
+            with (
+                self.subTest(
+                    error=str(error), kwargs=kwargs, overrides=tuple(overrides)
+                ),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "S5_LOCAL_ONLY": "0",
+                        "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
+                        **overrides,
+                    },
+                ),
+                mock.patch.object(
+                    coder, "_run_coder_attempt", side_effect=error
+                ) as attempt,
+            ):
+                with self.assertRaises(type(error)) as raised:
+                    coder.run_coder("/repo", "brief", "system", "thread", 5, **kwargs)
+                self.assertIs(raised.exception, error)
+                self.assertEqual(attempt.call_count, 1)
+        for result in ("finished", ""):
+            with mock.patch.object(
+                coder, "_run_coder_attempt", return_value=result
+            ) as attempt:
+                self.assertEqual(
+                    coder.run_coder("/repo", "brief", "system", "thread", 5), result
+                )
+                attempt.assert_called_once()
+
+    def test_paid_failure_is_not_retried(self):
+        error = self.cap_error(model=coder.DEFAULT_FALLBACK_MODEL)
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "S5_LOCAL_ONLY": "0",
+                    "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
+                },
+            ),
+            mock.patch.object(
+                coder, "_run_coder_attempt", side_effect=[self.cap_error(), error]
+            ) as attempt,
+        ):
+            with self.assertRaises(type(error)) as raised:
+                coder.run_coder("/repo", "brief", "system", "thread", 5)
+            self.assertIs(raised.exception, error)
+            self.assertEqual(attempt.call_count, 2)
+
+    def test_fallback_builder_forces_twt_without_free_stage_maps(self):
+        spec = {
+            "provider": "twt",
+            "model": "default",
+            "base_url": "http://twt/v1",
+            "provider_models": {"nvidia": "free"},
+        }
+        with (
+            mock.patch.object(
+                model_router, "resolve_llm", return_value=spec
+            ) as resolve,
+            mock.patch.object(
+                model_router, "build_chat_model", return_value=(None, spec)
+            ) as build,
+        ):
+            coder.build_fallback_model(coder.DEFAULT_FALLBACK_MODEL)
+        resolve.assert_called_once_with(prefer="twt")
+        self.assertNotIn("stage", build.call_args.kwargs)
+        sent = build.call_args.kwargs["spec"]
+        self.assertEqual(sent["provider"], "twt")
+        self.assertEqual(sent["model"], "nebius/zai-org/GLM-5.3-Flash")
+        self.assertNotIn("provider_models", sent)
+        with (
+            mock.patch.object(
+                model_router, "resolve_llm", return_value={"provider": "ollama"}
+            ),
+            mock.patch.object(model_router, "build_chat_model") as build,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "requires TwT"):
+                coder.build_fallback_model(coder.DEFAULT_FALLBACK_MODEL)
+            build.assert_not_called()
+
+    def writing_model(self, prefix):
+        from langchain_core.messages import AIMessage
+
+        return LocalModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {
+                                "file_path": f"{prefix}-{n}.txt",
+                                "content": "done",
+                            },
+                            "id": f"{prefix}-{n}",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+                for n in range(coder.INITIAL_MODEL_LIMIT)
+            ]
+        )
+
+    def test_real_graph_retains_edits_and_verifies_on_a_fresh_paid_thread(self):
+        from langchain_core.messages import AIMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        paid = LocalModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "run_check",
+                            "args": {"command": "python3 -m unittest tests.test_edits"},
+                            "id": "check",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="DONE #1550"),
+            ]
+        )
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.dict(
+                os.environ,
+                {
+                    "S5_LOCAL_ONLY": "0",
+                    "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
+                },
+            ),
+            mock.patch.object(
+                coder,
+                "build_model",
+                return_value=(
+                    self.writing_model("free"),
+                    {"provider": "twt", "model": "route:default"},
+                ),
+            ) as initial,
+            mock.patch.object(
+                coder,
+                "build_fallback_model",
+                return_value=(
+                    paid,
+                    {"provider": "twt", "model": coder.DEFAULT_FALLBACK_MODEL},
+                ),
+            ) as fallback,
+            mock.patch.object(
+                deep_chat,
+                "open_checkpointer",
+                return_value=(InMemorySaver(), False, None),
+            ),
+            mock.patch.object(
+                observe,
+                "default_trace_path",
+                side_effect=lambda _, thread: str(Path(root, thread + ".jsonl")),
+            ),
+            mock.patch.object(coder, "verify_rounds", return_value=1),
+            mock.patch.object(ledger, "record"),
+        ):
+            Path(root, "tests").mkdir()
+            Path(root, "tests/__init__.py").touch()
+            Path(root, "tests/test_edits.py").write_text(
+                "import unittest\nfrom pathlib import Path\n"
+                "class Edits(unittest.TestCase):\n"
+                "    def test_retained(self):\n"
+                "        self.assertEqual(len(list(Path('.').glob('free-*.txt'))), 20)\n"
+            )
+            result = coder.run_coder(root, "implement", "system", "thread", 10)
+            self.assertEqual(result[0], "DONE #1550")
+            self.assertTrue(result[6])
+            self.assertEqual(len(list(Path(root).glob("free-*.txt"))), 20)
+            initial.assert_called_once()
+            fallback.assert_called_once_with(coder.DEFAULT_FALLBACK_MODEL)
+
+    def test_real_paid_graph_has_its_own_20_call_limit(self):
+        from langchain.agents.middleware.model_call_limit import (
+            ModelCallLimitExceededError,
+        )
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.dict(
+                os.environ,
+                {
+                    "S5_LOCAL_ONLY": "0",
+                    "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
+                },
+            ),
+            mock.patch.object(
+                coder,
+                "build_model",
+                return_value=(
+                    self.writing_model("free"),
+                    {"provider": "twt", "model": "default"},
+                ),
+            ),
+            mock.patch.object(
+                coder,
+                "build_fallback_model",
+                return_value=(
+                    self.writing_model("paid"),
+                    {"provider": "twt", "model": coder.DEFAULT_FALLBACK_MODEL},
+                ),
+            ) as fallback,
+            mock.patch.object(
+                deep_chat,
+                "open_checkpointer",
+                return_value=(InMemorySaver(), False, None),
+            ),
+            mock.patch.object(
+                observe,
+                "default_trace_path",
+                side_effect=lambda _, thread: str(Path(root, thread + ".jsonl")),
+            ),
+            mock.patch.object(ledger, "record"),
+        ):
+            with self.assertRaises(ModelCallLimitExceededError) as raised:
+                coder.run_coder(root, "implement", "system", "thread", 10)
+            self.assertEqual(raised.exception.thread_count, 20)
+            self.assertEqual(len(list(Path(root).glob("paid-*.txt"))), 20)
+            fallback.assert_called_once()
+
+    def test_remaining_issue_budget_prevents_paid_dispatch(self):
+        from scripts import queue_runner
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "ledger.jsonl")
+
+            def build(*args, recorder, **kwargs):
+                def invoke(*args, **kwargs):
+                    recorder.model_response(
+                        {
+                            "reported_cost_usd": 0.5,
+                            "input_tokens": 100,
+                            "output_tokens": 20,
+                            "total_tokens": 120,
+                        }
+                    )
+                    raise self.cap_error()
+
+                return SimpleNamespace(invoke=invoke)
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "S5_LOCAL_ONLY": "0",
+                        "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
+                    },
+                ),
+                mock.patch.object(
+                    coder,
+                    "build_model",
+                    return_value=(None, {"provider": "twt", "model": "default"}),
+                ),
+                mock.patch.object(coder, "build_agent", side_effect=build),
+                mock.patch.object(
+                    deep_chat, "open_checkpointer", return_value=(None, False, None)
+                ),
+                mock.patch.object(ledger, "LEDGER", str(path)),
+                mock.patch.object(runs, "LEDGER", str(path)),
+                mock.patch.object(ledger, "state_dir", return_value=root),
+                mock.patch.object(
+                    observe,
+                    "default_trace_path",
+                    side_effect=lambda _, thread: str(Path(root, thread + ".jsonl")),
+                ),
+                mock.patch.object(
+                    model_router, "_remote_spec", model_router._remote_spec
+                ),
+                mock.patch.object(
+                    model_router._BoundedHistory,
+                    "_bounded_kwargs",
+                    model_router._BoundedHistory._bounded_kwargs,
+                ),
+                mock.patch.object(model_router, "build_chat_model") as paid,
+            ):
+                queue_runner.install_budget_guard(0.5, Path(root, "job"), [])
+                with self.assertRaises(queue_runner.BudgetStop):
+                    coder.run_coder(root, "implement", "system", "thread", 5)
+                paid.assert_not_called()
+            self.assertEqual(json.loads(path.read_text())["cost_usd"], 0.5)
+
+    def test_failed_first_attempt_is_ledgered_before_paid_dispatch_and_costs_add(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "ledger.jsonl")
+            attempts = []
+
+            def agent(*args, recorder, written_files, **kwargs):
+                index = len(attempts)
+                attempts.append(index)
+
+                def invoke(*args, **kwargs):
+                    recorder.model_response(
+                        {
+                            "reported_cost_usd": 0.01 if index == 0 else 0.02,
+                            "input_tokens": 100,
+                            "output_tokens": 20,
+                            "total_tokens": 120,
+                        }
+                    )
+                    written_files.add("result.txt")
+                    if index == 0:
+                        raise self.cap_error()
+                    return {"messages": [AIMessage(content="DONE #1550")]}
+
+                return SimpleNamespace(invoke=invoke)
+
+            def paid(model):
+                row = json.loads(path.read_text())
+                self.assertEqual(row["cost_usd"], 0.01)
+                self.assertIn("ModelCallLimitExceededError", row["extra"]["error"])
+                return None, {"provider": "twt", "model": model}
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "S5_LOCAL_ONLY": "0",
+                        "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
+                    },
+                ),
+                mock.patch.object(
+                    coder,
+                    "build_model",
+                    return_value=(None, {"provider": "twt", "model": "default"}),
+                ),
+                mock.patch.object(coder, "build_fallback_model", side_effect=paid),
+                mock.patch.object(coder, "build_agent", side_effect=agent),
+                mock.patch.object(coder, "verify_rounds", return_value=0),
+                mock.patch.object(
+                    deep_chat, "open_checkpointer", return_value=(None, False, None)
+                ),
+                mock.patch.object(ledger, "LEDGER", str(path)),
+                mock.patch.object(
+                    observe,
+                    "default_trace_path",
+                    side_effect=lambda _, thread: str(Path(root, thread + ".jsonl")),
+                ),
+            ):
+                result = coder.run_coder(root, "implement", "system", "thread", 5)
+                ledger.record(
+                    "pipeline.py",
+                    result[4],
+                    "thread",
+                    [],
+                    result[3],
+                    usage=result[1],
+                    calls=result[2],
+                )
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual(len(rows), 2)
+            self.assertAlmostEqual(sum(row["cost_usd"] for row in rows), 0.03)
 
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
