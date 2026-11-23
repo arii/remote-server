@@ -1570,7 +1570,7 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(self.posts[-1][2], "Needs Okay")
         self.assertEqual(self.posts[-1][3], ISSUE_URL)
 
-    def test_budget_exhausted_posts_needs_okay_without_escalation(self):
+    def test_budget_exhausted_posts_needs_okay_and_counts_toward_escalation(self):
         summary = {
             "exit_code": 1,
             "result": {"status": "BUDGET_EXHAUSTED", "detail": "cap"},
@@ -1579,8 +1579,8 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.posts[-1][2], "Needs Okay")
         self.assertIn("Needs Okay: BUDGET_EXHAUSTED, queue run", self.posts[-1][1])
-        self.assertNotIn("BUDGET_EXHAUSTED", runner.COUNTED_STATUSES)
-        self.assertNotIn("owner/repo#7", status.get("tier_failures", {}))
+        self.assertIn("BUDGET_EXHAUSTED", runner.COUNTED_STATUSES)
+        self.assertEqual(status["tier_failures"], {"owner/repo#7": 1})
         self.assertEqual(status["completed"], ["owner/repo#7"])
 
     def test_budget_unsplittable_posts_needs_okay(self):
@@ -1589,7 +1589,7 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(self.posts[-1][2], "Needs Okay")
         self.assertIn("Needs Okay: BUDGET_UNSPLITTABLE, queue run", self.posts[-1][1])
 
-    def test_budget_exhausted_does_not_reset_tier_failures(self):
+    def test_budget_exhausted_bumps_tier_failures(self):
         with tempfile.TemporaryDirectory() as root:
             config, state = self.fixture(root)
             state.mkdir()
@@ -1601,7 +1601,7 @@ class LedgerTests(unittest.TestCase):
             with self.spawn(state, summary):
                 runner.supervise(config)
             status = runner.read_json(state / "status.json")
-        self.assertEqual(status["tier_failures"], {"owner/repo#7": 1})
+        self.assertEqual(status["tier_failures"], {"owner/repo#7": 2})
 
     def test_fresh_foreign_act_claim_skips_the_issue(self):
         self.rows = [self.foreign(hours=1)]
@@ -2131,6 +2131,27 @@ class BudgetReportTests(unittest.TestCase):
         self.assertIn("runs=1 verified=1 calls_per_verified=4.0", out.getvalue())
 
 
+class CapEscalationTests(unittest.TestCase):
+    def test_counts_exhausted_only(self):
+        def summary(status, **extra):
+            return {
+                "exit_code": 1,
+                "halt_queue": False,
+                "result": {"status": status},
+                **extra,
+            }
+
+        self.assertTrue(runner.counts_toward_escalation(summary("BUDGET_EXHAUSTED")))
+        for case in (
+            summary("BUDGET_UNSPLITTABLE"),
+            summary("BUDGET_EXHAUSTED", halt_queue=True),
+            summary("BUDGET_EXHAUSTED", budget_stop=True),
+            summary("PAUSED_BY_USER"),
+            {**summary("BUDGET_EXHAUSTED"), "exit_code": 0},
+        ):
+            self.assertFalse(runner.counts_toward_escalation(case), case)
+
+
 class StrongRoutingTests(unittest.TestCase):
     fixture = RunnerTests.fixture
 
@@ -2222,6 +2243,31 @@ class StrongRoutingTests(unittest.TestCase):
                 self.assertEqual(job["model_tier"], tier)
                 if tier == "strong":
                     self.assertEqual(job["tier_reason"], f"auto-escalation:{failures}")
+
+    def test_capped_run_escalates_to_strong_once_then_stops(self):
+        capped = self.failed("BUDGET_EXHAUSTED")
+        one = {"strong_after_failures": 1}
+        with tempfile.TemporaryDirectory() as root:
+            status, job, _out = self.run_one(root, capped, config_extra=one)
+            self.assertEqual(job["model_tier"], "default")
+            self.assertEqual(status["tier_failures"], {"owner/repo#7": 1})
+        for expected_failures in (2, 3):
+            with tempfile.TemporaryDirectory() as root:
+                seed = {**status, "completed": []}
+                status, job, _out = self.run_one(
+                    root, capped, seed=seed, config_extra=one
+                )
+            self.assertEqual(
+                (job["model_tier"], job["tier_reason"]),
+                ("strong", f"auto-escalation:{expected_failures - 1}"),
+            )
+            self.assertEqual(
+                status["tier_failures"], {"owner/repo#7": expected_failures}
+            )
+        tiers = [a["tier"] for a in status["attempts"]["owner/repo#7"]]
+        self.assertEqual(tiers, ["default", "strong", "strong"])
+        # One supervise pass dispatches one worker: nothing retries by itself.
+        self.assertEqual(status["completed"], ["owner/repo#7"])
 
     def test_threshold_is_configurable_and_validated(self):
         seed = {"completed": [], "tier_failures": {"owner/repo#7": 1}}

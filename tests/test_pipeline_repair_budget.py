@@ -554,6 +554,12 @@ class TestModelTierSelector(unittest.TestCase):
         self.assertEqual(tier, "fast")
         self.assertEqual(used, 1)
 
+    def test_call_cap_escalates_once_then_stays_fast(self):
+        cap = pipeline.CALL_CAP
+        self.assertEqual(pipeline.choose_model_tier(1, cap, 0), ("fast", 0))
+        self.assertEqual(pipeline.choose_model_tier(2, cap, 0), ("strong", 1))
+        self.assertEqual(pipeline.choose_model_tier(3, cap, 1), ("fast", 1))
+
 
 class TestDeterministicPreAuditGate(unittest.TestCase):
     def test_pre_audit_catches_ast_syntax_error_as_mechanical(self):

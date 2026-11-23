@@ -400,7 +400,7 @@ Starting tier is decided per attempt by the supervisor:
 3. Otherwise `default`.
 
 Counted failures are finished runs with a nonzero exit, no halt, no budget stop,
-and result status `BLOCKED_DETERMINISTIC` or `CHANGES_REQUESTED`. Not counted:
+and result status `BLOCKED_DETERMINISTIC`, `CHANGES_REQUESTED` or `BUDGET_EXHAUSTED` (coder call cap). Not counted: `BUDGET_UNSPLITTABLE`,
 `CONFIG_ERROR`, `STRONG_BUDGET_INSUFFICIENT`, `PAUSED_BY_USER`, `RUNNER_ERROR`,
 worker halts, budget or STOP interruptions. A successful run clears the counter;
 uncounted outcomes leave it unchanged. The counter is `status.json`
@@ -436,7 +436,7 @@ The per-turn coder limits (`INITIAL_MODEL_LIMIT` 20, `REPAIR_MODEL_LIMIT` 12) ar
 
 **Resume and caps.** When a coder turn hits its call limit, it continues once on the same checkpointed thread with a fresh per-turn budget (`MAX_CONTINUATIONS_PER_SUBBRIEF` = 1). Total model calls per parent task stop at `MAX_CALLS_PER_PARENT` (60 = 3 x 20, above the 21-40 bucket on purpose). The cap is checked before every new model-call turn. Continuation is never unbounded.
 
-**Exhaustion.** The run ends `BUDGET_EXHAUSTED` (exit nonzero, no PR, worktree kept, `result["partial"]` lists done and not_done acceptance items). It is not in `COUNTED_STATUSES`: it does not bump or reset `tier_failures`, so it never triggers auto-escalation. The ledger gets `Needs Okay: BUDGET_EXHAUSTED, queue run <id>` with state `Needs Okay`. The supervisor does not requeue it. Operator options:
+**Exhaustion.** The run ends `BUDGET_EXHAUSTED` (exit nonzero, no PR, worktree kept, `result["partial"]` lists done and not_done acceptance items). It is in `COUNTED_STATUSES` (#1638): it bumps `tier_failures`, so once the count reaches `strong_after_failures` the next attempt starts on the strong tier (`MAX_CALLS_PER_PARENT` stays absolute, so there is no in-run escalation). A strong attempt that also exhausts its cap does not escalate again and nothing retries by itself. `BUDGET_UNSPLITTABLE` does not count: a stronger model does not fix a brief that needs scoping. The ledger gets `Needs Okay: BUDGET_EXHAUSTED, queue run <id>` with state `Needs Okay`. The supervisor does not requeue it. Operator options:
 
 - split the issue by hand into smaller issues with explicit done-when items;
 - `--retry owner/repo#N`, which is the explicit approval and starts a fresh parent budget. The old job dir, including `budget.json`, is archived and done sub-briefs are not reused: the retry re-runs every sub-brief from the start (`budget.json` is a record, not resume input);

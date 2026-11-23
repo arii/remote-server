@@ -33,6 +33,10 @@ APPROVED = "APPROVED"
 CHANGES_REQUESTED = "CHANGES_REQUESTED"
 BLOCKED = "BLOCKED_DETERMINISTIC"
 BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
+# failure_class for coder call-cap exhaustion (#1638). A capped run ends
+# BUDGET_EXHAUSTED and MAX_CALLS_PER_PARENT stays absolute, so the escalation
+# applies to the next queue attempt (via COUNTED_STATUSES), not in-run.
+CALL_CAP = "call_cap"
 BUDGET_UNSPLITTABLE = "BUDGET_UNSPLITTABLE"
 
 # Coder budget (planner owns fitting work to the model-call cap). A brief
@@ -202,14 +206,14 @@ def choose_model_tier(
 
     Rules:
     - Attempt <= 1 or failure_class == 'mechanical' always stays on 'fast'.
-    - Attempt >= 2 with 'test_failure' or 'audit_semantic' escalates to 'strong' if
+    - Attempt >= 2 with 'test_failure', 'audit_semantic' or 'call_cap' escalates to 'strong' if
       escalations_used < max_escalations.
     - Strong-tier escalations are capped at max_escalations (default 1).
     Returns (tier, new_escalations_used).
     """
     if attempt <= 1 or failure_class == "mechanical" or not failure_class:
         return "fast", escalations_used
-    if failure_class in ("test_failure", "audit_semantic"):
+    if failure_class in ("test_failure", "audit_semantic", CALL_CAP):
         if escalations_used < max_escalations:
             return "strong", escalations_used + 1
     return "fast", escalations_used
