@@ -18,6 +18,20 @@ ENTRY_MAP = {
 }
 
 
+def format_out_of_scope_finding(issue: str, title: str, problem: str) -> dict:
+    """Build a task-shaped ledger row for an out-of-scope finding."""
+    return {"issue": issue, "title": title, "problem": problem}
+
+
+def post_out_of_scope_finding(
+    agent: str, issue: str, title: str, problem: str, link: str = ""
+) -> int:
+    """Post an out-of-scope finding as a task-shaped Agent Ledger row."""
+    row = format_out_of_scope_finding(issue, title, problem)
+    note = f"[{row['issue']}] {row['title']} / Problem: {row['problem']}"
+    return post_entry(agent, note, status="Act", link=link or row["issue"])
+
+
 def post_entry(agent: str, note: str, status: str = "Act", link: str = "") -> int:
     payload = {
         ENTRY_MAP["agent"]: agent,
