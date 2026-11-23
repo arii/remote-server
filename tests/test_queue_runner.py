@@ -96,6 +96,30 @@ class OutOfScopeFindingTests(unittest.TestCase):
         )
 
 
+class PostEntryConfirmationTests(unittest.TestCase):
+    def response(self, status, body):
+        resp = mock.MagicMock()
+        resp.__enter__.return_value = resp
+        resp.status = status
+        resp.read.return_value = body.encode()
+        return resp
+
+    def test_confirmed_row_returns_status(self):
+        resp = self.response(200, "<p>Your response has been recorded.</p>")
+        with mock.patch.object(
+            ledger_post.urllib.request, "urlopen", return_value=resp
+        ):
+            self.assertEqual(ledger_post.post_entry("a", "n", "Act", "l"), 200)
+
+    def test_unconfirmed_200_raises_so_the_row_is_retried(self):
+        resp = self.response(200, "<p>This form is no longer accepting responses.</p>")
+        with mock.patch.object(
+            ledger_post.urllib.request, "urlopen", return_value=resp
+        ):
+            with self.assertRaisesRegex(RuntimeError, "did not confirm"):
+                ledger_post.post_entry("a", "n", "Act", "l")
+
+
 class LedgerNetworkGuardTests(unittest.TestCase):
     def test_real_claim_post_fails_before_https_even_if_error_is_caught(self):
         with mock.patch.object(HTTPSHandler, "https_open", autospec=True) as https_open:
@@ -1473,18 +1497,27 @@ class LedgerTests(unittest.TestCase):
             mock.patch.object(
                 runner.subprocess,
                 "check_output",
-                side_effect=lambda *a, **k: json.dumps(
-                    {
-                        "state": "open",
-                        "title": "Fix",
-                        "body": "scope",
-                        "labels": [{"name": "ready"}],
-                    }
-                ),
+                side_effect=self.gh_output,
             ),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    pr_view = {"body": "Closes #7", "files": [{"path": "tests/test_x.py"}]}
+
+    def gh_output(self, command, *_args, **_kwargs):
+        if "body,files" in command:
+            if isinstance(self.pr_view, Exception):
+                raise self.pr_view
+            return json.dumps(self.pr_view)
+        return json.dumps(
+            {
+                "state": "open",
+                "title": "Fix",
+                "body": "scope",
+                "labels": [{"name": "ready"}],
+            }
+        )
 
     def write(self, agent, note, status, link):
         if self.fail_posts:
@@ -1575,6 +1608,24 @@ class LedgerTests(unittest.TestCase):
             status["ledger_open_prs"]["owner/repo#7"],
             {"issue": ISSUE_URL, "pr": PR_URL},
         )
+
+    def test_invalid_pr_claim_posts_later_with_reason_not_act(self):
+        for view, reason in (
+            ({"body": "no ref", "files": [{"path": "tests/a.py"}]}, "Closes #<n>"),
+            ({"body": "Closes #7", "files": [{"path": "src/a.py"}]}, "no test file"),
+            (OSError("gh down"), "pr_unverifiable"),
+        ):
+            self.pr_view = view
+            self.posts.clear()
+            _code, status, _config = self.run_one(self.SUCCESS)
+            _agent, note, state, link = self.posts[-1]
+            self.assertEqual((state, link), ("Later", ISSUE_URL))
+            self.assertIn("invalid PR claim", note)
+            self.assertIn(reason, note)
+            self.assertFalse(
+                [p for p in self.posts if p[2] == "Act" and "opened" in p[1]]
+            )
+            self.assertFalse(status.get("ledger_open_prs"))
 
     def test_failure_posts_later_with_reason_not_detail(self):
         summary = {

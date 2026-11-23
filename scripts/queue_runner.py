@@ -503,6 +503,21 @@ class QueueLedger:
         except Exception as error:
             self.defer({"claim": link, "run_id": self.run_id}, error)
 
+    def pr_problem(self, pr):
+        """Return why the PR claim cannot be shown valid, or "" when it can."""
+        try:
+            view = json.loads(
+                subprocess.check_output(
+                    self.gh + ["pr", "view", pr, "--json", "body,files"], text=True
+                )
+            )
+            files = [f.get("path", "") for f in view.get("files") or []]
+        except Exception as error:
+            ledger_log(f"PR check failed: {type(error).__name__}")
+            return "pr_unverifiable"
+        ok, reason = claims_pr_valid({"body": view.get("body"), "files": files})
+        return "" if ok else reason
+
     def result(self, key, summary, limit_hit=False):
         link = self.url(key)
         run = f"queue run {self.run_id}"
@@ -514,6 +529,10 @@ class QueueLedger:
         pr = str(result.get("submit_url") or "")
         recon = summary.get("reconciliation") or {}
         if not summary.get("exit_code") and code == "APPROVED" and PR_URL.fullmatch(pr):
+            if problem := self.pr_problem(pr):
+                return self.post(
+                    f"Later: invalid PR claim ({problem}), {run}", "Later", link
+                )
             cost = recon.get("cost_usd")
             spend = f"${cost:.4f}" if type(cost) in (int, float) else "unknown"
             basis = recon.get("cost_basis") or "unknown"
