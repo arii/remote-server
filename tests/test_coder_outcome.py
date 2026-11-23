@@ -192,6 +192,33 @@ class TestCoderOutcome(unittest.TestCase):
                 repair=True,
             )
 
+    def test_initial_turn_can_exceed_repair_model_budget(self):
+        result, events = self.run_scenario(
+            "DONE #1261",
+            operation=lambda actions: [
+                actions.write(f"result-{index}.txt", "done")
+                for index in range(coder.REPAIR_MODEL_LIMIT + 2)
+            ],
+        )
+        self.assertNotIsInstance(result, BaseException)
+        self.assertEqual(result[0], "DONE #1261")
+        self.assertTrue(events[-1]["ok"])
+
+    def test_initial_model_budget_is_bounded(self):
+        from langchain.agents.middleware.model_call_limit import (
+            ModelCallLimitExceededError,
+        )
+
+        self.assertGreater(coder.INITIAL_MODEL_LIMIT, coder.REPAIR_MODEL_LIMIT)
+        with self.assertRaises(ModelCallLimitExceededError):
+            self.run_scenario(
+                "DONE #1261",
+                operation=lambda actions: [
+                    actions.write(f"result-{index}.txt", "done")
+                    for index in range(coder.INITIAL_MODEL_LIMIT)
+                ],
+            )
+
     def test_flatline_is_failed_with_missing_contract_reason(self):
         result, events = self.run_scenario("")
         self.assertIsInstance(result, RuntimeError)

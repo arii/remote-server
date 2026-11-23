@@ -22,7 +22,7 @@ class TestRepairBudget(unittest.TestCase):
     def test_repeated_inspection_warns_then_stops_without_reexecution(self):
         from langchain_core.messages import ToolMessage
 
-        guard = coder.repair_tool_middleware().wrap_tool_call
+        guard = coder.coder_tool_middleware(repair=True).wrap_tool_call
         handler = mock.Mock(
             return_value=ToolMessage(content="No matches found", tool_call_id="probe")
         )
@@ -41,7 +41,7 @@ class TestRepairBudget(unittest.TestCase):
 
         for status in ("success", "error"):
             with self.subTest(status=status):
-                guard = coder.repair_tool_middleware().wrap_tool_call
+                guard = coder.coder_tool_middleware(repair=True).wrap_tool_call
                 handler = mock.Mock(
                     return_value=ToolMessage(
                         content="result", tool_call_id="probe", status=status
@@ -56,7 +56,7 @@ class TestRepairBudget(unittest.TestCase):
     def test_total_budget_cannot_be_reset_by_edits_or_unique_calls(self):
         from langchain_core.messages import ToolMessage
 
-        guard = coder.repair_tool_middleware().wrap_tool_call
+        guard = coder.coder_tool_middleware(repair=True).wrap_tool_call
         handler = mock.Mock(
             return_value=ToolMessage(content="edited", tool_call_id="probe")
         )
@@ -65,6 +65,58 @@ class TestRepairBudget(unittest.TestCase):
         with self.assertRaisesRegex(coder.RepairBudgetExceeded, "budget exhausted"):
             guard(self.call("read_file", file_path="next.py"), handler)
         self.assertEqual(handler.call_count, coder.REPAIR_TOOL_LIMIT)
+
+    def test_initial_tool_budget_is_larger_but_cannot_be_reset_by_edits(self):
+        from langchain_core.messages import ToolMessage
+
+        self.assertGreater(coder.INITIAL_TOOL_LIMIT, coder.REPAIR_TOOL_LIMIT)
+        guard = coder.coder_tool_middleware().wrap_tool_call
+        handler = mock.Mock(
+            return_value=ToolMessage(content="edited", tool_call_id="probe")
+        )
+        for n in range(coder.INITIAL_TOOL_LIMIT):
+            guard(self.call("edit_file", file_path=f"{n}.py"), handler)
+        with self.assertRaisesRegex(
+            coder.CoderBudgetExceeded, "BLOCKED.*budget exhausted"
+        ):
+            guard(self.call("read_file", file_path="next.py"), handler)
+        self.assertEqual(handler.call_count, coder.INITIAL_TOOL_LIMIT)
+
+    def test_1550_initial_repeated_read_stops_before_graph_backstop(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from tests.test_coder_outcome import LocalModel
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "tests").mkdir()
+            Path(root, "tests/test_queue_runner.py").write_text("pass\n")
+            model = LocalModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {
+                                    "file_path": "tests/test_queue_runner.py",
+                                    "limit": 80,
+                                },
+                                "id": f"read-{n}",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                    for n in range(20)
+                ]
+            )
+            graph = coder.build_agent(root, "implement", model=model, repair=False)
+            with self.assertRaisesRegex(
+                coder.CoderBudgetExceeded, "BLOCKED.*repeated unchanged"
+            ):
+                graph.invoke(
+                    {"messages": [HumanMessage(content="fix #1550")]},
+                    config={"recursion_limit": 128},
+                )
+            self.assertLessEqual(model.i, 3)
 
     def test_real_agent_stops_repeated_grep_before_recursion_limit(self):
         from langchain_core.messages import AIMessage, HumanMessage
