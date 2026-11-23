@@ -1483,7 +1483,7 @@ class LedgerTests(unittest.TestCase):
 
     def foreign(self, status="Act", source="BoomTick", hours=1.0, link=ISSUE_URL):
         stamp = runner.datetime.datetime.fromtimestamp(
-            self.now - hours * 3600, runner.datetime.timezone.utc
+            self.now - hours * 3600, runner.zoneinfo.ZoneInfo(runner.LEDGER_TIMEZONE)
         )
         return {
             "Timestamp": stamp.strftime("%m/%d/%Y %H:%M:%S"),
@@ -1654,6 +1654,12 @@ class LedgerTests(unittest.TestCase):
             saved["ledger_skipped"]["owner/repo#7"],
         )
         self.assertNotIn("owner/repo#7", saved["completed"])
+
+    def test_ledger_timestamps_are_sheet_local_time(self):
+        now = runner.datetime.datetime(
+            2026, 11, 23, 12, 15, tzinfo=runner.datetime.timezone.utc
+        )
+        self.assertAlmostEqual(runner.ledger_age_hours("11/23/2026 3:15:00", now), 1.0)
 
     def test_post_failure_keeps_run_green_retries_once_then_drops(self):
         self.fail_posts = 3

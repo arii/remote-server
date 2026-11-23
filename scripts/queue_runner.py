@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zoneinfo
 
 
 class SafetyStop(RuntimeError):
@@ -345,6 +346,8 @@ def checked_cap(value):
 
 LEDGER_AGENT = "S5-Queue"
 LEDGER_STALE_HOURS = 6
+# Form timestamps are naive, in the Agent Ledger Sheet's timezone.
+LEDGER_TIMEZONE = "America/Los_Angeles"
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 STATUS_CODE = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
 
@@ -378,7 +381,8 @@ def ledger_age_hours(stamp, now):
             then = datetime.datetime.strptime(stamp.strip(), form)
         except ValueError:
             continue
-        return (now - then.replace(tzinfo=datetime.timezone.utc)).total_seconds() / 3600
+        zone = zoneinfo.ZoneInfo(LEDGER_TIMEZONE)
+        return (now - then.replace(tzinfo=zone)).total_seconds() / 3600
     return None
 
 
