@@ -350,9 +350,7 @@ class TestDefaultRouteSequence(unittest.TestCase):
             ModelCallLimitExceededError,
         )
 
-        error = ModelCallLimitExceededError(
-            floor + 20, floor + 20, floor + 20, None
-        )
+        error = ModelCallLimitExceededError(floor + 20, floor + 20, floor + 20, None)
         error.coder_model_spec = spec or self.SPEC
         error.coder_written_files = files
         return error
@@ -414,9 +412,7 @@ class TestDefaultRouteSequence(unittest.TestCase):
         )
         self.assertIsNone(error)
         self.assertEqual(result, "done")
-        self.assertEqual(
-            self.threads(seen), ["thread", "thread", "thread-fallback"]
-        )
+        self.assertEqual(self.threads(seen), ["thread", "thread", "thread-fallback"])
         initial, cont, fallback = seen
         self.assertEqual(initial[1]["thread_floor"], 0)
         self.assertEqual(cont[0][1], coder.CONTINUE_PROMPT)
@@ -599,9 +595,7 @@ class TestRealGraphResume(unittest.TestCase):
                 "build_fallback_model",
                 return_value=(fallback, {"provider": "twt", "model": "fb"}),
             ) as build_fb,
-            mock.patch(
-                "backend.shared.model_router.local_only", return_value=False
-            ),
+            mock.patch("backend.shared.model_router.local_only", return_value=False),
             mock.patch.object(
                 deep_chat, "open_checkpointer", return_value=(saver, False, None)
             ),
