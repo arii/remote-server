@@ -1545,6 +1545,12 @@ class LedgerTests(unittest.TestCase):
         self.assertNotIn("owner/repo#7", status.get("tier_failures", {}))
         self.assertEqual(status["completed"], ["owner/repo#7"])
 
+    def test_budget_unsplittable_posts_needs_okay(self):
+        summary = {"exit_code": 1, "result": {"status": "BUDGET_UNSPLITTABLE"}}
+        self.run_one(summary)
+        self.assertEqual(self.posts[-1][2], "Needs Okay")
+        self.assertIn("Needs Okay: BUDGET_UNSPLITTABLE, queue run", self.posts[-1][1])
+
     def test_budget_exhausted_does_not_reset_tier_failures(self):
         with tempfile.TemporaryDirectory() as root:
             config, state = self.fixture(root)
@@ -1991,10 +1997,6 @@ class AccountingTests(unittest.TestCase):
                 runner.coverage(self.root)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class BudgetReportTests(unittest.TestCase):
     def job(self, root, name, calls=None, verified=False, exhausted=False):
         directory = Path(root) / name
@@ -2021,6 +2023,7 @@ class BudgetReportTests(unittest.TestCase):
             self.job(root, "d", 30, verified=True)
             self.job(root, "e", 60, exhausted=True)
             self.job(root, "f", None)
+            self.job(root, "z", 0)
             (Path(root) / "g").mkdir()
             report = runner.budget_report(root)
         lines = report.splitlines()
@@ -2308,3 +2311,7 @@ class StrongRoutingTests(unittest.TestCase):
         self.assertEqual((code, calls), (1, 0))
         self.assertEqual(summary["result"]["status"], "STRONG_BUDGET_INSUFFICIENT")
         self.assertFalse(summary["halt_queue"])
+
+
+if __name__ == "__main__":
+    unittest.main()

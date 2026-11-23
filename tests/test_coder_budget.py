@@ -243,6 +243,7 @@ class TestParentCap(PipelineBudgetCase):
         pipe.stage_calls = 10
         self.assertEqual(pipe.calls_left(), pipeline.MAX_CALLS_PER_PARENT - 35)
 
+    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
     def test_implement_passes_remaining_budget_and_continuation_allowance(self):
         pipe = ScriptedPipeline(SMALL, [], self.root)
         pipe.budget = pipeline.new_budget(

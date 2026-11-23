@@ -504,8 +504,8 @@ class QueueLedger:
             return self.post(
                 f"Needs Okay: spend cap reached, {run}", "Needs Okay", link
             )
-        if code == "BUDGET_EXHAUSTED":
-            return self.post(f"Needs Okay: BUDGET_EXHAUSTED, {run}", "Needs Okay", link)
+        if code in ("BUDGET_EXHAUSTED", "BUDGET_UNSPLITTABLE"):
+            return self.post(f"Needs Okay: {code}, {run}", "Needs Okay", link)
         reason = "max_common_failures" if limit_hit else code
         self.post(f"Later: {reason}, {run}", "Later", link)
 
@@ -1353,6 +1353,8 @@ def budget_report(root):
             continue
         done = bool(parent.get("verified"))
         calls = parent["calls_used"]
+        if calls < 1:
+            continue  # zero-call runs (UNSPLITTABLE, early failures) are not budget data
         bucket = buckets[budget_bucket(calls)]
         bucket[0] += 1
         runs += 1
