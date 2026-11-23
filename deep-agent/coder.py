@@ -77,6 +77,7 @@ EXISTING_FILE_EDITS = frozenset({"edit_file", "replace_lines"})
 MUTATING_TOOLS = EXISTING_FILE_EDITS | {"write_file", "delete"}
 SYNTAX_CHECKED_SUFFIXES = frozenset({".py", ".ts", ".tsx"})
 SYNTAX_REJECTION = "No changes written"
+ALREADY_APPLIED = "already_applied"
 DEFAULT_VERIFY_ROUNDS = 2
 REPAIR_TOOL_LIMIT = 20
 NEXT_OFFSET_RE = re.compile(r"\bnext offset (\d+)")
@@ -635,6 +636,45 @@ def numbered_lines(lines, start, end):
     return "\n".join(f"{i + 1} | {lines[i]}" for i in range(start, end))
 
 
+def normalize_newlines(text):
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def updated_region(content, start, count):
+    lines = content.splitlines()
+    if not lines:
+        return "(file is empty)"
+    start = min(start, len(lines) - 1)
+    return numbered_lines(lines, start, min(start + max(1, count), len(lines)))
+
+
+def applied_edit(message, region):
+    return f"{message} This change is now in the file.\nUpdated region:\n{region}", None
+
+
+def already_applied(file_path, region):
+    return (
+        f"Change in {file_path} already applied; don't resend it, move to the next step."
+        f"\nCurrent region:\n{region}",
+        ALREADY_APPLIED,
+    )
+
+
+def is_applied_replay(call, result):
+    return (
+        call["name"] in EXISTING_FILE_EDITS
+        and getattr(result, "artifact", None) == ALREADY_APPLIED
+    )
+
+
+def is_file_mutation(call, result):
+    return (
+        call["name"] in MUTATING_TOOLS
+        and getattr(result, "status", None) == "success"
+        and not is_applied_replay(call, result)
+    )
+
+
 def proposed_syntax_error(file_path, content):
     suffix = os.path.splitext(file_path)[1].lower()
     if suffix == ".py":
@@ -850,8 +890,7 @@ def build_filesystem_backend(worktree):
                     error=f"Error: Cannot read file '{file_path}' as UTF-8"
                 )
             source, old_string, new_string = (
-                part.replace("\r\n", "\n").replace("\r", "\n")
-                for part in (source, old_string, new_string)
+                normalize_newlines(part) for part in (source, old_string, new_string)
             )
             proposal = perform_string_replacement(
                 source, old_string, new_string, replace_all
@@ -931,10 +970,7 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
         result = handler(request)
 
         # Invalidate read cache on file mutations
-        if (
-            call["name"] in MUTATING_TOOLS
-            and getattr(result, "status", None) == "success"
-        ):
+        if is_file_mutation(call, result):
             target_file = call["args"].get("file_path") or call["args"].get("path")
             if target_file:
                 rel = worktree_file_key(worktree, target_file)
@@ -992,11 +1028,8 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
             )
             truncated = _truncate_tool_output(result.content, limit=limit)
             if truncated != result.content:
-                return ToolMessage(
-                    content=truncated,
-                    tool_call_id=call["id"],
-                    name=call["name"],
-                    status=getattr(result, "status", "success"),
+                return result.model_copy(
+                    update={"content": truncated, "name": call["name"]}
                 )
 
         return result
@@ -1038,22 +1071,37 @@ def closest_edit_region(source, old_string):
     return numbered_lines(lines, best_start, best_start + width)
 
 
-def build_edit_tool(backend):
-    from langchain_core.tools import ToolException, tool
+def build_edit_tool(backend, *, allow_replace_all=False):
+    from langchain_core.tools import tool
 
-    @tool
-    def edit_file(file_path: str, old_string: str, new_string: str) -> str:
-        """Replace one exact, unique text block. Copy old_string from the file."""
+    def edit(file_path, old_string, new_string, replace_all):
+        from langchain_core.tools import ToolException
+
+        old_string, new_string = map(normalize_newlines, (old_string, new_string))
         if not old_string or old_string == new_string:
             raise ToolException(
                 "Provide non-empty old_string and different new_string."
             )
-        result = backend.edit(file_path, old_string, new_string)
+        count = len(new_string.splitlines())
+        source = edit_source(backend, file_path)
+        if source is not None:
+            source = normalize_newlines(source)
+            if old_string not in source and new_string:
+                offset = source.find(new_string)
+                if offset >= 0 and source.find(new_string, offset + 1) < 0:
+                    return already_applied(
+                        file_path,
+                        updated_region(
+                            source,
+                            source.count("\n", 0, offset),
+                            count,
+                        ),
+                    )
+        result = backend.edit(file_path, old_string, new_string, replace_all)
         if result.error:
             if result.error.startswith(SYNTAX_REJECTION):
                 raise ToolException(result.error)
             if result.error.startswith("Error: String not found in file:"):
-                source = edit_source(backend, file_path)
                 region = closest_edit_region(source, old_string) if source else ""
                 message = (
                     f"No exact match in {file_path}. Do not resend the same arguments. "
@@ -1067,7 +1115,32 @@ def build_edit_tool(backend):
                 f"{result.error} Copy one exact block from the file, including "
                 "enough surrounding text to match exactly once."
             )
-        return f"Applied one replacement in {file_path}."
+        current = normalize_newlines(edit_source(backend, file_path) or "")
+        offset = source.find(old_string) if source is not None else 0
+        start = source.count("\n", 0, max(offset, 0)) if source is not None else 0
+        message = (
+            f"Applied one replacement in {file_path}."
+            if result.occurrences == 1
+            else f"Applied {result.occurrences} replacements in {file_path}. First replacement shown."
+        )
+        return applied_edit(message, updated_region(current, start, count))
+
+    if allow_replace_all:
+
+        @tool(response_format="content_and_artifact")
+        def edit_file(
+            file_path: str, old_string: str, new_string: str, replace_all: bool = False
+        ) -> tuple[str, str | None]:
+            """Replace one exact text block, or all matches with replace_all."""
+            return edit(file_path, old_string, new_string, replace_all)
+    else:
+
+        @tool(response_format="content_and_artifact")
+        def edit_file(
+            file_path: str, old_string: str, new_string: str
+        ) -> tuple[str, str | None]:
+            """Replace one exact, unique text block. Copy old_string from the file."""
+            return edit(file_path, old_string, new_string, False)
 
     edit_file.handle_tool_error = True
     return edit_file
@@ -1076,10 +1149,12 @@ def build_edit_tool(backend):
 def build_replace_lines_tool(backend, planned_files):
     from langchain_core.tools import ToolException, tool
 
-    @tool
+    last_shrink = {}
+
+    @tool(response_format="content_and_artifact")
     def replace_lines(
         file_path: str, start_line: int, end_line: int, new_text: str
-    ) -> str:
+    ) -> tuple[str, str | None]:
         """Replace whole lines in a planned file, using 1-based inclusive line numbers.
 
         Use the latest read or closest region to choose the range. Pass empty
@@ -1091,6 +1166,17 @@ def build_replace_lines_tool(backend, planned_files):
         if source is None:
             raise ToolException(f"Cannot read {file_path} as UTF-8.")
         lines = source.splitlines(keepends=True)
+        start = start_line - 1
+        new_lines = new_text.splitlines()
+        edit = (start_line, end_line, normalize_newlines(new_text))
+        previous = last_shrink.get(file_path)
+        if previous is not None and previous == (
+            edit,
+            hashlib.sha256(source.encode()).digest(),
+        ):
+            return already_applied(
+                file_path, updated_region(source, start, len(new_lines))
+            )
         if not 1 <= start_line <= end_line <= len(lines):
             raise ToolException(
                 f"Invalid range: expected 1 <= start_line <= end_line <= {len(lines)}."
@@ -1100,17 +1186,25 @@ def build_replace_lines_tool(backend, planned_files):
         replacement = re.sub(r"\r\n|\r|\n", lambda _: newline, new_text)
         if replacement and ending and not replacement.endswith(newline):
             replacement += newline
-        updated = (
-            "".join(lines[: start_line - 1]) + replacement + "".join(lines[end_line:])
-        )
-        if updated == source:
-            raise ToolException("Replacement would not change the file.")
+        updated = "".join(lines[:start]) + replacement + "".join(lines[end_line:])
+        if updated == source or (
+            len(new_lines) >= end_line - start
+            and source.splitlines()[start : start + len(new_lines)] == new_lines
+        ):
+            return already_applied(
+                file_path, updated_region(source, start, len(new_lines))
+            )
         result = backend.write(file_path, updated)
         if result.error:
             if result.error.startswith(SYNTAX_REJECTION):
                 raise ToolException(result.error)
             raise ToolException(f"Cannot replace lines in {file_path}: {result.error}")
-        return f"Replaced lines {start_line}–{end_line} in {file_path}."
+        if len(new_lines) < end_line - start:
+            last_shrink[file_path] = (edit, hashlib.sha256(updated.encode()).digest())
+        return applied_edit(
+            f"Replaced lines {start_line}–{end_line} in {file_path}.",
+            updated_region(updated, start, len(new_lines)),
+        )
 
     replace_lines.handle_tool_error = True
     return replace_lines
@@ -1225,6 +1319,7 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
     from langchain_core.messages import ToolMessage
 
     seen = {}
+    acknowledged = set()
     earlier = {}
     calls = 0
     explored = 0
@@ -1272,7 +1367,7 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
                         status="error",
                     )
             if call["name"] != "run_check" and (repair or call["name"] != "read_file"):
-                seen[key] = seen.get(key, 0) + 1
+                seen[key] = seen.get(key, int(key in acknowledged)) + 1
                 if seen[key] >= REPAIR_REPEAT_LIMIT:
                     raise error(
                         f"BLOCKED: {label} repeated unchanged tool call: {key[0]} {key[1]}"
@@ -1295,12 +1390,15 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
                         status="error",
                     )
         result = handler(request)
-        if isinstance(getattr(result, "content", None), str):
-            with lock:
+        with lock:
+            if isinstance(getattr(result, "content", None), str):
                 earlier[key] = result.content
-        if call["name"] in MUTATING_TOOLS and result.status == "success":
-            with lock:
+            if is_applied_replay(call, result):
+                seen.pop(key, None)
+                acknowledged.add(key)
+            elif is_file_mutation(call, result):
                 seen.clear()
+                acknowledged.clear()
                 explored = 0
                 nudged = None
         return result
@@ -1360,7 +1458,7 @@ def build_agent(
                 "ls",
                 "read_file",
                 "write_file",
-                *(["edit_file"] if first_edit is None else []),
+                *(["edit_file"] if planning else []),
                 "delete",
                 "glob",
                 "grep",
@@ -1398,8 +1496,11 @@ def build_agent(
         default_tools = [build_check_tool(worktree, written_files, repo)]
     else:
         default_tools = list(tools)
+    if not planning:
+        default_tools.append(
+            build_edit_tool(backend, allow_replace_all=first_edit is None)
+        )
     if first_edit is not None:
-        default_tools.append(build_edit_tool(backend))
         default_tools.append(build_replace_lines_tool(backend, first_edit))
     return create_deep_agent(
         model=model,
