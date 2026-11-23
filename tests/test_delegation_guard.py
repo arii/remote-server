@@ -194,15 +194,17 @@ class TestCoderImplementGate(_StubbedCase):
         self.assertEqual(REGISTERED[0][0], "openai:nv")
         self.assertTrue(_gp_disabled(REGISTERED[0][1]))
 
-    def test_tools_still_just_run_check(self):
+    def test_tools_are_run_check_and_coder_edit(self):
         with tempfile.TemporaryDirectory() as d:
             coder.build_agent(
                 d, "SYS", model=object(), spec={"provider": "ollama", "model": "q8"}
             )
         _args, kwargs = CREATED[0]
         self.assertEqual(
-            [getattr(t, "__name__", "") for t in kwargs["tools"]], ["run_check"]
+            [getattr(t, "__name__", "") for t in kwargs["tools"]],
+            ["run_check", "edit_file"],
         )
+        self.assertNotIn("edit_file", kwargs["middleware"][2].kwargs["tools"])
         self.assertNotIn("subagents", kwargs)
         self.assertEqual(
             kwargs["middleware"][0].kwargs,

@@ -400,6 +400,126 @@ class TestCoderBackend(unittest.TestCase):
             self.assertEqual(planned.read_bytes(), b"first\r\nnew\r\nline\r\nthird")
             self.assertEqual(replace("planned.py", 2, 3, "").status, "success")
             self.assertEqual(planned.read_bytes(), b"first\r\nthird")
+            self.assertEqual(
+                replace("planned.py", 2, 3, "").artifact, coder.ALREADY_APPLIED
+            )
+            self.assertEqual(
+                replace("planned.py", 2, 2, "third").artifact, coder.ALREADY_APPLIED
+            )
+            self.assertEqual(planned.read_bytes(), b"first\r\nthird")
+
+    def test_1570_applied_docstring_replay_keeps_file_and_repeat_guard(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from tests.test_coder_outcome import LocalModel
+
+        file_path = "backend/notify/prefs_state.py"
+        old = '"""Operator prefs/state + notification send gate."""'
+        new = (
+            '"""Operator prefs/state + notification send gate.\n\n'
+            "The notification dispatch gate determines a runner’s health.\n"
+            '"""'
+        )
+        for name, edit_args in (
+            ("edit_file", {"old_string": old, "new_string": new}),
+            ("replace_lines", {"start_line": 1, "end_line": 1, "new_text": new}),
+        ):
+            for stop in (False, True):
+                with (
+                    self.subTest(name=name, stop=stop),
+                    tempfile.TemporaryDirectory() as root,
+                ):
+                    target = Path(root, file_path)
+                    target.parent.mkdir(parents=True)
+                    target.write_text(f"{old}\n\nVALUE = 1\n")
+
+                    def call(id, tool, **args):
+                        return AIMessage(
+                            content="",
+                            tool_calls=[
+                                dict(
+                                    id=id,
+                                    name=tool,
+                                    args={"file_path": file_path, **args},
+                                    type="tool_call",
+                                )
+                            ],
+                        )
+
+                    model = LocalModel(
+                        responses=[
+                            call("read", "read_file"),
+                            call("51a2c30c", name, **edit_args),
+                            call("345db283", name, **edit_args),
+                            call("89afe4dc", name, **edit_args),
+                            call("stop", name, **edit_args)
+                            if stop
+                            else AIMessage(content="Done"),
+                        ]
+                    )
+                    written = coder.WriteTracker()
+                    agent = coder.build_agent(
+                        root,
+                        "test",
+                        model=model,
+                        written_files=written,
+                        first_edit={file_path: True},
+                    )
+                    request = {
+                        "messages": [HumanMessage(content="Update the docstring")]
+                    }
+                    if stop:
+                        with self.assertRaisesRegex(
+                            coder.CoderBudgetExceeded,
+                            f"repeated unchanged tool call: {name}",
+                        ):
+                            agent.invoke(request)
+                    else:
+                        result = agent.invoke(request)
+                        replies = {
+                            m.tool_call_id: m
+                            for m in result["messages"]
+                            if m.type == "tool"
+                        }
+                        applied = replies["51a2c30c"]
+                        self.assertEqual(applied.status, "success")
+                        self.assertIn(
+                            "This change is now in the file.", applied.content
+                        )
+                        self.assertIn(
+                            "3 | The notification dispatch gate", applied.content
+                        )
+                        replay = replies["345db283"]
+                        self.assertEqual(replay.status, "success")
+                        self.assertIn(
+                            "already applied; don't resend it, move to the next step",
+                            replay.content,
+                        )
+                        self.assertEqual(replies["89afe4dc"].status, "error")
+                    self.assertEqual(target.read_text(), f"{new}\n\nVALUE = 1\n")
+                    self.assertEqual(written.mutations, 1)
+
+    def test_edit_replay_requires_unique_new_text_and_no_old_text(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, "state.txt")
+            target.write_text("new\nnew\n")
+            reply = self.tool_call(
+                root,
+                "edit_file",
+                {"file_path": "state.txt", "old_string": "old", "new_string": "new"},
+            )
+            self.assertEqual(reply.status, "error")
+            target.write_text("old\nnew\n")
+            written = coder.WriteTracker()
+            reply = self.tool_call(
+                root,
+                "edit_file",
+                {"file_path": "state.txt", "old_string": "old", "new_string": "new"},
+                written,
+            )
+            self.assertIn("Updated region:\n1 | new", reply.content)
+            self.assertEqual(reply.status, "success")
+            self.assertEqual(target.read_text(), "new\nnew\n")
+            self.assertEqual(written.mutations, 1)
 
     def test_implementation_requires_tool_call_until_successful_grounding(self):
         from langchain_core.messages import AIMessage, HumanMessage
