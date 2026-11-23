@@ -151,7 +151,10 @@ STRONG_MIN_BUDGET_USD = 0.05
 # Result statuses that count as a coder failure toward auto-escalation.
 # Everything else (CONFIG_ERROR, STRONG_BUDGET_INSUFFICIENT, PAUSED_BY_USER,
 # RUNNER_ERROR, halts, budget stops) is an operator or infrastructure event.
-COUNTED_STATUSES = ("BLOCKED_DETERMINISTIC", "CHANGES_REQUESTED")
+# BUDGET_EXHAUSTED (coder call cap hit after continuations, #1638) counts: a
+# stronger model may finish within the cap. BUDGET_UNSPLITTABLE does not: it is
+# a scoping problem that a stronger model would not fix.
+COUNTED_STATUSES = ("BLOCKED_DETERMINISTIC", "CHANGES_REQUESTED", "BUDGET_EXHAUSTED")
 
 
 def start_tier(fresh, failures, threshold):
