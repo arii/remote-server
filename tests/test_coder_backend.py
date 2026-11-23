@@ -246,7 +246,9 @@ class TestCoderBackend(unittest.TestCase):
             self.assertEqual(written, {path})
             self.assertEqual(written.mutations, 1)
             self.assertEqual(bindings[:4], [({"read_file"}, "required")] * 4)
-            self.assertEqual(bindings[4:8], [({"edit_file"}, "required")] * 4)
+            self.assertEqual(
+                bindings[4:8], [({"edit_file", "replace_lines"}, "required")] * 4
+            )
             self.assertIn("run_check", bindings[8][0])
             tools = {m.tool_call_id: m for m in result["messages"] if m.type == "tool"}
             self.assertIn("Read each planned file", tools["7a8e687c"].content)
@@ -255,6 +257,148 @@ class TestCoderBackend(unittest.TestCase):
                 self.assertEqual(tools[id].status, "error")
                 self.assertIn("match exactly once", tools[id].content)
             self.assertEqual(tools["applied"].status, "success")
+
+    def test_1570_missing_docstring_quotes_replay(self):
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+        from langchain.agents.middleware import AgentMiddleware, ToolCallRequest
+        from langchain_core.messages import ToolMessage
+
+        path = "backend/server.py"
+        first_line = '"""Minimal FastAPI application entrypoint."""'
+        original = first_line + "\n\nimport os\nimport sys\n"
+        bad = {
+            "file_path": path,
+            "old_string": first_line[:-2] + "\n\nimport os\nimport sys",
+            "new_string": first_line[:-2]
+            + "\n\nimport os\nimport sys\nfrom enum import Enum",
+        }
+
+        for repeats in (False, True):
+            with self.subTest(repeats=repeats), tempfile.TemporaryDirectory() as root:
+                target = Path(root, path)
+                target.parent.mkdir()
+                target.write_text(original)
+                written = coder.WriteTracker()
+                with mock.patch("deepagents.create_deep_agent") as create:
+                    coder.build_agent(
+                        root,
+                        "",
+                        model=mock.Mock(),
+                        written_files=written,
+                        first_edit={path: True},
+                    )
+                config = create.call_args.kwargs
+                tools = {tool.name: tool for tool in config["tools"]}
+
+                def run(request):
+                    if request.tool is None:
+                        return ToolMessage(
+                            content=target.read_text(),
+                            tool_call_id=request.tool_call["id"],
+                        )
+                    return request.tool.invoke(request.tool_call)
+
+                def wrap(layer, handler):
+                    return lambda request: layer.wrap_tool_call(request, handler)
+
+                for layer in reversed(config["middleware"]):
+                    if type(
+                        layer
+                    ).wrap_tool_call is AgentMiddleware.wrap_tool_call or isinstance(
+                        layer, FilesystemMiddleware
+                    ):
+                        continue
+                    run = wrap(layer, run)
+
+                def call(id, name, **args):
+                    return run(
+                        ToolCallRequest(
+                            tool_call={
+                                "id": id,
+                                "name": name,
+                                "args": args,
+                                "type": "tool_call",
+                            },
+                            tool=tools.get(name),
+                            state={},
+                            runtime=None,
+                        )
+                    )
+
+                self.assertEqual(
+                    call("read", "read_file", file_path=path).status, "success"
+                )
+                mismatch = call("64b57473", "edit_file", **bad)
+                duplicate = call("26413794", "edit_file", **bad)
+                if repeats:
+                    with self.assertRaisesRegex(
+                        coder.CoderBudgetExceeded,
+                        "repeated unchanged tool call: edit_file",
+                    ):
+                        call("1d714dd5", "edit_file", **bad)
+                    self.assertEqual(target.read_text(), original)
+                    self.assertEqual(written.mutations, 0)
+                else:
+                    corrected = call(
+                        "corrected",
+                        "replace_lines",
+                        file_path=path,
+                        start_line=4,
+                        end_line=4,
+                        new_text="import sys\nfrom enum import Enum",
+                    )
+                    self.assertEqual(corrected.status, "success")
+                    self.assertEqual(
+                        target.read_text(), original + "from enum import Enum\n"
+                    )
+                    self.assertEqual(written, {path})
+                    self.assertEqual(written.mutations, 1)
+                self.assertEqual(mismatch.status, "error")
+                self.assertIn("Do not resend the same arguments", mismatch.content)
+                self.assertIn(
+                    f"Closest region:\n1 | {first_line}\n2 | \n3 | import os",
+                    mismatch.content,
+                )
+                self.assertEqual(duplicate.status, "error")
+                self.assertIn("use replace_lines instead", duplicate.content)
+
+    def test_line_replacement_validates_scope_and_preserves_whole_lines(self):
+        with tempfile.TemporaryDirectory() as root:
+            planned = Path(root, "planned.py")
+            unplanned = Path(root, "unplanned.py")
+            original = b"first\r\nsecond\r\nthird"
+            planned.write_bytes(original)
+            unplanned.write_bytes(original)
+            tool = coder.build_replace_lines_tool(
+                coder.build_filesystem_backend(root), {"planned.py": True}
+            )
+
+            def replace(path, start, end, text):
+                return tool.invoke(
+                    {
+                        "name": "replace_lines",
+                        "id": "replace",
+                        "type": "tool_call",
+                        "args": dict(
+                            file_path=path,
+                            start_line=start,
+                            end_line=end,
+                            new_text=text,
+                        ),
+                    }
+                )
+
+            for start, end in [(0, 1), (3, 2), (2, 4)]:
+                self.assertEqual(
+                    replace("planned.py", start, end, "no").status, "error"
+                )
+            self.assertEqual(replace("unplanned.py", 1, 1, "no").status, "error")
+            self.assertEqual(planned.read_bytes(), original)
+            self.assertEqual(unplanned.read_bytes(), original)
+            self.assertEqual(replace("planned.py", 2, 2, "new\nline").status, "success")
+            self.assertEqual(planned.read_bytes(), b"first\r\nnew\r\nline\r\nthird")
+            self.assertEqual(replace("planned.py", 2, 3, "").status, "success")
+            self.assertEqual(planned.read_bytes(), b"first\r\nthird")
 
     def test_implementation_requires_tool_call_until_successful_grounding(self):
         from langchain_core.messages import AIMessage, HumanMessage
