@@ -35,6 +35,41 @@ function statusLabel(status: string | undefined): string {
     : status || 'Needs review';
 }
 
+const REVIEWED_KEY = 'ledgerTriage.reviewed';
+
+function rowTime(row: LedgerIntakeRow): number {
+  const raw = row.ts ?? row.at;
+  if (typeof raw === 'number') return raw * 1000;
+  const parsed = raw ? Date.parse(String(raw)) : NaN;
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function newestFirst(rows: LedgerIntakeRow[]): LedgerIntakeRow[] {
+  return [...rows].sort((a, b) => rowTime(b) - rowTime(a));
+}
+
+function loadReviewed(): Set<string> {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(REVIEWED_KEY) || '[]');
+    return new Set(Array.isArray(stored) ? stored.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const PROBLEM_PREVIEW_LENGTH = 160;
+
+function LedgerProblem({ problem }: { problem?: string }) {
+  if (!problem) return null;
+  if (problem.length <= PROBLEM_PREVIEW_LENGTH) return <p>{problem}</p>;
+  return (
+    <details className="ledger-card-problem">
+      <summary>{problem.slice(0, PROBLEM_PREVIEW_LENGTH).trimEnd()}…</summary>
+      <p>{problem}</p>
+    </details>
+  );
+}
+
 function candidateIdOf(row: LedgerIntakeRow): string {
   const candidate = row.duplicate_candidate;
   return candidate
@@ -51,13 +86,26 @@ export default function LedgerTriageView(): ReactElement {
   const [notice, setNotice] = useState<string | null>(null);
   const [serverRisks, setServerRisks] = useState<Record<string, string[]>>({});
   const [mergeNotes, setMergeNotes] = useState<Record<string, string>>({});
+  const [reviewed, setReviewed] = useState<Set<string>>(loadReviewed);
+  const unreviewedCount = rows.filter((row) => !reviewed.has(rowId(row))).length;
+
+  function markReviewed(id: string) {
+    if (!id || reviewed.has(id)) return;
+    const next = new Set(reviewed).add(id);
+    setReviewed(next);
+    try {
+      localStorage.setItem(REVIEWED_KEY, JSON.stringify([...next]));
+    } catch {
+      // Storage can be full or blocked; the marker still clears for this visit.
+    }
+  }
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
       const response = await fetchLedgerIntake();
-      setRows(response.rows);
+      setRows(newestFirst(response.rows));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -82,6 +130,7 @@ export default function LedgerTriageView(): ReactElement {
 
   async function approve(row: LedgerIntakeRow) {
     const id = rowId(row);
+    markReviewed(id);
     if (!id || busy) return;
     setBusy(id);
     setNotice(null);
@@ -108,6 +157,7 @@ export default function LedgerTriageView(): ReactElement {
 
   async function merge(row: LedgerIntakeRow) {
     const id = rowId(row);
+    markReviewed(id);
     const candidateId = candidateIdOf(row);
     if (!id || !candidateId || busy) return;
     setBusy(id);
@@ -125,6 +175,7 @@ export default function LedgerTriageView(): ReactElement {
 
   async function distinct(row: LedgerIntakeRow) {
     const id = rowId(row);
+    markReviewed(id);
     const candidateId = candidateIdOf(row);
     if (!id || !candidateId || busy) return;
     setBusy(id);
@@ -146,6 +197,9 @@ export default function LedgerTriageView(): ReactElement {
         <div>
           <h2 id="ledger-triage-title">Ledger triage</h2>
           <p className="row-meta">Review intake rows without editing the raw sheet.</p>
+          <p className="row-meta" data-testid="ledger-unreviewed-count">
+            {unreviewedCount} unreviewed
+          </p>
         </div>
         <button type="button" onClick={() => void load()} disabled={loading}>
           Refresh
@@ -162,10 +216,22 @@ export default function LedgerTriageView(): ReactElement {
           const id = rowId(row);
           const missing = (row.missing_fields || []).map(String);
           const risks = rowRisks(row).map((name) => RISK_LABELS[name] || name);
+          const sourceUrl = row.source_url?.trim();
           return (
-            <article className="ledger-triage-card" key={id} tabIndex={0}>
+            <article
+              className="ledger-triage-card"
+              key={id}
+              tabIndex={0}
+              onClick={() => markReviewed(id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') markReviewed(id);
+              }}
+            >
               <div className="ledger-card-head">
                 <span className="status-badge">{statusLabel(row.status)}</span>
+                {!reviewed.has(id) && (
+                  <strong data-testid={`unreviewed-${id}`}>Unreviewed</strong>
+                )}
                 <span className="row-meta">{id}</span>
               </div>
               {row.duplicate_candidate ? (
@@ -173,7 +239,7 @@ export default function LedgerTriageView(): ReactElement {
                   <div className="ledger-duplicate-pane">
                     <strong>Incoming row</strong>
                     <h3>{row.title || 'Untitled intake row'}</h3>
-                    {row.problem && <p>{row.problem}</p>}
+                    <LedgerProblem problem={row.problem} />
                   </div>
                   <div className="ledger-duplicate-pane ledger-duplicate-candidate" aria-label="Duplicate candidate">
                     <strong>Possible match</strong>
@@ -219,8 +285,13 @@ export default function LedgerTriageView(): ReactElement {
               ) : (
                 <>
                   <h3>{row.title || 'Untitled intake row'}</h3>
-                  {row.problem && <p>{row.problem}</p>}
+                  <LedgerProblem problem={row.problem} />
                 </>
+              )}
+              {sourceUrl && /^https?:\/\//i.test(sourceUrl) && (
+                <p className="row-meta">
+                  <a href={sourceUrl} target="_blank" rel="noopener noreferrer">{sourceUrl}</a>
+                </p>
               )}
               {row.duplicate_of && (
                 <p className="row-meta">

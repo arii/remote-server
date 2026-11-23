@@ -18,6 +18,7 @@ let host: HTMLDivElement;
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  localStorage.clear();
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
@@ -73,6 +74,58 @@ function confirmButton(label: string): HTMLButtonElement {
 }
 
 describe('LedgerTriageView', () => {
+  it('shows the title, short problem, originating issue link, and status on the same card', async () => {
+    const sourceUrl = 'https://github.com/arii/remote-server/issues/1574';
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{
+        kind: 'ledger-intake',
+        intake_id: 'intake-mobile',
+        status: 'NEW',
+        title: 'Fix unreadable triage cards',
+        problem: 'The issue link is missing on phones.',
+        source_url: sourceUrl,
+      }],
+    });
+
+    await act(async () => root.render(<LedgerTriageView />));
+    const card = host.querySelector('.ledger-triage-card')!;
+    expect(card.querySelector('h3')?.textContent).toBe('Fix unreadable triage cards');
+    expect(card.textContent).toContain('The issue link is missing on phones.');
+    const source = card.querySelector('a');
+    expect(source?.getAttribute('href')).toBe(sourceUrl);
+    expect(source?.target).toBe('_blank');
+    expect(source?.relList.contains('noopener')).toBe(true);
+    expect(card.querySelector('.ledger-card-head')?.textContent).toContain('NEW');
+    expect(card.querySelector('details')).toBeNull();
+  });
+
+  it('folds a long problem in the incoming row and retains the originating PR link', async () => {
+    const problem = 'A long problem with an unbroken value: ' + 'x'.repeat(300);
+    const sourceUrl = 'https://github.com/arii/remote-server/pull/1574';
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{ ...duplicateRows.rows[0], problem, source_url: sourceUrl }],
+    });
+
+    await act(async () => root.render(<LedgerTriageView />));
+    const card = host.querySelector('.ledger-triage-card')!;
+    const disclosure = card.querySelector('details')!;
+    const preview = disclosure.querySelector('summary')!.textContent!;
+    expect(disclosure.hasAttribute('open')).toBe(false);
+    expect(preview).toMatch(/…$/);
+    expect(problem.startsWith(preview.slice(0, -1))).toBe(true);
+    expect(disclosure.querySelector('p')?.textContent).toBe(problem);
+    expect(card.querySelector('a')?.getAttribute('href')).toBe(sourceUrl);
+  });
+
+  it('does not link a non-web source URL', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{ ...duplicateRows.rows[0], source_url: 'javascript:void(0)' }],
+    });
+
+    await act(async () => root.render(<LedgerTriageView />));
+    expect(host.querySelector('.ledger-triage-card a')).toBeNull();
+  });
+
   it('shows only flagged fields and clears a card after approval', async () => {
     await act(async () => root.render(<LedgerTriageView />));
     expect(host.textContent).toContain('Add retry policy');
@@ -181,5 +234,80 @@ describe('LedgerTriageView', () => {
       host.querySelector<HTMLButtonElement>('button[aria-label^="Confirm"]')!.click();
     });
     expect(api.approveLedgerIntake).toHaveBeenLastCalledWith('intake-1', { scope: 'migrate the prod DB' }, true);
+  });
+});
+
+describe('LedgerTriageView review markers', () => {
+  const datedRows = {
+    rows: [
+      { kind: 'ledger-intake', intake_id: 'old', status: 'NEW', title: 'Older row', ts: 1_700_000_000 },
+      { kind: 'ledger-intake', intake_id: 'new', status: 'NEW', title: 'Newer row', ts: 1_700_000_500 },
+      { kind: 'ledger-intake', intake_id: 'mid', status: 'NEW', title: 'Middle row', at: '2023-11-14T22:20:00Z' },
+    ],
+  };
+
+  function titles(): string[] {
+    return Array.from(host.querySelectorAll('.ledger-triage-card h3')).map((h) => h.textContent || '');
+  }
+
+  function count(): string {
+    return host.querySelector('[data-testid="ledger-unreviewed-count"]')!.textContent || '';
+  }
+
+  it('lists rows newest-first and counts every row as unreviewed', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce(datedRows);
+    await act(async () => root.render(<LedgerTriageView />));
+    expect(titles()).toEqual(['Newer row', 'Middle row', 'Older row']);
+    expect(count()).toBe('3 unreviewed');
+    expect(host.querySelectorAll('[data-testid^="unreviewed-"]')).toHaveLength(3);
+  });
+
+  it('clears the marker when a card is opened and keeps it cleared on reload', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValue(datedRows);
+    await act(async () => root.render(<LedgerTriageView />));
+    await act(async () => host.querySelector<HTMLElement>('.ledger-triage-card')!.click());
+    expect(tap('unreviewed-new')).toBeNull();
+    expect(count()).toBe('2 unreviewed');
+
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await act(async () => root.render(<LedgerTriageView />));
+    expect(tap('unreviewed-new')).toBeNull();
+    expect(count()).toBe('2 unreviewed');
+  });
+
+  it('clears the marker when a card is opened from the keyboard', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce(datedRows);
+    await act(async () => root.render(<LedgerTriageView />));
+    await act(async () => {
+      host.querySelector('.ledger-triage-card')!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      );
+    });
+    expect(tap('unreviewed-new')).toBeNull();
+    expect(count()).toBe('2 unreviewed');
+  });
+
+  it('still approves when browser storage refuses the write', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError');
+    });
+    await act(async () => root.render(<LedgerTriageView />));
+    await act(async () => host.querySelector<HTMLButtonElement>('.btn-primary')!.click());
+    expect(api.approveLedgerIntake).toHaveBeenCalledWith('intake-1', {}, false);
+    expect(count()).toBe('0 unreviewed');
+  });
+
+  it('counts a dismissed row as reviewed', async () => {
+    await act(async () => root.render(<LedgerTriageView />));
+    expect(count()).toBe('1 unreviewed');
+    await act(async () => {
+      const input = host.querySelector('input')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'backend');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => host.querySelector<HTMLButtonElement>('.btn-primary')!.click());
+    expect(count()).toBe('0 unreviewed');
+    expect(JSON.parse(localStorage.getItem('ledgerTriage.reviewed') || '[]')).toEqual(['intake-1']);
   });
 });
