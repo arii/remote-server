@@ -15,6 +15,16 @@ const FIELD_LABELS: Record<string, string> = {
   done_when: 'Done-when',
 };
 
+const RISK_LABELS: Record<string, string> = {
+  production_mutation: 'production mutation',
+  external_comms: 'external communication',
+  billing_permission: 'billing or permission change',
+};
+
+function riskList(row: LedgerIntakeRow): string[] {
+  return (row.risk_categories || []).map(String).filter(Boolean);
+}
+
 function rowId(row: LedgerIntakeRow): string {
   return String(row.intake_id || row.row_key || row.canonical_intake_id || '');
 }
@@ -71,7 +81,7 @@ export default function LedgerTriageView(): ReactElement {
     setBusy(id);
     setNotice(null);
     try {
-      await approveLedgerIntake(id, values[id] || {});
+      await approveLedgerIntake(id, values[id] || {}, riskList(row).length > 0);
       setRows((current) => current.filter((candidate) => rowId(candidate) !== id));
       setNotice('Marked READY.');
     } catch (err) {
@@ -136,6 +146,7 @@ export default function LedgerTriageView(): ReactElement {
         {rows.map((row) => {
           const id = rowId(row);
           const missing = (row.missing_fields || []).map(String);
+          const risks = riskList(row).map((name) => RISK_LABELS[name] || name);
           return (
             <article className="ledger-triage-card" key={id} tabIndex={0}>
               <div className="ledger-card-head">
@@ -211,8 +222,21 @@ export default function LedgerTriageView(): ReactElement {
                   />
                 </label>
               ))}
+              {risks.length > 0 && row.status?.toUpperCase() !== 'DUPLICATE' && (
+                <p role="note" className="row-meta">
+                  High blast radius: {risks.join(', ')}. A human must confirm before this row can be READY.
+                </p>
+              )}
               {row.status?.toUpperCase() === 'DUPLICATE' ? (
                 <p className="row-meta">Merge or mark as not a duplicate before approving.</p>
+              ) : risks.length > 0 ? (
+                <TapToFire
+                  label="Approve and mark READY"
+                  testid={`approve-high-risk-${id}`}
+                  disabled={busy !== null}
+                  confirm={`This row touches ${risks.join(', ')}. Mark READY so the queue may pick it up?`}
+                  onFire={() => void approve(row)}
+                />
               ) : (
                 <button
                   type="button"

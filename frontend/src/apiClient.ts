@@ -768,10 +768,13 @@ export function fetchLedgerIntake(): Promise<{ rows: LedgerIntakeRow[] }> {
 export function approveLedgerIntake(
   intakeId: string,
   fields: Record<string, string>,
+  confirm = false,
 ): Promise<{ ok: boolean; row: LedgerIntakeRow }> {
   return postJson<{ ok: boolean; row: LedgerIntakeRow }>(
     `api/ledger-intake/${encodeURIComponent(intakeId)}/approve`,
-    { fields },
+    confirm
+      ? { fields, intent: 'ledger-intake-approve-high-risk', confirmed: true }
+      : { fields },
   );
 }
 

@@ -1,3 +1,4 @@
+import os
 import unittest
 
 from scripts.ledger_intake import (
@@ -6,7 +7,9 @@ from scripts.ledger_intake import (
     dedupe_hash,
     intake_id,
     ready_rows,
+    status_for,
 )
+from backend.core.intake_risk import risk_categories
 
 
 class LedgerIntakeTests(unittest.TestCase):
@@ -124,3 +127,80 @@ class LedgerIntakeTests(unittest.TestCase):
     def test_claim_requires_issue_url(self):
         with self.assertRaises(ValueError):
             claim_row(build_row({"title": "Task", "repo": "arii/remote-server"}), "")
+
+
+def _complete(**overrides):
+    return {
+        "title": "Tidy docs",
+        "repo": "arii/remote-server",
+        "problem": "wording",
+        "scope": "docs",
+        "done_when": "merged",
+        **overrides,
+    }
+
+
+class HighBlastRadiusLockTests(unittest.TestCase):
+    def test_categories_detected_on_sample_rows(self):
+        samples = {
+            "production_mutation": [
+                "Deploy the backend",
+                "run docker compose up on the host",
+                "DROP TABLE users",
+                "rm -rf the cache dir",
+                "Restart services after the change",
+            ],
+            "external_comms": [
+                "Email the customers",
+                "Publish the release notes",
+                "post to Slack",
+                "send an ntfy alert",
+            ],
+            "billing_permission": [
+                "Raise the spend cap",
+                "change IAM roles",
+                "rotate token scopes",
+                "enable branch protection",
+                "grant admin",
+            ],
+        }
+        for category, titles in samples.items():
+            for title in titles:
+                with self.subTest(title=title):
+                    self.assertIn(category, risk_categories({"title": title}))
+
+    def test_other_fields_are_scanned(self):
+        self.assertEqual(
+            risk_categories({"done_when": "customers receive an email"}),
+            ["external_comms"],
+        )
+
+    def test_plain_row_has_no_categories(self):
+        self.assertEqual(risk_categories(_complete()), [])
+
+    def test_complete_flagged_row_locks_to_needs_approval(self):
+        row = build_row(_complete(title="Deploy the backend"))
+        self.assertEqual(row["status"], "NEEDS_APPROVAL")
+        self.assertEqual(row["risk_categories"], "production_mutation")
+
+    def test_unflagged_complete_row_is_unchanged(self):
+        self.assertEqual(build_row(_complete())["status"], "READY")
+
+    def test_precedence_of_duplicate_and_missing_fields_is_unchanged(self):
+        flagged = _complete(title="Deploy the backend")
+        self.assertEqual(status_for(flagged, duplicate=True), "DUPLICATE")
+        self.assertEqual(status_for({**flagged, "scope": ""}), "NEEDS_INFO")
+
+    def test_needs_approval_never_reaches_ready_rows(self):
+        row = build_row(_complete(title="Deploy the backend"))
+        self.assertEqual(ready_rows([row]), [])
+
+    def test_queue_runner_has_no_intake_status_path(self):
+        # The queue dispatches only on the GitHub `ready` label. Nothing in
+        # it may read intake status or promote NEEDS_APPROVAL to that label.
+        path = os.path.join(os.getcwd(), "scripts", "queue_runner.py")
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        for needle in ("NEEDS_APPROVAL", "ledger_intake", "intake_risk"):
+            self.assertNotIn(needle, source)
+        self.assertIn('if "ready" not in labels', source)
