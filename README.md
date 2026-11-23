@@ -98,6 +98,7 @@ Configure paths/runtimes through `--config` or `QUEUE_CONFIG`. Bounded
 reservations count toward its maximum $0.50 recorded-spend cap; unknown
 unbounded spend halts. Installing this repository does not start the queue.
 See [the queue runbook](docs/twt-queue.md) before enabling or recovering it.
+The runbook also covers the [optional post-run S5 failure audit](docs/twt-queue.md#post-run-s5-failure-audit).
 
 ## CI and local checks
 

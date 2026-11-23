@@ -237,6 +237,49 @@ review of a real PR needs Ari.
 
 ## Agent Ledger rows
 
+### Post-run S5 failure audit
+
+The optional audit runs on the supervisor after each worker exits, including
+failed or interrupted runs recovered on startup. It makes no model calls. It
+reads the TwT SQLite audit tables in read-only mode and counts failed upstream
+attempts by provider and HTTP status or known error reason, plus exhausted
+waterfalls. It checks retained coder traces in current and archived jobs via
+the configured worker runtime so root-owned traces stay in the container.
+Counts are per provider attempt, exhausted request, or affected coder trace.
+Only the fixed cause signatures leave the audit, not provider payloads or
+individual trace contents.
+
+On S5, dry-run from the host using the active queue's config:
+
+```sh
+python3 scripts/twt_failure_audit.py --config ~/twt/queue/config-main.json \
+  --twt-db ~/twt/catalog.sqlite3
+```
+
+This prints grouped counts and whether each cause was seen before without
+writing to the Agent Ledger or its audit state. Review the retained history
+first: the initial scan includes historical causes. To enable filing on the
+next approved queue start, point `QUEUE_RUNNER` at the updated checkout (with
+`twt_failure_audit.py` and `ledger_post.py` alongside it) and add
+`"failure_audit_db": "/home/ari/twt/catalog.sqlite3"` to the host queue config.
+No separate service or TwT configuration change is needed. Omit the setting to
+leave filing disabled.
+
+For each new signature, the audit uses the existing Form writer as `S5-Local`
+with status `Act` (TwT tasks go to `boomtick`, coder tasks to `remote-server`).
+The Agent Ledger hook must allow that source and both repos. The supervisor
+records a signature in `failure-audit-seen.json` under `state_dir` only after
+the Form accepts the row; keep this file across restarts. Submissions use
+stable notes so the hook's replay deduplication also applies. Before enabling,
+confirm that the hook's remaining shared UTC-day capacity can cover the
+dry-run's new causes. A Form success does not confirm issue creation, and the
+audit does not resubmit a row the Form already accepted. Check the hook's
+outcome rows after the initial backfill.
+The audit never sets `ready`. Audit errors are logged but do not change the
+queue's run status; a failed Form submission remains eligible on the next run.
+
+### Ledger intake review
+
 `python3 scripts/ledger_intake_review.py OWNER/REPO NUMBER` audits one new `ledger-intake` issue through local Ollama/TwT and may post one finding comment. It checks the issue body for the canonical `problem`, `scope` and `done_when` fields (the hook's `Problem`, `Out of scope` and `Done when` sections; `title` and `repo` come from the issue itself) and reports gaps by those names. It never changes labels or issue state.
 
 ### Missing routing fields (#1585)
