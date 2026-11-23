@@ -149,6 +149,78 @@ class TestRepairBudget(unittest.TestCase):
             guard(self.call("read_file", file_path="next.py"), handler)
         self.assertEqual(handler.call_count, coder.INITIAL_TOOL_LIMIT)
 
+    def test_1633_exploring_without_an_edit_nudges_then_blocks(self):
+        from langchain_core.messages import ToolMessage
+
+        handler = mock.Mock(
+            return_value=ToolMessage(
+                content="ok", tool_call_id="probe", status="success"
+            )
+        )
+        guard = coder.coder_tool_middleware().wrap_tool_call
+        for n in range(coder.EXPLORE_NUDGE - 1):
+            guard(self.call("grep", path="a.py", pattern=f"p{n}"), handler)
+        nudge = guard(self.call("read_file", file_path="b.py"), handler)
+        self.assertEqual(nudge.status, "error")
+        self.assertIn("make the planned edit now", nudge.content)
+        self.assertEqual(handler.call_count, coder.EXPLORE_NUDGE - 1)
+        for n in range(coder.EXPLORE_LIMIT - coder.EXPLORE_NUDGE - 1):
+            guard(self.call("ls", path=f"d{n}"), handler)
+        with self.assertRaisesRegex(
+            coder.CoderBudgetExceeded, "BLOCKED.*inspection calls without editing"
+        ):
+            guard(self.call("glob", pattern="*.ts"), handler)
+
+    def test_1633_calls_batched_with_the_nudge_get_it_instead_of_the_block(self):
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        handler = mock.Mock(
+            return_value=ToolMessage(
+                content="ok", tool_call_id="probe", status="success"
+            )
+        )
+        guard = coder.coder_tool_middleware().wrap_tool_call
+        for n in range(coder.EXPLORE_NUDGE - 1):
+            guard(self.call("grep", path="a.py", pattern=f"p{n}"), handler)
+        batch = [
+            {"name": "grep", "args": {"pattern": f"b{n}"}, "id": f"b{n}"}
+            for n in range(5)
+        ]
+        state = {"messages": [AIMessage(content="", tool_calls=batch)]}
+        for call in batch:
+            result = guard(SimpleNamespace(tool_call=call, state=state), handler)
+            self.assertIn("make the planned edit now", result.content)
+            self.assertIn("BLOCKED #<issue>", result.content)
+        self.assertEqual(handler.call_count, coder.EXPLORE_NUDGE - 1)
+        for n in range(coder.EXPLORE_LIMIT - coder.EXPLORE_NUDGE - 1):
+            guard(self.call("ls", path=f"d{n}"), handler)
+        with self.assertRaisesRegex(coder.CoderBudgetExceeded, "without editing"):
+            guard(self.call("glob", pattern="*.ts"), handler)
+
+    def test_1633_successful_edit_resets_exploring_and_other_modes_are_unbound(self):
+        from langchain_core.messages import ToolMessage
+
+        handler = mock.Mock(
+            return_value=ToolMessage(
+                content="ok", tool_call_id="probe", status="success"
+            )
+        )
+        guard = coder.coder_tool_middleware().wrap_tool_call
+        for n in range(coder.EXPLORE_NUDGE - 1):
+            guard(self.call("grep", path="a.py", pattern=f"p{n}"), handler)
+        guard(self.call("edit_file", file_path="a.py"), handler)
+        for n in range(coder.EXPLORE_NUDGE - 1):
+            result = guard(self.call("grep", path="a.py", pattern=f"q{n}"), handler)
+            self.assertEqual(result.content, "ok")
+        planner = coder.coder_tool_middleware(planning=True).wrap_tool_call
+        for n in range(coder.EXPLORE_LIMIT + 1):
+            self.assertEqual(
+                planner(
+                    self.call("grep", path="a.py", pattern=f"r{n}"), handler
+                ).content,
+                "ok",
+            )
+
     def test_1550_initial_repeated_read_stops_before_graph_backstop(self):
         from langchain_core.messages import AIMessage, HumanMessage
         from tests.test_coder_outcome import LocalModel
