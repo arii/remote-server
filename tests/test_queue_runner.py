@@ -514,7 +514,9 @@ class RunnerTests(unittest.TestCase):
     @mock.patch.object(
         runner.subprocess,
         "check_output",
-        return_value=json.dumps({"state": "open", "title": "Fix"}),
+        return_value=json.dumps(
+            {"state": "open", "labels": [{"name": "ready"}], "title": "Fix"}
+        ),
     )
     def test_lowered_cap_halts_retry_without_creating_empty_directory(
         self, _read, _signal
@@ -659,7 +661,14 @@ class RunnerTests(unittest.TestCase):
     @mock.patch.object(
         runner.subprocess,
         "check_output",
-        return_value=json.dumps({"state": "open", "title": "Fix", "body": "scope"}),
+        return_value=json.dumps(
+            {
+                "state": "open",
+                "labels": [{"name": "ready"}],
+                "title": "Fix",
+                "body": "scope",
+            }
+        ),
     )
     def test_retried_issue_dispatches_first_with_remaining_budget_once(
         self, _read, _signal
@@ -872,7 +881,12 @@ class RunnerTests(unittest.TestCase):
         runner.subprocess,
         "check_output",
         return_value=json.dumps(
-            {"state": "open", "title": "Fix issue", "body": "scope"}
+            {
+                "state": "open",
+                "labels": [{"name": "ready"}],
+                "title": "Fix issue",
+                "body": "scope",
+            }
         ),
     )
     def test_normal_worker_failure_continues_but_unknown_cost_halts(
@@ -917,11 +931,69 @@ class RunnerTests(unittest.TestCase):
                 spawn.assert_not_called()
 
     @mock.patch.object(runner.signal, "signal")
+    def test_only_ready_open_issues_are_dispatched(self, _signal):
+        for labels, refresh_error, dispatched in (
+            ([{"name": "ledger-intake"}], None, False),
+            ([], None, False),
+            (None, None, False),
+            ([{"name": "ledger-intake"}, {"name": "ready"}], None, True),
+            (None, ValueError("boom"), False),
+        ):
+            with tempfile.TemporaryDirectory() as root:
+                config, state = self.fixture(root)
+                payload = {"state": "open", "title": "Fix", "body": "scope"}
+                if labels is not None:
+                    payload["labels"] = labels
+                github = mock.Mock(
+                    side_effect=refresh_error, return_value=json.dumps(payload)
+                )
+                process = mock.Mock(returncode=0)
+                process.communicate.side_effect = lambda _source: runner.write_json(
+                    state / "owner_repo-7" / "summary.json",
+                    {
+                        "halt_queue": False,
+                        "reconciliation": {"reconciled": True},
+                        "result": {"status": "DONE"},
+                        "exit_code": 0,
+                    },
+                )
+                with (
+                    self.subTest(labels=labels, error=refresh_error),
+                    mock.patch.object(runner.subprocess, "check_output", github),
+                    mock.patch.object(
+                        runner.subprocess, "Popen", return_value=process
+                    ) as spawn,
+                    mock.patch("builtins.print") as log,
+                ):
+                    self.assertEqual(runner.supervise(config), 0)
+                    status = runner.read_json(state / "status.json")
+                    if dispatched:
+                        spawn.assert_called_once()
+                        self.assertEqual(status["completed"], ["owner/repo#7"])
+                        continue
+                    spawn.assert_not_called()
+                    self.assertEqual(status["completed"], [])
+                    self.assertNotIn("skipped", status)
+                    self.assertFalse(status.get("consecutive_failures"))
+                    lines = [call.args[0] for call in log.call_args_list]
+                    expected = (
+                        "SKIP owner/repo#7 refresh failed: boom"
+                        if refresh_error
+                        else "SKIP owner/repo#7 not ready"
+                    )
+                    self.assertIn(expected, lines)
+
+    @mock.patch.object(runner.signal, "signal")
     @mock.patch.object(
         runner.subprocess,
         "check_output",
         return_value=json.dumps(
-            {"state": "open", "title": "Fix issue", "body": "scope"}
+            {
+                "state": "open",
+                "labels": [{"name": "ready"}],
+                "title": "Fix issue",
+                "body": "scope",
+            }
         ),
     )
     def test_no_summary_and_interrupted_runs_never_restart_blindly(
@@ -975,6 +1047,7 @@ class RunnerTests(unittest.TestCase):
                 return json.dumps(
                     {
                         "state": "closed" if number == 100 else "open",
+                        "labels": [{"name": "ready"}],
                         "title": "Fix",
                         "body": "scope",
                     }
@@ -1029,7 +1102,14 @@ class RunnerTests(unittest.TestCase):
                 if repo in failing:
                     raise runner.subprocess.CalledProcessError(1, command)
                 return json.dumps(listings.get(repo, []))
-            return json.dumps({"state": "open", "title": "Fix", "body": "scope"})
+            return json.dumps(
+                {
+                    "state": "open",
+                    "title": "Fix",
+                    "body": "scope",
+                    "labels": [{"name": "ready"}],
+                }
+            )
 
         return fake
 
@@ -1139,7 +1219,14 @@ class RunnerTests(unittest.TestCase):
     @mock.patch.object(
         runner.subprocess,
         "check_output",
-        return_value=json.dumps({"state": "open", "title": "Fix", "body": "scope"}),
+        return_value=json.dumps(
+            {
+                "state": "open",
+                "labels": [{"name": "ready"}],
+                "title": "Fix",
+                "body": "scope",
+            }
+        ),
     )
     def test_common_failures_halt_after_three_and_worker_exit_must_match(
         self, _read, _signal
@@ -1179,7 +1266,14 @@ class RunnerTests(unittest.TestCase):
     @mock.patch.object(
         runner.subprocess,
         "check_output",
-        return_value=json.dumps({"state": "open", "title": "Fix", "body": "scope"}),
+        return_value=json.dumps(
+            {
+                "state": "open",
+                "labels": [{"name": "ready"}],
+                "title": "Fix",
+                "body": "scope",
+            }
+        ),
     )
     def test_real_stdin_worker_uses_declared_paths_without_live_pipeline(
         self, _read, _signal
@@ -1277,7 +1371,12 @@ class LedgerTests(unittest.TestCase):
                 runner.subprocess,
                 "check_output",
                 side_effect=lambda *a, **k: json.dumps(
-                    {"state": "open", "title": "Fix", "body": "scope"}
+                    {
+                        "state": "open",
+                        "title": "Fix",
+                        "body": "scope",
+                        "labels": [{"name": "ready"}],
+                    }
                 ),
             ),
         ):
@@ -1849,7 +1948,7 @@ if __name__ == "__main__":
 class StrongRoutingTests(unittest.TestCase):
     fixture = RunnerTests.fixture
 
-    def run_one(self, root, summary, labels=(), seed=None, config_extra=None):
+    def run_one(self, root, summary, labels=("ready",), seed=None, config_extra=None):
         """Dispatch issue 7 once with a stubbed worker; return (status, job, out)."""
         config, state = self.fixture(root)
         if config_extra:
@@ -1857,11 +1956,14 @@ class StrongRoutingTests(unittest.TestCase):
         if seed:
             state.mkdir(exist_ok=True)
             runner.write_json(state / "status.json", seed)
+        # The dispatch gate (#1589) requires a ready label on refresh; routing
+        # behavior is orthogonal, so every refresh here carries ready.
+        names = dict.fromkeys([*labels, "ready"])
         payload = {
             "state": "open",
             "title": "Fix",
             "body": "scope",
-            "labels": [{"name": name} for name in labels],
+            "labels": [{"name": name} for name in names],
         }
 
         def spawn(command, **_kwargs):

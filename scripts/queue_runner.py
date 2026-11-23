@@ -1155,18 +1155,30 @@ def supervise(config_path, *, clear_halt=False):
                 continue
             if issue["repo"] not in config["repo_paths"]:
                 raise ValueError("no configured checkout for " + issue["repo"])
-            fresh = json.loads(
-                subprocess.check_output(
-                    config.get("gh_command", ["gh"])
-                    + ["api", f"repos/{issue['repo']}/issues/{issue['number']}"],
-                    text=True,
+            try:
+                fresh = json.loads(
+                    subprocess.check_output(
+                        config.get("gh_command", ["gh"])
+                        + ["api", f"repos/{issue['repo']}/issues/{issue['number']}"],
+                        text=True,
+                    )
                 )
-            )
-            if fresh["state"] != "open":
+                state = fresh["state"]
+                labels = {
+                    label.get("name") if isinstance(label, dict) else label
+                    for label in fresh.get("labels") or []
+                }
+            except (subprocess.CalledProcessError, OSError, ValueError, KeyError) as e:
+                print(f"SKIP {key} refresh failed: {e}", flush=True)
+                continue
+            if state != "open":
                 status["completed"].append(key)
                 if status.get("retry") == key:
                     status.pop("retry")
                 write_json(status_path, status)
+                continue
+            if "ready" not in labels:
+                print(f"SKIP {key} not ready", flush=True)
                 continue
             name = issue["repo"].replace("/", "_") + "-" + str(issue["number"])
             directory = root / name

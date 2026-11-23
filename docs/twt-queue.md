@@ -93,6 +93,16 @@ removes labels. Every `discover_repos` entry must also be in `repo_paths`
 If `gh` fails for a repo, a `DISCOVERY` line is logged and that repo is skipped
 for this refresh. If a repo returns 100 issues, the log warns that older ones
 may be missing.
+## Dispatch gate
+
+The queue dispatches an issue only if, when it is refreshed just before dispatch,
+it is open and carries the `ready` label. Only Ariel adds `ready`; the queue never
+adds or removes `ready` or `ledger-intake`. A listed issue without `ready` logs
+`SKIP owner/repo#N not ready`. It is not marked completed, skipped or failed, and no
+failure counter changes, so the next queue run checks it again and runs it once
+`ready` is added. If the refresh call fails or returns unusable data, the queue fails
+closed: it logs `SKIP owner/repo#N refresh failed: <reason>` and does not dispatch.
+Closed issues are marked completed without dispatch.
 
 ## Accounting and recovery
 
