@@ -25,13 +25,6 @@ def setUpModule():
     unittest.enterModuleContext(block_google_docs_requests())
 
 
-def setUpModule():
-    # Supervisor runs post claim rows; without this they reach the live Form.
-    guard = mock.patch.object(ledger_post, "post_entry", return_value=200)
-    guard.start()
-    unittest.addModuleCleanup(guard.stop)
-
-
 class ClaimsPrValidTests(unittest.TestCase):
     def test_valid_pr(self):
         ok, reason = runner.claims_pr_valid(
