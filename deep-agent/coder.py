@@ -78,6 +78,9 @@ REPAIR_REPEAT_LIMIT = 3
 REPAIR_MODEL_LIMIT = 12
 INITIAL_MODEL_LIMIT = 20
 INITIAL_TOOL_LIMIT = 32
+INSPECTION_TOOLS = frozenset({"read_file", "grep", "ls", "glob"})
+EXPLORE_NUDGE = 12
+EXPLORE_LIMIT = 20
 DEFAULT_FALLBACK_MODEL = "nebius/zai-org/GLM-5.3-Flash"
 # Middleware adds graph steps beyond the model and tool calls themselves.
 RECURSION_LIMIT = int(
@@ -746,13 +749,15 @@ class RepairBudgetExceeded(CoderBudgetExceeded):
     pass
 
 
-def coder_tool_middleware(*, repair=False):
+def coder_tool_middleware(*, repair=False, planning=False):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
 
     seen = {}
     earlier = {}
     calls = 0
+    explored = 0
+    bound_exploring = not (repair or planning)
     lock = threading.Lock()
     limit = REPAIR_TOOL_LIMIT if repair else INITIAL_TOOL_LIMIT
     label = "Repair" if repair else "Initial implementation"
@@ -760,13 +765,31 @@ def coder_tool_middleware(*, repair=False):
 
     @wrap_tool_call
     def bound_calls(request, handler):
-        nonlocal calls
+        nonlocal calls, explored
         call = request.tool_call
         key = (call["name"], json.dumps(call["args"], sort_keys=True))
         with lock:
             calls += 1
             if calls > limit:
                 raise error(f"BLOCKED: {label} tool budget exhausted ({limit} calls)")
+            if bound_exploring and call["name"] in INSPECTION_TOOLS:
+                explored += 1
+                if explored >= EXPLORE_LIMIT:
+                    raise error(
+                        f"BLOCKED: {label} made {explored} inspection calls "
+                        "without editing"
+                    )
+                if explored == EXPLORE_NUDGE:
+                    return ToolMessage(
+                        content=(
+                            f"{explored} inspection calls without an edit. You have "
+                            "enough context: make the planned edit now with "
+                            "edit_file or write_file, or finish with "
+                            "BLOCKED: <reason>."
+                        ),
+                        tool_call_id=call["id"],
+                        status="error",
+                    )
             if call["name"] != "run_check" and (repair or call["name"] != "read_file"):
                 seen[key] = seen.get(key, 0) + 1
                 if seen[key] >= REPAIR_REPEAT_LIMIT:
@@ -792,6 +815,7 @@ def coder_tool_middleware(*, repair=False):
         if call["name"] in MUTATING_TOOLS and result.status == "success":
             with lock:
                 seen.clear()
+                explored = 0
         return result
 
     return bound_calls
@@ -858,7 +882,7 @@ def build_agent(
     ]
     if written_files is not None:
         middleware.append(implementation_tool_middleware())
-    middleware.insert(0, coder_tool_middleware(repair=repair))
+    middleware.insert(0, coder_tool_middleware(repair=repair, planning=planning))
     if not planning:
         middleware.insert(
             0,
