@@ -4,7 +4,11 @@
   "state_dir": "/absolute/queue-state",
   "runtime_state_dir": "/absolute/queue-state",
   "pipeline_checkout": "/absolute/remote-server",
-  "repo_paths": {"arii/remote-server": "/absolute/remote-server"},
+  "repo_paths": {
+    "arii/remote-server": "/absolute/remote-server",
+    "arii/boomtick": "/absolute/boomtick"
+  },
+  "discover_repos": ["arii/remote-server", "arii/boomtick"],
   "runtime_command": [],
   "worker_python": "/opt/venvs/td/bin/python",
   "cap_usd": 0.5,
