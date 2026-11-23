@@ -140,7 +140,7 @@ test.describe('responsive console layout', () => {
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
       const nav = bar.getByRole('navigation', { name: 'Views' });
-      await expect(nav.locator('button')).toHaveCount(8);
+      await expect(nav.locator('button')).toHaveCount(9);
       expect(await nav.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
       for (const overflow of await nav.locator('button').evaluateAll((buttons) =>
         buttons.map((button) => button.scrollWidth - button.clientWidth),
@@ -158,7 +158,7 @@ test.describe('responsive console layout', () => {
     await expect(page.getByTestId('nav-badge-review')).toBeVisible();
     const bar = page.getByTestId('topbar');
     const nav = bar.getByRole('navigation', { name: 'Views' });
-    await expect(nav.locator('button')).toHaveCount(8);
+    await expect(nav.locator('button')).toHaveCount(9);
     const rows = await nav.locator('button').evaluateAll((buttons) =>
       buttons.map((button) => Math.round(button.getBoundingClientRect().top)),
     );
