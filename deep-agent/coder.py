@@ -1563,7 +1563,7 @@ def _run_coder_attempt(
         reply = extract_reply(result)
         if verified and repair_files:
             written_files.update(existing_implementation_files(worktree, repair_files))
-        reason = implementation_failure(reply, written_files)
+        reason = implementation_failure(reply, written_files, verified)
         if reason:
             recorder.event("coder_verdict", ok=False, reason=reason)
             raise RuntimeError(reason)
@@ -1612,14 +1612,21 @@ def existing_implementation_files(worktree, allowed_files):
 NO_WRITES = "no written files for implementation"
 
 
-def implementation_failure(reply, written_files):
+def implementation_failure(reply, written_files, verified=False):
+    """Why the coder's reply fails its contract, or "" when it holds.
+
+    A reply missing the terminal DONE/BLOCKED line still counts as done
+    when the run wrote files and passed run_check; the pipeline's
+    verification gate and reviewer stage still judge the diff.
+    """
     lines = reply.strip().splitlines()
     contract = (
         re.fullmatch(r"(DONE|BLOCKED) #\d+", lines[-1].strip()) if lines else None
     )
     reasons = []
     if contract is None:
-        reasons.append("missing terminal DONE #<issue> or BLOCKED #<issue> line")
+        if not (verified and written_files):
+            reasons.append("missing terminal DONE #<issue> or BLOCKED #<issue> line")
     elif contract.group(1) == "BLOCKED":
         reasons.append("coder reported " + contract.group(0))
     if not written_files:

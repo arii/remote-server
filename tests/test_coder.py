@@ -823,5 +823,28 @@ class TestUnchangedInspectionNotice(unittest.TestCase):
             self.assertIn("identical output", last)
 
 
+class TestImplementationFailure(unittest.TestCase):
+    def test_missing_done_line_passes_with_writes_and_passing_check(self):
+        self.assertEqual(
+            coder.implementation_failure("edited a.py", {"a.py"}, verified=True), ""
+        )
+
+    def test_missing_done_line_fails_without_passing_check(self):
+        reason = coder.implementation_failure("edited a.py", {"a.py"}, verified=False)
+        self.assertIn("missing terminal", reason)
+
+    def test_missing_done_line_fails_without_writes(self):
+        reason = coder.implementation_failure("looked around", set(), verified=True)
+        self.assertIn("missing terminal", reason)
+        self.assertIn(coder.NO_WRITES, reason)
+
+    def test_blocked_line_still_fails_when_verified(self):
+        reason = coder.implementation_failure("stuck\nBLOCKED #7", {"a.py"}, True)
+        self.assertIn("coder reported BLOCKED #7", reason)
+
+    def test_done_line_passes(self):
+        self.assertEqual(coder.implementation_failure("ok\nDONE #7", {"a.py"}), "")
+
+
 if __name__ == "__main__":
     unittest.main()
