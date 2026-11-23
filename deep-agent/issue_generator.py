@@ -28,7 +28,7 @@ from threading import Lock
 import skills_registry
 import literal_checks
 from coder import DEFAULT_TOOL_OUTPUT_LIMIT, _truncate_tool_output
-from backend.shared.s5tools import verification_guidance
+from backend.shared.s5tools import active_checkout_path, verification_guidance
 
 REQUIRED_SECTIONS = (
     "Problem Statement",
@@ -384,17 +384,24 @@ class IssueGeneratorGraph:
         if brief in self._preseed_cache:
             return self._preseed_cache[brief]
         parts = []
-        candidates = evidence_cites_repo_file(brief, self.repo_root)
+        candidates = {}
+        for rel in evidence_cites_repo_file(brief, self.repo_root):
+            try:
+                candidates[rel] = active_checkout_path(self.repo_root, rel)
+            except ValueError:
+                continue
+            if len(candidates) == 3:
+                break
         try:
             top = sorted(os.listdir(self.repo_root))
-            top = [e for e in top if e != ".git"][:40]
+            top = [e for e in top if e not in {".git", ".worktrees"}][:40]
             parts.append("Repo top level: " + ", ".join(top))
         except OSError as exc:
             parts.append(f"Repo tree unavailable: {exc}")
-        for rel in candidates[:3]:
+        for rel, path in candidates.items():
             try:
                 with open(
-                    os.path.join(self.repo_root, rel),
+                    path,
                     encoding="utf-8",
                     errors="replace",
                 ) as handle:
@@ -418,7 +425,7 @@ class IssueGeneratorGraph:
             try:
                 proc = subprocess.run(
                     ["git", "-C", self.repo_root, "log", "--oneline", "-5", "--"]
-                    + candidates[:3],
+                    + list(candidates),
                     capture_output=True,
                     text=True,
                     timeout=10,
