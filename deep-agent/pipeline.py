@@ -625,6 +625,10 @@ class Pipeline:
                     )
                     if os.path.normpath(path) != os.path.normpath(spec_path)
                 ]
+            else:
+                kwargs["first_edit"] = coder.first_edit_targets(
+                    root, plan, exclude=(spec_path,)
+                )
             meter = {}
             try:
                 result = coder.run_coder(
@@ -696,7 +700,7 @@ class Pipeline:
             return summary
 
         def plan(task, root, context):
-            context = {**self.answers, **context}
+            context = {**self.answers, **context, "first_edit_plan": not repair_notes}
             if repair_notes:
                 context["repair_notes"] = repair_notes
             if self._repo_slug():

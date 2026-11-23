@@ -183,7 +183,7 @@ VERIFY_NUDGE = (
 CODER_RULES = (
     """You are implementing the task below in the checkout at {worktree}. Rules:
 - File paths are repo-relative like frontend/src/views/NowView.tsx; never use absolute paths or a leading /.
-- Start filesystem discovery with ls(path="."). The worktree above is your sole filesystem root; never list the parent checkout even if task context names it.
+- Start with the planned file reads when provided; otherwise start discovery with ls(path="."). Never list the parent checkout.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
 - Invoke tools through the function-calling interface. Never print JSON commands or pretend a prose command executed.
@@ -290,6 +290,46 @@ def validate_plan(plan):
     return True, "PLAN recorded:\n" + plan.strip()
 
 
+def first_edit_targets(worktree, plan, *, exclude=()):
+    """Use the plan's file list, not incidental paths in its prose."""
+    paths = files_named(*re.findall(r"\[files:\s*([^\]]+)\]", plan, re.I))
+    targets = {}
+    for path in paths:
+        path = os.path.normpath(path)
+        if path in exclude:
+            continue
+        try:
+            target = assert_inside(worktree, path)
+        except ValueError:
+            continue
+        if os.path.isfile(target):
+            targets[path] = True
+        elif not os.path.lexists(target) and os.path.isdir(os.path.dirname(target)):
+            targets[path] = False
+    return targets
+
+
+def plan_path_hints(worktree, brief):
+    """Show paths that actually exist, without sending a repository-wide listing."""
+    subject = brief.split("### Grounded Code Context (RAG):", 1)[0]
+    terms = set(re.findall(r"[a-z]{4,}", subject.lower()))
+    listing = subprocess.run(
+        ["git", "-C", worktree, "ls-files", "-z"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if listing.returncode:
+        return ""
+    matches = []
+    for path in listing.stdout.split("\0"):
+        words = set(re.findall(r"[a-z]{4,}", path.lower()))
+        score = len(words & terms)
+        if score:
+            matches.append((-score, path))
+    return "\n".join(path for _, path in sorted(matches)[:30])
+
+
 def parse_args(argv):
     """Spawner-shaped argv: -p --system-prompt CTX [--model M] BRIEF.
 
@@ -361,6 +401,17 @@ def _default_plan_fn(brief, worktree_root, context):
     context = dict(context or {})
     skills = (context.get("skills") or "").strip()
     skills_block = "\n\n---\n\nSkills:\n" + skills if skills else ""
+    path_hints = (
+        plan_path_hints(worktree_root, brief) if context.get("first_edit_plan") else ""
+    )
+    paths_block = (
+        "\n\nName concrete repo-relative implementation files, not symbols or the "
+        "already-written spec. Use real paths from context; only name a missing "
+        "file if you intend to create it in an existing directory."
+        f"\n\nRelevant tracked paths:\n{path_hints}"
+        if context.get("first_edit_plan")
+        else ""
+    )
     prompt = (
         "Propose an implementation plan for this brief. "
         "Reply with a numbered step list, one step per line, each "
@@ -368,6 +419,7 @@ def _default_plan_fn(brief, worktree_root, context):
         "Keep it to the brief; no questions."
         f"\n\n{verification_guidance(context.get('repo') or None)}"
         f"{skills_block}"
+        f"{paths_block}"
         f"\n\nBrief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
         f"\n\nRepair notes:\n{context.get('repair_notes', '')}"
     )
@@ -715,10 +767,54 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
     return guard_file_call
 
 
-def implementation_tool_middleware():
+def build_edit_tool(backend):
+    from langchain_core.tools import ToolException, tool
+
+    @tool
+    def edit_file(file_path: str, old_string: str, new_string: str) -> str:
+        """Replace one exact, unique text block. Copy old_string from the file."""
+        if not old_string or old_string == new_string:
+            raise ToolException(
+                "Provide non-empty old_string and different new_string."
+            )
+        result = backend.edit(file_path, old_string, new_string)
+        if result.error:
+            raise ToolException(
+                f"{result.error} Copy one exact block from the file, including "
+                "enough surrounding text to match exactly once."
+            )
+        return f"Applied one replacement in {file_path}."
+
+    edit_file.handle_tool_error = True
+    return edit_file
+
+
+def implementation_tool_middleware(written_files=None, first_edit=None):
     from langchain.agents.middleware import AgentMiddleware
+    from langchain_core.messages import ToolMessage
+
+    unread = {path for path, exists in (first_edit or {}).items() if exists}
+    lock = threading.Lock()
+
+    def first_edit_tools():
+        if unread:
+            return {"read_file"}
+        return {
+            "edit_file" if exists else "write_file" for exists in first_edit.values()
+        }
 
     def grounded_request(request):
+        with lock:
+            if first_edit is not None and not written_files:
+                names = first_edit_tools()
+                return request.override(
+                    tools=[
+                        tool
+                        for tool in request.tools
+                        if getattr(tool, "name", None) in names
+                    ],
+                    tool_choice="required",
+                )
         if request.tools and not any(
             message.type == "tool" and message.status == "success"
             for message in request.messages
@@ -732,6 +828,41 @@ def implementation_tool_middleware():
 
         async def awrap_model_call(self, request, handler):
             return await handler(grounded_request(request))
+
+        def wrap_tool_call(self, request, handler):
+            call = request.tool_call
+            name = call["name"]
+            path = call["args"].get("file_path")
+            if isinstance(path, str):
+                path = os.path.normpath(path)
+            with lock:
+                if first_edit is not None and not written_files:
+                    permitted = (
+                        name == "read_file" and path in unread
+                        if unread
+                        else name in first_edit_tools()
+                        and path in first_edit
+                        and name == ("edit_file" if first_edit[path] else "write_file")
+                    )
+                    if not permitted:
+                        action = (
+                            "Read each planned file once with read_file: "
+                            + ", ".join(sorted(unread))
+                            if unread
+                            else "Make the first planned edit now with edit_file for "
+                            "existing files or write_file for new files: "
+                            + ", ".join(first_edit)
+                        )
+                        return ToolMessage(
+                            content=action,
+                            tool_call_id=call["id"],
+                            status="error",
+                        )
+            result = handler(request)
+            if name == "read_file" and getattr(result, "status", None) == "success":
+                with lock:
+                    unread.discard(path)
+            return result
 
     return GroundImplementation()
 
@@ -760,7 +891,7 @@ def issuing_message(request):
     return None
 
 
-def coder_tool_middleware(*, repair=False, planning=False):
+def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=None):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
 
@@ -784,7 +915,11 @@ def coder_tool_middleware(*, repair=False, planning=False):
             calls += 1
             if calls > limit:
                 raise error(f"BLOCKED: {label} tool budget exhausted ({limit} calls)")
-            if bound_exploring and call["name"] in INSPECTION_TOOLS:
+            if (
+                bound_exploring
+                and (first_edit_writes is None or first_edit_writes)
+                and call["name"] in INSPECTION_TOOLS
+            ):
                 # Calls batched with the nudged one get the nudge too, so the
                 # model sees it before the hard stop.
                 message = issuing_message(request)
@@ -855,6 +990,7 @@ def build_agent(
     planning=False,
     thread_floor=0,
     call_cap=None,
+    first_edit=None,
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
@@ -890,7 +1026,7 @@ def build_agent(
                 "ls",
                 "read_file",
                 "write_file",
-                "edit_file",
+                *(["edit_file"] if first_edit is None else []),
                 "delete",
                 "glob",
                 "grep",
@@ -899,8 +1035,15 @@ def build_agent(
         worktree_file_middleware(worktree, written_files),
     ]
     if written_files is not None:
-        middleware.append(implementation_tool_middleware())
-    middleware.insert(0, coder_tool_middleware(repair=repair, planning=planning))
+        middleware.append(implementation_tool_middleware(written_files, first_edit))
+    middleware.insert(
+        0,
+        coder_tool_middleware(
+            repair=repair,
+            planning=planning,
+            first_edit_writes=written_files if first_edit is not None else None,
+        ),
+    )
     if not planning:
         middleware.insert(
             0,
@@ -921,6 +1064,8 @@ def build_agent(
         default_tools = [build_check_tool(worktree, written_files, repo)]
     else:
         default_tools = list(tools)
+    if first_edit is not None:
+        default_tools.append(build_edit_tool(backend))
     return create_deep_agent(
         model=model,
         tools=default_tools,
@@ -1328,6 +1473,7 @@ def run_coder(
     continuations=0,
     call_budget=None,
     meter=None,
+    first_edit=None,
 ):
     """Code normally; on a model-call cap, resume, then allow one TwT fallback.
 
@@ -1352,6 +1498,7 @@ def run_coder(
         model_tier=model_tier,
         repo=repo,
         meter=meter,
+        first_edit=first_edit,
     )
 
     def left():
@@ -1432,6 +1579,7 @@ def _run_coder_attempt(
     thread_floor=0,
     call_cap=None,
     meter=None,
+    first_edit=None,
 ):
     """Invoke the coder with a verify gate.
 
@@ -1501,6 +1649,22 @@ def _run_coder_attempt(
         )
 
     try:
+        if first_edit is not None and not prior_files:
+            if not first_edit:
+                raise CoderBudgetExceeded(
+                    "BLOCKED: the approved plan names no usable implementation files"
+                )
+            targets = "\n".join(
+                f"- {path} ({'read then edit' if exists else 'new file'})"
+                for path, exists in first_edit.items()
+            )
+            brief = (
+                "First edit: read each existing file below once, then immediately "
+                "apply one change with edit_file (one exact old_string/new_string "
+                "replacement) or write_file (new file). Do not discover other "
+                "files before the first edit. If you cannot safely edit, report "
+                "the blocker.\n" + targets + "\n\n" + brief
+            )
         saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
         agent = build_agent(
             worktree,
@@ -1514,6 +1678,7 @@ def _run_coder_attempt(
             repo=repo,
             thread_floor=thread_floor,
             call_cap=call_cap,
+            first_edit=first_edit,
         )
         config = {"configurable": {"thread_id": thread}}
 
