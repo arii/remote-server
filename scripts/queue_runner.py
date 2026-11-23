@@ -564,9 +564,29 @@ def archive_issue_worktree(directory):
     if source.exists():
         if destination.exists() or source.is_symlink():
             raise SafetyStop("retry worktree source and archive conflict")
-        branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=source)
+        branch = (
+            git("symbolic-ref", "--short", "HEAD", cwd=source)
+            if record["branch"]
+            else "HEAD"
+        )
         if record["branch"] and branch == record["branch"]:
-            git("branch", "-m", record["archive_branch"], cwd=source)
+            old_ref = "refs/heads/" + record["branch"]
+            new_ref = "refs/heads/" + record["archive_branch"]
+            refs = dict(
+                line.split(" ", 1)
+                for line in git(
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    old_ref,
+                    new_ref,
+                ).splitlines()
+            )
+            if old_ref not in refs:
+                if refs.get(new_ref) != record["head"]:
+                    raise SafetyStop("renamed retry branch differs from saved evidence")
+                git("symbolic-ref", "HEAD", new_ref, cwd=source)
+            else:
+                git("branch", "-m", record["archive_branch"], cwd=source)
         elif branch != (record["archive_branch"] if record["branch"] else "HEAD"):
             raise SafetyStop("retry worktree branch changed during archival")
         destination.parent.mkdir(parents=True, exist_ok=True)

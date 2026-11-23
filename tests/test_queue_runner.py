@@ -91,6 +91,35 @@ class RetryWorktreeTests(unittest.TestCase):
             )
             self.assertFalse(worktree.exists())
 
+    def test_branch_ref_rename_before_head_update_resumes(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo, worktree, archive = self.fixture(root)
+            original = runner.subprocess.check_output
+
+            def command(args, **kwargs):
+                if args[3:5] == ["branch", "-m"]:
+                    self.git(repo, "update-ref", "refs/heads/" + args[-1], "HEAD")
+                    self.git(repo, "update-ref", "-d", "refs/heads/issue-7")
+                    raise OSError("interrupted before worktree HEAD update")
+                return original(args, **kwargs)
+
+            with (
+                mock.patch.object(
+                    runner.subprocess, "check_output", side_effect=command
+                ),
+                self.assertRaises(OSError),
+            ):
+                runner.archive_issue_worktree(archive)
+            self.assertEqual(runner.archive_issue_worktree(archive), 0)
+            saved = runner.read_json(archive / "worktree-archive.json")
+            self.assertEqual(
+                self.git(Path(saved["destination"]), "rev-parse", "HEAD"), saved["head"]
+            )
+            self.assertEqual(
+                (Path(saved["destination"]) / "tracked.txt").read_text(),
+                "dirty evidence",
+            )
+
     def test_missing_worktree_is_an_idempotent_noop(self):
         with tempfile.TemporaryDirectory() as root:
             repo, worktree, archive = self.fixture(root)
