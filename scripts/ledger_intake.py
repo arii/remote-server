@@ -4,6 +4,10 @@
 Blank required fields (repo, scope, done_when, ...) are never defaulted or
 inferred here: they stay blank, are listed in missing_fields and the row is
 NEEDS_INFO until a human fills them (#1585).
+
+Intake never promotes work. It writes only NEW, NEEDS_INFO, DUPLICATE or
+NEEDS_APPROVAL. READY and DISPATCHED stay valid statuses, but only a human
+triage approve sets READY and only the queue sets DISPATCHED (#1613).
 """
 
 import hashlib
@@ -48,7 +52,11 @@ def missing_fields(row):
 
 
 def status_for(row, *, duplicate=False):
-    """Derive the explicit intake state from completeness and duplication."""
+    """Derive the intake state: DUPLICATE, NEEDS_INFO, NEEDS_APPROVAL or NEW.
+
+    Never returns READY or DISPATCHED. A complete, unflagged row is NEW and
+    waits for a human triage approve (#1613).
+    """
     if duplicate:
         return "DUPLICATE"
     if missing_fields(row):
@@ -56,7 +64,7 @@ def status_for(row, *, duplicate=False):
     if risk_categories(row):
         # High-blast-radius rows wait for a human confirm (#1586).
         return "NEEDS_APPROVAL"
-    return "READY"
+    return "NEW"
 
 
 def build_row(row, *, duplicate=False):
@@ -96,5 +104,5 @@ def claim_row(row, issue_url):
 
 
 def ready_rows(rows):
-    """Return only rows explicitly marked READY for queue dispatch."""
+    """Return only rows a human has marked READY (never set by intake)."""
     return [row for row in rows if row.get("status") == "READY"]

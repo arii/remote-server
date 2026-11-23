@@ -258,7 +258,7 @@ route work to the wrong place.
 
 #### Out of scope
 
-Deriving `READY` in `status_for` (#1613) and any new required field.
+Any new required field. `status_for` never derives `READY` or `DISPATCHED` (#1613).
 
 The supervisor reads the response Sheet via `scripts/ledger_read.py` and posts
 claims and results as `S5-Queue` via `scripts/ledger_post.py`. The only agent
@@ -344,11 +344,11 @@ The intake code and routes contain no delete path. The only path that removes th
 ### High-blast-radius lock (#1586)
 
 A schema-complete intake row that matches a high-blast-radius category gets
-status `NEEDS_APPROVAL` instead of `READY`. Detection is deterministic keyword
+status `NEEDS_APPROVAL` instead of `NEW`. Detection is deterministic keyword
 matching (no model) over `title`, `problem`, `scope`, `done_when` and `notes`,
 case-insensitive, at word starts. False positives are expected and cost one
 confirm. False negatives are possible for phrasings the lists do not cover
-(the lock then fails open to `READY`); extend the lists when you see one. The
+(the row then stays `NEW` and still needs the normal human approve); extend the lists when you see one. The
 keyword constants live in `backend/core/intake_risk.py`.
 
 | Category | Keywords |
@@ -357,8 +357,10 @@ keyword constants live in `backend/core/intake_risk.py`.
 | `external_comms` | email, e-mail, tweet, post to, post a, slack, ntfy (whole word), publish, comment on, send a message, announce |
 | `billing_permission` | billing, payment, spend cap, quota, permission, iam (whole word), rotate, api key, token scope, branch protection, secret, admin |
 
-Status precedence is unchanged: `DUPLICATE`, then `NEEDS_INFO`, then
-`NEEDS_APPROVAL`, then `READY`. `scripts/ledger_intake.py` `build_row` (which imports `backend.core`, so it
+Status precedence: `DUPLICATE`, then `NEEDS_INFO`, then
+`NEEDS_APPROVAL`, then `NEW`. The intake script writes only `NEW`, `NEEDS_INFO`,
+`DUPLICATE` and `NEEDS_APPROVAL`, never `READY` or `DISPATCHED` (#1613). `READY` is set
+only by a human triage approve. `scripts/ledger_intake.py` `build_row` (which imports `backend.core`, so it
 needs the backend dependencies installed) writes
 `risk_categories`. The boomtick hook still writes `NEW`, so
 `GET /api/ledger-intake` re-derives the categories server side and lists

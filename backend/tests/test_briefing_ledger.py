@@ -422,6 +422,29 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(response.json()["row"]["status"], "READY")
         self.assertEqual(self.client.get("/api/ledger-intake").json()["rows"], [])
 
+    def test_new_intake_row_is_listed_and_only_human_approve_makes_it_ready(self):
+        from scripts.ledger_intake import build_row
+
+        row = build_row(
+            {
+                "title": "T",
+                "repo": "arii/remote-server",
+                "problem": "p",
+                "scope": "s",
+                "done_when": "d",
+                "kind": "ledger-intake",
+            }
+        )
+        self.assertEqual(row["status"], "NEW")
+        ledger.append(row)
+        listed = self.client.get("/api/ledger-intake").json()["rows"]
+        self.assertEqual([r["status"] for r in listed], ["NEW"])
+        response = self.client.post(
+            f"/api/ledger-intake/{row['canonical_intake_id']}/approve", json={}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["row"]["status"], "READY")
+
     def _intake_row(self, **overrides):
         row = {
             "kind": "ledger-intake",
