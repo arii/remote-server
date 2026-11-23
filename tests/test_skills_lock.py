@@ -111,7 +111,7 @@ class RepoLockTest(unittest.TestCase):
             ["architectural_audit_rubric", "co_browsing_state_takeover",
              "cobrowse_handoff_specialist", "coder_root_cause_analysis",
              "dispatch_brief", "repo_review", "shared_browser_access",
-             "write_spec_issue"],
+             "tmux_send_keys", "write_spec_issue"],
         )
 
     def test_lock_matches_tree(self):

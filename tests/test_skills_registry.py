@@ -138,6 +138,7 @@ class TestRepoSkills(unittest.TestCase):
                 "dispatch_brief",
                 "repo_review",
                 "shared_browser_access",
+                "tmux_send_keys",
                 "write_spec_issue",
             ],
         )
