@@ -2372,112 +2372,139 @@ class IssueLabelTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 500)
 
 
+class _ThreadScopedTime:
+    """Stand-in for ``issues_mod.time`` whose sleep is fake only on one thread.
+
+    Patching ``issues_mod.time.sleep`` mutates the process-wide ``time``
+    module, so any other thread (e.g. a daemon ticker started by
+    ``_ensure_schedule_ticker`` in another test) would land in the fake.
+    This proxy is installed on the ``issues_mod`` attribute only, and other
+    threads fall through to the real sleep.
+    """
+
+    def __init__(self, fake_sleep):
+        self._owner = threading.get_ident()
+        self._fake_sleep = fake_sleep
+        self._real_sleep = time.sleep
+
+    def sleep(self, secs):
+        if threading.get_ident() == self._owner:
+            return self._fake_sleep(secs)
+        return self._real_sleep(secs)
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 class ScheduleTickLoopTest(unittest.TestCase):
-    def _run_ticks(self, ticks):
+    class Done(Exception):
+        pass
+
+    def _run_loop(self, ticks, jobs):
+        """Run the tick loop on this thread with every job stubbed.
+
+        ``jobs`` maps schedules/digest/budget/actions/restarts to a callable
+        (called with no args). Returns the ordered call log and sleep count.
+        """
+        import backend.core.container_restarts as restarts_mod
         import backend.notify as notify_mod
         from backend.api.routers import jobs as jobs_mod
 
         calls = []
         sleeps = []
-
-        class Done(Exception):
-            pass
+        done = self.Done
 
         def fake_sleep(_secs):
             calls.append("sleep")
             sleeps.append(1)
             if len(sleeps) > ticks:
-                raise Done()
+                raise done()
 
+        def stub(name):
+            def run():
+                calls.append(name)
+                return jobs[name]()
+
+            return run
+
+        threads_before = set(threading.enumerate())
+        real_sleep = time.sleep
         with (
-            patch.object(issues_mod.time, "sleep", side_effect=fake_sleep),
-            patch.object(
-                issues_mod,
-                "fire_due_schedules",
-                side_effect=lambda: calls.append("schedules"),
-            ),
-            patch.object(
-                notify_mod,
-                "fire_due_digest",
-                side_effect=lambda: calls.append("digest"),
-            ),
-            patch.object(
-                notify_mod,
-                "fire_budget_watch",
-                side_effect=lambda: calls.append("budget"),
-            ),
-            patch.object(
-                jobs_mod,
-                "fire_due_action_schedules",
-                side_effect=lambda: calls.append("actions"),
-            ),
+            patch.object(issues_mod, "time", _ThreadScopedTime(fake_sleep)),
+            patch.object(issues_mod, "fire_due_schedules", stub("schedules")),
+            patch.object(notify_mod, "fire_due_digest", stub("digest")),
+            patch.object(notify_mod, "fire_budget_watch", stub("budget")),
+            patch.object(jobs_mod, "fire_due_action_schedules", stub("actions")),
+            patch.object(restarts_mod, "record_container_restarts", stub("restarts")),
         ):
-            with self.assertRaises(Done):
+            self.assertIs(time.sleep, real_sleep)
+            with self.assertRaises(done):
                 issues_mod._schedule_tick_loop()
-        return calls
+        self.assertEqual(set(threading.enumerate()) - threads_before, set())
+        return calls, len(sleeps)
 
-    def test_tick_runs_all_four_jobs(self):
-        calls = self._run_ticks(2)
-        self.assertEqual(
-            calls,
-            [
-                "sleep",
-                "schedules",
-                "digest",
-                "budget",
-                "actions",
-                "sleep",
-                "schedules",
-                "digest",
-                "budget",
-                "actions",
-                "sleep",
-            ],
-        )
+    @staticmethod
+    def _noop_jobs():
+        return {
+            k: (lambda: None)
+            for k in ("schedules", "digest", "budget", "actions", "restarts")
+        }
+
+    def test_tick_runs_all_five_jobs_in_order(self):
+        calls, _ = self._run_loop(2, self._noop_jobs())
+        tick = ["sleep", "schedules", "digest", "budget", "actions", "restarts"]
+        self.assertEqual(calls, tick + tick + ["sleep"])
 
     def test_tick_survives_job_errors(self):
-        import backend.notify as notify_mod
-        from backend.api.routers import jobs as jobs_mod
+        def boom(msg):
+            def run():
+                raise RuntimeError(msg)
 
-        ticks = []
+            return run
 
-        class Done(Exception):
-            pass
+        jobs = {
+            "schedules": boom("repair down"),
+            "digest": lambda: False,
+            "budget": boom("notify down"),
+            "actions": boom("jobs down"),
+            "restarts": boom("docker down"),
+        }
+        calls, sleeps = self._run_loop(2, jobs)
+        self.assertEqual(sleeps, 3)
+        for name in ("schedules", "digest", "budget", "actions", "restarts"):
+            self.assertEqual(calls.count(name), 2, name)
+        # An earlier failure never skips later jobs; restarts stays last.
+        tick = ["sleep", "schedules", "digest", "budget", "actions", "restarts"]
+        self.assertEqual(calls, tick + tick + ["sleep"])
 
-        def fake_sleep(_secs):
-            ticks.append(1)
-            if len(ticks) > 2:
-                raise Done()
+    def test_other_thread_sleep_does_not_reach_harness(self):
+        """A foreign thread sleeping mid-run must not touch the records."""
+        outsider = {}
 
-        budget_calls = []
-        actions_calls = []
+        def outsider_job():
+            def other():
+                issues_mod.time.sleep(0)
+                outsider["done"] = True
 
-        def boom_budget():
-            budget_calls.append(1)
-            raise RuntimeError("notify down")
+            t = threading.Thread(target=other)
+            t.start()
+            t.join(5)
 
-        def boom_actions():
-            actions_calls.append(1)
-            raise RuntimeError("jobs down")
+        jobs = self._noop_jobs()
+        jobs["schedules"] = outsider_job
+        calls, sleeps = self._run_loop(1, jobs)
+        self.assertTrue(outsider.get("done"))
+        self.assertEqual(sleeps, 2)
+        self.assertEqual(calls.count("sleep"), 2)
 
-        with (
-            patch.object(issues_mod.time, "sleep", side_effect=fake_sleep),
-            patch.object(
-                issues_mod,
-                "fire_due_schedules",
-                side_effect=RuntimeError("repair down"),
-            ),
-            patch.object(notify_mod, "fire_due_digest", return_value=False),
-            patch.object(notify_mod, "fire_budget_watch", side_effect=boom_budget),
-            patch.object(
-                jobs_mod, "fire_due_action_schedules", side_effect=boom_actions
-            ),
-        ):
-            with self.assertRaises(Done):
-                issues_mod._schedule_tick_loop()
-        self.assertEqual(len(ticks), 3)
-        self.assertEqual(len(budget_calls), 2)
-        self.assertEqual(len(actions_calls), 2)
+    def test_global_sleep_patch_is_contaminated_by_other_threads(self):
+        """Documents the old harness flaw: a global patch eats foreign sleeps."""
+        seen = []
+        with patch.object(issues_mod.time, "sleep", side_effect=seen.append):
+            t = threading.Thread(target=lambda: time.sleep(0))
+            t.start()
+            t.join(5)
+        self.assertEqual(seen, [0])
 
 
 def _gate_view(**over):
