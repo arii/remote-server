@@ -29,6 +29,10 @@ except ImportError:
     HAS_CLIENT = False
 
 
+# Approve refuses blank required fields (#1585); these tests are about duplicates.
+APPROVABLE_FIELDS = {"problem": "p", "scope": "s", "done_when": "d"}
+
+
 class _SyncThread:
     """Thread fake: runs the target inline on start() for
     deterministic stale-while-revalidate tests (no real threads)."""
@@ -634,7 +638,7 @@ class BriefingLedgerTest(unittest.TestCase):
         )
         before = self._intake_count()
         response = self.client.post(
-            "/api/ledger-intake/intake-new/approve", json={"fields": {}}
+            "/api/ledger-intake/intake-new/approve", json={"fields": APPROVABLE_FIELDS}
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self._intake_count(), before)
@@ -650,7 +654,7 @@ class BriefingLedgerTest(unittest.TestCase):
             },
         )
         response = self.client.post(
-            "/api/ledger-intake/intake-new/approve", json={"fields": {}}
+            "/api/ledger-intake/intake-new/approve", json={"fields": APPROVABLE_FIELDS}
         )
         self.assertEqual(response.status_code, 200)
 
@@ -671,10 +675,11 @@ class BriefingLedgerTest(unittest.TestCase):
             "backend.api.routers.briefing._duplicate_candidate"
         ) as candidate:
             response = self.client.post(
-                "/api/ledger-intake/intake-other/approve", json={"fields": {}}
+                "/api/ledger-intake/intake-other/approve",
+                json={"fields": APPROVABLE_FIELDS},
             )
             missing = self.client.post(
-                "/api/ledger-intake/nope/approve", json={"fields": {}}
+                "/api/ledger-intake/nope/approve", json={"fields": APPROVABLE_FIELDS}
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(missing.status_code, 404)
