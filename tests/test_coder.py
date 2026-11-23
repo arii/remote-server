@@ -762,6 +762,32 @@ class TestUnchangedInspectionDither(unittest.TestCase):
 
 
 class TestTargetedChecks(unittest.TestCase):
+    def test_backend_import_lookup_rereads_only_changed_tests(self):
+        with tempfile.TemporaryDirectory() as worktree:
+            test_dir = Path(worktree, "backend/tests")
+            test_dir.mkdir(parents=True)
+            related = test_dir / "test_regression.py"
+            related.write_text("from backend.repair_worker import repair\n")
+            unrelated = test_dir / "test_other.py"
+            unrelated.write_text("from backend import some_other_module\n")
+            with mock.patch.object(
+                Path, "read_text", autospec=True, side_effect=Path.read_text
+            ) as read:
+
+                def checks():
+                    return coder.targeted_checks(
+                        worktree, ["backend/repair_worker.py"], "arii/remote-server"
+                    )
+
+                expected = ["python3 -m unittest backend.tests.test_regression"]
+                self.assertEqual(checks(), expected)
+                self.assertEqual(read.call_count, 2)
+                self.assertEqual(checks(), expected)
+                self.assertEqual(read.call_count, 2)
+                related.write_text("from backend import something_else\n")
+                self.assertEqual(checks(), [])
+                self.assertEqual(read.call_count, 3)
+
     def test_recovers_with_existing_planned_and_written_tests(self):
         _install_fake_langchain(self)
         with tempfile.TemporaryDirectory() as worktree:

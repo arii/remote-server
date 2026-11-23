@@ -46,6 +46,7 @@ import subprocess
 import sys
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 
 from backend.shared import cli
@@ -542,6 +543,11 @@ def _inject_replanner_skills():
         return ""
 
 
+@lru_cache(maxsize=512)
+def _read_test_source(path, _version):
+    return path.read_text(encoding="utf-8")
+
+
 def targeted_checks(worktree, files, repo):
     if repo != "arii/remote-server":
         return []
@@ -550,9 +556,10 @@ def targeted_checks(worktree, files, repo):
 
     def existing(path):
         try:
-            return Path(active_checkout_path(worktree, str(path))).is_file()
+            resolved = Path(active_checkout_path(worktree, str(path)))
         except ValueError:
-            return False
+            return None
+        return resolved if resolved.is_file() else None
 
     for name in sorted(files):
         path = Path(name)
@@ -587,14 +594,23 @@ def targeted_checks(worktree, files, repo):
                         )
                         for candidate in sorted((root / test_dir).glob("test_*.py")):
                             relative = candidate.relative_to(root)
-                            if existing(relative):
-                                try:
-                                    if imports.search(
-                                        candidate.read_text(encoding="utf-8")
-                                    ):
-                                        tests.add(relative)
-                                except (OSError, UnicodeError):
-                                    continue
+                            resolved = existing(relative)
+                            if resolved is None:
+                                continue
+                            try:
+                                info = resolved.stat()
+                                version = (
+                                    info.st_dev,
+                                    info.st_ino,
+                                    info.st_size,
+                                    info.st_mtime_ns,
+                                    info.st_ctime_ns,
+                                )
+                                source = _read_test_source(resolved, version)
+                            except (OSError, UnicodeError):
+                                continue
+                            if imports.search(source):
+                                tests.add(relative)
 
     commands = []
     for path in sorted(tests):
