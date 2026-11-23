@@ -3,12 +3,14 @@ import argparse
 from collections import Counter
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
 from unittest import mock
 
+import observe
 from scripts import twt_failure_audit as sut
 from scripts.run_root_tests import block_google_docs_requests
 
@@ -95,6 +97,52 @@ class FailureAuditTests(unittest.TestCase):
         }
         (traces / "coder_read.jsonl").write_text(json.dumps(false_positive) + "\n")
         (traces / "reviewer_thread.jsonl").write_text(json.dumps(examples[0]) + "\n")
+
+    def run_check_event(self):
+        warning = "DITHERING: this exact command has run 3 times"
+        recorder = observe.TraceRecorder(os.devnull)
+        output = "x" * 3000 + "\n" + warning
+        events = []
+        recorder.event = lambda type, **fields: events.append(fields)
+        recorder.tool_call("run_check", "make test", 1, True, result=output)
+        event = dict(events[0], type="tool_call")
+        self.assertNotIn(warning, event["result_preview"])
+        self.assertIn(warning, event["check_output"])
+        return event
+
+    def test_repeat_warning_beyond_preview_is_found_in_check_output(self):
+        event = self.run_check_event()
+        self.assertEqual(sut.coder_cause(event), sut.REPEAT)
+        del event["check_output"]
+        self.assertIsNone(sut.coder_cause(event))
+        event["result_preview"] = "ok\nDITHERING: this exact command has run 3 times"
+        self.assertEqual(sut.coder_cause(event), sut.REPEAT)
+
+    def test_termination_loop_and_gave_up_escalate_unless_infra(self):
+        traces = Path(self.config["runtime_state_dir"]) / "job-9/state/traces"
+        traces.mkdir(parents=True)
+
+        def write(name, *reasons):
+            (traces / name).write_text(
+                "".join(
+                    json.dumps({"type": "termination", "reason": r}) + "\n"
+                    for r in reasons
+                )
+            )
+
+        write("coder_loop.jsonl", "loop_detected")
+        write("coder_gave_up.jsonl", "gave_up")
+        write("coder_ok.jsonl", "success")
+        write("coder_infra.jsonl", "gave_up", "infra_error")
+        counts = sut.trace_counts(Path(self.config["runtime_state_dir"]))
+        self.assertEqual(counts[sut.LOOP_DETECTED], 1)
+        self.assertEqual(counts[sut.GAVE_UP], 1)
+        self.assertEqual(
+            sut.known_cause(
+                f"{sut.GAVE_UP}=https://github.com/arii/remote-server/issues/1"
+            ),
+            (sut.GAVE_UP, "https://github.com/arii/remote-server/issues/1"),
+        )
 
     def test_dry_run_groups_evidence_and_never_writes(self):
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
