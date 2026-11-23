@@ -13,8 +13,11 @@ modules. All model/tool seams are injectable for deterministic evals.
 """
 
 import json
+import math
 import os
+import re
 import subprocess
+import tempfile
 import time
 
 from backend.shared import s5tools
@@ -29,8 +32,164 @@ DRIVE_LIMIT_DEFAULT = 25
 APPROVED = "APPROVED"
 CHANGES_REQUESTED = "CHANGES_REQUESTED"
 BLOCKED = "BLOCKED_DETERMINISTIC"
+BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
+BUDGET_UNSPLITTABLE = "BUDGET_UNSPLITTABLE"
+
+# Coder budget (planner owns fitting work to the model-call cap). A brief
+# over either size budget is split into sequential sub-briefs; a cap hit
+# resumes a bounded number of times; the parent total is a hard stop.
+# BRIEF_LINE_BUDGET: briefs under ~60 lines succeeded fast in operator runs.
+# BRIEF_FILE_BUDGET: an unvalidated guess; tune from the budget report.
+BRIEF_LINE_BUDGET = 60
+BRIEF_FILE_BUDGET = 4
+SPLIT_MAX_PARTS = 3
+MAX_CONTINUATIONS_PER_SUBBRIEF = 1
+# SPLIT_MAX_PARTS x INITIAL_MODEL_LIMIT (coder.py); reported as the >40 bucket.
+MAX_CALLS_PER_PARENT = 60
+SPLIT_CONTEXT_LINES = 20
 
 AGENT_PAUSED = "PAUSED_BY_USER"
+
+
+_ACCEPTANCE_HEADING = re.compile(
+    r"^\s*(?:#{1,6}\s*)?\**\s*(?:acceptance|done[ -]when)\b[^\n]*$", re.I
+)
+_HEADING = re.compile(r"^\s*#{1,6}\s+\S")
+_ITEM = re.compile(r"^\s*[-*+]\s+(?:\[[ xX]\]\s*)?(\S.*)$")
+
+
+def brief_title(brief):
+    for line in brief.splitlines():
+        if line.strip():
+            return line.strip().lstrip("#").strip()[:120]
+    return ""
+
+
+def acceptance_items(brief):
+    """Bullet or checkbox items under an Acceptance / Done when heading. Pure."""
+    items, active = [], False
+    for line in brief.splitlines():
+        if _ACCEPTANCE_HEADING.match(line):
+            active = True
+        elif _HEADING.match(line):
+            active = False
+        elif active and (match := _ITEM.match(line)):
+            items.append(match[1].strip())
+    return items
+
+
+def brief_files(brief, exclude=None):
+    """Distinct files a brief names or allows, minus the spec file. Pure."""
+    import coder
+    import issue_generator
+
+    names = [*coder.files_named(brief), *issue_generator.explicit_allowed_paths(brief)]
+    skip = os.path.normpath(exclude) if exclude else None
+    return sorted({n for n in names if os.path.normpath(n) != skip})
+
+
+def brief_size(brief, exclude=None):
+    """(non-blank lines, distinct files) of a brief. Pure."""
+    lines = sum(1 for line in brief.splitlines() if line.strip())
+    return lines, len(brief_files(brief, exclude))
+
+
+def over_budget(brief, exclude=None):
+    lines, files = brief_size(brief, exclude)
+    return lines > BRIEF_LINE_BUDGET or files > BRIEF_FILE_BUDGET
+
+
+def split_brief(brief):
+    """Deterministically split a brief by its acceptance items. Pure, no model.
+
+    Returns up to SPLIT_MAX_PARTS sequential [{id, title, brief,
+    acceptance}] (contiguous acceptance groups), or None when the brief has
+    fewer than 2 acceptance items. Each sub-brief carries the title, a
+    bounded context preamble, its own acceptance list, and every file the
+    parent allows (the coder gate rejects writes outside the allowed list).
+    """
+    import issue_generator
+
+    items = acceptance_items(brief)
+    if len(items) < 2:
+        return None
+    title = brief_title(brief)
+    context = []
+    for line in brief.splitlines()[1:]:
+        if _HEADING.match(line) or _ACCEPTANCE_HEADING.match(line):
+            break
+        context.append(line)
+    context = "\n".join(context).strip().splitlines()[:SPLIT_CONTEXT_LINES]
+    allowed = issue_generator.explicit_allowed_paths(brief)
+    parts = min(SPLIT_MAX_PARTS, len(items))
+    size = math.ceil(len(items) / parts)
+    groups = [items[i : i + size] for i in range(0, len(items), size)]
+    subs = []
+    for n, group in enumerate(groups, 1):
+        files = list(dict.fromkeys([*allowed, *brief_files("\n".join(group))]))
+        text = [f"# {title} (part {n} of {len(groups)})", *context]
+        text += ["", "## Acceptance", *[f"- {item}" for item in group]]
+        if files:
+            text += ["", "### Allowed Files", *[f"- `{path}`" for path in files]]
+        subs.append(
+            {
+                "id": n,
+                "title": f"{title} (part {n} of {len(groups)})",
+                "brief": "\n".join(text) + "\n",
+                "acceptance": group,
+            }
+        )
+    return subs
+
+
+def new_budget(sub_briefs):
+    return {
+        "parent": {
+            "calls_used": 0,
+            "max_calls": MAX_CALLS_PER_PARENT,
+            "exhausted": False,
+            "verified": False,
+        },
+        "sub_briefs": [
+            {
+                "id": sub["id"],
+                "title": sub["title"],
+                "acceptance": list(sub["acceptance"]),
+                "status": "pending",
+                "calls": 0,
+                "continuations": 0,
+                "verified": False,
+                "verification": "",
+            }
+            for sub in sub_briefs
+        ],
+    }
+
+
+def budget_state_path(thread_id):
+    """S5_BUDGET_STATE, else <state dir>/budget-<thread_id>.json."""
+    configured = os.environ.get("S5_BUDGET_STATE")
+    if configured:
+        return configured
+    from backend.shared import ledger
+
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", thread_id)[:64]
+    return os.path.join(ledger.state_dir(), f"budget-{safe}.json")
+
+
+def write_budget(path, budget):
+    """Atomic JSON write (temp file + rename in the same directory)."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            json.dump(budget, out, indent=2)
+        os.replace(temporary, path)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
 
 
 def choose_model_tier(
@@ -286,6 +445,13 @@ class Pipeline:
         self.drive_limit = drive_limit
         self.preview_url = preview_url
         self.events = []
+        self.budget = None
+        self._current_sub = None
+        self.budget_path = budget_state_path(self.thread_id)
+        # Per stage_code run; implement (or a test double) fills these.
+        self.stage_calls = 0
+        self.stage_continuations = 0
+        self.stage_exhausted = False
 
     def _repo_slug(self):
         """owner/name for the checkout, '' when unknown (default verify policy)."""
@@ -391,6 +557,7 @@ class Pipeline:
                     )
                     if os.path.normpath(path) != os.path.normpath(spec_path)
                 ]
+            meter = {}
             try:
                 result = coder.run_coder(
                     root,
@@ -399,9 +566,26 @@ class Pipeline:
                     f"{self.thread_id}-edit-{time.time_ns()}",
                     coder._timeout(),
                     repo=self._repo_slug(),
+                    continuations=max(
+                        0,
+                        MAX_CONTINUATIONS_PER_SUBBRIEF
+                        - self._sub_continuations()
+                        - self.stage_continuations,
+                    ),
+                    call_budget=self.calls_left(),
+                    meter=meter,
                     **kwargs,
                 )
-            except RuntimeError as exc:
+            except Exception as exc:
+                if coder.is_call_cap(exc):
+                    self.stage_exhausted = True
+                    raise RuntimeError(
+                        "coder model-call budget exhausted after "
+                        f"{meter.get('calls', 0)} calls in this turn "
+                        f"({meter.get('continuations', 0)} continuations)"
+                    ) from exc
+                if not isinstance(exc, RuntimeError):
+                    raise
                 if kwargs.get("repair") and errors and coder.NO_WRITES in str(exc):
                     # Still fail closed, but keep the deterministic gate
                     # failure that triggered the repair visible (#1372).
@@ -409,6 +593,9 @@ class Pipeline:
                         f"{exc}; unresolved gate errors: {'; '.join(map(str, errors))}"
                     ) from exc
                 raise
+            finally:
+                self.stage_calls += meter.get("calls", 0)
+                self.stage_continuations += meter.get("continuations", 0)
             summary, usage, calls, started, label, trace, verified, _ = result
             self.verification_evidence = coder.trace_verification_evidence(
                 trace, self._repo_slug()
@@ -514,6 +701,76 @@ class Pipeline:
         if not state.get("valid"):
             return False, state, (state.get("errors") or ["coder invalid"])
         return True, state, state.get("worktree_root", "") or worktree_root
+
+    # -- coder budget -------------------------------------------------
+
+    def calls_left(self):
+        used = self.budget["parent"]["calls_used"] if self.budget else 0
+        return MAX_CALLS_PER_PARENT - used - self.stage_calls
+
+    def _sub_continuations(self):
+        return self._current_sub["continuations"] if self._current_sub else 0
+
+    def _save_budget(self):
+        if self.budget:
+            write_budget(self.budget_path, self.budget)
+
+    def _begin_stage(self, sub):
+        self._current_sub = sub
+        self.stage_calls = 0
+        self.stage_continuations = 0
+        self.stage_exhausted = False
+
+    def _end_stage(self, sub):
+        """Fold this stage_code run's calls into the sub-brief and parent."""
+        if sub is not None:
+            sub["calls"] += self.stage_calls
+            sub["continuations"] += self.stage_continuations
+        parent = self.budget["parent"]
+        parent["calls_used"] += self.stage_calls
+        parent["exhausted"] = parent["exhausted"] or self.stage_exhausted
+        self._save_budget()
+
+    def _mark(self, sub, status, verification=""):
+        sub["status"] = status
+        sub["verified"] = status == "done"
+        sub["verification"] = verification
+        self._save_budget()
+
+    def _partial(self):
+        subs = self.budget["sub_briefs"]
+        return {
+            "done": [
+                a for sub in subs if sub["status"] == "done" for a in sub["acceptance"]
+            ],
+            "not_done": [
+                a for sub in subs if sub["status"] != "done" for a in sub["acceptance"]
+            ],
+        }
+
+    def _coder_stopped(self, sub, reason, worktree, audit_cycles, started, **extra):
+        """Result for a failed or budget-stopped coder stage (no PR)."""
+        if (
+            self.stage_exhausted
+            or self.budget["parent"]["calls_used"] >= MAX_CALLS_PER_PARENT
+        ):
+            self._mark(sub, "exhausted", reason)
+            self.budget["parent"]["exhausted"] = True
+            self._save_budget()
+            status = BUDGET_EXHAUSTED
+            reason = (
+                f"{reason}; {self.budget['parent']['calls_used']}/"
+                f"{MAX_CALLS_PER_PARENT} calls used. Needs operator approval: "
+                "retry with --retry to start a fresh parent budget"
+            )
+        else:
+            self._mark(sub, "failed", str(reason)[:200])
+            status = BLOCKED
+        split = len(self.budget["sub_briefs"]) > 1
+        partial = self._partial() if split or status != BLOCKED else None
+        return self._result(
+            status, worktree, reason, audit_cycles, started, partial=partial, **extra
+        )
 
     def pre_audit_check(self, worktree_root):
         """Run fast, deterministic pre-audit checks before invoking AuditorGraph.
@@ -771,50 +1028,152 @@ class Pipeline:
         # reads `detail` only when audit_cycles is nonzero, so it
         # survived uninitialized — initialize it outright. (#1136)
         detail = ""
+
+        subs = None
+        if over_budget(spec, self.spec_path):
+            subs = split_brief(spec)
+            if subs is None:
+                lines, files = brief_size(spec, self.spec_path)
+                self.budget = new_budget(
+                    [{"id": 1, "title": brief_title(spec), "acceptance": []}]
+                )
+                self._mark(self.budget["sub_briefs"][0], "failed", "unsplittable")
+                reason = (
+                    f"brief is over budget ({lines} lines, {files} files; limits "
+                    f"{BRIEF_LINE_BUDGET} lines, {BRIEF_FILE_BUDGET} files) and has "
+                    "fewer than 2 acceptance items so it cannot be split. Add an "
+                    "'Acceptance' list with at least 2 independent items, or split "
+                    "the issue by hand."
+                )
+                self.log("split", f"BLOCKED: {reason}")
+                return self._result(BUDGET_UNSPLITTABLE, "", reason, 0, started)
+        if subs is None:
+            subs = [
+                {
+                    "id": 1,
+                    "title": brief_title(spec),
+                    "brief": spec,
+                    "acceptance": acceptance_items(spec) or [brief_title(spec)],
+                }
+            ]
+        self.budget = new_budget(subs)
+        self._save_budget()
+        split = len(subs) > 1
+        if split:
+            self.log("split", f"{len(subs)} sub-briefs")
+            for sub, record in zip(subs, self.budget["sub_briefs"]):
+                self._await_if_paused()
+                if self.budget["parent"]["calls_used"] >= MAX_CALLS_PER_PARENT:
+                    self.stage_exhausted = True
+                    return self._coder_stopped(
+                        record, "parent call cap reached", worktree, 0, started
+                    )
+                self._begin_stage(record)
+                ok, _code_state, root = self.stage_code(
+                    sub["brief"], worktree_root=worktree or None
+                )
+                self._end_stage(record)
+                if not ok:
+                    reason = (
+                        _code_state if isinstance(_code_state, str) else "coder failed"
+                    )
+                    self.log("code", f"BLOCKED (part {record['id']}): {reason}")
+                    return self._coder_stopped(
+                        record,
+                        reason,
+                        root if isinstance(root, str) else worktree,
+                        0,
+                        started,
+                    )
+                worktree = root
+                pre_ok, failure_class, reason = self.pre_audit_check(worktree)
+                if not pre_ok:
+                    self.log("pre_audit", f"FAILED ({failure_class}): {reason[:200]}")
+                    self._mark(
+                        record, "failed", f"pre-audit {failure_class}: {reason}"[:200]
+                    )
+                    return self._result(
+                        BLOCKED,
+                        worktree,
+                        f"sub-brief {record['id']} failed pre-audit {failure_class}: {reason}",
+                        0,
+                        started,
+                        partial=self._partial(),
+                    )
+                self._mark(record, "done", "run_check passed; pre-audit passed")
+                self.log("code", f"part {record['id']} done worktree={worktree}")
+            # The auditor reads the spec file: restore the whole brief.
+            import issue_generator
+
+            issue_generator.write_spec(os.path.join(worktree, self.spec_path), spec)
+        precoded = split
         while True:
             self._await_if_paused()
-            ok, _code_state, worktree = self.stage_code(
-                spec,
-                worktree_root=worktree or None,
-                repair_notes=detail if repair_cycles else "",
-            )
-            if not ok:
-                reason = _code_state if isinstance(_code_state, str) else "coder failed"
-                self.log("code", f"BLOCKED: {reason}")
-                return self._result(
-                    BLOCKED,
-                    worktree,
-                    reason,
-                    audit_cycles,
-                    started,
-                    repair_cycles=repair_cycles,
-                )
-            self.log("code", f"worktree={worktree}")
-            self._await_if_paused()
-
-            # Deterministic pre-audit gate (#1403)
-            pre_ok, failure_class, reason = self.pre_audit_check(worktree)
-            if not pre_ok:
-                repair_cycles += 1
-                self.log("pre_audit", f"FAILED ({failure_class}): {reason[:200]}")
-                if repair_cycles >= self.max_repair_cycles:
-                    return self._result(
-                        CHANGES_REQUESTED,
+            if precoded:
+                precoded = False
+            else:
+                record = self.budget["sub_briefs"][-1]
+                if self.budget["parent"]["calls_used"] >= MAX_CALLS_PER_PARENT:
+                    self.stage_exhausted = True
+                    return self._coder_stopped(
+                        record,
+                        "parent call cap reached",
                         worktree,
-                        f"repair cycles exhausted ({repair_cycles}/{self.max_repair_cycles}): pre-audit {failure_class}: {reason}",
                         audit_cycles,
                         started,
                         repair_cycles=repair_cycles,
                     )
-                self.current_model_tier, self.escalations_used = self._next_tier(
-                    repair_cycles + 1, failure_class
+                self._begin_stage(None if split else record)
+                ok, _code_state, worktree = self.stage_code(
+                    spec,
+                    worktree_root=worktree or None,
+                    repair_notes=detail if repair_cycles else "",
                 )
-                detail = f"Pre-audit {failure_class} failure:\n{reason}"
-                continue
+                self._end_stage(None if split else record)
+                if not ok:
+                    reason = (
+                        _code_state if isinstance(_code_state, str) else "coder failed"
+                    )
+                    self.log("code", f"BLOCKED: {reason}")
+                    return self._coder_stopped(
+                        record,
+                        reason,
+                        worktree,
+                        audit_cycles,
+                        started,
+                        repair_cycles=repair_cycles,
+                    )
+                self.log("code", f"worktree={worktree}")
+                self._await_if_paused()
+
+                # Deterministic pre-audit gate (#1403)
+                pre_ok, failure_class, reason = self.pre_audit_check(worktree)
+                if not pre_ok:
+                    repair_cycles += 1
+                    self.log("pre_audit", f"FAILED ({failure_class}): {reason[:200]}")
+                    if repair_cycles >= self.max_repair_cycles:
+                        return self._result(
+                            CHANGES_REQUESTED,
+                            worktree,
+                            f"repair cycles exhausted ({repair_cycles}/{self.max_repair_cycles}): pre-audit {failure_class}: {reason}",
+                            audit_cycles,
+                            started,
+                            repair_cycles=repair_cycles,
+                        )
+                    self.current_model_tier, self.escalations_used = self._next_tier(
+                        repair_cycles + 1, failure_class
+                    )
+                    detail = f"Pre-audit {failure_class} failure:\n{reason}"
+                    continue
 
             status, _audit_state, detail = self.stage_audit(worktree)
             if status == APPROVED:
                 self.log("audit", "APPROVED")
+                for record in self.budget["sub_briefs"]:
+                    if record["status"] != "done":
+                        self._mark(record, "done", "audit approved")
+                self.budget["parent"]["verified"] = True
+                self._save_budget()
                 break
             self.log("audit", f"{status}: {detail[:200]}")
             if status == BLOCKED:
@@ -896,8 +1255,9 @@ class Pipeline:
         submit_url="",
         cleaned=False,
         repair_cycles=None,
+        partial=None,
     ):
-        return {
+        result = {
             "status": status,
             "worktree": worktree,
             "detail": (detail if isinstance(detail, str) else json.dumps(detail))[:500],
@@ -909,4 +1269,8 @@ class Pipeline:
             "cleaned": cleaned,
             "elapsed_s": round(time.time() - started, 2),
             "events": list(self.events),
+            "budget": self.budget,
         }
+        if partial is not None:
+            result["partial"] = partial
+        return result
