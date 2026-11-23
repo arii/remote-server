@@ -939,6 +939,119 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(dispatched, [11, 12, 10])
             self.assertEqual(len(runner.read_json(state / "status.json")["skipped"]), 7)
 
+    def ready_fake(self, listings, failing=()):
+        def fake(command, **_kwargs):
+            if command[1:3] == ["issue", "list"]:
+                repo = command[command.index("--repo") + 1]
+                if repo in failing:
+                    raise runner.subprocess.CalledProcessError(1, command)
+                return json.dumps(listings.get(repo, []))
+            return json.dumps({"state": "open", "title": "Fix", "body": "scope"})
+
+        return fake
+
+    @staticmethod
+    def listed(number, created, labels=("ready",)):
+        return {
+            "number": number,
+            "title": "t",
+            "createdAt": created,
+            "labels": [{"name": name} for name in labels],
+        }
+
+    def test_ready_issues_are_discovered_filtered_ordered_and_not_duplicated(self):
+        config = {"discover_repos": ["owner/repo", "owner/other"]}
+        manifest = [{"repo": "owner/repo", "number": 7}]
+        listings = {
+            "owner/repo": [
+                self.listed(7, "2020-01-01"),
+                self.listed(9, "2020-01-09"),
+                self.listed(8, "2020-01-08"),
+                self.listed(5, "2020-01-05"),
+                self.listed(6, "2020-01-06", labels=("bug",)),
+                self.listed(23, "2020-01-01"),
+            ],
+            "owner/other": [self.listed(3, "2020-01-03")],
+            "owner/denied": [self.listed(1, "2020-01-01")],
+        }
+        with mock.patch.object(
+            runner.subprocess, "check_output", side_effect=self.ready_fake(listings)
+        ) as gh:
+            found = runner.discover_ready(config, manifest, ["owner/repo#5"])
+            again = runner.discover_ready(config, manifest + found, ["owner/repo#5"])
+        self.assertEqual(
+            [(i["repo"], i["number"]) for i in found],
+            [("owner/other", 3), ("owner/repo", 8), ("owner/repo", 9)],
+        )
+        self.assertEqual(again, [])
+        self.assertNotIn("owner/denied", str(gh.call_args_list))
+        self.assertIn("--label", gh.call_args_list[0].args[0])
+        self.assertEqual(runner.discover_ready({}, manifest, []), [])
+
+    def test_failed_listing_skips_only_that_repo(self):
+        config = {"discover_repos": ["owner/repo", "owner/other"]}
+        listings = {"owner/other": [self.listed(3, "2020-01-03")]}
+        fake = self.ready_fake(listings, failing=("owner/repo",))
+        with mock.patch.object(runner.subprocess, "check_output", side_effect=fake):
+            found = runner.discover_ready(config, [], [])
+        self.assertEqual([i["number"] for i in found], [3])
+
+    @mock.patch.object(runner.signal, "signal")
+    def test_supervise_dispatches_discovered_ready_issue_after_manifest(self, _signal):
+        with tempfile.TemporaryDirectory() as root:
+            config_path, state = self.fixture(root)
+            config = runner.read_json(config_path)
+            config["discover_repos"] = ["owner/repo"]
+            runner.write_json(config_path, config)
+            listings = {
+                "owner/repo": [
+                    self.listed(7, "2020-01-01"),
+                    self.listed(4, "2020-01-04"),
+                ]
+            }
+            dispatched = []
+
+            def spawn(command, **_kwargs):
+                name = Path(command[-1]).name
+                dispatched.append(name)
+                process = mock.Mock(returncode=0)
+                process.communicate.side_effect = lambda _source: runner.write_json(
+                    state / name / "summary.json",
+                    {
+                        "halt_queue": False,
+                        "reconciliation": {"reconciled": True},
+                        "result": {"status": "DONE"},
+                        "exit_code": 0,
+                    },
+                )
+                return process
+
+            with (
+                mock.patch.object(
+                    runner.subprocess,
+                    "check_output",
+                    side_effect=self.ready_fake(listings),
+                ),
+                mock.patch.object(runner.subprocess, "Popen", side_effect=spawn),
+            ):
+                self.assertEqual(runner.supervise(config_path), 0)
+                self.assertEqual(runner.supervise(config_path), 0)
+            self.assertEqual(dispatched, ["owner_repo-7", "owner_repo-4"])
+            self.assertEqual(
+                runner.read_json(state / "status.json")["completed"],
+                ["owner/repo#7", "owner/repo#4"],
+            )
+
+    @mock.patch.object(runner.signal, "signal")
+    def test_discover_repos_must_have_a_checkout(self, _signal):
+        with tempfile.TemporaryDirectory() as root:
+            config_path, _state = self.fixture(root)
+            config = runner.read_json(config_path)
+            config["discover_repos"] = ["owner/unmapped"]
+            runner.write_json(config_path, config)
+            with self.assertRaises(ValueError):
+                runner.supervise(config_path)
+
     @mock.patch.object(runner.signal, "signal")
     @mock.patch.object(
         runner.subprocess,
