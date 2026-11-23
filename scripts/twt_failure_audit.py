@@ -3,7 +3,8 @@
 
 import argparse
 from collections import Counter
-from contextlib import closing
+from contextlib import closing, contextmanager
+from datetime import UTC, datetime
 import fcntl
 import json
 import os
@@ -16,11 +17,13 @@ import tempfile
 
 AGENT = "S5-Local"
 SEEN_FILE = "failure-audit-seen.json"
+DEFAULT_DAILY_POST_CAP = 3
 NO_PROVIDER = "TwT no provider available"
 REPEAT = "Coder repeat loop"
 READ_ONLY = "Coder read-only run"
 OUTSIDE = "Coder write outside worktree"
 WRITE_TOOLS = {"write_file", "edit_file", "delete"}
+PROVIDER_ID = r"[a-z0-9_-]{1,40}"
 ATTEMPT_REASONS = {
     "timeout",
     "upstream connection error",
@@ -41,9 +44,7 @@ def twt_counts(path):
               AND json_extract(data, '$.reason') != 'success'
             GROUP BY 1, 2, 3
         """):
-            if not isinstance(provider, str) or not re.fullmatch(
-                r"[a-z0-9_-]{1,40}", provider
-            ):
+            if not isinstance(provider, str) or not re.fullmatch(PROVIDER_ID, provider):
                 continue
             if type(status) is int and 400 <= status <= 599:
                 counts[f"TwT {provider} HTTP {status}"] += count
@@ -112,21 +113,32 @@ def runtime_trace_counts(config):
     return Counter(json.loads(scanned.stdout))
 
 
-def load_seen(path):
+def load_state(path):
     try:
-        seen = json.loads(path.read_text(encoding="utf-8"))
+        state = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return set()
-    if not isinstance(seen, list) or not all(isinstance(key, str) for key in seen):
-        raise ValueError(f"invalid failure audit state: {path}")
-    return set(seen)
+        state = []
+    if isinstance(state, list) and all(isinstance(cause, str) for cause in state):
+        return {"seen": dict.fromkeys(state), "pending": {}, "day": "", "posted": 0}
+    if (
+        isinstance(state, dict)
+        and isinstance(state.get("seen"), dict)
+        and all(url is None or isinstance(url, str) for url in state["seen"].values())
+        and isinstance(state.get("pending"), dict)
+        and all(type(n) is int and n > 0 for n in state["pending"].values())
+        and isinstance(state.get("day"), str)
+        and type(state.get("posted")) is int
+        and state["posted"] >= 0
+    ):
+        return state
+    raise ValueError(f"invalid failure audit state: {path}")
 
 
-def save_seen(path, seen):
+def save_state(path, state):
     with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
         try:
-            json.dump(sorted(seen), stream)
+            json.dump(state, stream, sort_keys=True)
             stream.flush()
             os.fsync(stream.fileno())
             os.replace(temporary, path)
@@ -134,10 +146,20 @@ def save_seen(path, seen):
             temporary.unlink(missing_ok=True)
 
 
+@contextmanager
+def locked_state(path):
+    with path.with_suffix(".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield load_state(path)
+
+
+def intake_repo(cause):
+    return "boomtick" if cause.startswith("TwT ") else "remote-server"
+
+
 def intake_note(cause):
-    repo = "boomtick" if cause.startswith("TwT ") else "remote-server"
     return (
-        f"[issue] {repo}: S5 failure audit: {cause}\n"
+        f"[issue] {intake_repo(cause)}: S5 failure audit: {cause}\n"
         f"Problem: The S5 audit observed {cause} in retained operational evidence.\n"
         "Out of scope: Unrelated failure signatures and queue readiness.\n"
         "Done when: Reproduce or explain the cause using S5 audit evidence, "
@@ -145,31 +167,86 @@ def intake_note(cause):
     )
 
 
+def known_cause(entry):
+    cause, _, url = entry.partition("=")
+    provider = re.fullmatch(rf"TwT {PROVIDER_ID} (.+)", cause)
+    valid = cause in {NO_PROVIDER, REPEAT, READ_ONLY, OUTSIDE} or (
+        provider is not None
+        and (
+            provider[1] in ATTEMPT_REASONS
+            or re.fullmatch(r"HTTP [45]\d\d", provider[1]) is not None
+        )
+    )
+    if not valid or not re.fullmatch(
+        rf"https://github\.com/arii/{intake_repo(cause)}/(?:issues|pull)/[1-9]\d*", url
+    ):
+        raise argparse.ArgumentTypeError(
+            "expected SIGNATURE=https://github.com/arii/REPO/issues/N or /pull/N"
+        )
+    return cause, url
+
+
+def mark_known(path, entries):
+    with locked_state(path) as state:
+        state["seen"].update(entries)
+        for cause, _ in entries:
+            state["pending"].pop(cause, None)
+        save_state(path, state)
+
+
+def utc_day():
+    return datetime.now(UTC).date().isoformat()
+
+
+def plan_posts(state, counts, cap):
+    day = utc_day()
+    if state["day"] != day:
+        state.update(day=day, posted=0)
+    pending = state["pending"]
+    pending.update(
+        {cause: count for cause, count in counts.items() if cause not in state["seen"]}
+    )
+    ranked = sorted(pending, key=lambda cause: (-pending[cause], cause))
+    available = max(0, cap - state["posted"])
+    print(f"S5 failure audit: {len(counts)} causes", flush=True)
+    for cause, count in sorted(counts.items()):
+        status = "seen" if cause in state["seen"] else "new"
+        print(f"  {cause}: {count} ({status})", flush=True)
+    eligible, deferred = ranked[:available], ranked[available:]
+    print(f"  Eligible today (UTC): {', '.join(eligible) or 'none'}", flush=True)
+    print(f"  Deferred: {len(deferred)}", flush=True)
+    return eligible
+
+
 def audit(config, twt_db, *, poster=None):
+    cap = config.get("failure_audit_daily_post_cap", DEFAULT_DAILY_POST_CAP)
+    if type(cap) is not int or cap < 1:
+        raise ValueError("failure_audit_daily_post_cap must be a positive integer")
     counts = twt_counts(Path(twt_db))
     counts.update(runtime_trace_counts(config))
-    state = Path(config["state_dir"]) / SEEN_FILE
-
-    def report(seen):
-        print(f"S5 failure audit: {len(counts)} causes", flush=True)
-        for cause, count in sorted(counts.items()):
-            print(
-                f"  {cause}: {count} ({'seen' if cause in seen else 'new'})", flush=True
-            )
-
+    path = Path(config["state_dir"]) / SEEN_FILE
     if poster is None:
-        report(load_seen(state))
+        plan_posts(load_state(path), counts, cap)
         return
-    with state.with_suffix(".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        seen = load_seen(state)
-        report(seen)
-        for cause in sorted(counts.keys() - seen):
+    with locked_state(path) as state:
+        eligible = plan_posts(state, counts, cap)
+        save_state(path, state)
+        for cause in eligible:
+            if utc_day() != state["day"]:
+                break
             status = poster(AGENT, intake_note(cause), status="Act", link="")
             if not 200 <= status < 300:
                 raise RuntimeError(f"failure audit ledger post returned HTTP {status}")
-            seen.add(cause)
-            save_seen(state, seen)
+            accepted_day = utc_day()
+            crossed_midnight = accepted_day != state["day"]
+            if crossed_midnight:
+                state.update(day=accepted_day, posted=0)
+            state["seen"][cause] = None
+            state["pending"].pop(cause)
+            state["posted"] += 1
+            save_state(path, state)
+            if crossed_midnight:
+                break
 
 
 def main():
@@ -178,11 +255,25 @@ def main():
     source.add_argument("--config", type=Path)
     source.add_argument("--trace-counts", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--twt-db", type=Path, help="override the configured TwT DB")
+    parser.add_argument(
+        "--mark-known",
+        action="append",
+        type=known_cause,
+        metavar="SIGNATURE=URL",
+        help="record a tracking issue or PR without posting (repeatable)",
+    )
     args = parser.parse_args()
     if args.trace_counts is not None:
+        if args.mark_known or args.twt_db:
+            parser.error("--trace-counts does not accept --mark-known or --twt-db")
         print(json.dumps(trace_counts(args.trace_counts)))
         return
     config = json.loads(args.config.read_text(encoding="utf-8"))
+    if args.mark_known:
+        if args.twt_db:
+            parser.error("--mark-known only needs --config, not --twt-db")
+        mark_known(Path(config["state_dir"]) / SEEN_FILE, args.mark_known)
+        return
     twt_db = args.twt_db or config.get("failure_audit_db")
     if not twt_db:
         parser.error("--twt-db or failure_audit_db in config is required")

@@ -256,25 +256,49 @@ python3 scripts/twt_failure_audit.py --config ~/twt/queue/config-main.json \
   --twt-db ~/twt/catalog.sqlite3
 ```
 
-This prints grouped counts and whether each cause was seen before without
-writing to the Agent Ledger or its audit state. Review the retained history
-first: the initial scan includes historical causes. To enable filing on the
-next approved queue start, point `QUEUE_RUNNER` at the updated checkout (with
+This prints grouped counts, seen signatures, and the causes eligible to post
+today without writing to the Agent Ledger or its audit state. The first scan
+includes historical causes. Before enabling filing on S5, record causes
+already tracked in GitHub (one repeatable `--mark-known SIGNATURE=URL` per
+signature, using the name from the dry-run). This writes only to the queue
+state, not GitHub or the Form. For the initial S5 backfill:
+
+```sh
+python3 scripts/twt_failure_audit.py --config ~/twt/queue/config-main.json \
+  --mark-known 'TwT nvidia HTTP 404=https://github.com/arii/boomtick/issues/1419' \
+  --mark-known 'TwT cloudflare HTTP 410=https://github.com/arii/boomtick/pull/1421' \
+  --mark-known 'TwT sambanova HTTP 402=https://github.com/arii/boomtick/pull/1421' \
+  --mark-known 'TwT nvidia timeout=https://github.com/arii/boomtick/issues/1301' \
+  --mark-known 'TwT nebius HTTP 529=https://github.com/arii/boomtick/issues/1305' \
+  --mark-known 'Coder repeat loop=https://github.com/arii/remote-server/issues/1627' \
+  --mark-known 'Coder read-only run=https://github.com/arii/remote-server/issues/1633'
+```
+
+The repeat-loop group also covers the repeated read in #1630. The caller-side
+model configuration error in #1635 is not an upstream attempt or a coder
+guard trip, so there is no signature to mark for it.
+
+Run the dry-run again after marking known causes. On the next approved queue
+start, point `QUEUE_RUNNER` at the updated checkout (with
 `twt_failure_audit.py` and `ledger_post.py` alongside it) and add
 `"failure_audit_db": "/home/ari/twt/catalog.sqlite3"` to the host queue config.
-No separate service or TwT configuration change is needed. Omit the setting to
-leave filing disabled.
+No separate service or TwT configuration change is needed. Omit the setting
+to leave filing disabled.
 
 For each new signature, the audit uses the existing Form writer as `S5-Local`
 with status `Act` (TwT tasks go to `boomtick`, coder tasks to `remote-server`).
 The Agent Ledger hook must allow that source and both repos. The supervisor
-records a signature in `failure-audit-seen.json` under `state_dir` only after
-the Form accepts the row; keep this file across restarts. Submissions use
-stable notes so the hook's replay deduplication also applies. Before enabling,
-confirm that the hook's remaining shared UTC-day capacity can cover the
-dry-run's new causes. A Form success does not confirm issue creation, and the
-audit does not resubmit a row the Form already accepted. Check the hook's
-outcome rows after the initial backfill.
+records seen signatures, their tracker URLs when known, the pending backlog
+and the UTC-day post count in `failure-audit-seen.json` under `state_dir`.
+Keep this file across restarts. The audit accepts an optional positive integer
+`failure_audit_daily_post_cap` in the host config (default 3, below the hook's
+shared cap of 5). Higher-count causes are submitted first, with ties sorted
+by signature; excess causes remain pending for the next run with UTC-day
+capacity. Only successful Form submissions consume the local cap.
+Submissions use stable notes so the hook's replay deduplication also applies.
+Other Form sources share the hook's capacity; a Form success does not confirm
+issue creation, and the audit does not resubmit a row the Form already accepted.
+Check the hook's outcome rows after enabling.
 The audit never sets `ready`. Audit errors are logged but do not change the
 queue's run status; a failed Form submission remains eligible on the next run.
 
