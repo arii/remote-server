@@ -1271,8 +1271,11 @@ def run_coder(
     kwargs = dict(
         repair_files=repair_files, repair=repair, model_tier=model_tier, repo=repo
     )
+    deadline = time.monotonic() + timeout
     try:
-        return _run_coder_attempt(worktree, brief, system, thread, timeout, **kwargs)
+        return _run_coder_attempt(
+            worktree, brief, system, thread, timeout, deadline=deadline, **kwargs
+        )
     except ModelCallLimitExceededError as error:
         spec = getattr(error, "coder_model_spec", {})
         fallback = os.environ.get(
@@ -1289,6 +1292,9 @@ def run_coder(
         ):
             raise
         prior_files = error.coder_written_files
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RuntimeError(f"coder timed out after {timeout}s before fallback")
     return _run_coder_attempt(
         worktree,
         brief + "\n\nThe default-route attempt exhausted its model budget. "
@@ -1296,7 +1302,8 @@ def run_coder(
         "and verify before finishing.",
         system,
         thread + "-fallback",
-        timeout,
+        remaining,
+        deadline=deadline,
         fallback_model=fallback,
         prior_files=prior_files,
         **kwargs,
@@ -1316,6 +1323,7 @@ def _run_coder_attempt(
     repo=None,
     fallback_model=None,
     prior_files=(),
+    deadline=None,
 ):
     """Invoke the coder with a verify gate.
 
@@ -1333,6 +1341,7 @@ def _run_coder_attempt(
     from backend.shared import ledger  # noqa: E402
 
     started = time.time()
+    deadline = time.monotonic() + timeout if deadline is None else deadline
     override = tier_model(model_tier)
     model, spec = (
         build_fallback_model(fallback_model)
@@ -1402,6 +1411,14 @@ def _run_coder_attempt(
                 config={**config, "recursion_limit": RECURSION_LIMIT},
             )
 
+        def invoke_bounded(message):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"timed out after {timeout}s")
+            return run_bounded(
+                lambda: _invoke([HumanMessage(content=message)]), remaining
+            )
+
         last_diff = None
 
         def is_stagnant():
@@ -1422,12 +1439,8 @@ def _run_coder_attempt(
 
         max_rounds = verify_rounds()
         result, rounds, verified = run_with_verify(
-            lambda: run_bounded(
-                lambda: _invoke([HumanMessage(content=brief)]), timeout
-            ),
-            lambda: run_bounded(
-                lambda: _invoke([HumanMessage(content=VERIFY_NUDGE)]), timeout
-            ),
+            lambda: invoke_bounded(brief),
+            lambda: invoke_bounded(VERIFY_NUDGE),
             lambda: trace_has_passing_check(recorder.path),
             max_rounds,
             dithered=lambda: trace_has_dither(recorder.path),

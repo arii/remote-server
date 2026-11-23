@@ -113,6 +113,100 @@ class TestCoderFallback(unittest.TestCase):
                 )
                 attempt.assert_called_once()
 
+    def test_fallback_receives_only_remaining_wall_clock_budget(self):
+        for elapsed in (3, 5, 6):
+            with (
+                self.subTest(elapsed=elapsed),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "S5_LOCAL_ONLY": "0",
+                        "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
+                    },
+                ),
+                mock.patch.object(
+                    coder.time, "monotonic", side_effect=[100, 100 + elapsed]
+                ),
+                mock.patch.object(
+                    coder,
+                    "_run_coder_attempt",
+                    side_effect=[self.cap_error(), "finished"],
+                ) as attempt,
+            ):
+                if elapsed >= 5:
+                    with self.assertRaisesRegex(RuntimeError, "timed out"):
+                        coder.run_coder("/repo", "brief", "system", "thread", 5)
+                    self.assertEqual(attempt.call_count, 1)
+                else:
+                    self.assertEqual(
+                        coder.run_coder("/repo", "brief", "system", "thread", 5),
+                        "finished",
+                    )
+                    self.assertEqual(attempt.call_args.args[4], 2)
+
+    def test_verify_reprompts_share_the_attempt_deadline(self):
+        for last_tick in (104, 105):
+            with (
+                self.subTest(last_tick=last_tick),
+                tempfile.TemporaryDirectory() as root,
+            ):
+                limits = []
+
+                def build(*args, written_files, **kwargs):
+                    written_files.add("result.txt")
+                    return SimpleNamespace(
+                        invoke=lambda *args, **kwargs: {
+                            "messages": [AIMessage(content="DONE #1550")]
+                        }
+                    )
+
+                clock = SimpleNamespace(
+                    time=coder.time.time,
+                    monotonic=mock.Mock(side_effect=[100, 102, last_tick]),
+                )
+                with (
+                    mock.patch.object(coder, "time", clock),
+                    mock.patch.object(
+                        coder,
+                        "build_model",
+                        return_value=(None, {"provider": "twt", "model": "default"}),
+                    ),
+                    mock.patch.object(coder, "build_agent", side_effect=build),
+                    mock.patch.object(
+                        deep_chat, "open_checkpointer", return_value=(None, False, None)
+                    ),
+                    mock.patch.object(
+                        coder, "trace_has_passing_check", side_effect=[False, True]
+                    ),
+                    mock.patch.object(coder, "verify_rounds", return_value=1),
+                    mock.patch.object(
+                        coder,
+                        "run_bounded",
+                        side_effect=lambda fn, timeout: (limits.append(timeout), fn())[
+                            1
+                        ],
+                    ),
+                    mock.patch.object(ledger, "record"),
+                    mock.patch.object(
+                        observe,
+                        "default_trace_path",
+                        return_value=str(Path(root, "trace.jsonl")),
+                    ),
+                ):
+                    if last_tick == 105:
+                        with self.assertRaisesRegex(RuntimeError, "timed out"):
+                            coder._run_coder_attempt(
+                                root, "brief", "system", "thread", 5
+                            )
+                        self.assertEqual(limits, [3])
+                    else:
+                        self.assertTrue(
+                            coder._run_coder_attempt(
+                                root, "brief", "system", "thread", 5
+                            )[6]
+                        )
+                        self.assertEqual(limits, [3, 1])
+
     def test_paid_failure_is_not_retried(self):
         error = self.cap_error(model=coder.DEFAULT_FALLBACK_MODEL)
         with (
