@@ -28,6 +28,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The review shells out to td for impact/semantic context; install
+      # the pinned revision (same immutable revision as e2e.yml and the
+      # Dockerfiles). Without this the step fails with `spawn td ENOENT`
+      # and the review posts with no impact analysis (#1620).
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: install boomtick td CLI
+        run: pip install "git+https://github.com/arii/boomtick.git@3e970a570aee0a550ec6409de769c201c9a5b900#subdirectory=cli"
+
       - name: Automated AI Code Review
         uses: arii/boomtick@8a413b25a47cf251f6472c46becfeeba7fbb3e67 # boomtick feat/review-verdict-gate, re-pin to the boomtick main merge commit after the boomtick PR merges
         env:

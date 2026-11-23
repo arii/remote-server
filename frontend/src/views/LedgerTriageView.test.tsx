@@ -117,6 +117,55 @@ describe('LedgerTriageView', () => {
     expect(card.querySelector('a')?.getAttribute('href')).toBe(sourceUrl);
   });
 
+  it('shows readable link text without the query string and keeps the full destination', async () => {
+    const sourceUrl = 'https://www.github.com/arii/remote-server/issues/1574?' + 'q=abcdef&'.repeat(40) + '#frag';
+    const duplicateOf = 'https://github.com/arii/remote-server/issues/1500';
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{ ...duplicateRows.rows[0], source_url: sourceUrl, duplicate_of: duplicateOf }],
+    });
+
+    await act(async () => root.render(<LedgerTriageView />));
+    const [source, duplicate] = Array.from(host.querySelectorAll<HTMLAnchorElement>('.ledger-triage-card a'));
+    expect(source.getAttribute('href')).toBe(sourceUrl);
+    expect(source.textContent).toBe('github.com/arii/remote-server/issues/1574');
+    expect(source.title).toBe(sourceUrl);
+    expect(duplicate.getAttribute('href')).toBe(duplicateOf);
+    expect(duplicate.textContent).toBe('github.com/arii/remote-server/issues/1500');
+  });
+
+  it('shortens very long paths to a bounded link text', async () => {
+    const sourceUrl = 'https://example.com/' + 'segment/'.repeat(30) + 'end';
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{ ...duplicateRows.rows[0], source_url: sourceUrl }],
+    });
+
+    await act(async () => root.render(<LedgerTriageView />));
+    const source = host.querySelector<HTMLAnchorElement>('.ledger-triage-card a')!;
+    expect(source.textContent!.length).toBeLessThanOrEqual(48);
+    expect(source.textContent).toContain('…');
+    expect(source.textContent!.endsWith('segment/end')).toBe(true);
+    expect(source.getAttribute('href')).toBe(sourceUrl);
+  });
+
+  it('shows a chevron on the fold and keeps expanding from marking the card reviewed', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{ ...duplicateRows.rows[0], problem: 'y'.repeat(300) }],
+    });
+
+    await act(async () => root.render(<LedgerTriageView />));
+    const summary = host.querySelector<HTMLElement>('.ledger-card-problem summary')!;
+    expect(summary.querySelector('.ledger-chevron')?.getAttribute('aria-hidden')).toBe('true');
+    await act(async () => summary.click());
+    for (const key of ['Enter', ' ']) {
+      await act(async () => {
+        summary.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      });
+    }
+    expect(tap('unreviewed-intake-new')).not.toBeNull();
+    expect(host.querySelector('[data-testid="ledger-unreviewed-count"]')!.textContent).toBe('1 unreviewed');
+    expect(localStorage.getItem('ledgerTriage.reviewed')).toBeNull();
+  });
+
   it('does not link a non-web source URL', async () => {
     vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
       rows: [{ ...duplicateRows.rows[0], source_url: 'javascript:void(0)' }],

@@ -57,6 +57,7 @@ from backend.shared.s5tools import (  # noqa: E402,F401
     CHECK_PREFIXES,
     CHECK_TIMEOUT,
     TEST_FILE_RE,
+    active_checkout_path,
     allowed_commands_text,
     check_allowed,
     check_env,
@@ -178,6 +179,12 @@ VERIFY_NUDGE = (
     "checks for your edits with run_check and fix any failures; "
     "do not finish without a passing run. Invoke actual function tools; "
     "printing JSON commands does not execute them."
+)
+
+TERMINAL_NUDGE = (
+    "Your last reply omitted the required status line. Reply with your summary "
+    "and end with DONE #<issue> or BLOCKED #<issue>, using the issue number "
+    "from the task. Do not make additional changes in this reply."
 )
 
 CODER_RULES = (
@@ -327,7 +334,17 @@ def plan_path_hints(worktree, brief):
         score = len(words & terms)
         if score:
             matches.append((-score, path))
-    return "\n".join(path for _, path in sorted(matches)[:30])
+    paths = []
+    for _, path in sorted(matches):
+        try:
+            target = active_checkout_path(worktree, path)
+        except ValueError:
+            continue
+        if os.path.isfile(target):
+            paths.append(path)
+            if len(paths) == 30:
+                break
+    return "\n".join(paths)
 
 
 def parse_args(argv):
@@ -613,10 +630,14 @@ def build_filesystem_backend(worktree):
     from deepagents.backends import FilesystemBackend
 
     class CoderFilesystemBackend(FilesystemBackend):
+        def _to_virtual_path(self, path):
+            active_checkout_path(self.cwd, path)
+            return super()._to_virtual_path(path)
+
         def _resolve_path(self, key):
             try:
                 key = worktree_file_key(worktree, key)
-                assert_inside(worktree, key)
+                active_checkout_path(self.cwd, key)
             except ValueError as exc:
                 raise PermissionError(
                     "outside_worktree_root: use worktree-relative paths "
@@ -665,7 +686,7 @@ def worktree_file_middleware(worktree, written_files, read_cache=None):
                     continue
                 try:
                     relative = worktree_file_key(worktree, path)
-                    target = assert_inside(worktree, relative)
+                    target = active_checkout_path(worktree, relative)
                     if (
                         os.path.isabs(path)
                         and path != "/"
@@ -1696,9 +1717,9 @@ def _run_coder_attempt(
     Returns (summary, usage, calls, started, label, trace, verified,
     verify_rounds). Unless CODER_VERIFY_ROUNDS=0, a turn with no
     passing run_check in the trace re-invokes (same thread) with the
-    verify nudge, up to the round bound; an exhausted bound prefixes
-    the summary with [unverified]. Missing terminal contracts, blocked runs,
-    and implementations with no successful writes fail. Venv-only.
+    verify nudge and latest failed check, up to the round bound; an exhausted
+    bound prefixes the summary with [unverified]. Ask once for an omitted
+    terminal line before applying the existing verdict rules. Venv-only.
     """
     import observe  # noqa: E402
     from langchain_core.messages import HumanMessage  # noqa: E402
@@ -1808,10 +1829,14 @@ def _run_coder_attempt(
                 lambda: _invoke([HumanMessage(content=message)]), remaining
             )
 
-        last_diff = None
+        def latest_failed_check():
+            checks = trace_verification_evidence(recorder.path, repo)
+            return checks[-1] if checks and not checks[-1]["passed"] else None
+
+        last_progress = None
 
         def is_stagnant():
-            nonlocal last_diff
+            nonlocal last_progress
             try:
                 cur_diff = subprocess.run(
                     ["git", "-C", worktree, "diff", "HEAD"],
@@ -1821,15 +1846,29 @@ def _run_coder_attempt(
                 ).stdout
             except Exception:
                 return False
-            if last_diff is not None and cur_diff == last_diff:
-                return True
-            last_diff = cur_diff
-            return False
+            failed = latest_failed_check()
+            progress = (
+                cur_diff,
+                (failed["command"], failed["output"]) if failed else None,
+            )
+            stagnant = progress == last_progress
+            last_progress = progress
+            return stagnant
+
+        def retry_verification():
+            failed = latest_failed_check()
+            prompt = VERIFY_NUDGE
+            if failed:
+                prompt += (
+                    f"\n\nLatest failed run_check: {failed['command']}\n"
+                    f"{failed['output']}"
+                )
+            return invoke_bounded(prompt)
 
         max_rounds = verify_rounds()
         result, rounds, verified = run_with_verify(
             lambda: invoke_bounded(brief),
-            lambda: invoke_bounded(VERIFY_NUDGE),
+            retry_verification,
             lambda: trace_has_passing_check(recorder.path),
             max_rounds,
             dithered=lambda: trace_has_dither(recorder.path),
@@ -1838,6 +1877,9 @@ def _run_coder_attempt(
         # Keep the checkpointer connection alive until the run returns.
         _ = holder
         reply = extract_reply(result)
+        if terminal_contract(reply) is None:
+            reply = extract_reply(invoke_bounded(TERMINAL_NUDGE))
+            verified = trace_has_passing_check(recorder.path)
         if verified and repair_files:
             written_files.update(existing_implementation_files(worktree, repair_files))
         reason = implementation_failure(reply, written_files, verified)
@@ -1889,6 +1931,11 @@ def existing_implementation_files(worktree, allowed_files):
 NO_WRITES = "no written files for implementation"
 
 
+def terminal_contract(reply):
+    lines = reply.strip().splitlines()
+    return re.fullmatch(r"(DONE|BLOCKED) #\d+", lines[-1].strip()) if lines else None
+
+
 def implementation_failure(reply, written_files, verified=False):
     """Why the coder's reply fails its contract, or "" when it holds.
 
@@ -1896,10 +1943,7 @@ def implementation_failure(reply, written_files, verified=False):
     when the run wrote files and passed run_check; the pipeline's
     verification gate and reviewer stage still judge the diff.
     """
-    lines = reply.strip().splitlines()
-    contract = (
-        re.fullmatch(r"(DONE|BLOCKED) #\d+", lines[-1].strip()) if lines else None
-    )
+    contract = terminal_contract(reply)
     reasons = []
     if contract is None:
         if not (verified and written_files):

@@ -45,11 +45,41 @@
 }
 
 .ledger-card-problem summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 0;
   cursor: pointer;
+  list-style: none;
+}
+
+.ledger-card-problem summary::-webkit-details-marker {
+  display: none;
+}
+
+.ledger-card-problem summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ledger-chevron {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin: 0 4px;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+
+.ledger-card-problem[open] .ledger-chevron {
+  transform: rotate(45deg);
 }
 
 .ledger-card-problem p {
-  margin-top: 6px;
+  margin-top: 8px;
   white-space: pre-wrap;
 }
 
@@ -340,6 +370,7 @@ h1, h2, h3 { text-wrap: balance; }
   display: inline-block;
 }
 
+.ledger-link { display: inline-flex; align-items: center; min-height: 44px; max-width: 100%; }
 .row-meta { color: var(--muted); font-size: 0.85rem; margin: 0; }
 .row-title { display: block; font-weight: 650; font-size: 1rem; margin: 0; color: var(--text); }
 

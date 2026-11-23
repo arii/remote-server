@@ -1,13 +1,6 @@
 {
   "version": 1,
   "skills": {
-    "antislop-code": {
-      "source": "miqdadbadjuber/anti-slop",
-      "sourceType": "github",
-      "skillPath": "skills/antislop-code/SKILL.md",
-      "computedHash": "cac8f34af374f085900fd9b211a92fdfb387f63826571e1221cfb927fb31a5ca",
-      "ref": "35b54dc660aa7d11428ee62c5788ad36bc18ac3c"
-    },
     "ari-workspace-quickstart": {
       "source": "arii/skills",
       "sourceType": "github",

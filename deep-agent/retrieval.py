@@ -14,7 +14,7 @@ import hashlib
 import os
 import re
 
-from backend.shared import cli
+from backend.shared import cli, s5tools
 
 DB_DIR = os.path.join(cli.repo_root(), "deep-agent", "chroma_db")
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
@@ -300,10 +300,11 @@ def search_td(query, repo_path, top_k=8):
     parts = []
     for hit in hits or []:
         try:
+            s5tools.active_checkout_path(repo_path, hit["filepath"])
             parts.append(
                 f"[{hit.get('filepath')}:{hit.get('start_line')}] "
                 f"{(hit.get('content') or '')[:700]}"
             )
-        except Exception:
+        except (KeyError, TypeError, ValueError):
             continue
     return "\n\n".join(parts)[:2800] or "no doc hits"
