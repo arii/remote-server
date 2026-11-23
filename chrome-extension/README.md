@@ -42,6 +42,8 @@ A local-first Chrome Extension using Chrome's Built-in On-Device AI foundation m
    - **Passive submit observer**: Detects form submissions and compares values against the vault.
    - Zero silent overwrites: presents proposed updates in the **Review & Merge Queue** with approve/discard actions and toolbar badge counters.
    - **Correction learning**: repeated approved corrections for the same field label become alias proposals in a "Learned" section (on-device, aliases only, verified before promotion).
+   - **Fill outcomes**: on allowlisted domains, submitting a filled form records per field whether it was kept, edited or cleared (never the values). The Fill tab shows `Last fill: N kept, M edited, K cleared` and the kept-rate over the last 20 fills.
+   - **Learned mappings**: when you correct a fill to another vault entry's value, the field is remembered as a quarantined mapping. It is only used after 3 agreeing submissions (you keep or re-enter that entry) or your Confirm click, and the first time you overwrite it, it is deleted. The Learned section lists aliases and mappings in one flat list with Delete (and Confirm for unconfirmed rows). Never stores values.
 
 ---
 
@@ -55,7 +57,12 @@ npm run check
 
 # Direct build
 npm run build
+
+# Offline fill-accuracy eval (writes eval/last-run.json)
+npm run eval
 ```
+
+`npm run eval` runs the shared matcher over the Ashby, Greenhouse and Lever fixtures plus synthetic ambiguous (billing vs shipping), mismatched-control, multi-step and abstain fixtures against a sample vault (`eval/eval-vault.json`). It scores correct fill, wrong fill, correct abstain and wrong abstain, and prints accuracy per fixture, per case type and in total. It makes no network or model calls. `npm test` fails if accuracy drops below the committed `eval/last-run.json`; after an intended improvement, rerun `npm run eval` and commit the new file.
 
 This validates `manifest.json`, checks all referenced scripts and icons, outputs the ready-to-load extension in `dist/`, and packages `dist/localform-ai-extension.zip`.
 
@@ -80,6 +87,7 @@ This validates `manifest.json`, checks all referenced scripts and icons, outputs
 ```text
 chrome-extension/
 ├── package.json               # Build and syntax test scripts
+├── eval/                      # Offline fill-accuracy eval (run-eval.mjs, eval-vault.json, last-run.json)
 ├── scripts/
 │   └── build.mjs             # Validation, asset packaging, and zip builder
 ├── extension/                 # Source extension files (Manifest V3)

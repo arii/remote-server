@@ -3,7 +3,7 @@
 // Implements Phases 1 through 7 for Chrome's Built-in On-Device AI
 // ============================================================================
 
-import { aliasMatches } from "./lib/matcher.js";
+import { matchField } from "./lib/matcher.js";
 import { deduplicateVault } from "./lib/vault.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
 import {
@@ -598,6 +598,22 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       "activeSessionContext"
     ]);
 
+    // Learned mappings (#1540): only confirmed ones are used by matchField.
+    let learned = [];
+    try {
+      learned = (await chrome.runtime.sendMessage({ type: "learning:getMappings" }))?.mappings || [];
+    } catch {
+      learned = [];
+    }
+    let host = "";
+    try {
+      host = tab.url ? new URL(tab.url).hostname : "";
+    } catch {
+      host = "";
+    }
+    const matchOpts = { learned, host };
+
+    const fillId = `fill_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const autoConsent = document.getElementById("chk-agree-consent")?.checked ?? true;
     const longFormFields = [];
 
@@ -627,18 +643,12 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
 
       if (isLongFormEssay) {
         // If vault has a direct deterministic match for this essay/project prompt (e.g. "Share something cool you've built"), use it!
-        let matchedVaultEssay = null;
-        for (const entry of userContextVault) {
-          const aliases = [entry.key, ...(entry.aliases || [])];
-          if (aliases.some((a) => aliasMatches(q, a))) {
-          field.entryId = entry.id;
-            matchedVaultEssay = entry.value;
-            break;
-          }
-        }
+        const essayMatch = matchField(fieldMatchInput(field, q), userContextVault, matchOpts);
+        const matchedVaultEssay = essayMatch ? essayMatch.entry.value : null;
+        if (essayMatch) tagMatch(field, essayMatch);
         if (matchedVaultEssay) {
           field.value = matchedVaultEssay;
-          field.confidence = 0.98;
+          field.confidence = essayMatch.confidence;
           continue;
         }
 
@@ -646,6 +656,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
         if (activeSessionContext?.preDraftedCoverLetter && /cover letter|note|motivation|why/i.test(q)) {
           field.value = activeSessionContext.preDraftedCoverLetter;
           field.confidence = 0.99;
+          field.pass = "prompt";
         } else {
           longFormFields.push(field);
         }
@@ -662,24 +673,18 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       }
 
       // Deterministic match for standard atomic inputs
-      const autoAttr = field.constraints?.autocomplete;
-      for (const entry of userContextVault) {
-        if (autoAttr && entry.autocomplete && entry.autocomplete === autoAttr) {
+      const atomicMatch = matchField(fieldMatchInput(field, q), userContextVault, matchOpts);
+      if (atomicMatch) {
+        const { entry, pass, confidence } = atomicMatch;
+        tagMatch(field, atomicMatch);
+        if (pass === "autocomplete") {
           field.value = entry.value;
-          field.entryId = entry.id;
-          field.confidence = 0.99;
-          break;
+        } else if (field.inputType === "checkbox") {
+          field.value = /^(yes|true|1)$/i.test(String(entry.value).trim());
+        } else {
+          field.value = entry.value;
         }
-        const aliases = [entry.key, ...(entry.aliases || [])];
-        if (aliases.some((a) => aliasMatches(q, a))) {
-          if (field.inputType === "checkbox") {
-            field.value = /^(yes|true|1)$/i.test(String(entry.value).trim());
-          } else {
-            field.value = entry.value;
-          }
-          field.confidence = 0.98;
-          break;
-        }
+        field.confidence = confidence;
       }
     }
 
@@ -688,7 +693,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     const stage1Result = await sendToActiveTab({
       action: "HYDRATE_PAGE_FORMS",
       document: doc,
-      options: { highlightConfidence: true }
+      options: { highlightConfidence: true, trackFill: true, fillId }
     });
     Telemetry.logTrace({
       type: "HYDRATE",
@@ -697,6 +702,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       details: summarizeHydrationResult(stage1Result)
     });
     reportFillVerdicts(doc, stage1Result);
+    renderFillStats();
     statusBox.textContent = `Stage 1 filled ${stage1Result.filledCount} fields instantly...`;
 
     // 4. Stage 2: On-Device LLM synthesis ONLY for remaining tailored essays or unmapped fields
@@ -762,6 +768,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
             }
             field.value = finalText;
             field.confidence = 0.92;
+            field.pass = "prompt";
           }
         }
         session.destroy?.();
@@ -772,7 +779,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
         const finalResult = await sendToActiveTab({
           action: "HYDRATE_PAGE_FORMS",
           document: doc,
-          options: { highlightConfidence: true }
+          options: { highlightConfidence: true, trackFill: true, fillId }
         });
         Telemetry.logTrace({
           type: "HYDRATE",
@@ -799,6 +806,47 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     btn.textContent = "✨ Auto-Fill Active Form with AI";
   }
 });
+
+// Fill outcomes (#1539): "Last fill: N kept, M edited, K cleared" plus the
+// kept-rate over the last 20 fills. Read-only; the worker owns the data.
+async function renderFillStats() {
+  const el = document.getElementById("fill-stats-line");
+  if (!el) return;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "learning:getOutcomes" });
+    if (!res?.last) {
+      el.textContent = "Last fill: no submitted fills recorded yet.";
+      return;
+    }
+    const { kept, edited, cleared } = res.last;
+    const rate = Math.round(res.keptRate * 100);
+    el.textContent = `Last fill: ${kept} kept, ${edited} edited, ${cleared} cleared. Kept-rate over last ${res.fills} fills: ${rate}%`;
+  } catch {
+    el.textContent = "";
+  }
+}
+renderFillStats();
+
+// Input for matchField. name/type rebuild the signature the content script
+// records at submit time (type is the element's type attribute or tag name).
+function fieldMatchInput(field, label) {
+  const t = field.inputType || "";
+  const type = t.startsWith("select") ? "select" : t === "radio-group" ? "radio" : t;
+  return {
+    label,
+    autocomplete: field.constraints?.autocomplete,
+    name: field.locator?.name || "",
+    type
+  };
+}
+
+// Tag a doc field with the vault entry and pass that filled it, so the content
+// script can report the outcome after submit.
+function tagMatch(field, match) {
+  field.entryId = match.entry.id;
+  field.entryKey = match.entry.key;
+  field.pass = match.pass;
+}
 
 // Phase 3: Manual JSON Import
 document.getElementById("btn-run-manual-import").addEventListener("click", async () => {
@@ -1020,16 +1068,20 @@ async function renderLearned() {
   const box = document.getElementById("learned-container");
   if (!box) return;
   let res;
+  let mres;
   try {
     res = await chrome.runtime.sendMessage({ type: "learning:getProposals" });
+    mres = await chrome.runtime.sendMessage({ type: "learning:getMappings" });
   } catch {
     return;
   }
   if (!res || res.error) return;
   const proposals = await refineWithLanguageModel(res.proposals || [], res.cases || [], res.vault || []);
   const keyOf = (id) => (res.vault || []).find((e) => e.id === id)?.key || id;
-  const learned = res.learned || [];
-  if (proposals.length === 0 && learned.length === 0) {
+  // One flat list: aliases you added (#1529) and field mappings learned from
+  // your edits (#1540). Delete on every row, Confirm only on unconfirmed rows.
+  const rows = mres?.rows || [];
+  if (proposals.length === 0 && rows.length === 0) {
     box.innerHTML = "";
     return;
   }
@@ -1047,10 +1099,17 @@ async function renderLearned() {
       </div>`
       )
       .join("")}
-    ${learned
-      .slice(0, 5)
+    ${rows
       .map(
-        (l) => `<div style="font-size:10.5px; color:var(--text-muted);">Learned: ${escapeHtml(l.alias)} &rarr; ${escapeHtml(l.entryKey)}</div>`
+        (r, i) => `
+      <div class="item-card" style="margin-bottom:6px;">
+        <div style="font-size:11px;"><b>${escapeHtml(r.from)}</b> &rarr; ${escapeHtml(r.to)}
+          <span style="color:var(--text-muted);">(${escapeHtml(r.origin)})</span></div>
+        <div class="btn-row" style="margin-top:4px;">
+          ${r.unconfirmed ? `<button class="btn btn-primary btn-sm btn-confirm-learned" data-index="${i}">Confirm</button>` : ""}
+          <button class="btn btn-sm btn-delete-learned" data-index="${i}">Delete</button>
+        </div>
+      </div>`
       )
       .join("")}`;
   box.querySelectorAll(".btn-promote-alias").forEach((btn) => {
@@ -1059,6 +1118,24 @@ async function renderLearned() {
       const r = await chrome.runtime.sendMessage({ type: "learning:promote", proposal: { label, entryId, alias } });
       if (r && r.ok === false) alert(`Alias not added: ${r.reason}`);
       renderVault();
+      renderLearned();
+    });
+  });
+  box.querySelectorAll(".btn-confirm-learned").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await chrome.runtime.sendMessage({ type: "learning:confirmMapping", sig: rows[Number(btn.dataset.index)].sig });
+      renderLearned();
+    });
+  });
+  box.querySelectorAll(".btn-delete-learned").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const r = rows[Number(btn.dataset.index)];
+      await chrome.runtime.sendMessage(
+        r.kind === "alias"
+          ? { type: "learning:deleteAlias", entryId: r.entryId, alias: r.from }
+          : { type: "learning:deleteMapping", sig: r.sig }
+      );
+      if (r.kind === "alias") renderVault();
       renderLearned();
     });
   });
