@@ -232,6 +232,9 @@ def new_budget(sub_briefs):
     }
 
 
+SPEC_EVIDENCE = "spec-validated.md"
+
+
 def budget_state_path(thread_id):
     """S5_BUDGET_STATE, else <state dir>/budget-<thread_id>.json."""
     configured = os.environ.get("S5_BUDGET_STATE")
@@ -241,6 +244,62 @@ def budget_state_path(thread_id):
 
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", thread_id)[:64]
     return os.path.join(ledger.state_dir(), f"budget-{safe}.json")
+
+
+class SpecEvidenceError(RuntimeError):
+    """The validated spec could not be saved as immutable run evidence."""
+
+
+def spec_evidence_path(thread_id):
+    """spec-validated.md beside S5_BUDGET_STATE (the run evidence directory).
+
+    Without a configured run directory the state dir is shared across runs,
+    so the thread id keeps each run's artifact distinct.
+    """
+    configured = os.environ.get("S5_BUDGET_STATE")
+    if configured:
+        return os.path.join(os.path.dirname(os.path.abspath(configured)), SPEC_EVIDENCE)
+    from backend.shared import ledger
+
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", thread_id)[:64]
+    return os.path.join(ledger.state_dir(), f"spec-validated-{safe}.md")
+
+
+def save_validated_spec(path, spec):
+    """Write the exact validated spec once: atomic, read-only, never replaced.
+
+    Re-capturing identical text is a no-op; different text for the same run
+    raises, so audit, repair and resume cannot alter the evidence.
+    """
+    data = spec.encode("utf-8")
+    try:
+        if os.path.lexists(path):
+            with open(path, "rb") as existing:
+                if existing.read() == data:
+                    return
+            raise SpecEvidenceError(
+                f"{path} already holds a different validated spec; refusing to overwrite"
+            )
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        handle, temporary = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        try:
+            with os.fdopen(handle, "wb") as out:
+                out.write(data)
+                out.flush()
+                os.fsync(out.fileno())
+            os.chmod(temporary, 0o444)
+            # link() fails if the target exists, so a racing writer cannot
+            # replace the artifact the way rename() would.
+            os.link(temporary, path)
+        finally:
+            os.unlink(temporary)
+    except FileExistsError:
+        save_validated_spec(path, spec)
+    except OSError as exc:
+        raise SpecEvidenceError(
+            f"cannot save validated spec evidence to {path}: {exc}"
+        ) from exc
 
 
 def write_budget(path, budget):
@@ -1157,7 +1216,16 @@ class Pipeline:
                 reason = "; ".join(str(error) for error in reason) or "spec failed"
             self.log("spec", f"BLOCKED: {reason}")
             return self._result(BLOCKED, "", reason, 0, started)
+        if not isinstance(spec, str) or not spec.strip():
+            self.log("spec", "BLOCKED: spec stage returned no text")
+            return self._result(BLOCKED, "", "spec stage returned no text", 0, started)
         self.log("spec", f"validated ({len(spec)} chars)")
+        try:
+            save_validated_spec(spec_evidence_path(self.thread_id), spec)
+        except SpecEvidenceError as exc:
+            reason = f"pipeline error: {exc}. Fix the run evidence directory and retry."
+            self.log("spec", f"BLOCKED: {reason}")
+            return self._result(BLOCKED, "", reason, 0, started)
 
         worktree = ""
         audit_cycles = 0
