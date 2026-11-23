@@ -288,7 +288,9 @@ class AuditorGraph:
         verification_commands=None,
         preview_url=None,
         verification_evidence=None,
+        issue_id=None,
     ):
+        self.issue_id = issue_id
         self.worktree_root = os.path.abspath(worktree_root)
         self.audit_fn = audit_fn
         self.td_runner = td_runner
@@ -327,11 +329,16 @@ class AuditorGraph:
             if gate_errors:
                 return False, payloads, gate_errors
         if self.spec_file:
+            # The scope gate allows exactly this issue's generated spec
+            # (docs/specs/issue-<N>.md) when it knows the issue.
+            scope_args = ["--spec-file", self.spec_file]
+            if self.issue_id:
+                scope_args += ["--issue", str(self.issue_id)]
             ok, payload = run_td_gate(
                 "verify-scope",
                 self.worktree_root,
                 runner=self.td_runner,
-                extra_args=["--spec-file", self.spec_file],
+                extra_args=scope_args,
             )
             if not ok:
                 return False, payloads, [payload]
