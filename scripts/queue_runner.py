@@ -47,6 +47,17 @@ def write_json(path, value, owner=None):
     os.replace(temporary, path)
 
 
+def claims_pr_valid(pr):
+    """Return (ok, reason) for a PR: must close an issue and touch a test file."""
+    body = (pr.get("body") or "") if isinstance(pr, dict) else ""
+    if not re.search(r"Closes\s+#\d+", body):
+        return False, "PR body lacks 'Closes #<n>'"
+    files = pr.get("files") or []
+    if not any("test" in str(f) for f in files):
+        return False, "PR diff touches no test file"
+    return True, ""
+
+
 def receipt_total(ids, local_ids, receipts):
     from backend.shared.twt_receipts import receipt_cost
 

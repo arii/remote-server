@@ -13,6 +13,71 @@ from backend.shared import model_router
 from backend.shared import runs
 from backend.shared import twt_receipts
 from scripts import queue_runner as runner
+from scripts import ledger_post
+
+
+class ClaimsPrValidTests(unittest.TestCase):
+    def test_valid_pr(self):
+        ok, reason = runner.claims_pr_valid(
+            {"body": "Fixes stuff. Closes #12", "files": ["tests/test_x.py"]}
+        )
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
+    def test_missing_closes(self):
+        ok, reason = runner.claims_pr_valid({"body": "no ref", "files": ["tests/x.py"]})
+        self.assertFalse(ok)
+        self.assertIn("Closes", reason)
+
+    def test_no_test_file(self):
+        ok, reason = runner.claims_pr_valid(
+            {"body": "Closes #3", "files": ["src/a.py"]}
+        )
+        self.assertFalse(ok)
+        self.assertIn("test", reason)
+
+    def test_missing_body_or_files(self):
+        self.assertFalse(runner.claims_pr_valid({})[0])
+        self.assertFalse(runner.claims_pr_valid({"body": "Closes #3"})[0])
+
+
+class OutOfScopeFindingTests(unittest.TestCase):
+    def test_row_shape(self):
+        row = ledger_post.format_out_of_scope_finding("#1553", "Probe", "out of scope")
+        self.assertEqual(
+            row, {"issue": "#1553", "title": "Probe", "problem": "out of scope"}
+        )
+
+    def test_keys_only(self):
+        row = ledger_post.format_out_of_scope_finding("1", "t", "p")
+        self.assertEqual(sorted(row), ["issue", "problem", "title"])
+
+    def test_empty_fields_allowed(self):
+        self.assertEqual(
+            ledger_post.format_out_of_scope_finding("", "", ""),
+            {"issue": "", "title": "", "problem": ""},
+        )
+
+    def test_post_uses_task_shape(self):
+        calls = {}
+        real = ledger_post.post_entry
+        ledger_post.post_entry = (
+            lambda agent, note, status="Act", link="": calls.update(
+                {"agent": agent, "note": note, "status": status, "link": link}
+            )
+            or 200
+        )
+        try:
+            rc = ledger_post.post_out_of_scope_finding(
+                "queue", "#1553", "Extra", "out of scope"
+            )
+        finally:
+            ledger_post.post_entry = real
+        self.assertEqual(rc, 200)
+        self.assertEqual(calls["agent"], "queue")
+        self.assertIn("[#1553]", calls["note"])
+        self.assertIn("Problem:", calls["note"])
+        self.assertEqual(calls["status"], "Act")
 
 
 class RetryWorktreeTests(unittest.TestCase):

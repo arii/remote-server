@@ -189,3 +189,10 @@ systemd-analyze --user verify scripts/twt-queue.service
 
 Tests mock GitHub, model receipts and worker processes; they do not run inference,
 open PRs, access S5 or change a live ledger.
+
+## Out-of-scope findings
+
+Queue PRs must pass `claims_pr_valid` (a `Closes #N` reference plus at least one
+test file). Out-of-scope findings are never shipped as code: submit them via
+`scripts/ledger_post.py` as task-shaped rows (`format_out_of_scope_finding`
+returns `{"issue", "title", "problem"}`), posted to the Agent Ledger.
