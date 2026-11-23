@@ -8,6 +8,7 @@ from scripts.ledger_intake import (
     intake_id,
     ready_rows,
     status_for,
+    STATUS_VALUES,
 )
 from backend.core.intake_risk import risk_categories
 
@@ -81,7 +82,7 @@ class LedgerIntakeTests(unittest.TestCase):
         for name in ("repo", "scope", "done_when"):
             self.assertNotIn(name, absent)
 
-    def test_duplicate_and_ready_states_are_explicit(self):
+    def test_duplicate_and_human_ready_states_are_explicit(self):
         complete = {
             "title": "Task",
             "repo": "arii/remote-server",
@@ -89,16 +90,14 @@ class LedgerIntakeTests(unittest.TestCase):
             "scope": "where",
             "done_when": "proof",
         }
-        self.assertEqual(build_row(complete)["status"], "READY")
+        self.assertEqual(build_row(complete)["status"], "NEW")
         self.assertEqual(build_row(complete, duplicate=True)["status"], "DUPLICATE")
+        human_ready = {**build_row(complete), "status": "READY"}
         self.assertEqual(
-            [
-                row["status"]
-                for row in ready_rows(
-                    [build_row(complete), build_row(complete, duplicate=True)]
-                )
-            ],
-            ["READY"],
+            ready_rows(
+                [build_row(complete), build_row(complete, duplicate=True), human_ready]
+            ),
+            [human_ready],
         )
 
     def test_dispatched_is_not_ready(self):
@@ -138,6 +137,43 @@ def _complete(**overrides):
         "done_when": "merged",
         **overrides,
     }
+
+
+class NeverAutoReadyTests(unittest.TestCase):
+    """Intake never writes READY or DISPATCHED (#1613, mirrors boomtick #1410)."""
+
+    def test_complete_unflagged_row_is_new(self):
+        self.assertEqual(status_for(_complete()), "NEW")
+        self.assertEqual(build_row(_complete())["status"], "NEW")
+
+    def test_matrix_never_yields_ready_or_dispatched(self):
+        rows = [
+            _complete(),
+            _complete(title="Deploy the backend"),
+            _complete(title="Email the customers"),
+            _complete(title="Rotate the API key"),
+            {},
+            {"title": "Task"},
+            _complete(repo=""),
+            _complete(scope="  "),
+            _complete(done_when=""),
+            _complete(status="READY"),
+            _complete(status="DISPATCHED"),
+        ]
+        seen = set()
+        for row in rows:
+            for duplicate in (False, True):
+                with self.subTest(row=row, duplicate=duplicate):
+                    status = status_for(row, duplicate=duplicate)
+                    built = build_row(row, duplicate=duplicate)["status"]
+                    self.assertEqual(status, built)
+                    self.assertNotIn(status, ("READY", "DISPATCHED"))
+                    seen.add(status)
+        self.assertEqual(seen, {"NEW", "NEEDS_INFO", "DUPLICATE", "NEEDS_APPROVAL"})
+
+    def test_ready_and_dispatched_remain_valid_statuses(self):
+        self.assertIn("READY", STATUS_VALUES)
+        self.assertIn("DISPATCHED", STATUS_VALUES)
 
 
 class HighBlastRadiusLockTests(unittest.TestCase):
@@ -205,7 +241,7 @@ class HighBlastRadiusLockTests(unittest.TestCase):
         self.assertEqual(row["risk_categories"], "production_mutation")
 
     def test_unflagged_complete_row_is_unchanged(self):
-        self.assertEqual(build_row(_complete())["status"], "READY")
+        self.assertEqual(build_row(_complete())["status"], "NEW")
 
     def test_precedence_of_duplicate_and_missing_fields_is_unchanged(self):
         flagged = _complete(title="Deploy the backend")
