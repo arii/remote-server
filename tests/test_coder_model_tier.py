@@ -106,3 +106,41 @@ class TestTierModel(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
+class TestStrongStartSkipsLocal(unittest.TestCase):
+    def test_strong_tier_with_nebius_only_never_touches_ollama(self):
+        from backend.shared import model_router
+
+        env = {
+            "NEBIUS_ONLY": "1",
+            "S5_LOCAL_ONLY": "0",
+            "OLLAMA_STRICT": "0",
+            "CODER_MODEL": "",
+            "CODER_STRONG_MODEL": "big-m",
+        }
+        built = []
+        with (
+            mock.patch.dict("os.environ", env),
+            mock.patch.object(
+                model_router, "ollama_reachable", side_effect=AssertionError("ollama")
+            ),
+            mock.patch.object(
+                model_router, "_ollama_spec", side_effect=AssertionError("ollama")
+            ),
+            mock.patch.object(
+                model_router,
+                "_twt_spec",
+                return_value={"provider": "twt", "model": "default"},
+            ),
+            mock.patch.object(
+                model_router,
+                "build_chat_model",
+                side_effect=lambda spec, **_k: built.append(spec) or (object(), spec),
+            ),
+        ):
+            coder.build_model(coder.tier_model("strong"))
+        self.assertEqual(
+            [(s["provider"], s["model"]) for s in built], [("twt", "big-m")]
+        )

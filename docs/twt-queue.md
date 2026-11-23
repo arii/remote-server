@@ -29,8 +29,12 @@ example absolute paths with persistent paths in your deployment:
   "worker_python": "/opt/venvs/td/bin/python",
   "cap_usd": 0.5,
   "max_common_failures": 3,
+  "strong_after_failures": 2,
   "inter_issue_delay_seconds": 60,
-  "environment": {"TWT_BASE_URL": "http://127.0.0.1:8000/v1"}
+  "environment": {
+    "TWT_BASE_URL": "http://127.0.0.1:8000/v1",
+    "CODER_STRONG_MODEL": "nebius/zai-org/GLM-5.3-Flash"
+  }
 }
 ```
 
@@ -264,6 +268,52 @@ because the Form is public.
 Not posted: a `Needs Okay` row for login or CAPTCHA walls (the queue cannot
 detect them), a pass/fail result against the issue's "done when" check, and an
 issue comment per result.
+## Strong-tier routing
+
+The worker always runs with `NEBIUS_ONLY=1` and no `CODER_MODEL`, so an ordinary
+attempt uses TwT model `default`, which TwT routes local-first and can burn its
+whole timeout on a hard issue. A **strong** attempt instead sends the explicit
+`CODER_STRONG_MODEL` to TwT from the first coder call. No local attempt is made
+and the `default` route is never used, so the bounded fallback above (it fires
+only for the `default` route) cannot double-escalate a strong attempt. That
+fallback stays as the in-attempt safety net for ordinary attempts. The tier chosen
+here is only the starting tier; once strong, pipeline repair cycles stay strong.
+
+Starting tier is decided per attempt by the supervisor:
+
+1. The GitHub issue has the label `model:strong` (read from the live issue
+   payload at dispatch): reason `label:model:strong`. Add the label to route an
+   expected-hard issue straight to strong; remove it to stop.
+2. Otherwise, once the issue has `strong_after_failures` (default 2) counted
+   failures, reason `auto-escalation:<count>`.
+3. Otherwise `default`.
+
+Counted failures are finished runs with a nonzero exit, no halt, no budget stop,
+and result status `BLOCKED_DETERMINISTIC` or `CHANGES_REQUESTED`. Not counted:
+`CONFIG_ERROR`, `STRONG_BUDGET_INSUFFICIENT`, `PAUSED_BY_USER`, `RUNNER_ERROR`,
+worker halts, budget or STOP interruptions. A successful run clears the counter;
+uncounted outcomes leave it unchanged. The counter is `status.json`
+`tier_failures["owner/repo#N"]`, so it survives restarts and `--retry`.
+
+Spend: strong attempts use the same per-issue cap (`NEBIUS_SPEND_CAP_USD` is set
+from the remaining issue budget) and the same `install_budget_guard`; there is
+no second cap. Before the pipeline starts, the worker reads recorded spend and
+refuses the attempt with `STRONG_BUDGET_INSUFFICIENT` if less than $0.05 is left.
+That attempt makes no model call, does not fall back to local, and does not
+count toward escalation.
+
+A strong attempt without `CODER_STRONG_MODEL` in the config `environment` fails
+before any model call with `CONFIG_ERROR` and **halts the queue** (every later
+strong issue would fail the same way). Set the variable, then use `--clear-halt`.
+
+Where to read the tier: the supervisor prints
+`START owner/repo#N tier=strong reason=label:model:strong`; the worker logs
+`tier=... reason=... model=...` to `run.log`, followed by the coder's
+`coder via twt:<model> (tier=strong)`; `job.json` has `model_tier` and
+`tier_reason`; `summary.json` has `tier`, `tier_reason`, `strong_model`; and
+`status.json` `attempts["owner/repo#N"]` lists tier, reason, status and exit code
+per attempt. Known gaps: the plan and resume coder paths still call
+`build_model(CODER_MODEL)` without a tier, and ledger rows carry no tier tag.
 
 ## User service
 

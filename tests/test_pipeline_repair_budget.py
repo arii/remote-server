@@ -556,3 +556,24 @@ class TestDeterministicPreAuditGate(unittest.TestCase):
             result = pipe.run()
             self.assertEqual(result["status"], pipeline.CHANGES_REQUESTED)
             self.assertIn("repair cycles exhausted (2/2)", result["detail"])
+
+
+class TestStartModelTier(unittest.TestCase):
+    def test_default_start_is_fast_and_follows_choose_model_tier(self):
+        with mock.patch.dict("os.environ", {"S5_START_MODEL_TIER": ""}):
+            run = pipeline.Pipeline("/tmp", "fix")
+        self.assertEqual(run.current_model_tier, "fast")
+        self.assertEqual(run._next_tier(2, "test_failure"), ("strong", 1))
+        self.assertEqual(run._next_tier(2, "mechanical"), ("fast", 0))
+
+    def test_strong_start_never_drops_back_to_fast(self):
+        with mock.patch.dict("os.environ", {"S5_START_MODEL_TIER": "strong"}):
+            run = pipeline.Pipeline("/tmp", "fix")
+        self.assertEqual(run.current_model_tier, "strong")
+        for failure_class in ("mechanical", "test_failure", "audit_semantic"):
+            self.assertEqual(run._next_tier(3, failure_class)[0], "strong")
+
+    def test_unknown_start_tier_fails_loudly(self):
+        with mock.patch.dict("os.environ", {"S5_START_MODEL_TIER": "huge"}):
+            with self.assertRaisesRegex(ValueError, "S5_START_MODEL_TIER"):
+                pipeline.Pipeline("/tmp", "fix")
