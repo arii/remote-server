@@ -665,8 +665,6 @@ def proposed_syntax_error(file_path, content):
 
 def build_filesystem_backend(worktree):
     from deepagents.backends import FilesystemBackend
-    from deepagents.backends.protocol import EditResult, WriteResult
-    from deepagents.backends.utils import perform_string_replacement
 
     class CoderFilesystemBackend(FilesystemBackend):
         def _to_virtual_path(self, path):
@@ -685,17 +683,24 @@ def build_filesystem_backend(worktree):
             return super()._resolve_path(key)
 
         def write(self, file_path, content):
+            from deepagents.backends.protocol import WriteResult
+
             error = proposed_syntax_error(file_path, content)
             if error:
                 return WriteResult(error=error)
             return super().write(file_path, content)
 
         def edit(self, file_path, old_string, new_string, replace_all=False):
+            from deepagents.backends.protocol import EditResult
+            from deepagents.backends.utils import perform_string_replacement
+
             if os.path.splitext(file_path)[1].lower() not in SYNTAX_CHECKED_SUFFIXES:
                 return super().edit(file_path, old_string, new_string, replace_all)
             source = edit_source(self, file_path)
             if source is None:
-                return EditResult(error=f"Error: Cannot read file '{file_path}' as UTF-8")
+                return EditResult(
+                    error=f"Error: Cannot read file '{file_path}' as UTF-8"
+                )
             source, old_string, new_string = (
                 part.replace("\r\n", "\n").replace("\r", "\n")
                 for part in (source, old_string, new_string)

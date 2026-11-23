@@ -464,13 +464,19 @@ class TestCoderBackend(unittest.TestCase):
             cases = (
                 (
                     replace_lines,
-                    dict(file_path=file_path, start_line=1, end_line=4, new_text=escaped),
+                    dict(
+                        file_path=file_path, start_line=1, end_line=4, new_text=escaped
+                    ),
                     "unexpected character after line continuation character",
                     f"1 | {escaped}",
                 ),
                 (
                     edit_file,
-                    dict(file_path=file_path, old_string="import unittest", new_string='"""'),
+                    dict(
+                        file_path=file_path,
+                        old_string="import unittest",
+                        new_string='"""',
+                    ),
                     "unterminated triple-quoted string literal",
                     '6 | """',
                 ),
@@ -489,7 +495,11 @@ class TestCoderBackend(unittest.TestCase):
             result = self.tool_call(
                 root,
                 "edit_file",
-                dict(file_path=file_path, old_string="import unittest", new_string="if True:"),
+                dict(
+                    file_path=file_path,
+                    old_string="import unittest",
+                    new_string="if True:",
+                ),
             )
             self.assertEqual(result.status, "error")
             self.assertIn(f"{file_path}:6: SyntaxError:", result.content)
@@ -497,7 +507,11 @@ class TestCoderBackend(unittest.TestCase):
             result = self.tool_call(
                 root,
                 "edit_file",
-                dict(file_path=file_path, old_string="import unittest", new_string="import sys"),
+                dict(
+                    file_path=file_path,
+                    old_string="import unittest",
+                    new_string="import sys",
+                ),
             )
             self.assertEqual(result.status, "success", result.content)
             self.assertEqual(path.read_text(), original.replace("unittest", "sys"))
@@ -506,10 +520,15 @@ class TestCoderBackend(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             written = coder.WriteTracker()
             result = self.tool_call(
-                root, "write_file", dict(file_path="new.py", content="return 0\n"), written
+                root,
+                "write_file",
+                dict(file_path="new.py", content="return 0\n"),
+                written,
             )
             self.assertEqual(result.status, "error")
-            self.assertIn("new.py:1: SyntaxError: 'return' outside function", result.content)
+            self.assertIn(
+                "new.py:1: SyntaxError: 'return' outside function", result.content
+            )
             self.assertIn("1 | return 0", result.content)
             self.assertFalse(Path(root, "new.py").exists())
             self.assertEqual(written.mutations, 0)
