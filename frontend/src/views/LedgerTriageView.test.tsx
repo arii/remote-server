@@ -74,6 +74,58 @@ function confirmButton(label: string): HTMLButtonElement {
 }
 
 describe('LedgerTriageView', () => {
+  it('shows the title, short problem, originating issue link, and status on the same card', async () => {
+    const sourceUrl = 'https://github.com/arii/remote-server/issues/1574';
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{
+        kind: 'ledger-intake',
+        intake_id: 'intake-mobile',
+        status: 'NEW',
+        title: 'Fix unreadable triage cards',
+        problem: 'The issue link is missing on phones.',
+        source_url: sourceUrl,
+      }],
+    });
+
+    await act(async () => root.render(<LedgerTriageView />));
+    const card = host.querySelector('.ledger-triage-card')!;
+    expect(card.querySelector('h3')?.textContent).toBe('Fix unreadable triage cards');
+    expect(card.textContent).toContain('The issue link is missing on phones.');
+    const source = card.querySelector('a');
+    expect(source?.getAttribute('href')).toBe(sourceUrl);
+    expect(source?.target).toBe('_blank');
+    expect(source?.relList.contains('noopener')).toBe(true);
+    expect(card.querySelector('.ledger-card-head')?.textContent).toContain('NEW');
+    expect(card.querySelector('details')).toBeNull();
+  });
+
+  it('folds a long problem in the incoming row and retains the originating PR link', async () => {
+    const problem = 'A long problem with an unbroken value: ' + 'x'.repeat(300);
+    const sourceUrl = 'https://github.com/arii/remote-server/pull/1574';
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{ ...duplicateRows.rows[0], problem, source_url: sourceUrl }],
+    });
+
+    await act(async () => root.render(<LedgerTriageView />));
+    const card = host.querySelector('.ledger-triage-card')!;
+    const disclosure = card.querySelector('details')!;
+    const preview = disclosure.querySelector('summary')!.textContent!;
+    expect(disclosure.hasAttribute('open')).toBe(false);
+    expect(preview).toMatch(/…$/);
+    expect(problem.startsWith(preview.slice(0, -1))).toBe(true);
+    expect(disclosure.querySelector('p')?.textContent).toBe(problem);
+    expect(card.querySelector('a')?.getAttribute('href')).toBe(sourceUrl);
+  });
+
+  it('does not link a non-web source URL', async () => {
+    vi.mocked(api.fetchLedgerIntake).mockResolvedValueOnce({
+      rows: [{ ...duplicateRows.rows[0], source_url: 'javascript:void(0)' }],
+    });
+
+    await act(async () => root.render(<LedgerTriageView />));
+    expect(host.querySelector('.ledger-triage-card a')).toBeNull();
+  });
+
   it('shows only flagged fields and clears a card after approval', async () => {
     await act(async () => root.render(<LedgerTriageView />));
     expect(host.textContent).toContain('Add retry policy');
