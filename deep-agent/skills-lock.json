@@ -42,6 +42,12 @@
       "source": "first-party",
       "sourceType": "repo"
     },
+    "tmux_send_keys": {
+      "computedHash": "a2a2afc424ca7d6d5cecda63cf1faeb6e8f63c721d005ec7c3fff04fb4c7cf06",
+      "skillPath": "skills/tmux_send_keys.md",
+      "source": "first-party",
+      "sourceType": "repo"
+    },
     "write_spec_issue": {
       "computedHash": "fc9379ec4f575b903ed980ac3390af95d1cada57e5d68d8a3ad58a4d56324e12",
       "skillPath": "skills/write_spec_issue.md",
