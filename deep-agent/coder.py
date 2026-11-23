@@ -1474,6 +1474,11 @@ def run_coder(
     call_budget=None,
     meter=None,
     first_edit=None,
+    cli_fallback=None,
+    issue=None,
+    run_id=None,
+    stage="code",
+    cli_verify_fn=None,
 ):
     """Code normally; on a model-call cap, resume, then allow one TwT fallback.
 
@@ -1484,6 +1489,14 @@ def run_coder(
     after the continuations. ``meter`` (a dict) accumulates "calls" and
     "continuations" across every turn, including failed ones. Cap
     exhaustion re-raises ModelCallLimitExceededError.
+
+    When every applicable TwT attempt has failed with a classified
+    eligible trigger (gateway unavailability, exhausted TwT routes, or
+    a budget-blocked request), the opt-in CLI fallback (issue #1610)
+    runs one CLI attempt instead, but only when ``cli_fallback`` is an
+    enabled CliFallbackConfig and the caller supplied ``issue``,
+    ``run_id``, and ``cli_verify_fn``. A blocked or failed CLI attempt
+    re-raises the original TwT error.
     """
     from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 
@@ -1506,60 +1519,157 @@ def run_coder(
 
     deadline = time.monotonic() + timeout
     turn_brief, floor, prior_files = brief, 0, ()
-    while True:
+    twt_errors = []
+
+    def attempt(*args, **kwargs):
+        """One TwT attempt; record non-cap failures for the CLI hook."""
         try:
-            return _run_coder_attempt(
-                worktree,
-                turn_brief,
-                system,
-                thread,
-                timeout,
-                deadline=deadline,
-                thread_floor=floor,
-                call_cap=left(),
-                prior_files=prior_files,
-                **kwargs,
-            )
-        except ModelCallLimitExceededError as error:
-            capped = error
-            if meter["continuations"] >= continuations or (
-                call_budget is not None and left() <= 0
-            ):
-                break
-            meter["continuations"] += 1
-            turn_brief, floor = CONTINUE_PROMPT, error.thread_count
-            prior_files = error.coder_written_files
-    error = capped
-    spec = getattr(error, "coder_model_spec", {})
-    fallback = os.environ.get("CODER_FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL).strip()
-    if (
-        repair
-        or (call_budget is not None and left() <= 0)
-        or model_router.local_only()
-        or spec.get("provider") != "twt"
-        or spec.get("model") not in ("default", "route:default")
-        or error.thread_limit - floor != INITIAL_MODEL_LIMIT
-        or error.thread_count - floor < INITIAL_MODEL_LIMIT
-        or not fallback
-    ):
-        raise error
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise RuntimeError(f"coder timed out after {timeout}s before fallback")
-    return _run_coder_attempt(
-        worktree,
-        brief + "\n\nThe default-route attempt exhausted its model budget. "
-        "Its worktree changes are preserved. Inspect them, complete the task, "
-        "and verify before finishing.",
-        system,
-        thread + "-fallback",
-        remaining,
-        deadline=deadline,
-        fallback_model=fallback,
-        prior_files=error.coder_written_files,
-        call_cap=left(),
-        **kwargs,
-    )
+            return _run_coder_attempt(*args, **kwargs)
+        except ModelCallLimitExceededError:
+            raise
+        except Exception as exc:
+            twt_errors.append(exc)
+            raise
+
+    try:
+        while True:
+            try:
+                return attempt(
+                    worktree,
+                    turn_brief,
+                    system,
+                    thread,
+                    timeout,
+                    deadline=deadline,
+                    thread_floor=floor,
+                    call_cap=left(),
+                    prior_files=prior_files,
+                    **kwargs,
+                )
+            except ModelCallLimitExceededError as error:
+                capped = error
+                if meter["continuations"] >= continuations or (
+                    call_budget is not None and left() <= 0
+                ):
+                    break
+                meter["continuations"] += 1
+                turn_brief, floor = CONTINUE_PROMPT, error.thread_count
+                prior_files = error.coder_written_files
+        error = capped
+        spec = getattr(error, "coder_model_spec", {})
+        fallback = os.environ.get(
+            "CODER_FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL
+        ).strip()
+        if (
+            repair
+            or (call_budget is not None and left() <= 0)
+            or model_router.local_only()
+            or spec.get("provider") != "twt"
+            or spec.get("model") not in ("default", "route:default")
+            or error.thread_limit - floor != INITIAL_MODEL_LIMIT
+            or error.thread_count - floor < INITIAL_MODEL_LIMIT
+            or not fallback
+        ):
+            raise error
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f"coder timed out after {timeout}s before fallback")
+        return attempt(
+            worktree,
+            brief + "\n\nThe default-route attempt exhausted its model budget. "
+            "Its worktree changes are preserved. Inspect them, complete the task, "
+            "and verify before finishing.",
+            system,
+            thread + "-fallback",
+            remaining,
+            deadline=deadline,
+            fallback_model=fallback,
+            prior_files=error.coder_written_files,
+            call_cap=left(),
+            **kwargs,
+        )
+    except ModelCallLimitExceededError:
+        raise
+    except Exception:
+        result = _try_cli_fallback(
+            twt_errors,
+            config=cli_fallback,
+            issue=issue,
+            run_id=run_id,
+            stage=stage,
+            thread=thread,
+            brief=brief,
+            worktree=worktree,
+            deadline=deadline,
+            verify_fn=cli_verify_fn,
+        )
+        if result is not None:
+            return result
+        raise
+
+
+def _try_cli_fallback(
+    twt_errors,
+    *,
+    config,
+    issue,
+    run_id,
+    stage,
+    thread,
+    brief,
+    worktree,
+    deadline,
+    verify_fn,
+):
+    """Try the opt-in CLI fallback after classified TwT failures.
+
+    Returns the CLI attempt result on success, else None (the caller
+    re-raises the original TwT error). Never raises: a blocked or
+    failed CLI attempt must not mask the TwT failure that triggered
+    it. The attempt id is stable per implement() call (thread) so a
+    restart never double-spawns the same attempt.
+    """
+    if config is None or not config.enabled:
+        return None
+    if issue is None or run_id is None:
+        return None
+    import cli_fallback
+
+    trigger = cli_fallback.classify_twt_failure(twt_errors)
+    if trigger is None:
+        return None
+    from backend.shared import model_router
+
+    if model_router.local_only():
+        return None
+    repo, sep, number = (issue or "").rpartition("#")
+    if not sep or not repo or not number.isdigit():
+        return None
+    try:
+        return cli_fallback.run_cli_fallback(
+            config=config,
+            issue=issue,
+            run_id=run_id,
+            stage=stage,
+            attempt_id=f"{thread}-cli-{trigger}",
+            trigger=trigger,
+            brief=brief,
+            worktree=worktree,
+            deadline=deadline,
+            repo=repo,
+            number=int(number),
+            verify_fn=verify_fn,
+        )
+    except cli_fallback.Blocked as exc:
+        print(f"CLI fallback blocked: {exc}", file=sys.stderr, flush=True)
+        return None
+    except Exception as exc:  # noqa: BLE001 - CLI failure must not mask the TwT error
+        print(
+            f"CLI fallback failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
 
 
 def _run_coder_attempt(
