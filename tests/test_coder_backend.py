@@ -636,6 +636,123 @@ class TestCoderBackend(unittest.TestCase):
             self.assertEqual(result.status, "success", result.content)
             self.assertEqual(path.read_text(), original.replace("unittest", "sys"))
 
+    def test_1570_queue_runner_replays_rejected_edits(self):
+        file_path = "scripts/queue_runner.py"
+        old = (
+            "        if clear_halt:\n"
+            "            status.update(halted=False, reason=None, halt_acknowledged_at=time.time())"
+        )
+        new = (
+            old + "\n\n"
+            "    def get_runner_state(self, status):\n"
+            '        """Determine runner state: Idle, Stalled, or Down."""\n'
+            "        now = time.time()\n"
+            '        heartbeat = status.get("heartbeat", 0)\n'
+            "        if now - heartbeat > 300:\n"
+            '            return "Down"\n'
+            '        if status.get("current"):\n'
+            '            return "Stalled"\n'
+            '        return "Idle"'
+        )
+        original = Path(file_path).read_text()
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, file_path)
+            path.parent.mkdir()
+            edit = coder.build_edit_tool(coder.build_filesystem_backend(root))
+            for trace, old_end, new_end in (
+                ("ece45731", "\n", "\n"),
+                ("88b2e824", "", "\n"),
+                ("2b7670fd", "\n\n", "\n\n\n"),
+                ("6947edd9", "", "\n\n\n"),
+                ("e11ef6f1", "\n", "\n\n\n"),
+            ):
+                with self.subTest(trace=trace):
+                    path.write_text(original)
+                    old_string, new_string = old + old_end, new + new_end
+                    result = edit.invoke(
+                        dict(
+                            name=edit.name,
+                            id=trace,
+                            type="tool_call",
+                            args=dict(
+                                file_path=file_path,
+                                old_string=old_string,
+                                new_string=new_string,
+                            ),
+                        )
+                    )
+                    if trace == "2b7670fd":
+                        self.assertEqual(result.status, "error")
+                        self.assertIn("No exact match", result.content)
+                        self.assertEqual(path.read_text(), original)
+                        continue
+                    with self.assertRaisesRegex(IndentationError, "unexpected indent"):
+                        compile(
+                            original.replace(old_string, new_string), file_path, "exec"
+                        )
+                    self.assertEqual(result.status, "success", result.content)
+                    rebased = "".join(
+                        "    " + line if line.strip() else line
+                        for line in new_string.splitlines(keepends=True)
+                    )
+                    self.assertEqual(
+                        path.read_text(), original.replace(old_string, rebased)
+                    )
+
+    def test_existing_edits_rebase_indentation_and_preserve_relative_levels(self):
+        file_path = "runner.py"
+        old = "    return 1"
+        original = f"def run():\n    setup()\n{old}\n"
+        replacement = "        if ready:\n            return 2\n        return 3"
+        expected = (
+            "def run():\n    setup()\n    if ready:\n        return 2\n    return 3\n"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, file_path)
+            backend = coder.build_filesystem_backend(root)
+            for tool, args in (
+                (
+                    coder.build_edit_tool(backend),
+                    dict(old_string=old, new_string=replacement),
+                ),
+                (
+                    coder.build_replace_lines_tool(backend, {file_path: True}),
+                    dict(start_line=3, end_line=3, new_text=replacement),
+                ),
+            ):
+                with self.subTest(tool=tool.name):
+                    path.write_text(original)
+                    result = tool.invoke(
+                        dict(
+                            name=tool.name,
+                            id=tool.name,
+                            type="tool_call",
+                            args=dict(file_path=file_path, **args),
+                        )
+                    )
+                    self.assertEqual(result.status, "success", result.content)
+                    self.assertEqual(path.read_text(), expected)
+                    self.assertIn("4 |         return 2", result.content)
+
+    def test_failed_indentation_rebase_keeps_original_rejection_and_file(self):
+        original = "def run():\n    setup()\n    return 1\n"
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "runner.py")
+            path.write_text(original)
+            result = self.tool_call(
+                root,
+                "edit_file",
+                dict(
+                    file_path="runner.py",
+                    old_string="    return 1",
+                    new_string="        if ready:\n        return 2",
+                ),
+            )
+            self.assertEqual(result.status, "error")
+            self.assertIn("unexpected indent", result.content)
+            self.assertIn("base indentation: '    '", result.content)
+            self.assertEqual(path.read_text(), original)
+
     def test_invalid_python_write_does_not_create_or_track_file(self):
         with tempfile.TemporaryDirectory() as root:
             written = coder.WriteTracker()

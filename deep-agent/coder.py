@@ -803,32 +803,44 @@ def is_file_mutation(call, result):
     )
 
 
-def proposed_syntax_error(file_path, content):
+def proposed_syntax_diagnostic(file_path, content):
+    indentation = False
     suffix = os.path.splitext(file_path)[1].lower()
     if suffix == ".py":
         try:
             compile(content, file_path, "exec", dont_inherit=True)
         except SyntaxError as exc:
             line, message = exc.lineno, f"SyntaxError: {exc.msg}"
+            indentation = isinstance(exc, IndentationError)
         else:
-            return None
+            return None, False
     elif suffix in SYNTAX_CHECKED_SUFFIXES:
         from backend.ast_validator import validate_source_syntax
 
         result = validate_source_syntax(file_path, content)
         if result.get("degraded"):
-            return f"{SYNTAX_REJECTION}: TypeScript syntax checker unavailable for {file_path}."
+            return (
+                f"{SYNTAX_REJECTION}: TypeScript syntax checker unavailable for {file_path}.",
+                False,
+            )
         if result["valid"]:
-            return None
+            return None, False
         line, message = result["line"], result["error"]
     else:
-        return None
+        return None, False
     line = max(1, line or 1)
     lines = content.splitlines()
     excerpt = numbered_lines(lines, max(0, line - 3), min(line + 2, len(lines)))
     return (
         f"{SYNTAX_REJECTION}: {file_path}:{line}: {message}\n"
-        "Proposed content (current file unchanged):\n" + excerpt
+        "Proposed content (current file unchanged):\n" + excerpt,
+        indentation,
+    )
+
+
+def common_indentation(text):
+    return os.path.commonprefix(
+        [re.match(r"[ \t]*", line)[0] for line in text.splitlines() if line.strip()]
     )
 
 
@@ -993,9 +1005,37 @@ def build_filesystem_backend(worktree):
         def write(self, file_path, content):
             from deepagents.backends.protocol import WriteResult
 
-            error = proposed_syntax_error(file_path, content)
+            error, _ = proposed_syntax_diagnostic(file_path, content)
             if error:
                 return WriteResult(error=error)
+            return self._write_valid_content(file_path, content)
+
+        def write_replacement(self, file_path, content, old_text, new_text, proposal):
+            from deepagents.backends.protocol import WriteResult
+
+            error, indentation = proposed_syntax_diagnostic(file_path, content)
+            if indentation and old_text is not None:
+                expected = common_indentation(old_text)
+                actual = common_indentation(new_text)
+                if expected != actual and new_text.strip():
+                    rebased = "".join(
+                        expected + line[len(actual) :] if line.strip() else line
+                        for line in new_text.splitlines(keepends=True)
+                    )
+                    corrected = proposal(rebased)
+                    if not proposed_syntax_diagnostic(file_path, corrected)[0]:
+                        content, error = corrected, None
+                if error:
+                    error += (
+                        f"\nMatch the replaced block's base indentation: {expected!r}."
+                    )
+            if error:
+                return WriteResult(error=error), content
+            return self._write_valid_content(file_path, content), content
+
+        def _write_valid_content(self, file_path, content):
+            from deepagents.backends.protocol import WriteResult
+
             if os.path.splitext(file_path)[1].lower() == ".py":
                 try:
                     target = self._resolve_path(file_path)
@@ -1026,7 +1066,14 @@ def build_filesystem_backend(worktree):
             if isinstance(proposal, str):
                 return EditResult(error=proposal)
             content, occurrences = proposal
-            result = self.write(file_path, content)
+            line_matches = len(re.findall(r"(?m)^" + re.escape(old_string), source))
+            result, _ = self.write_replacement(
+                file_path,
+                content,
+                old_string if line_matches == occurrences else None,
+                new_string,
+                lambda text: source.replace(old_string, text, occurrences),
+            )
             if result.error:
                 return EditResult(error=result.error)
             return EditResult(path=file_path, occurrences=occurrences)
@@ -1322,7 +1369,10 @@ def build_replace_lines_tool(backend, planned_files):
         replacement = re.sub(r"\r\n|\r|\n", lambda _: newline, new_text)
         if replacement and ending and not replacement.endswith(newline):
             replacement += newline
-        updated = "".join(lines[:start]) + replacement + "".join(lines[end_line:])
+        before, replaced, after = map(
+            "".join, (lines[:start], lines[start:end_line], lines[end_line:])
+        )
+        updated = before + replacement + after
         if updated == source or (
             len(new_lines) >= end_line - start
             and source.splitlines()[start : start + len(new_lines)] == new_lines
@@ -1330,7 +1380,13 @@ def build_replace_lines_tool(backend, planned_files):
             return already_applied(
                 file_path, updated_region(source, start, len(new_lines))
             )
-        result = backend.write(file_path, updated)
+        result, updated = backend.write_replacement(
+            file_path,
+            updated,
+            replaced,
+            replacement,
+            lambda text: before + text + after,
+        )
         if result.error:
             if result.error.startswith(SYNTAX_REJECTION):
                 raise ToolException(result.error)
