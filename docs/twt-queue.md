@@ -281,7 +281,7 @@ claimed issue. This proves the live claim check, not the full claim-to-result
 handoff tracked in [#1537](https://github.com/arii/remote-server/issues/1537).
 
 Nov 23 status: `twt-queue.service` failed at 04:10 and a restart was in progress
-when reported. Separately, main is red on a test-only lint failure tracked in
+when reported. Separately, main hit a test-only lint failure fixed by merged
 [PR #1621](https://github.com/arii/remote-server/pull/1621); two root test
 failures on main are tracked in [#1623](https://github.com/arii/remote-server/issues/1623).
 
