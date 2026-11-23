@@ -226,6 +226,8 @@ jobs:
           python-version: '3.11'
       - name: install backend deps
         run: pip install -r backend/requirements.txt
+      - name: install test-only deps
+        run: pip install -r backend/requirements-test.txt
       - name: install root-suite deps
         run: pip install "pytest==9.1.1" "ruff==0.17.4"
       - name: compile-check backend tree
