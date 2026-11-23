@@ -57,6 +57,19 @@ function loadReviewed(): Set<string> {
   }
 }
 
+const PROBLEM_PREVIEW_LENGTH = 160;
+
+function LedgerProblem({ problem }: { problem?: string }) {
+  if (!problem) return null;
+  if (problem.length <= PROBLEM_PREVIEW_LENGTH) return <p>{problem}</p>;
+  return (
+    <details className="ledger-card-problem">
+      <summary>{problem.slice(0, PROBLEM_PREVIEW_LENGTH).trimEnd()}…</summary>
+      <p>{problem}</p>
+    </details>
+  );
+}
+
 function candidateIdOf(row: LedgerIntakeRow): string {
   const candidate = row.duplicate_candidate;
   return candidate
@@ -203,6 +216,7 @@ export default function LedgerTriageView(): ReactElement {
           const id = rowId(row);
           const missing = (row.missing_fields || []).map(String);
           const risks = rowRisks(row).map((name) => RISK_LABELS[name] || name);
+          const sourceUrl = row.source_url?.trim();
           return (
             <article
               className="ledger-triage-card"
@@ -225,7 +239,7 @@ export default function LedgerTriageView(): ReactElement {
                   <div className="ledger-duplicate-pane">
                     <strong>Incoming row</strong>
                     <h3>{row.title || 'Untitled intake row'}</h3>
-                    {row.problem && <p>{row.problem}</p>}
+                    <LedgerProblem problem={row.problem} />
                   </div>
                   <div className="ledger-duplicate-pane ledger-duplicate-candidate" aria-label="Duplicate candidate">
                     <strong>Possible match</strong>
@@ -271,8 +285,13 @@ export default function LedgerTriageView(): ReactElement {
               ) : (
                 <>
                   <h3>{row.title || 'Untitled intake row'}</h3>
-                  {row.problem && <p>{row.problem}</p>}
+                  <LedgerProblem problem={row.problem} />
                 </>
+              )}
+              {sourceUrl && /^https?:\/\//i.test(sourceUrl) && (
+                <p className="row-meta">
+                  <a href={sourceUrl} target="_blank" rel="noopener noreferrer">{sourceUrl}</a>
+                </p>
               )}
               {row.duplicate_of && (
                 <p className="row-meta">
