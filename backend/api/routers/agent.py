@@ -98,6 +98,7 @@ class ProviderStatus(BaseModel):
     name: str = ""
     available: bool = False
     checked_at: int = 0
+    waiting_count: int = 0
     detail: str = ""
 
 
