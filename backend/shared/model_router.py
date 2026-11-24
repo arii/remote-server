@@ -100,9 +100,36 @@ def bounded_history(messages):
             None,
         )
         if removable is None:
-            raise ValueError("Pipeline history exceeds the instruction/context budget")
+            break
         groups.pop(removable)
-    return [message for group in groups for message in group]
+    # The live tail group cannot be dropped — its tool results answer
+    # tool_calls the model must still see resolved — but it can bust the
+    # budget alone when one turn fans out dozens of reads (#1571). Shrink
+    # those contents to a stub before failing; instruction messages
+    # (system/human) are never touched, so an oversized prompt still raises.
+    flat = [message for group in groups for message in group]
+    cap = 2048
+    while size(flat) > PIPELINE_HISTORY_CHARS and cap >= 256:
+        for index, message in enumerate(flat):
+            if message.type in ("tool", "ai") and len(str(message.content)) > cap:
+                text = str(message.content)
+                flat[index] = message.model_copy(
+                    update={
+                        "content": text[: cap // 2]
+                        + "\n[history trimmed]\n"
+                        + text[-cap // 2 :]
+                    }
+                )
+        cap //= 2
+    if size(flat) > PIPELINE_HISTORY_CHARS:
+        for index, message in enumerate(flat):
+            if message.type in ("tool", "ai"):
+                flat[index] = message.model_copy(
+                    update={"content": "[history trimmed: oversized result]"}
+                )
+    if size(flat) > PIPELINE_HISTORY_CHARS:
+        raise ValueError("Pipeline history exceeds the instruction/context budget")
+    return flat
 
 
 class _BoundedHistory:

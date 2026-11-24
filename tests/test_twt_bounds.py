@@ -174,6 +174,35 @@ class BoundsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             model_router.bounded_history([HumanMessage("x" * 100000)])
 
+    def test_live_tail_group_is_shrunk_not_dropped(self):
+        # #1571: one model turn fanned out 27 read_file calls; the tool
+        # results in the live tail group bust the budget alone and cannot
+        # be dropped without orphaning their tool_call_ids.
+        calls = [
+            {"id": f"read{i}", "name": "read_file", "args": {"file_path": f"f{i}.py"}}
+            for i in range(27)
+        ]
+        messages = [
+            SystemMessage("rules"),
+            HumanMessage("task"),
+            AIMessage("", tool_calls=calls),
+        ] + [
+            ToolMessage("x" * 4000, tool_call_id=f"read{i}") for i in range(27)
+        ]
+        result = model_router.bounded_history(messages)
+        self.assertLess(
+            sum(len(json.dumps(m.model_dump())) for m in result),
+            model_router.PIPELINE_HISTORY_CHARS,
+        )
+        self.assertEqual([m.type for m in result], ["system", "human", "ai"] + ["tool"] * 27)
+        self.assertEqual(
+            {m.tool_call_id for m in result if m.type == "tool"},
+            {f"read{i}" for i in range(27)},
+        )
+        self.assertTrue(
+            any("[history trimmed" in str(m.content) for m in result if m.type == "tool")
+        )
+
     def test_sync_async_models_bound_history_and_output(self):
         model, _ = model_router.build_chat_model(
             {
