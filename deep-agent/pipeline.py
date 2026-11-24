@@ -57,29 +57,6 @@ SPLIT_CONTEXT_LINES = 20
 
 AGENT_PAUSED = "PAUSED_BY_USER"
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
-TEST_COMMANDS = (
-    ("pytest",),
-    ("python3", "-m", "pytest"),
-    ("python3", "-m", "unittest"),
-    ("pnpm", "exec", "vitest"),
-    s5tools.FRONTEND_VITEST_PREFIX,
-    ("pnpm", "test"),
-    ("npm", "test"),
-    ("go", "test"),
-)
-
-
-def _is_test_command(argv):
-    return (
-        any(tuple(argv[: len(head)]) == head for head in TEST_COMMANDS)
-        or len(argv) >= 2
-        and argv[0] == "python3"
-        and bool(s5tools.TEST_FILE_RE.fullmatch(argv[1]))
-        or len(argv) >= 3
-        and argv[0] in ("npm", "pnpm")
-        and argv[1] == "run"
-        and (argv[2] == "test" or argv[2].startswith("test:"))
-    )
 
 
 def _count_run_rows(thread_id: str, trace_ids: set[str]):
@@ -729,8 +706,8 @@ class Pipeline:
                     **kwargs,
                 )
             except Exception as exc:
-                self.verification_evidence = coder.trace_verification_evidence(
-                    meter.get("trace"), self._repo_slug()
+                self.verification_evidence = coder.turn_verification_evidence(
+                    meter, self._repo_slug()
                 )
                 if coder.is_call_cap(exc):
                     self.stage_exhausted = True
@@ -752,8 +729,8 @@ class Pipeline:
                 self.stage_calls += meter.get("calls", 0)
                 self.stage_continuations += meter.get("continuations", 0)
             summary, usage, calls, started, label, trace, verified, _ = result
-            self.verification_evidence = coder.trace_verification_evidence(
-                trace, self._repo_slug()
+            self.verification_evidence = coder.turn_verification_evidence(
+                meter, self._repo_slug(), trace
             )
             provider, _, model = label.partition(":")
             graph.last_model_spec = {"provider": provider, "model": model}
@@ -1000,7 +977,7 @@ class Pipeline:
                     cwd=worktree_root,
                     check=False,
                 )
-                if _is_test_command(argv):
+                if s5tools.is_test_command(argv):
                     self._test_checks[tuple(argv)] = proc.returncode == 0
                 if proc.returncode != 0:
                     output = ((proc.stderr or "") + (proc.stdout or ""))[-2000:]
@@ -1014,7 +991,7 @@ class Pipeline:
                         f"Command '{cmd_str}' failed (exit {proc.returncode}):\n{output}",
                     )
             except Exception as exc:
-                if _is_test_command(argv):
+                if s5tools.is_test_command(argv):
                     self._test_checks[tuple(argv)] = False
                 return (
                     False,
@@ -1067,7 +1044,7 @@ class Pipeline:
                 (state.get("gate") or {}).get("verification", {}).get("commands", [])
             ):
                 argv = check["command"]
-                if _is_test_command(argv):
+                if s5tools.is_test_command(argv):
                     self._test_checks[tuple(argv)] = check["exit"] == 0
         if not isinstance(state, dict) or state.get("drive_exhausted"):
             return BLOCKED, state, "audit drive exhausted"
@@ -1177,7 +1154,7 @@ class Pipeline:
             if check.get("stale"):
                 continue
             argv = s5tools.parse_check_command(check["command"], repo)
-            if _is_test_command(argv):
+            if s5tools.is_test_command(argv):
                 checks[tuple(argv)] = check["passed"]
         checks.update(self._test_checks)
         url = self._opened_pr_url or result["submit_url"]

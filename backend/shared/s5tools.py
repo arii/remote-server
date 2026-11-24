@@ -71,6 +71,30 @@ TEST_FILE_RE = re.compile(r"^(?:backend/)?tests/test_[A-Za-z0-9_]+\.py$")
 UNITTEST_MODULE_RE = re.compile(
     r"(?:backend\.)?tests\.test_[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*"
 )
+UNITTEST_PREFIX = ("python3", "-m", "unittest")
+TEST_COMMANDS = (
+    ("pytest",),
+    ("python3", "-m", "pytest"),
+    UNITTEST_PREFIX,
+    ("pnpm", "exec", "vitest"),
+    FRONTEND_VITEST_PREFIX,
+    ("pnpm", "test"),
+    ("npm", "test"),
+    ("go", "test"),
+)
+
+
+def is_test_command(argv):
+    return (
+        any(tuple(argv[: len(head)]) == head for head in TEST_COMMANDS)
+        or len(argv) >= 2
+        and argv[0] == "python3"
+        and bool(TEST_FILE_RE.fullmatch(argv[1]))
+        or len(argv) >= 3
+        and argv[0] in ("npm", "pnpm")
+        and argv[1] == "run"
+        and (argv[2] == "test" or argv[2].startswith("test:"))
+    )
 
 
 def check_prefixes(repo=None):
@@ -86,7 +110,7 @@ def check_allowed(argv, repo=None):
     repo adds that repo's profile prefixes (REPO_CHECK_PREFIXES)."""
     tupled = tuple(argv)
     unittest_argv = tupled[1:] if tupled[:1] == ("PYTHONPATH=./deep-agent",) else tupled
-    if unittest_argv[:3] == ("python3", "-m", "unittest"):
+    if unittest_argv[:3] == UNITTEST_PREFIX:
         return len(unittest_argv) > 3 and all(
             not module.endswith(".py") and UNITTEST_MODULE_RE.fullmatch(module)
             for module in unittest_argv[3:]

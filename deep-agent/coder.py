@@ -62,11 +62,13 @@ from backend.shared.s5tools import (  # noqa: E402,F401
     CHECK_TIMEOUT,
     FRONTEND_VITEST_PREFIX,
     TEST_FILE_RE,
+    UNITTEST_PREFIX,
     active_checkout_path,
     allowed_commands_text,
     check_allowed,
     check_env,
     exec_argv,
+    is_test_command,
     parse_check_command,
     verification_env,
     verification_guidance,
@@ -653,6 +655,11 @@ def missing_check_target(returncode, output):
     )
 
 
+VERIFIED_EDIT_NOTICE = (
+    "Verification passed for your edits. Reply DONE now with a one-line summary."
+)
+
+
 def build_check_tool(worktree, written_files=None, repo=None, *, planned_files=()):
     """run_check tool: allowlisted verification commands in worktree."""
     from langchain_core.tools import tool  # noqa: E402
@@ -686,7 +693,8 @@ def build_check_tool(worktree, written_files=None, repo=None, *, planned_files=(
             argv = parse_check_command(command, repo)
         except ValueError as exc:
             return recovery(f"REJECTED: bad command line: {exc}")
-        import subprocess  # noqa: E402
+        tracker = written_files if isinstance(written_files, WriteTracker) else None
+        generation = tracker.mutations if tracker is not None else None
 
         try:
             with verification_env(worktree) as env:
@@ -700,10 +708,16 @@ def build_check_tool(worktree, written_files=None, repo=None, *, planned_files=(
                     check=False,
                 )
         except subprocess.TimeoutExpired:
+            if tracker is not None:
+                tracker.record_check(argv, False, generation)
             return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
         except FileNotFoundError as exc:
+            if tracker is not None:
+                tracker.record_check(argv, False, generation)
             return recovery(f"exec failed: {exc}")
         except OSError as exc:
+            if tracker is not None:
+                tracker.record_check(argv, False, generation)
             return f"exec failed: {exc}"
         output = (proc.stdout or "") + (proc.stderr or "")
         out = _truncate_tool_output(output, limit=CHECK_OUTPUT_LIMIT)
@@ -740,6 +754,18 @@ def build_check_tool(worktree, written_files=None, repo=None, *, planned_files=(
             else:
                 notice = DITHER_NOTICE
             result += "\n" + notice.format(streak=spin["streak"])
+        if tracker is not None:
+            passed = (
+                proc.returncode == 0
+                and bool(output.strip())
+                and not re.search(r"(?m)^Ran 0 tests\b", output)
+            )
+            if (
+                tracker.record_check(argv, passed, generation)
+                and passed
+                and tracker.verified(worktree, repo)
+            ):
+                result += "\n\n" + VERIFIED_EDIT_NOTICE
         return (
             recovery(result)
             if missing_check_target(proc.returncode, output)
@@ -1089,6 +1115,39 @@ class WriteTracker(set):
     def __init__(self):
         super().__init__()
         self.mutations = 0
+        self.check_generation = 0
+        self.checks = {}
+        self.verification_lock = threading.Lock()
+
+    def record_check(self, argv, passed, generation):
+        if generation != self.mutations or not is_test_command(argv):
+            return False
+        if self.check_generation != generation:
+            self.checks.clear()
+            self.check_generation = generation
+        command = tuple(argv)
+        if command[:3] == UNITTEST_PREFIX:
+            for module in command[3:]:
+                self.checks[(*UNITTEST_PREFIX, module)] = passed
+        else:
+            self.checks[command] = passed
+        return True
+
+    def verified(self, worktree, repo):
+        if (
+            not self
+            or self.check_generation != self.mutations
+            or not self.checks
+            or not all(self.checks.values())
+        ):
+            return False
+        return all(
+            any(
+                tuple(command.split()) in self.checks
+                for command in targeted_checks(worktree, [path], repo)
+            )
+            for path in sorted(self)
+        )
 
 
 def worktree_file_middleware(worktree, written_files, read_cache=None, *, repo=None):
@@ -1102,6 +1161,14 @@ def worktree_file_middleware(worktree, written_files, read_cache=None, *, repo=N
 
     @wrap_tool_call
     def guard_file_call(request, handler):
+        if isinstance(written_files, WriteTracker) and request.tool_call["name"] in (
+            MUTATING_TOOLS | {"run_check"}
+        ):
+            with written_files.verification_lock:
+                return file_call(request, handler)
+        return file_call(request, handler)
+
+    def file_call(request, handler):
         call = request.tool_call
         if call["name"] in MUTATING_TOOLS | {
             "ls",
@@ -1852,8 +1919,8 @@ def trace_has_passing_check(trace_path):
     return verified
 
 
-def trace_verification_evidence(trace_path, repo=None):
-    evidence = []
+def trace_verification_evidence(trace_path, repo=None, *, earlier=()):
+    evidence = [dict(check) for check in earlier]
     try:
         with open(trace_path, encoding="utf-8") as handle:
             for line in handle:
@@ -1890,7 +1957,15 @@ def trace_verification_evidence(trace_path, repo=None):
                     }
                 )
     except (OSError, TypeError):
-        return []
+        return evidence
+    return evidence
+
+
+def turn_verification_evidence(meter, repo, trace_path=None):
+    evidence = []
+    traces = (*meter.get("verification_traces", ()), trace_path or meter.get("trace"))
+    for path in dict.fromkeys(traces):
+        evidence = trace_verification_evidence(path, repo, earlier=evidence)
     return evidence
 
 
@@ -2170,6 +2245,9 @@ def run_coder(
         meter=meter,
         first_edit=first_edit,
     )
+    issue_ref = re.search(r"#\d+\b", issue or brief)
+    if issue_ref:
+        kwargs["issue_ref"] = issue_ref[0]
 
     def left():
         return None if call_budget is None else call_budget - meter["calls"]
@@ -2212,6 +2290,7 @@ def run_coder(
                 meter["continuations"] += 1
                 turn_brief, floor = CONTINUE_PROMPT, error.thread_count
                 prior_files = error.coder_written_files
+                kwargs["prior_tracker"] = getattr(error, "coder_write_tracker", None)
         error = capped
         spec = getattr(error, "coder_model_spec", {})
         fallback = os.environ.get(
@@ -2231,6 +2310,7 @@ def run_coder(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError(f"coder timed out after {timeout}s before fallback")
+        kwargs.pop("prior_tracker", None)
         return attempt(
             worktree,
             brief + "\n\nThe default-route attempt exhausted its model budget. "
@@ -2347,6 +2427,8 @@ def _run_coder_attempt(
     call_cap=None,
     meter=None,
     first_edit=None,
+    prior_tracker=None,
+    issue_ref="",
 ):
     """Invoke the coder with a verify gate.
 
@@ -2379,8 +2461,26 @@ def _run_coder_attempt(
     print(f"coder via {label}{marker}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label + marker)
     invocation_started = False
-    written_files = WriteTracker()
+    written_files = WriteTracker() if prior_tracker is None else prior_tracker
     written_files.update(prior_files)
+
+    def verified_completion(reason):
+        if not written_files.verified(worktree, repo):
+            return ""
+        paths = sorted(written_files)
+        reply = f"Auto-completed: verified edits to {', '.join(paths)}."
+        if issue_ref:
+            reply += f"\nDONE {issue_ref}"
+        recorder.event(
+            "coder_verdict", ok=True, auto_completed=True, reason=reason, summary=reply
+        )
+        return reply
+
+    def account_attempt():
+        if meter is not None:
+            meter["calls"] = meter.get("calls", 0) + recorder.model_calls
+            if written_files.checks or meter.get("verification_traces"):
+                meter.setdefault("verification_traces", []).append(recorder.path)
 
     def fail(error, reply=""):
         if not invocation_started:
@@ -2393,8 +2493,7 @@ def _run_coder_attempt(
         recorder.run_end(False)
         recorder.close()
         usage, calls = recorder.totals()
-        if meter is not None:
-            meter["calls"] = meter.get("calls", 0) + recorder.model_calls
+        account_attempt()
         ledger.record(
             "coder.py",
             spec["model"],
@@ -2495,7 +2594,11 @@ def _run_coder_attempt(
             last_progress = progress
             return stagnant
 
+        rounds = 0
+
         def retry_verification():
+            nonlocal rounds
+            rounds += 1
             failed = latest_failed_check()
             prompt = VERIFY_NUDGE
             if failed:
@@ -2506,23 +2609,36 @@ def _run_coder_attempt(
             return invoke_bounded(prompt)
 
         max_rounds = verify_rounds()
-        result, rounds, verified = run_with_verify(
-            lambda: invoke_bounded(brief),
-            retry_verification,
-            lambda: trace_has_passing_check(recorder.path),
-            max_rounds,
-            dithered=lambda: trace_has_dither(recorder.path),
-            check_stagnant=is_stagnant,
-        )
+        auto_completed = False
+        try:
+            result, rounds, verified = run_with_verify(
+                lambda: invoke_bounded(brief),
+                retry_verification,
+                lambda: trace_has_passing_check(recorder.path),
+                max_rounds,
+                dithered=lambda: trace_has_dither(recorder.path),
+                check_stagnant=is_stagnant,
+            )
+            reply = extract_reply(result)
+            if terminal_contract(reply) is None:
+                reply = extract_reply(invoke_bounded(TERMINAL_NUDGE))
+                verified = trace_has_passing_check(recorder.path)
+                if terminal_contract(reply) is None:
+                    completion = verified_completion("missing_terminal_line")
+                    if completion:
+                        reply, verified, auto_completed = completion, True, True
+        except Exception as error:
+            if not is_call_cap(error):
+                raise
+            reply = verified_completion("model_call_budget_exhausted")
+            if not reply:
+                raise
+            verified, auto_completed = True, True
         # Keep the checkpointer connection alive until the run returns.
         _ = holder
-        reply = extract_reply(result)
-        if terminal_contract(reply) is None:
-            reply = extract_reply(invoke_bounded(TERMINAL_NUDGE))
-            verified = trace_has_passing_check(recorder.path)
         if verified and repair_files:
             written_files.update(existing_implementation_files(worktree, repair_files))
-        reason = implementation_failure(reply, written_files, verified)
+        reason = implementation_failure(reply, written_files, auto_completed)
         if reason:
             recorder.event("coder_verdict", ok=False, reason=reason)
             recorder.termination(
@@ -2534,14 +2650,14 @@ def _run_coder_attempt(
         recorder.run_end(True)
         recorder.close()
         usage, calls = recorder.totals()
-        if meter is not None:
-            meter["calls"] = meter.get("calls", 0) + recorder.model_calls
+        account_attempt()
         print(f"trace: {recorder.path}", file=sys.stderr)
         return reply, usage, calls, started, label, recorder.path, verified, rounds
     except BaseException as error:
         fail(error)
         error.coder_model_spec = {key: spec.get(key) for key in ("provider", "model")}
         error.coder_written_files = tuple(written_files)
+        error.coder_write_tracker = written_files
         if isinstance(error, TimeoutError):
             raise RuntimeError(f"coder timed out after {timeout}s") from error
         raise
