@@ -95,7 +95,6 @@ INITIAL_TOOL_LIMIT = 32
 INSPECTION_TOOLS = frozenset({"read_file", "grep", "ls", "glob"})
 EXPLORE_NUDGE = 12
 EXPLORE_LIMIT = 20
-CORRECTION_READ_LIMIT = 3
 DEFAULT_FALLBACK_MODEL = "nebius/zai-org/GLM-5.3-Flash"
 # Middleware adds graph steps beyond the model and tool calls themselves.
 RECURSION_LIMIT = int(
@@ -1536,6 +1535,21 @@ def build_edit_tool(backend, *, allow_replace_all=False):
     return edit_file
 
 
+def build_write_tool(backend):
+    from langchain_core.tools import ToolException, tool
+
+    @tool
+    def write_file(file_path: str, content: str) -> str:
+        """Create or replace a file with its full content."""
+        result = backend.write(file_path, content)
+        if result.error:
+            raise ToolException(result.error)
+        return f"Updated file {result.path}"
+
+    write_file.handle_tool_error = True
+    return write_file
+
+
 def build_replace_lines_tool(backend, planned_files):
     from langchain_core.tools import ToolException, tool
 
@@ -1705,9 +1719,9 @@ class RepairBudgetExceeded(CoderBudgetExceeded):
 
 
 class StalledVerificationFailed(RuntimeError):
-    def __init__(self, message, *, fixable=False):
+    def __init__(self, message, *, failures=()):
         super().__init__(message)
-        self.fixable = fixable
+        self.failures = failures
 
 
 def verify_stalled_edits(worktree, written_files, repo, recorder, deadline):
@@ -1740,12 +1754,128 @@ def verify_stalled_edits(worktree, written_files, repo, recorder, deadline):
             )
             argv = tuple(parse_check_command(command, repo))
             if not result.startswith("exit=0\n") or not written_files.checks.get(argv):
-                failures.append(f"{command}\n{result[-1600:]}")
+                failures.append((argv, result))
         if failures:
             raise StalledVerificationFailed(
-                "BLOCKED: targeted verification failed:\n" + "\n\n".join(failures),
-                fixable=True,
+                "BLOCKED: targeted verification failed:\n"
+                + "\n\n".join(
+                    f"{shlex.join(argv)}\n{output[-1600:]}" for argv, output in failures
+                ),
+                failures=failures,
             )
+
+
+def correction_context(worktree, edited_files, failures):
+    def source(path):
+        try:
+            return Path(active_checkout_path(worktree, path)).read_text(
+                encoding="utf-8"
+            )
+        except (ValueError, OSError, UnicodeError):
+            return None
+
+    def test_module_path(module):
+        # unittest argv may name a class/method selector; keep the deepest
+        # prefix that resolves to a real file.
+        parts = module.split(".")
+        for cut in range(len(parts), 0, -1):
+            candidate = "/".join(parts[:cut]) + ".py"
+            if source(candidate) is not None:
+                return candidate
+        return module.replace(".", "/") + ".py"
+
+    sections = []
+    for path in sorted(edited_files):
+        current = source(path)
+        if current is None:
+            continue
+        baseline = subprocess.run(
+            ["git", "-C", worktree, "show", f"HEAD:{path}"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+        ).stdout.splitlines()
+        lines = current.splitlines()
+        groups = difflib.SequenceMatcher(None, baseline, lines, autojunk=False)
+        for group in groups.get_grouped_opcodes(n=4):
+            start, end = group[0][3], group[-1][4]
+            removed = [
+                numbered_lines(baseline, before, after)
+                for tag, before, after, _, _ in group
+                if tag in {"delete", "replace"}
+            ]
+            section = (
+                f"Current edited region: {path}\n{numbered_lines(lines, start, end)}"
+            )
+            if removed:
+                section += "\nPrevious lines replaced or removed:\n" + "\n".join(
+                    removed
+                )
+            sections.append(section)
+    for argv, output in failures:
+        sections.append(f"Failing verification: {shlex.join(argv)}\n{output}")
+        if argv[:3] == UNITTEST_PREFIX:
+            paths = [test_module_path(module) for module in argv[3:]]
+        elif argv[: len(FRONTEND_VITEST_PREFIX)] == FRONTEND_VITEST_PREFIX:
+            paths = [f"frontend/{path}" for path in argv[len(FRONTEND_VITEST_PREFIX) :]]
+        elif argv[:3] == ("python3", "-m", "pytest") or argv[:1] == ("pytest",):
+            start = 3 if argv[0] == "python3" else 1
+            paths = [
+                arg.split("::")[0] for arg in argv[start:] if not arg.startswith("-")
+            ]
+        else:
+            paths = []
+        frames = {
+            (worktree_file_key(worktree, path), int(line))
+            for path, line in re.findall(r'File "([^"]+)", line (\d+)', output)
+        }
+        for path in paths:
+            test = source(path)
+            if test is None:
+                continue
+            lines = test.splitlines()
+            functions = []
+            if path.endswith(".py"):
+                try:
+                    functions = [
+                        (
+                            min(node.lineno, *(d.lineno for d in node.decorator_list))
+                            if node.decorator_list
+                            else node.lineno,
+                            node.end_lineno,
+                        )
+                        for node in ast.walk(ast.parse(test))
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and node.name.startswith("test")
+                        and (
+                            (re.search(rf"\b{re.escape(node.name)}\b", output))
+                            or any(
+                                name == path and node.lineno <= line <= node.end_lineno
+                                for name, line in frames
+                            )
+                        )
+                    ]
+                except SyntaxError:
+                    pass
+            # Windows are 1-based inclusive, like the function ranges above.
+            windows = (
+                functions
+                or [
+                    (max(1, line - 30), min(len(lines), line + 30))
+                    for name, line in sorted(frames)
+                    if name == path
+                ]
+                or [(1, min(len(lines), 200))]
+            )
+            for start, end in dict.fromkeys(windows):
+                section = f"Current failing test source: {path}\n" + numbered_lines(
+                    lines, start - 1, end
+                )
+                if end < len(lines):
+                    section += f"\n... ({len(lines) - end} further lines omitted)"
+                sections.append(section)
+    return "\n\n".join(sections)
 
 
 def issuing_message(request):
@@ -1760,7 +1890,7 @@ def issuing_message(request):
 
 
 def coder_tool_middleware(
-    *, repair=False, planning=False, first_edit_writes=None, correction_failure=""
+    *, repair=False, planning=False, first_edit_writes=None, correction=False
 ):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
@@ -1772,8 +1902,7 @@ def coder_tool_middleware(
     calls = 0
     explored = 0
     nudged = None
-    edit_attempted = False
-    bound_exploring = not (repair or planning or correction_failure)
+    bound_exploring = not (repair or planning or correction)
     lock = threading.Lock()
     limit = REPAIR_TOOL_LIMIT if repair else INITIAL_TOOL_LIMIT
     label = "Repair" if repair else "Initial implementation"
@@ -1781,7 +1910,7 @@ def coder_tool_middleware(
 
     @wrap_tool_call
     def bound_calls(request, handler):
-        nonlocal calls, edit_generation, explored, nudged, edit_attempted
+        nonlocal calls, edit_generation, explored, nudged
         call = request.tool_call
         key = (call["name"], json.dumps(call["args"], sort_keys=True))
         inspection = call["name"] in INSPECTION_TOOLS
@@ -1790,21 +1919,6 @@ def coder_tool_middleware(
             if calls > limit:
                 raise error(f"BLOCKED: {label} tool budget exhausted ({limit} calls)")
             generation = edit_generation
-            if correction_failure:
-                edit_attempted |= call["name"] in MUTATING_TOOLS
-                if inspection and (
-                    not edit_attempted or explored > CORRECTION_READ_LIMIT
-                ):
-                    explored += 1
-                    if explored > CORRECTION_READ_LIMIT:
-                        content = "Make the correction edit now or reply BLOCKED."
-                        if explored == CORRECTION_READ_LIMIT + 1:
-                            content += (
-                                f"\n\nFailing verification:\n{correction_failure}"
-                            )
-                        return ToolMessage(
-                            content=content, tool_call_id=call["id"], status="error"
-                        )
             if inspection and key in earlier:
                 previous = earlier[key]
                 return previous.model_copy(
@@ -1886,8 +2000,7 @@ def coder_tool_middleware(
                 seen.clear()
                 acknowledged.clear()
                 earlier.clear()
-                if not correction_failure:
-                    explored = 0
+                explored = 0
                 nudged = None
         return result
 
@@ -1912,7 +2025,7 @@ def build_agent(
     call_cap=None,
     first_edit=None,
     planned_files=(),
-    correction_failure="",
+    correction=False,
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
@@ -1941,22 +2054,24 @@ def build_agent(
         model_router.disable_general_purpose(spec)
 
     backend = build_filesystem_backend(worktree)
-    middleware = [
-        FilesystemMiddleware(
-            backend=backend,
-            tools=[
-                "ls",
-                "read_file",
-                "write_file",
-                *(["edit_file"] if planning else []),
-                "delete",
-                "glob",
-                "grep",
-            ],
-        ),
-        worktree_file_middleware(worktree, written_files, repo=repo),
-    ]
-    if written_files is not None:
+    middleware = [worktree_file_middleware(worktree, written_files, repo=repo)]
+    if not correction:
+        middleware.insert(
+            0,
+            FilesystemMiddleware(
+                backend=backend,
+                tools=[
+                    "ls",
+                    "read_file",
+                    "write_file",
+                    *(["edit_file"] if planning else []),
+                    "delete",
+                    "glob",
+                    "grep",
+                ],
+            ),
+        )
+    if written_files is not None and not correction:
         middleware.append(implementation_tool_middleware(written_files, first_edit))
     middleware.insert(
         0,
@@ -1964,7 +2079,7 @@ def build_agent(
             repair=repair,
             planning=planning,
             first_edit_writes=written_files if first_edit is not None else None,
-            correction_failure=correction_failure,
+            correction=correction,
         ),
     )
     if not planning:
@@ -1973,7 +2088,7 @@ def build_agent(
             ModelCallLimitMiddleware(
                 thread_limit=thread_floor
                 + min(
-                    REPAIR_MODEL_LIMIT if repair else INITIAL_MODEL_LIMIT,
+                    REPAIR_MODEL_LIMIT if repair or correction else INITIAL_MODEL_LIMIT,
                     INITIAL_MODEL_LIMIT if call_cap is None else call_cap,
                 ),
                 exit_behavior="error",
@@ -1983,6 +2098,22 @@ def build_agent(
         import observe  # noqa: E402
 
         middleware = observe.trace_middleware(recorder) + middleware
+    if correction:
+        from langchain.agents import create_agent
+
+        existing = dict(first_edit or ())
+        existing.update({path: True for path in written_files or ()})
+        return create_agent(
+            model=model,
+            tools=[
+                build_edit_tool(backend),
+                build_replace_lines_tool(backend, existing),
+                build_write_tool(backend),
+            ],
+            system_prompt=system,
+            checkpointer=checkpointer,
+            middleware=middleware,
+        )
     planned_files = set(planned_files) | set(first_edit or ())
     if tools is None:
         default_tools = [
@@ -2543,7 +2674,7 @@ def run_coder(
         )
     except StalledVerificationFailed as error:
         if (
-            not error.fixable
+            not error.failures
             or meter["continuations"] >= continuations
             or (call_budget is not None and left() <= 0)
             or time.monotonic() >= deadline
@@ -2551,11 +2682,21 @@ def run_coder(
             raise
         meter["continuations"] += 1
         kwargs["prior_tracker"] = error.coder_write_tracker
+        if (os.environ.get("CODER_STRONG_MODEL") or "").strip():
+            # Count an out-of-band escalation so the pipeline's tier selector
+            # still respects max_escalations on a later repair.
+            if kwargs.get("model_tier") != "strong":
+                meter["strong_escalations"] = meter.get("strong_escalations", 0) + 1
+            kwargs["model_tier"] = "strong"
         return _run_coder_attempt(
             worktree,
-            f"{brief}\n\nFix the edits using the verification failures below. "
-            f"Make the needed changes, then reply DONE or BLOCKED.\n\n{error}",
-            system,
+            f"{brief}\n\n{correction_context(worktree, error.coder_written_files, error.failures)}",
+            "Correct the failed verification using only edit_file, replace_lines, "
+            "or write_file. Use the supplied current source and failing tests. "
+            "Use worktree-relative paths and make only the changes needed. "
+            "Do not commit, push, or open a PR. "
+            "Verification runs automatically after the turn. If you cannot safely "
+            "make the correction, explain why and end with BLOCKED #<issue>.",
             thread + "-verify-fix",
             timeout,
             deadline=deadline,
@@ -2563,7 +2704,7 @@ def run_coder(
             if left() is None
             else min(REPAIR_MODEL_LIMIT, left()),
             prior_files=error.coder_written_files,
-            correction_failure=str(error),
+            correction=True,
             **kwargs,
         )
     except ModelCallLimitExceededError:
@@ -2671,7 +2812,7 @@ def _run_coder_attempt(
     prior_tracker=None,
     issue_ref="",
     verify_stalls=False,
-    correction_failure="",
+    correction=False,
 ):
     """Invoke the coder with a verify gate.
 
@@ -2792,7 +2933,7 @@ def _run_coder_attempt(
             call_cap=call_cap,
             first_edit=first_edit,
             planned_files=repair_files,
-            correction_failure=correction_failure,
+            correction=correction,
         )
         config = {"configurable": {"thread_id": thread}}
 
@@ -2866,7 +3007,7 @@ def _run_coder_attempt(
         stall_reason = ""
         reply = ""
         try:
-            if correction_failure:
+            if correction:
                 reply = extract_reply(invoke_bounded(brief))
                 verified = False
                 contract = terminal_contract(reply)
@@ -2899,14 +3040,14 @@ def _run_coder_attempt(
                 stall_reason = "coder_tool_stall"
             else:
                 raise
-            completion = "" if correction_failure else verified_completion(stall_reason)
+            completion = "" if correction else verified_completion(stall_reason)
             if not completion and not (verify_stalls and written_files):
                 raise
             if completion:
                 reply, verified, auto_completed = completion, True, True
                 stall_reason = ""
         if stall_reason:
-            completion = "" if correction_failure else verified_completion(stall_reason)
+            completion = "" if correction else verified_completion(stall_reason)
             if not completion and verify_stalls and written_files:
                 verify_stalled_edits(worktree, written_files, repo, recorder, deadline)
                 completion = verified_completion(stall_reason)
