@@ -224,6 +224,23 @@ class LogDecision(unittest.TestCase):
         self.assertEqual(captured["thread_id"], "arii/remote-server#1")
         self.assertIn("strong", captured["extra"]["picks"])
 
+    def test_records_requested_vs_served_tier(self):
+        captured = {}
+        decision = task_router.route_issue(
+            {"title": "t", "body": "b"}, 1.0, catalog=CATALOG
+        )
+        task_router.log_decision(
+            decision,
+            "k",
+            ledger_record=lambda **kw: captured.update(kw),
+            requested_tier="default",
+            served_tier="strong",
+        )
+        extra = captured["extra"]
+        self.assertEqual(extra["requested_tier"], "default")
+        self.assertEqual(extra["served_tier"], "strong")
+        self.assertTrue(extra["tier_substituted"])
+
 
 class DisabledParsing(unittest.TestCase):
     def test_env_csv_parsing(self):

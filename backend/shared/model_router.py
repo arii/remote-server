@@ -331,20 +331,50 @@ def _openrouter_spec():
     return _remote_spec("openrouter", model, DEFAULT_OPENROUTER_BASE_URL)
 
 
+def _note_substitution(spec, requested):
+    """Mark and warn when the served provider differs from the requested one.
+
+    Which model wins is unchanged; the spec gains requested/served_by/
+    substituted so callers and the ledger can audit the swap.
+    """
+    if not requested or spec["provider"] == requested:
+        return spec
+    logger.warning(
+        "model_router: requested provider %s but serving %s (%s)",
+        requested,
+        spec["provider"],
+        spec.get("model", "?"),
+    )
+    return dict(spec, requested=requested, served_by=spec["provider"], substituted=True)
+
+
 def resolve_llm(prefer=None):
     """Pick the cheapest feasible LLM. Returns {"provider","model","base_url"}.
+
+    When the served provider differs from the requested one (``prefer``,
+    NEBIUS_ONLY, or S5_ISSUE_PROVIDER), the spec also carries
+    ``requested``, ``served_by`` and ``substituted`` and a warning is logged.
 
     ``prefer`` selects a provider strictly. Default order is local Ollama,
     then TwT. TwT owns the free-tier/paid waterfall.
     OLLAMA_STRICT=1 disables the fallback on the default path too.
     """
+    requested = (
+        (
+            prefer
+            or ("twt" if _env("NEBIUS_ONLY") == "1" else "")
+            or _env("S5_ISSUE_PROVIDER")
+        )
+        .strip()
+        .lower()
+    )
     if local_only():
         spec = validate_local_spec(_ollama_spec())
         if not ollama_reachable():
             raise RuntimeError(
                 "S5_LOCAL_ONLY=1: Ollama unreachable at " + _ollama_base()
             )
-        return spec
+        return _note_substitution(spec, requested)
     only_nebius = _env("NEBIUS_ONLY") == "1"
     strict_ollama = _env("OLLAMA_STRICT") == "1"
     want = (prefer or ("twt" if only_nebius else "")).strip().lower()
@@ -363,7 +393,7 @@ def resolve_llm(prefer=None):
             "Ollama unreachable at " + _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
         )
     if ollama_reachable():
-        return _ollama_spec()
+        return _note_substitution(_ollama_spec(), requested)
     if strict_ollama:
         raise RuntimeError(
             "Ollama unreachable and OLLAMA_STRICT=1 refuses remote fallback"

@@ -23,6 +23,36 @@ class TestModelRouter(unittest.TestCase):
         self.assertEqual(spec["model"], "qwen3:8b")
         self.assertEqual(spec["base_url"], "http://127.0.0.1:8000/local")
 
+    def test_substitution_warns_and_marks_served_by(self):
+        with env(S5_ISSUE_PROVIDER="twt"):
+            with mock.patch.object(model_router, "ollama_reachable", return_value=True):
+                with self.assertLogs(model_router.logger, "WARNING") as logs:
+                    spec = model_router.resolve_llm()
+        self.assertEqual(spec["provider"], "ollama")
+        self.assertEqual(spec["requested"], "twt")
+        self.assertEqual(spec["served_by"], "ollama")
+        self.assertTrue(spec["substituted"])
+        self.assertIn("requested provider twt but serving ollama", logs.output[0])
+
+    def test_local_only_overriding_pin_is_substitution(self):
+        with env(S5_LOCAL_ONLY="1"):
+            with mock.patch.object(model_router, "ollama_reachable", return_value=True):
+                with self.assertLogs(model_router.logger, "WARNING"):
+                    spec = model_router.resolve_llm(prefer="twt")
+        self.assertTrue(spec["substituted"])
+
+    def test_no_substitution_no_warning(self):
+        with env():
+            with mock.patch.object(model_router, "ollama_reachable", return_value=True):
+                with self.assertNoLogs(model_router.logger, "WARNING"):
+                    spec = model_router.resolve_llm()
+        self.assertNotIn("substituted", spec)
+        with env(S5_ISSUE_PROVIDER="ollama"):
+            with mock.patch.object(model_router, "ollama_reachable", return_value=True):
+                with self.assertNoLogs(model_router.logger, "WARNING"):
+                    spec = model_router.resolve_llm()
+        self.assertNotIn("substituted", spec)
+
     def test_ask_model_honored(self):
         with env(ASK_MODEL="qwen3:14b"):
             with mock.patch.object(model_router, "ollama_reachable", return_value=True):
