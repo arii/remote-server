@@ -727,9 +727,7 @@ def worker(job_dir):
                     issue_key=f"{job['issue']['repo']}#{job['issue']['number']}",
                 )
             except Exception as error:
-                print(
-                    f"routing audit skipped: {error}", file=sys.stderr, flush=True
-                )
+                print(f"routing audit skipped: {error}", file=sys.stderr, flush=True)
         try:
             from backend.shared import model_router
 
