@@ -14,7 +14,7 @@ import {
   selectVaultFacts
 } from "./lib/ask-context.js";
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
-import { MODEL_APIS, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
+import { INTERNALS_URL, MODEL_APIS, describeModelError, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
   SUGGESTION_SCHEMA,
@@ -390,6 +390,8 @@ document.querySelectorAll(".nav button").forEach((btn) => {
 // ----------------------------------------------------------------------------
 // PHASE 1: BUILT-IN AI DETECTION & BOOTSTRAP
 // ----------------------------------------------------------------------------
+const failedModelDetails = {};
+
 async function checkBuiltInAIStatus() {
   const report = {
     languageModel: "unavailable",
@@ -445,10 +447,24 @@ async function checkBuiltInAIStatus() {
     badgeText.textContent = "AI Unavailable";
   }
 
-  for (const api of MODEL_APIS) renderModelProgress(api.key, modelProgressState(report[api.key]));
+  for (const api of MODEL_APIS) {
+    renderModelProgress(api.key, modelProgressState(report[api.key]));
+    if (report[api.key] === "unavailable") {
+      renderModelError(api.key, describeModelError(null, { availability: "unavailable" }));
+    } else if (!failedModelDetails[api.key]) {
+      renderModelError(api.key, null);
+    }
+  }
 
   document.getElementById("model-details-box").textContent = JSON.stringify(report, null, 2);
   return report;
+}
+
+function renderModelError(key, detail) {
+  const el = document.getElementById(`model-error-${key}`);
+  if (!el) return;
+  el.hidden = !detail;
+  el.textContent = detail ? formatModelError(detail) : "";
 }
 
 function renderModelProgress(key, { state, pct, label }, errorText = "") {
@@ -489,6 +505,10 @@ document.getElementById("btn-bootstrap-model").addEventListener("click", async (
   box.textContent = "Checking which models need downloading...";
   const before = await checkBuiltInAIStatus();
   const errors = [];
+  for (const api of MODEL_APIS) {
+    delete failedModelDetails[api.key];
+    renderModelError(api.key, null);
+  }
 
   for (const api of MODEL_APIS) {
     if (before[api.key] !== "downloadable" && before[api.key] !== "downloading") continue;
@@ -507,18 +527,37 @@ document.getElementById("btn-bootstrap-model").addEventListener("click", async (
       session.destroy?.();
     } catch (err) {
       errors.push(`${api.label}: ${err.message}`);
-      renderModelProgress(api.key, modelProgressState(before[api.key]), `Error: ${err.message}`);
+      let availability;
+      try {
+        availability = await self[api.global]?.availability?.();
+      } catch {
+        availability = undefined;
+      }
+      const detail = describeModelError(err, { availability });
+      detail.availability = availability;
+      failedModelDetails[api.key] = detail;
+      renderModelProgress(api.key, modelProgressState(availability || before[api.key]), "Failed");
+      renderModelError(api.key, detail);
+      Telemetry.logTrace({
+        type: "ERROR",
+        title: `${api.label} model download failed`,
+        durationMs: 0,
+        details: `${formatModelError(detail)}\ncause=${detail.cause} availability=${availability ?? "unknown"}`
+      });
     }
   }
 
   const after = await checkBuiltInAIStatus();
   for (const api of MODEL_APIS) {
-    const failed = errors.find((e) => e.startsWith(`${api.label}:`));
-    if (failed) renderModelProgress(api.key, modelProgressState(after[api.key]), failed);
+    if (failedModelDetails[api.key]) renderModelProgress(api.key, modelProgressState(after[api.key]), "Failed");
   }
   if (errors.length) {
     box.textContent = `Model initialization errors:\n${errors.join("\n")}\n\nMake sure chrome://flags/#optimization-guide-on-device-model and chrome://flags/#prompt-api-for-gemini-nano are enabled.\n\n${box.textContent}`;
   }
+});
+
+document.getElementById("btn-open-on-device-internals").addEventListener("click", () => {
+  chrome.tabs.create({ url: INTERNALS_URL });
 });
 
 // ----------------------------------------------------------------------------

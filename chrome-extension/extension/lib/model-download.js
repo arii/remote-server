@@ -30,3 +30,47 @@ export function makeDownloadMonitor(onPct) {
     });
   };
 }
+
+export const DISK_NOTE = "Chrome needs about 22 GB free on the profile volume for Gemini Nano, and removes the model if free space drops below 10 GB after download. Free space and retry.";
+export const INTERNALS_URL = "chrome://on-device-internals";
+
+/**
+ * Turn a failed create() error into a displayable detail. A cause is only
+ * named when the error name/message supports it; otherwise cause is "unknown"
+ * and the raw name and message are shown. Chrome documents no disk-space
+ * specific error, so disk is only claimed when the error itself says so.
+ * availability is the re-checked value after the failure (optional).
+ */
+export function describeModelError(err, { availability } = {}) {
+  const name = String(err?.name || "Error");
+  const message = String(err?.message ?? err ?? "");
+  const text = `${name} ${message}`;
+  let cause = "unknown";
+  let hint = "Cause not identified from the error. Open chrome://on-device-internals for the model status and logs.";
+  const steps = [];
+  if (name === "NotAllowedError") {
+    cause = "permission";
+    hint = "Chrome blocked the download: it needs a user gesture (click the button again) or the feature is not permitted.";
+  } else if (name === "QuotaExceededError" || /disk|space|storage|quota/i.test(text)) {
+    cause = "disk";
+    hint = "The error points to insufficient disk space.";
+    steps.push(DISK_NOTE);
+  } else if (name === "NotSupportedError") {
+    cause = "unsupported";
+    hint = "The device or requested options are not supported by this Chrome build.";
+  } else if (name === "NetworkError" || /network|fetch|offline/i.test(text)) {
+    cause = "network";
+    hint = "The download looks like a network failure. Check the connection and retry.";
+  } else if (availability === "unavailable") {
+    cause = "unavailable";
+    hint = "Chrome reports the model unavailable: the device or options are unsupported, possibly insufficient disk space or hardware. Chrome does not say which.";
+    steps.push(DISK_NOTE);
+  }
+  steps.push("Check chrome://flags/#optimization-guide-on-device-model and chrome://flags/#prompt-api-for-gemini-nano.");
+  return { name, message, cause, hint, steps };
+}
+
+/** Plain-text rendering of describeModelError output. */
+export function formatModelError(d) {
+  return `${d.name}: ${d.message}\n${d.hint}\n${d.steps.map((s) => `- ${s}`).join("\n")}`;
+}

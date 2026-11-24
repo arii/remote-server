@@ -89,6 +89,7 @@
             <span id="download-text-languageModel">...</span>
           </div>
           <div class="progress-bar-container"><div id="download-fill-languageModel" class="progress-bar" style="width: 0%;"></div></div>
+          <pre id="model-error-languageModel" class="model-error" hidden></pre>
         </div>
         <div class="model-progress-row" data-model="summarizer">
           <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
@@ -96,6 +97,7 @@
             <span id="download-text-summarizer">...</span>
           </div>
           <div class="progress-bar-container"><div id="download-fill-summarizer" class="progress-bar" style="width: 0%;"></div></div>
+          <pre id="model-error-summarizer" class="model-error" hidden></pre>
         </div>
         <div class="model-progress-row" data-model="writer">
           <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
@@ -103,12 +105,16 @@
             <span id="download-text-writer">...</span>
           </div>
           <div class="progress-bar-container"><div id="download-fill-writer" class="progress-bar" style="width: 0%;"></div></div>
+          <pre id="model-error-writer" class="model-error" hidden></pre>
         </div>
       </div>
 
       <button id="btn-bootstrap-model" class="btn btn-primary">
         Initialize / Download Built-in Models
       </button>
+
+      <button id="btn-open-on-device-internals" class="btn">Open chrome://on-device-internals</button>
+      <div class="card-desc">Model status and the real failure cause: chrome://on-device-internals. Flags: chrome://flags.</div>
 
       <pre id="model-details-box">Checking capabilities...</pre>
     </div>
