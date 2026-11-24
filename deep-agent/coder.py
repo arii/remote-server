@@ -1774,6 +1774,16 @@ def correction_context(worktree, edited_files, failures):
         except (ValueError, OSError, UnicodeError):
             return None
 
+    def test_module_path(module):
+        # unittest argv may name a class/method selector; keep the deepest
+        # prefix that resolves to a real file.
+        parts = module.split(".")
+        for cut in range(len(parts), 0, -1):
+            candidate = "/".join(parts[:cut]) + ".py"
+            if source(candidate) is not None:
+                return candidate
+        return module.replace(".", "/") + ".py"
+
     sections = []
     for path in sorted(edited_files):
         current = source(path)
@@ -1806,9 +1816,14 @@ def correction_context(worktree, edited_files, failures):
     for argv, output in failures:
         sections.append(f"Failing verification: {shlex.join(argv)}\n{output}")
         if argv[:3] == UNITTEST_PREFIX:
-            paths = [module.replace(".", "/") + ".py" for module in argv[3:]]
+            paths = [test_module_path(module) for module in argv[3:]]
         elif argv[: len(FRONTEND_VITEST_PREFIX)] == FRONTEND_VITEST_PREFIX:
             paths = [f"frontend/{path}" for path in argv[len(FRONTEND_VITEST_PREFIX) :]]
+        elif argv[:3] == ("python3", "-m", "pytest") or argv[:1] == ("pytest",):
+            start = 3 if argv[0] == "python3" else 1
+            paths = [
+                arg.split("::")[0] for arg in argv[start:] if not arg.startswith("-")
+            ]
         else:
             paths = []
         frames = {
@@ -1843,11 +1858,23 @@ def correction_context(worktree, edited_files, failures):
                     ]
                 except SyntaxError:
                     pass
-            for start, end in functions or [(1, len(lines))]:
-                sections.append(
-                    f"Current failing test source: {path}\n"
-                    + numbered_lines(lines, start - 1, end)
+            # Windows are 1-based inclusive, like the function ranges above.
+            windows = (
+                functions
+                or [
+                    (max(1, line - 30), min(len(lines), line + 30))
+                    for name, line in sorted(frames)
+                    if name == path
+                ]
+                or [(1, min(len(lines), 200))]
+            )
+            for start, end in dict.fromkeys(windows):
+                section = f"Current failing test source: {path}\n" + numbered_lines(
+                    lines, start - 1, end
                 )
+                if end < len(lines):
+                    section += f"\n... ({len(lines) - end} further lines omitted)"
+                sections.append(section)
     return "\n\n".join(sections)
 
 
@@ -2656,6 +2683,10 @@ def run_coder(
         meter["continuations"] += 1
         kwargs["prior_tracker"] = error.coder_write_tracker
         if (os.environ.get("CODER_STRONG_MODEL") or "").strip():
+            # Count an out-of-band escalation so the pipeline's tier selector
+            # still respects max_escalations on a later repair.
+            if kwargs.get("model_tier") != "strong":
+                meter["strong_escalations"] = meter.get("strong_escalations", 0) + 1
             kwargs["model_tier"] = "strong"
         return _run_coder_attempt(
             worktree,

@@ -729,6 +729,9 @@ class Pipeline:
             finally:
                 self.stage_calls += meter.get("calls", 0)
                 self.stage_continuations += meter.get("continuations", 0)
+                # Out-of-band strong corrections (verify-fix) consume the same
+                # escalation budget as tier selection.
+                self.escalations_used += meter.get("strong_escalations", 0)
             summary, usage, calls, started, label, trace, verified, _ = result
             self.verification_evidence = coder.turn_verification_evidence(
                 meter, self._repo_slug(), trace

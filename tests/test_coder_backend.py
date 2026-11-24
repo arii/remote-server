@@ -424,6 +424,9 @@ class TestCoderBackend(unittest.TestCase):
                         run()
                 expected = {"edit_file", "replace_lines", "write_file"}
                 self.assertEqual(model_overrides, ["route:default", "route:strong"])
+                # The verify-fix turn's out-of-band strong escalation is
+                # counted so the pipeline's escalation budget stays honest.
+                self.assertEqual(meter.get("strong_escalations"), 1)
                 self.assertEqual(
                     bindings[20:],
                     [expected] * {"ignore": 12, "edit": 2, "blocked": 1}[action],
@@ -435,6 +438,36 @@ class TestCoderBackend(unittest.TestCase):
                 for event in events:
                     if event.get("name") in {"ls", "grep", "read_file"}:
                         self.assertIn("not a valid tool", event["result_preview"])
+
+    def test_correction_context_finds_and_bounds_test_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            tests = Path(root, "tests")
+            tests.mkdir()
+            (tests / "__init__.py").touch()
+            (tests / "test_big.py").write_text(
+                "\n".join(f"# filler {i}" for i in range(1, 2001)) + "\n"
+            )
+            unittest_argv = (
+                "python3",
+                "-m",
+                "unittest",
+                "tests.test_big.Replay.test_missing",
+            )
+            context = coder.correction_context(root, set(), [(unittest_argv, "FAIL")])
+            self.assertIn("Current failing test source: tests/test_big.py", context)
+            self.assertIn("further lines omitted", context)
+            self.assertIn("1 | # filler 1", context)
+            self.assertNotIn("2000 | # filler 2000", context)
+
+            pytest_argv = (
+                "python3",
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_big.py::Replay::test_missing",
+            )
+            context = coder.correction_context(root, set(), [(pytest_argv, "FAIL")])
+            self.assertIn("Current failing test source: tests/test_big.py", context)
 
     def test_28ccfe7dd057_verifies_edited_runner_after_a_stall(self):
         runner = "scripts/queue_runner.py"
