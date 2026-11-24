@@ -105,17 +105,36 @@ class Choose(unittest.TestCase):
         self.assertNotIn("@cf/granite-micro", pick["top3"][0] if pick["top3"] else "")
 
     def test_strong_picks_priciest_affordable(self):
-        # frontier/huge costs ~$0.72/call est.: over half of a $1 cap,
-        # inside half of a $2 cap.
-        pick = task_router.choose(
-            "strong", self.features, CATALOG, disabled=self.disabled, cap_usd=2.0
-        )
-        self.assertEqual(pick["model"], "openrouter/frontier/huge")
-        self.assertFalse(pick["free_only"])
+        # nebius is the default spendable provider; openrouter/google
+        # paid models are catalog-priced but their keys are free-tier.
         pick = task_router.choose(
             "strong", self.features, CATALOG, disabled=self.disabled, cap_usd=1.0
         )
-        self.assertEqual(pick["model"], "google/gemini-pro")
+        self.assertEqual(pick["model"], "nebius/Qwen/Qwen3-235B")
+        self.assertFalse(pick["free_only"])
+
+    def test_strong_paid_env_extends_and_blockers_exclude(self):
+        # A funded OpenRouter key makes frontier/huge eligible (~$0.72/call
+        # est. fits half of a $2 cap); a 402 trace record blocks it again.
+        with mock.patch.dict(os.environ, {"TWT_PAID_PROVIDERS": "openrouter,google"}):
+            pick = task_router.choose(
+                "strong",
+                self.features,
+                CATALOG,
+                disabled=self.disabled,
+                cap_usd=2.0,
+                blocked=set(),
+            )
+            self.assertEqual(pick["model"], "openrouter/frontier/huge")
+            pick = task_router.choose(
+                "strong",
+                self.features,
+                CATALOG,
+                disabled=self.disabled,
+                cap_usd=2.0,
+                blocked={"openrouter"},
+            )
+            self.assertEqual(pick["model"], "google/gemini-pro")
 
     def test_strong_excludes_unrated_and_over_budget_paid(self):
         pick = task_router.choose(
@@ -177,6 +196,32 @@ class DisabledParsing(unittest.TestCase):
             os.environ, {"TWT_DISABLED_PROVIDERS": "nvidia, sambanova "}
         ):
             self.assertEqual(task_router.disabled_providers(), {"nvidia", "sambanova"})
+        with mock.patch.dict(os.environ, {"TWT_PAID_PROVIDERS": "openrouter"}):
+            self.assertEqual(task_router.paid_providers(), {"nebius", "openrouter"})
+
+    def test_paid_blockers_reads_trace_reasons(self):
+        import sqlite3
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "catalog.sqlite3")
+            conn = sqlite3.connect(db)
+            conn.execute("create table traces (id text, timestamp real, data text)")
+            conn.execute(
+                "insert into traces values (?, ?, ?)",
+                (
+                    "t1",
+                    1.0,
+                    (
+                        '{"attempts": [{"provider": "openrouter", '
+                        '"reason": "upstream payment required (HTTP 402)"}]}'
+                    ),
+                ),
+            )
+            conn.commit()
+            conn.close()
+            self.assertEqual(task_router.paid_blockers(db), {"openrouter"})
+        self.assertEqual(task_router.paid_blockers("/nonexistent/db.sqlite3"), set())
 
 
 if __name__ == "__main__":
