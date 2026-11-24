@@ -146,8 +146,11 @@ class TestRepairBudget(unittest.TestCase):
         )
         for n in range(coder.REPAIR_TOOL_LIMIT):
             guard(self.call("edit_file", file_path=f"{n}.py"), handler)
-        with self.assertRaisesRegex(coder.RepairBudgetExceeded, "budget exhausted"):
+        with self.assertRaisesRegex(
+            coder.RepairBudgetExceeded, "budget exhausted"
+        ) as caught:
             guard(self.call("read_file", file_path="next.py"), handler)
+        self.assertTrue(caught.exception.recoverable_stall)
         self.assertEqual(handler.call_count, coder.REPAIR_TOOL_LIMIT)
 
     def test_initial_tool_budget_is_larger_but_cannot_be_reset_by_edits(self):
@@ -162,8 +165,11 @@ class TestRepairBudget(unittest.TestCase):
             guard(self.call("edit_file", file_path=f"{n}.py"), handler)
         with self.assertRaisesRegex(
             coder.CoderBudgetExceeded, "BLOCKED.*budget exhausted"
-        ):
+        ) as caught:
             guard(self.call("read_file", file_path="next.py"), handler)
+        # A stalled turn's written-but-unverified edits still get the
+        # verify/correction salvage path (#1571).
+        self.assertTrue(caught.exception.recoverable_stall)
         self.assertEqual(handler.call_count, coder.INITIAL_TOOL_LIMIT)
 
     def test_1633_exploring_without_an_edit_nudges_then_blocks(self):

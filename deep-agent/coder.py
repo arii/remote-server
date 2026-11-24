@@ -1917,7 +1917,10 @@ def coder_tool_middleware(
         with lock:
             calls += 1
             if calls > limit:
-                raise error(f"BLOCKED: {label} tool budget exhausted ({limit} calls)")
+                raise error(
+                    f"BLOCKED: {label} tool budget exhausted ({limit} calls)",
+                    recoverable_stall=True,
+                )
             generation = edit_generation
             if inspection and key in earlier:
                 previous = earlier[key]
@@ -2564,8 +2567,9 @@ def run_coder(
     exhaustion re-raises ModelCallLimitExceededError.
 
     The pipeline can verify a stalled turn's edits without another model
-    call. Failing targeted checks can use one remaining continuation to fix
-    the edits before checking again.
+    call. Failing targeted checks get a correction turn, tracked in
+    ``meter["verify_fixes"]`` and capped by the same ``continuations``
+    budget, so a spent cap-resume never starves the correction.
 
     When every applicable TwT attempt has failed with a classified
     eligible trigger (gateway unavailability, exhausted TwT routes, or
@@ -2673,14 +2677,18 @@ def run_coder(
             **kwargs,
         )
     except StalledVerificationFailed as error:
+        # Verify-fix turns get their own slot, capped by the same
+        # ``continuations`` budget: a cap-resume must not starve the
+        # correction turn, or every resumed run loses the salvage path.
         if (
             not error.failures
-            or meter["continuations"] >= continuations
+            or meter.get("verify_fixes", 0) >= continuations
             or (call_budget is not None and left() <= 0)
             or time.monotonic() >= deadline
         ):
             raise
         meter["continuations"] += 1
+        meter["verify_fixes"] = meter.get("verify_fixes", 0) + 1
         kwargs["prior_tracker"] = error.coder_write_tracker
         if (os.environ.get("CODER_STRONG_MODEL") or "").strip():
             # Count an out-of-band escalation so the pipeline's tier selector

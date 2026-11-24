@@ -609,6 +609,67 @@ class TestCoderBackend(unittest.TestCase):
                         )
                     )
 
+    def test_1571_tool_cap_stall_gets_verify_fix_after_a_resume(self):
+        """#1571 replay: a spent cap-resume must not starve the correction turn.
+
+        The initial turn burns the tool budget with written-but-unverified
+        edits; the stall becomes a correction turn even though the meter's
+        continuation slot was already consumed by a cap-resume.
+        """
+        runner = "scripts/queue_runner.py"
+        tests = "tests/test_queue_runner.py"
+        command = "python3 -m unittest tests.test_queue_runner"
+
+        def edit(path, old, new):
+            return "edit_file", dict(file_path=path, old_string=old, new_string=new)
+
+        with tempfile.TemporaryDirectory() as root:
+            checkout = Path(root)
+            subprocess.run(["git", "init", "-q", root], check=True)
+            for package in ("scripts", "tests"):
+                (checkout / package).mkdir()
+                (checkout / package / "__init__.py").touch()
+            (checkout / runner).write_text("def state():\n    return 'old'\n")
+            (checkout / tests).write_text(
+                "import unittest\n"
+                "from scripts.queue_runner import state\n"
+                "class Replay(unittest.TestCase):\n"
+                "    def test_state(self):\n"
+                "        self.assertEqual(state(), 'idle')\n"
+            )
+            greps = [
+                ("grep", {"pattern": f"needle_{i}", "path": runner}) for i in range(28)
+            ]
+            steps = [
+                edit(runner, "return 'old'", "return 'broken1'"),
+                edit(tests, "state(), 'old'", "state(), 'idle'"),
+                greps[:10],
+                edit(runner, "return 'broken1'", "return 'broken2'"),
+                greps[10:20],
+                edit(runner, "return 'broken2'", "return 'broken3'"),
+                greps[20:28],
+                ("grep", {"pattern": "over_budget", "path": runner}),
+                # verify-fix correction turn.
+                edit(runner, "return 'broken3'", "return 'idle'"),
+                "Corrected the return value.",
+            ]
+            meter = {"continuations": 1}
+            result, prompts = self.run_completion(
+                root,
+                steps,
+                0,
+                repo="arii/remote-server",
+                call_budget=40,
+                continuations=1,
+                verify_stalls=True,
+                meter=meter,
+            )
+            self.assertTrue(result[6])
+            self.assertTrue(result[0].endswith("\nDONE #1570"))
+            self.assertEqual(meter["verify_fixes"], 1)
+            self.assertIn(command, prompts[-1])
+            self.assertIn("'broken3' != 'idle'", prompts[-1])
+
     def test_1570_recorded_inspections_replay_to_first_edit(self):
         """Replay calls from fa2e25a6cb54, then simulate the prompted correction."""
         from langchain_core.messages import AIMessage, HumanMessage
