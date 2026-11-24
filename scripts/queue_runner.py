@@ -725,6 +725,8 @@ def worker(job_dir):
                 task_router.log_decision(
                     routing,
                     issue_key=f"{job['issue']['repo']}#{job['issue']['number']}",
+                    requested_tier=job.get("requested_tier", tier),
+                    served_tier=tier,
                 )
             except Exception as error:
                 print(f"routing audit skipped: {error}", file=sys.stderr, flush=True)
@@ -1309,6 +1311,7 @@ def supervise(config_path, *, clear_halt=False):
             # start tier when the task itself looks hard — never lowered
             # below the escalation/label tier. Router failure keeps the
             # configured environment untouched.
+            requested_tier = tier
             routing = None
             try:
                 from backend.shared import task_router
@@ -1317,6 +1320,12 @@ def supervise(config_path, *, clear_halt=False):
                 if routing["tier"] == "strong" and tier != "strong":
                     tier = "strong"
                     tier_reason = f"{tier_reason}+{routing['tier_rule']}"
+                    print(
+                        f"WARNING {key} requested tier={requested_tier} "
+                        f"but serving tier={tier} ({routing['tier_rule']})",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             except Exception as error:
                 routing = {"error": str(error)}
             job = {
@@ -1331,6 +1340,7 @@ def supervise(config_path, *, clear_halt=False):
                 "pipeline_checkout": config["pipeline_checkout"],
                 "environment": config.get("environment", {}),
                 "model_tier": tier,
+                "requested_tier": requested_tier,
                 "tier_reason": tier_reason,
                 "routing": routing,
             }

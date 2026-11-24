@@ -288,7 +288,9 @@ def route_issue(issue, cap_usd, catalog=None, disabled=None):
     }
 
 
-def log_decision(decision, issue_key="", ledger_record=None):
+def log_decision(
+    decision, issue_key="", ledger_record=None, requested_tier=None, served_tier=None
+):
     """File the decision on the cost ledger (llm_call=False audit row)
     so routing choices join with spend and outcomes later."""
     if ledger_record is None:
@@ -310,6 +312,9 @@ def log_decision(decision, issue_key="", ledger_record=None):
             "features": decision.get("features"),
             "tier": decision.get("tier"),
             "tier_rule": decision.get("tier_rule"),
+            "requested_tier": requested_tier,
+            "served_tier": served_tier,
+            "tier_substituted": bool(requested_tier and requested_tier != served_tier),
             "picks": picks,
         },
         usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
