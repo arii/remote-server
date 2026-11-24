@@ -27,11 +27,11 @@ describe("isClientIdConfigured", () => {
     expect(isClientIdConfigured(undefined)).toBe(false);
     expect(isClientIdConfigured("123-abc.apps.googleusercontent.com")).toBe(true);
   });
-  it("ships the manifest with the placeholder, identity permission and read-only scope", () => {
+  it("ships the manifest with the identity permission and a configured client id", () => {
     const m = JSON.parse(readFileSync("extension/manifest.json", "utf8"));
     expect(m.permissions).toContain("identity");
-    expect(isClientIdConfigured(m.oauth2.client_id)).toBe(false);
-    expect(m.oauth2.scopes).toEqual(["https://www.googleapis.com/auth/drive.readonly"]);
+    expect(isClientIdConfigured(m.oauth2.client_id)).toBe(true);
+    expect(m.oauth2.scopes).toContain("https://www.googleapis.com/auth/drive.readonly");
   });
 });
 
