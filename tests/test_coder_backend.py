@@ -1076,6 +1076,66 @@ class TestCoderBackend(unittest.TestCase):
             self.assertIn("base indentation: '    '", result.content)
             self.assertEqual(path.read_text(), original)
 
+    def test_valid_python_with_wrong_scope_indentation_is_rejected(self):
+        original = (
+            "class Halt:\n    def stop(self):\n        self.on = True\n\n"
+            "    def clear_halt(self):\n        self.on = False\n"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "halt.py")
+            path.write_text(original)
+            result = self.tool_call(
+                root,
+                "edit_file",
+                dict(
+                    file_path="halt.py",
+                    old_string="    def clear_halt(self):\n        self.on = False",
+                    new_string="def clear_halt(self):\n    self.on = False",
+                ),
+            )
+            self.assertEqual(result.status, "error")
+            self.assertIn("would change its enclosing scope", result.content)
+            self.assertIn("base indentation: '    '", result.content)
+            self.assertEqual(path.read_text(), original)
+
+    def test_removing_class_method_still_referenced_is_rejected(self):
+        original = (
+            "class Case:\n    def response(self):\n        return 1\n\n"
+            "    def test_a(self):\n        self.assertEqual(self.response(), 1)\n"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "test_case.py")
+            path.write_text(original)
+            result = self.tool_call(
+                root,
+                "edit_file",
+                dict(
+                    file_path="test_case.py",
+                    old_string="    def response(self):\n        return 1\n\n",
+                    new_string="",
+                ),
+            )
+            self.assertEqual(result.status, "error")
+            self.assertIn("removed methods still referenced: response", result.content)
+            self.assertEqual(path.read_text(), original)
+
+    def test_removing_unreferenced_class_method_is_allowed(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "case.py")
+            path.write_text(
+                "class A:\n    def a(self):\n        pass\n\n    def b(self):\n        pass\n"
+            )
+            result = self.tool_call(
+                root,
+                "edit_file",
+                dict(
+                    file_path="case.py",
+                    old_string="\n    def b(self):\n        pass\n",
+                    new_string="",
+                ),
+            )
+            self.assertEqual(result.status, "success", result.content)
+
     def test_invalid_python_write_does_not_create_or_track_file(self):
         with tempfile.TemporaryDirectory() as root:
             written = coder.WriteTracker()
