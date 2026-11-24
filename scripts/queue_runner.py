@@ -1134,6 +1134,9 @@ def supervise(config_path, *, clear_halt=False):
     status_path = root / "status.json"
     with (root / "queue.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # queue_status reads this to tell a live supervisor from a --retry
+        # holding the same lock while the service is stopped.
+        (root / "supervisor.pid").write_text(str(os.getpid()))
         status = read_json(status_path) if status_path.exists() else {"completed": []}
         finish_retry(root, status_path, status, config)
         ledger = QueueLedger(config, status, status_path)
@@ -1440,26 +1443,44 @@ def budget_report(root):
 STALL_SECONDS = 1800
 
 
+def supervisor_alive(root):
+    """True when supervisor.pid names a live supervisor process."""
+    try:
+        os.kill(int((root / "supervisor.pid").read_text().strip()), 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def queue_status(config, now=None):
     """Name the runner state and the operator's next action."""
     root = Path(config["state_dir"])
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    status_path = root / "status.json"
+    status = read_json(status_path) if status_path.exists() else {}
     # The supervisor holds queue.lock for its whole run, so a free lock means
-    # the heartbeat is missing.
+    # the heartbeat is missing. --retry takes the same lock while the service
+    # is stopped, so a held lock only means busy unless supervisor.pid names
+    # a live supervisor.
     with (root / "queue.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            pass
+            if not supervisor_alive(root):
+                return "BUSY queue.lock held by a non-supervisor process (e.g. --retry). Next action: wait for it to finish"
         else:
+            if status.get("halted"):
+                return f"DOWN halted: {status.get('reason')}. Next action: inspect the halt, then restart with --clear-halt"
             return "DOWN runner heartbeat missing. Next action: Restart Service"
-    status_path = root / "status.json"
-    current = read_json(status_path).get("current") if status_path.exists() else None
+    current = status.get("current")
     if not current:
         return "IDLE nothing claimed. Next action: Ready"
     repo, number = current.rsplit("#", 1)
     log = root / (repo.replace("/", "_") + "-" + number) / "run.log"
-    quiet = (now or time.time()) - (log.stat().st_mtime if log.exists() else 0)
+    # A fresh claim has no run.log yet (the claim is recorded before the
+    # worker starts); fall back to the recorded claim time, not the epoch.
+    activity = log.stat().st_mtime if log.exists() else status.get("started_at", 0)
+    quiet = (now or time.time()) - activity
     if quiet > config.get("stall_seconds", STALL_SECONDS):
         return f"STALLED {current} no activity for {int(quiet)}s. Next action: Investigate/Restart"
     return f"RUNNING {current} active"

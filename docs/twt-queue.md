@@ -157,8 +157,11 @@ edit ledger costs by hand. Keep state on persistent storage, not `/tmp`.
 `python3 scripts/queue_runner.py --config /absolute/queue-config.json --status`
 prints one state and its next action: `IDLE` (supervisor running, nothing
 claimed) -> Ready; `STALLED` (claimed, `run.log` quiet past `stall_seconds`,
-default 1800) -> Investigate/Restart; `DOWN` (supervisor not holding
-`queue.lock`) -> Restart Service.
+default 1800; a fresh claim without a log yet counts from its recorded
+start) -> Investigate/Restart; `DOWN` (supervisor not holding `queue.lock`)
+-> Restart Service, or `DOWN halted: <reason>` -> inspect the halt, then
+restart with `--clear-halt`; `BUSY` (`queue.lock` held by a non-supervisor
+process such as `--retry`) -> wait for it to finish.
 
 ### Retry a transiently blocked issue
 
