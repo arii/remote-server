@@ -340,6 +340,25 @@ def skip_reason(issue):
     return issue.get("skip_reason")
 
 
+def only_issue_keys(value):
+    """`only_issues` config: a nonempty list of "owner/repo#N". The pass dispatches
+    only these (still subject to ready, ledger and budget checks), then ends."""
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(
+            isinstance(key, str)
+            and re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*#[1-9][0-9]*",
+                key,
+            )
+            for key in value
+        )
+    ):
+        raise ValueError('only_issues must be a nonempty list of "owner/repo#N"')
+    return set(value)
+
+
 def checked_cap(value):
     if (
         type(value) not in (int, float)
@@ -1251,6 +1270,10 @@ def supervise(config_path, *, clear_halt=False):
 
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
+        # Validated before any GitHub call, so a bad value dispatches nothing.
+        only = (
+            only_issue_keys(config["only_issues"]) if "only_issues" in config else None
+        )
         issues = ordered_issues(read_json(config["issues_file"]))
         issues += discover_ready(config, issues, status["completed"])
         issues.sort(
@@ -1258,6 +1281,9 @@ def supervise(config_path, *, clear_halt=False):
                 f"{issue['repo']}#{issue['number']}" != status.get("retry")
             )
         )
+        if only is not None:
+            issues = [i for i in issues if f"{i['repo']}#{i['number']}" in only]
+            print("ONLY " + ", ".join(sorted(only)), flush=True)
         for issue in issues:
             if stopping or (root / "STOP").exists():
                 status.update(stopped=True, current=None)

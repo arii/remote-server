@@ -95,6 +95,14 @@ removes labels. Every `discover_repos` entry must also be in `repo_paths`
 If `gh` fails for a repo, a `DISCOVERY` line is logged and that repo is skipped
 for this refresh. If a repo returns 100 issues, the log warns that older ones
 may be missing.
+### One issue only
+
+To run exactly one issue, set `"only_issues": ["owner/repo#N"]` in the queue config.
+The pass then dispatches only the listed issues. Each one still goes through the
+`ready`, ledger and budget checks, and the pass ends when they finish: the service has
+`Restart=no`, so nothing else runs. A malformed value fails at startup, before any
+GitHub call or dispatch. Remove the key to return to normal runs.
+
 ## Dispatch gate
 
 The queue dispatches an issue only if, when it is refreshed just before dispatch,
