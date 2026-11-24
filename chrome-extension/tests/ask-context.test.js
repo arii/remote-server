@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   allocateBudget,
+  askTabEntries,
   buildAskPrompt,
   formatTargetContext,
   isReadableTabUrl,
@@ -97,5 +98,32 @@ describe("helpers", () => {
     expect(isReadableTabUrl("https://x.test")).toBe(true);
     expect(isReadableTabUrl("chrome://settings")).toBe(false);
     expect(isReadableTabUrl("https://chromewebstore.google.com/x")).toBe(false);
+  });
+});
+
+describe("askTabEntries", () => {
+  const tab = (id, title, url) => ({ id, title, url });
+  it("excludes active tab, counts unreadable tabs", () => {
+    const r = askTabEntries([tab(1, "A", "https://a.test/"), tab(2, "B", "https://b.test/x"), tab(3, "Settings", "chrome://settings")], 1);
+    expect(r.entries.map((e) => e.id)).toEqual([2]);
+    expect(r.unreadableCount).toBe(1);
+  });
+  it("falls back to hostname for JSON, untitled, empty and url titles", () => {
+    const r = askTabEntries([
+      tab(2, '{"languageModel":"available"}', "https://j.test/status"),
+      tab(3, "Untitled", "https://u.test/"),
+      tab(4, "", "https://e.test/p"),
+      tab(5, "https://s.test/p", "https://s.test/p"),
+      tab(6, "[1,2]", "https://k.test/")
+    ], 1);
+    expect(r.entries.map((e) => e.label)).toEqual(["j.test", "u.test", "e.test", "s.test", "k.test"]);
+  });
+  it("collapses whitespace and truncates to 60 chars", () => {
+    const r = askTabEntries([tab(2, "  Hello \n  world  ", "https://a.test/"), tab(3, "x".repeat(100), "https://b.test/")], 1);
+    expect(r.entries[0].label).toBe("Hello world");
+    expect(r.entries[1].label).toHaveLength(60);
+  });
+  it("handles missing input", () => {
+    expect(askTabEntries(undefined, 1)).toEqual({ entries: [], unreadableCount: 0 });
   });
 });

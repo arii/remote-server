@@ -137,3 +137,25 @@ export function formatTargetContext(ctx) {
 export function isReadableTabUrl(url) {
   return /^https?:\/\//i.test(String(url || "")) && !/^https?:\/\/chromewebstore\.google\.com/i.test(url);
 }
+
+function tabLabel(title, url) {
+  let host = "";
+  try { host = new URL(url).hostname; } catch { /* keep empty */ }
+  const t = normalizeText(title);
+  const bad = !t || /^untitled$/i.test(t) || /^[{[]/.test(t) || t === url;
+  return (bad ? host || normalizeText(url) : t).slice(0, 60);
+}
+
+// Splits open tabs into listable entries (readable, not the active tab) and a
+// count of tabs the Ask card cannot read. Raw-JSON or empty titles fall back to
+// the hostname so the list never shows unusable labels.
+export function askTabEntries(tabs, activeTabId) {
+  const entries = [];
+  let unreadableCount = 0;
+  for (const tab of tabs || []) {
+    if (!tab || tab.id === activeTabId) continue;
+    if (!isReadableTabUrl(tab.url)) { unreadableCount++; continue; }
+    entries.push({ id: tab.id, title: tab.title || "", url: tab.url, label: tabLabel(tab.title, tab.url) });
+  }
+  return { entries, unreadableCount };
+}
