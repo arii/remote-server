@@ -10,6 +10,8 @@ decision -> outcome joins from these records plus summary/ledger cost.
 Env contract (stdlib only — system-python tests import this module):
   TWT_CATALOG_DB   catalog sqlite (default ~/twt/catalog.sqlite3)
   TWT_DISABLED_PROVIDERS  comma-separated provider ids to exclude
+  TWT_PAID_PROVIDERS  comma-separated provider ids allowed to spend
+                      (union with DEFAULT_PAID_PROVIDERS)
 
 CLI: python3 -m backend.shared.task_router --issue-file JOB_OR_ISSUE.json
      [--cap-usd 1.0] prints the routing decision as JSON.
@@ -31,6 +33,15 @@ CONTEXT_FLOOR = 32768
 # A paid call must cost less than this fraction of the remaining issue
 # cap or the model is not spendable for the task.
 PAID_BUDGET_SHARE = 0.5
+# Providers whose configured key can actually pay. Catalog prices alone
+# do not imply spend — a free-tier key 402s on paid models (OpenRouter
+# /key on S5: is_free_tier=true, ~$0.001 remaining). TWT_PAID_PROVIDERS
+# adds providers as accounts get funded.
+DEFAULT_PAID_PROVIDERS = {"nebius"}
+# Recent gateway attempts returning payment-required also block paid
+# picks for that provider; the trace lookback auto-clears when billing
+# is fixed (older rows fall out of the window).
+PAID_BLOCK_TRACE_ROWS = 5000
 # Task-property rules that mean "start strong" — deterministic, no
 # failure history needed. Tuned to the failures observed in the queue:
 # multi-file edits and large specs are where free tiers churn.
@@ -60,6 +71,45 @@ def catalog_path():
 def disabled_providers(raw=None):
     raw = raw if raw is not None else os.environ.get("TWT_DISABLED_PROVIDERS", "")
     return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
+def paid_providers(raw=None):
+    raw = raw if raw is not None else os.environ.get("TWT_PAID_PROVIDERS", "")
+    extra = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return DEFAULT_PAID_PROVIDERS | extra
+
+
+def paid_blockers(path=None):
+    """Providers whose recent gateway attempts hit payment-required
+    (HTTP 402) — live spend truth from the TwT trace table. Auto-clears
+    once those rows age out of the lookback window."""
+    db_path = path or catalog_path()
+    if not os.path.exists(db_path):
+        return set()
+    blocked = set()
+    try:
+        db = sqlite3.connect(db_path)
+        try:
+            rows = db.execute(
+                "select data from traces order by timestamp desc limit ?",
+                (PAID_BLOCK_TRACE_ROWS,),
+            ).fetchall()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return set()
+    for (data,) in rows:
+        try:
+            trace = json.loads(data)
+        except ValueError:
+            continue
+        for attempt in trace.get("attempts") or []:
+            reason = str(attempt.get("reason") or "")
+            if "payment required" in reason or "402" in reason:
+                provider = attempt.get("provider")
+                if provider:
+                    blocked.add(provider)
+    return blocked
 
 
 def load_catalog(path=None):
@@ -121,7 +171,7 @@ def _est_call_cost(model, est_input_tokens):
     return ip * est_input_tokens + op * EST_OUTPUT_TOKENS
 
 
-def _eligible(model, features, disabled, free_only, cap_usd):
+def _eligible(model, features, disabled, free_only, cap_usd, paid):
     if model.get("provider") in disabled:
         return False
     if not model.get("chat"):
@@ -136,13 +186,15 @@ def _eligible(model, features, disabled, free_only, cap_usd):
         return bool(model.get("free"))
     if model.get("free"):
         return True
+    if model.get("provider") not in paid:
+        return False  # priced in the catalog but no funded key
     cost = _est_call_cost(model, features["est_input_tokens"])
     if cost is None:
         return False  # unrated spend fails closed, same as the spend gate
     return cost <= cap_usd * PAID_BUDGET_SHARE
 
 
-def choose(tier, features, catalog, disabled=None, cap_usd=1.0):
+def choose(tier, features, catalog, disabled=None, cap_usd=1.0, blocked=None):
     """Pick one model for one tier. Returns a decision record.
 
     'fast' ranks free tool-capable models by context window (the trim
@@ -152,8 +204,12 @@ def choose(tier, features, catalog, disabled=None, cap_usd=1.0):
     not one env-pinned endpoint.
     """
     disabled = disabled_providers() if disabled is None else disabled
+    blocked = paid_blockers() if blocked is None else blocked
+    paid = paid_providers() - blocked
     free_only = tier != "strong"
-    cands = [m for m in catalog if _eligible(m, features, disabled, free_only, cap_usd)]
+    cands = [
+        m for m in catalog if _eligible(m, features, disabled, free_only, cap_usd, paid)
+    ]
     order = {p: i for i, p in enumerate(PROVIDER_ORDER)}
     if free_only:
 
@@ -183,6 +239,8 @@ def choose(tier, features, catalog, disabled=None, cap_usd=1.0):
             "rank:free_context_desc" if free_only else "rank:affordable_price_desc"
         ),
         "candidates": len(cands),
+        "paid_providers": sorted(paid),
+        "paid_blocked": sorted(blocked),
         "top3": [f"{m['provider']}/{m['id']}" for m in cands[:3]],
         "est_call_cost_usd": (
             _est_call_cost(pick, features["est_input_tokens"]) if pick else None
@@ -198,6 +256,7 @@ def route_issue(issue, cap_usd, catalog=None, disabled=None):
     tier, tier_rule = suggested_tier(features)
     if catalog is None:
         catalog = load_catalog()
+    blocked = paid_blockers()
     return {
         "version": 1,
         "ts": time.time(),
@@ -205,7 +264,14 @@ def route_issue(issue, cap_usd, catalog=None, disabled=None):
         "tier": tier,
         "tier_rule": tier_rule,
         "picks": {
-            name: choose(name, features, catalog, disabled=disabled, cap_usd=cap_usd)
+            name: choose(
+                name,
+                features,
+                catalog,
+                disabled=disabled,
+                cap_usd=cap_usd,
+                blocked=blocked,
+            )
             for name in ("fast", "strong")
         },
     }
