@@ -20,7 +20,27 @@ export const MAX_VALUE_CHARS = 1000;
 export const MAX_IMPORT_CHARS = 200000;
 const FACT_FIELDS = ["category", "key", "value"];
 
-export function buildVaultPrompt() {
+export const MAX_EXISTING_KEYS = 100;
+
+// Field names already in the vault, safe to show a chatbot so it skips them.
+// Values are never read. Sensitive-looking names are left out.
+export function existingKeysForPrompt(vault) {
+  const seen = new Set();
+  const out = [];
+  for (const e of Array.isArray(vault) ? vault : []) {
+    const key = String(e?.key || "").trim().slice(0, MAX_KEY_CHARS);
+    const category = String(e?.category || "");
+    if (!key || isSensitiveLabel(key) || sensitiveReason(key, "")) continue;
+    const id = `${category}|${key.toLowerCase()}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ category, key });
+    if (out.length >= MAX_EXISTING_KEYS) break;
+  }
+  return out;
+}
+
+export function buildVaultPrompt({ existing = [] } = {}) {
   const example = JSON.stringify(
     [
       { category: "identity", key: "Full Name", value: "Jane Q. Example" },
@@ -43,7 +63,16 @@ export function buildVaultPrompt() {
     "Rules:",
     "- Only include facts you actually know. Do not guess or invent anything.",
     "- NEVER include passwords, passcodes, card numbers, CVV, bank details, social security or government ID numbers, API keys, or any other secret.",
-    `- At most ${MAX_IMPORT_FACTS} items. One fact per item.`
+    `- At most ${MAX_IMPORT_FACTS} items. One fact per item.`,
+    ...(existing.length
+      ? [
+          "",
+          "Already in my profile (field names only, values omitted):",
+          ...existing.map((e) => `- ${e.category}: ${e.key}`),
+          "",
+          "Do not repeat these. Only add facts not listed. If you know nothing new, reply with an empty JSON array []."
+        ]
+      : [])
   ].join("\n");
 }
 
@@ -100,7 +129,7 @@ export function parseVaultImport(text) {
     return { ok: false, errors: ["Not valid JSON. Paste only the JSON array the chatbot returned."] };
   }
   if (!Array.isArray(parsed)) return { ok: false, errors: ["Expected a JSON array of facts."] };
-  if (parsed.length === 0) return { ok: false, errors: ["The array is empty."] };
+  if (parsed.length === 0) return { ok: false, errors: ["The chatbot found nothing new to add."] };
   if (parsed.length > MAX_IMPORT_FACTS) return { ok: false, errors: [`Too many facts: ${parsed.length} (max ${MAX_IMPORT_FACTS}).`] };
 
   const errors = [];

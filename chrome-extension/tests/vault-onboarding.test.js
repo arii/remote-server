@@ -1,11 +1,12 @@
 // Vault onboarding: prompt builder, strict import validator, and the
 // queue-then-approve path through the real worker handler.
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { PROFILE_CATEGORIES } from "../extension/lib/profile-ingest.js";
-import { MAX_IMPORT_FACTS, MAX_KEY_CHARS, MAX_VALUE_CHARS, buildVaultPrompt, parseVaultImport } from "../extension/lib/vault-onboarding.js";
+import { MAX_IMPORT_FACTS, MAX_EXISTING_KEYS, MAX_KEY_CHARS, MAX_VALUE_CHARS, buildVaultPrompt, existingKeysForPrompt, parseVaultImport } from "../extension/lib/vault-onboarding.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const html = readFileSync(path.join(here, "../extension/sidepanel.html"), "utf8");
@@ -41,6 +42,10 @@ describe("parseVaultImport", () => {
     rejects("");
     rejects({ category: "identity", key: "a", value: "b" });
     rejects([]);
+  });
+
+  it("an empty array gets a friendly message", () => {
+    expect(parse([])).toEqual({ ok: false, errors: ["The chatbot found nothing new to add."] });
   });
 
   it("rejects more than MAX_IMPORT_FACTS", () => {
@@ -90,6 +95,47 @@ describe("buildVaultPrompt", () => {
     const p = buildVaultPrompt();
     for (const c of PROFILE_CATEGORIES) expect(p).toContain(`"${c}"`);
     expect(p).toMatch(/NEVER include passwords/);
+  });
+
+  it("default output is unchanged", () => {
+    const sha = (t) => createHash("sha256").update(t).digest("hex");
+    expect(sha(buildVaultPrompt())).toBe("b30dd4af90d093a5303e7ad368d6282921c0199b80cc1f35d16feb051cb37fe7");
+    expect(buildVaultPrompt({ existing: [] })).toBe(buildVaultPrompt());
+  });
+
+  it("lists existing field names but never values", () => {
+    const vault = [
+      { category: "identity", key: "Full Name", value: "Jane Example" },
+      { category: "social", key: "GitHub", value: "https://github.com/jane" }
+    ];
+    const p = buildVaultPrompt({ existing: existingKeysForPrompt(vault) });
+    expect(p).toContain("Already in my profile (field names only, values omitted):");
+    expect(p).toContain("- identity: Full Name");
+    expect(p).toContain("- social: GitHub");
+    expect(p).toMatch(/empty JSON array \[\]/);
+    expect(p).not.toContain("Jane Example");
+    expect(p).not.toContain("github.com/jane");
+  });
+});
+
+describe("existingKeysForPrompt", () => {
+  it("dedupes, trims, and skips sensitive keys", () => {
+    const out = existingKeysForPrompt([
+      { category: "identity", key: " Full Name ", value: "a" },
+      { category: "identity", key: "full name", value: "b" },
+      { category: "identity", key: "Password", value: "x" },
+      { category: "identity", key: "SSN", value: "x" },
+      { category: "identity", key: "", value: "x" },
+      null
+    ]);
+    expect(out).toEqual([{ category: "identity", key: "Full Name" }]);
+  });
+
+  it("caps the list and key length", () => {
+    const vault = Array.from({ length: MAX_EXISTING_KEYS + 20 }, (_, i) => ({ category: "other", key: `Field ${i}`, value: "v" }));
+    expect(existingKeysForPrompt(vault)).toHaveLength(MAX_EXISTING_KEYS);
+    const long = existingKeysForPrompt([{ category: "other", key: "k".repeat(MAX_KEY_CHARS + 50), value: "v" }]);
+    expect(long[0].key).toHaveLength(MAX_KEY_CHARS);
   });
 });
 
@@ -156,5 +202,12 @@ describe("sidepanel wiring", () => {
     const ids = [...panelSrc.matchAll(/getElementById\("(vault-onboarding[\w-]*|btn-copy-vault-prompt|btn-vault-onboarding-import)"\)/g)].map((m) => m[1]);
     expect(ids.length).toBeGreaterThanOrEqual(6);
     for (const id of new Set(ids)) expect(html).toContain(`id="${id}"`);
+  });
+
+  it("the card is always present as a details element with the include checkbox", () => {
+    expect(html).toMatch(/<details class="card" id="vault-onboarding-card">/);
+    expect(html).not.toMatch(/id="vault-onboarding-card"[^>]*display:\s*none/);
+    expect(html).toContain('id="vault-onboarding-include-existing"');
+    expect(html).toContain("Include my existing field names so the chatbot skips them");
   });
 });

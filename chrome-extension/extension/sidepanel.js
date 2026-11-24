@@ -31,7 +31,7 @@ import {
 import { MAX_EVAL_CASES, casesKey, normalizeCases, removeCase, scoreOutput, suggestFromFailures, summarizeRun } from "./lib/prompt-eval.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
 import { MAX_PENDING_DELTAS } from "./lib/storage-mutations.js";
-import { buildVaultPrompt, parseVaultImport } from "./lib/vault-onboarding.js";
+import { buildVaultPrompt, existingKeysForPrompt, parseVaultImport } from "./lib/vault-onboarding.js";
 import {
   REFINEMENT_SCHEMA,
   buildRefinementPrompt,
@@ -1403,7 +1403,7 @@ async function renderVault() {
   });
 
   document.getElementById("vault-count-badge").textContent = `${cleanedVault.length} facts`;
-  document.getElementById("vault-onboarding-card").style.display = cleanedVault.length === 0 ? "" : "none";
+  renderVaultOnboarding(cleanedVault);
 
   // First-run flow: the vault ships empty (no seed PII). Point the user at the
   // import path — the file format is exactly what "Export Vault JSON" produces.
@@ -2062,12 +2062,32 @@ async function queueVerifiedDeltas(rawFacts, sourceTitle = "", sourceUrl = "") {
 
 // Vault onboarding: prompt for the user's own chatbot, then validated import
 // into the Review & Merge Queue (queueVerifiedDeltas sends delta:queue).
-document.getElementById("vault-onboarding-prompt").value = buildVaultPrompt();
+// The prompt lists existing field names (never values) when the vault has any
+// and the checkbox is on, so the chatbot only returns what is new.
+let onboardingVault = [];
+function currentVaultPrompt() {
+  const include = document.getElementById("vault-onboarding-include-existing").checked;
+  return buildVaultPrompt({ existing: include ? existingKeysForPrompt(onboardingVault) : [] });
+}
+
+function renderVaultOnboarding(vault) {
+  const card = document.getElementById("vault-onboarding-card");
+  onboardingVault = vault;
+  // Open only when the vault is empty; never force it closed on later renders.
+  if (vault.length === 0) card.open = true;
+  document.getElementById("vault-onboarding-title").textContent = vault.length === 0 ? "New here? Start from your AI chatbot" : "Add more from my chatbot";
+  document.getElementById("vault-onboarding-include-row").style.display = vault.length === 0 ? "none" : "flex";
+  document.getElementById("vault-onboarding-prompt").value = currentVaultPrompt();
+}
+
+document.getElementById("vault-onboarding-include-existing").addEventListener("change", () => {
+  document.getElementById("vault-onboarding-prompt").value = currentVaultPrompt();
+});
 
 document.getElementById("btn-copy-vault-prompt").addEventListener("click", async () => {
   const btn = document.getElementById("btn-copy-vault-prompt");
   try {
-    await navigator.clipboard.writeText(buildVaultPrompt());
+    await navigator.clipboard.writeText(currentVaultPrompt());
     btn.textContent = "Copied!";
   } catch {
     btn.textContent = "Copy failed. Select the text and copy it.";
