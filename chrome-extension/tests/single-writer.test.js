@@ -15,6 +15,7 @@ import {
   applyVaultUpsert,
   createMutationQueue
 } from "../extension/lib/storage-mutations.js";
+import { mergeStates } from "../extension/lib/drive-sync.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sidepanelSrc = readFileSync(path.join(here, "../extension/sidepanel.js"), "utf8");
 const workerSrc = readFileSync(path.join(here, "../extension/service-worker.js"), "utf8");
@@ -106,6 +107,14 @@ describe("storage-mutations", () => {
     const added = applyVaultUpsert({ userContextVault: [a] }, { id: "identity.2", value: "b@x.co" });
     expect(added.userContextVault).toHaveLength(2);
     expect(added.userContextVault[0].id).toBe("identity.2");
+  });
+
+  it("vault:upsert of an existing entry stamps updatedAt even when the incoming copy carries an old one", () => {
+    const old = "2026-01-01T00:00:00.000Z";
+    const a = { id: "identity.1", key: "Name", value: "A", aliases: [], updatedAt: old };
+    const edited = applyVaultUpsert({ userContextVault: [a] }, { ...a, value: "A2" });
+    expect(edited.userContextVault[0].value).toBe("A2");
+    expect(Date.parse(edited.userContextVault[0].updatedAt)).toBeGreaterThan(Date.parse(old));
   });
 
   it("vault:delete removes only the matching id", () => {
@@ -311,6 +320,31 @@ describe("worker mutation handler", () => {
     const pending = mock.store.get("pendingDeltas");
     expect(vault.some((e) => e.id === "custom.1" && e.value === "Manual bio")).toBe(true);
     expect(pending.some((d) => d.proposedValue === "found@corp.example")).toBe(true);
+  });
+
+  it("a value edit on device B reaches device A through mergeStates", () => {
+    const old = "2026-01-01T00:00:00.000Z";
+    const original = { id: "identity.1", key: "Name", value: "Old", aliases: [], updatedAt: old };
+    const deviceA = { userContextVault: [original] };
+    // Panel sends {...target, value}: the stale updatedAt rides along.
+    const deviceB = applyVaultUpsert({ userContextVault: [original] }, { ...original, value: "New" });
+    const merged = mergeStates(deviceA, { userContextVault: deviceB.userContextVault });
+    expect(merged.userContextVault[0].value).toBe("New");
+  });
+
+  it("an alias removed on device B propagates to device A", async () => {
+    const old = "2026-01-01T00:00:00.000Z";
+    const original = { id: "identity.1", key: "Name", value: "Ada", aliases: ["full name", "moniker"], updatedAt: old };
+    const mock = makeChromeMock();
+    mock.store.set("userContextVault", [original]);
+    mock.store.set("learnedAliases", []);
+    const listener = await loadWorker(mock);
+    const res = await sendUpdate(listener, { type: "learning:deleteAlias", entryId: "identity.1", alias: "moniker" }, {});
+    expect(res.ok).toBe(true);
+    const bVault = mock.store.get("userContextVault");
+    expect(bVault[0].aliases).toEqual(["full name"]);
+    const merged = mergeStates({ userContextVault: [original] }, { userContextVault: bVault });
+    expect(merged.userContextVault[0].aliases).toEqual(["full name"]);
   });
 
   it("records fill outcomes only for an allowlisted sender host and stores no values", async () => {

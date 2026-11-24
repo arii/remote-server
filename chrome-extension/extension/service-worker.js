@@ -437,7 +437,9 @@ const LEARNING_HANDLERS = {
       const { learnedAliases } = await readLearningState();
       const alias = normalizeLabel(msg.alias);
       const vault = state.userContextVault.map((e) =>
-        e.id === msg.entryId ? { ...e, aliases: (e.aliases || []).filter((a) => normalizeLabel(a) !== alias) } : e
+        e.id === msg.entryId
+          ? { ...e, aliases: (e.aliases || []).filter((a) => normalizeLabel(a) !== alias), updatedAt: new Date().toISOString() }
+          : e
       );
       const nextAliases = learnedAliases.filter((l) => !(l.entryId === msg.entryId && normalizeLabel(l.alias) === alias));
       await recordTombstones("alias", learnedAliases, nextAliases, aliasId);
