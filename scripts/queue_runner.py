@@ -1178,6 +1178,23 @@ def prune_landed_worktrees(config):
 
 
 def supervise(config_path, *, clear_halt=False):
+    """One queue pass. With `only_issues` set the stop is terminal: however the pass
+    ends (done, halt or error), the STOP sentinel is written, so a later start
+    dispatches nothing until an operator removes it (or runs --clear-halt)."""
+    config = read_json(
+        config_path
+    )  # read once: an unreadable config dispatches nothing
+    try:
+        return _supervise(config_path, clear_halt=clear_halt)
+    finally:
+        if "only_issues" in config:
+            root = Path(config["state_dir"]).resolve()
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            (root / "STOP").touch(mode=0o600)
+            print("STOP only_issues pass ended; remove STOP to run again", flush=True)
+
+
+def _supervise(config_path, *, clear_halt=False):
     config = read_json(config_path)
     cap = checked_cap(config.get("cap_usd", ISSUE_CAP_USD))
     failure_limit = config.get("max_common_failures", 3)

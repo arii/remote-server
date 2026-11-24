@@ -625,6 +625,13 @@ class RunnerTests(unittest.TestCase):
             self.assertIn("owner/repo#8", status["completed"])
             self.assertNotIn("owner/repo#7", status["completed"])
             self.assertTrue(status["done"])
+            # Terminal stop: the sentinel is written and a second start dispatches nothing.
+            self.assertTrue((state / "STOP").exists())
+            settings["only_issues"] = ["owner/repo#7"]
+            runner.write_json(config, settings)
+            with mock.patch.object(runner.subprocess, "Popen", side_effect=spawn):
+                self.assertEqual(runner.supervise(config), 0)
+            self.assertEqual(dispatched, ["owner_repo-8"])
 
     @mock.patch.object(runner.signal, "signal")
     def test_only_issues_must_be_well_formed_and_fails_before_any_dispatch(
@@ -645,6 +652,7 @@ class RunnerTests(unittest.TestCase):
                     runner.supervise(config)
                 spawn.assert_not_called()
                 github.assert_not_called()
+                self.assertTrue((_state / "STOP").exists(), "a bad value still stops")
 
     @mock.patch.object(runner.signal, "signal")
     def test_stop_sentinel_prevents_dispatch(self, _signal):

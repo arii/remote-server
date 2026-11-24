@@ -101,7 +101,9 @@ To run exactly one issue, set `"only_issues": ["owner/repo#N"]` in the queue con
 The pass then dispatches only the listed issues. Each one still goes through the
 `ready`, ledger and budget checks, and the pass ends when they finish: the service has
 `Restart=no`, so nothing else runs. A malformed value fails at startup, before any
-GitHub call or dispatch. Remove the key to return to normal runs.
+GitHub call or dispatch. The stop is terminal: however an `only_issues` pass ends (done,
+halt or error), it writes the `STOP` sentinel in `state_dir`, so a later start dispatches
+nothing. To run again, remove the key and delete `STOP` (or use `--clear-halt`).
 
 ## Dispatch gate
 
