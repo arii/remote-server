@@ -159,6 +159,12 @@ prints one state and its next action: `IDLE` (supervisor running, nothing
 claimed) -> Ready; `STALLED` (claimed, `run.log` quiet past `stall_seconds`,
 default 1800) -> Investigate/Restart; `DOWN` (supervisor not holding
 `queue.lock`) -> Restart Service.
+A `STOP` marker reports `STOPPED`, and a saved halt reports `HALTED` with its
+reason, before the heartbeat probe. Neither status recommends a plain restart:
+inspect and reconcile the saved run before the explicit recovery procedure above.
+Status checks leave those safety gates in place. The saved `stopped` and `done`
+flags describe earlier supervisor exits and can remain set during a later run;
+they do not override the marker, halt, lock, or current activity checks.
 
 ### Retry a transiently blocked issue
 
