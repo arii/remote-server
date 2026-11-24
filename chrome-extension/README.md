@@ -47,6 +47,7 @@ A local-first Chrome Extension using Chrome's Built-in On-Device AI foundation m
    - **Learned mappings**: when you correct a fill to another vault entry's value, the field is remembered as a quarantined mapping. It is only used after 3 agreeing submissions (you keep or re-enter that entry) or your Confirm click, and the first time you overwrite it, it is deleted. The Learned section lists aliases and mappings in one flat list with Delete (and Confirm for unconfirmed rows). Never stores values.
    - **Prompt guidance**: on the AI Model tab, add global or per-prompt guidance (max 800 characters each). It is inserted into every on-device prompt (profile extraction, form answers, target context, ask, system) under a "User guidance" heading, always before the format instructions, so it cannot replace the output schema. **Revert last** undoes the latest edit (20-step history). **Suggest improvements** asks the on-device model for guidance lines based on fill outcomes and approve/discard counts; each suggestion is checked (known prompt id, short, no URLs, emails, phone numbers or vault values) and only applied when you press Accept.
 
+   - **Import from Google Drive**: in the same card, pick Google Docs, `.txt`, `.md`, `.html` or `.json` files (500KB max each, 5 per run). Their text is added to the text box and then follows the same path as pasted text into the Review & Merge Queue. Read-only (`drive.readonly`); nothing is written to Drive or the vault. The button is disabled until a Google OAuth client is configured (below).
    - **Ask**: on the AI Model tab, type any question and the on-device model answers using only the sources you tick: the current page, other open tabs (each ticked individually; tabs without a content script are skipped with a visible note), relevant vault facts (keyword ranked, sensitive entries never included) and the captured target context. Output streams and can be stopped. **Save answer as fact** sends the answer to the Review & Merge Queue; Ask never writes to the vault.
 
 ---
@@ -108,3 +109,14 @@ chrome-extension/
 ├── dist/                     # Built and validated unpacked extension + zip
 └── technical_specs.md        # Complete PRD and technical design document
 ```
+
+## Google Drive import setup
+
+Drive import uses `chrome.identity.getAuthToken`, which reads the client from `oauth2.client_id` in `extension/manifest.json`. The repo ships the placeholder `YOUR_CLIENT_ID.apps.googleusercontent.com`, which the extension treats as unset (the Drive button stays disabled). To enable it, reuse your existing Chrome OAuth client or create one:
+
+1. In Google Cloud Console, open the project that owns the client and enable the **Google Drive API** (APIs & Services, Library).
+2. Under APIs & Services, Credentials, create (or reuse) an OAuth client of type **Chrome Extension** and set its **Item ID** to this extension's ID (shown at `chrome://extensions`). Load the extension with a stable ID, for example by adding a `key` to the manifest, so the ID does not change between installs.
+3. On the OAuth consent screen, add the `https://www.googleapis.com/auth/drive.readonly` scope. While the app is in Testing, add your Google account under **Test users**.
+4. Put the client ID in `oauth2.client_id` in `extension/manifest.json` and rebuild with `npm run check`.
+
+An OAuth client of type Web or Desktop will not work with `getAuthToken`; it must be the Chrome Extension type bound to the extension ID.

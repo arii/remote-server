@@ -108,6 +108,20 @@ per chunk (fresh session, `responseConstraint` = `PROFILE_FACTS_SCHEMA`) and
 queues results with `delta:queue` for review. `capturePageSnapshot` now keeps up
 to 40000 characters; the target-context and ask prompts slice it explicitly.
 
+**Google Drive import** (read-only; `lib/drive-import.js`, handlers in
+`service-worker.js`): `drive:status` returns `{ configured }` (false while
+`oauth2.client_id` in the manifest is the `YOUR_CLIENT_ID...` placeholder, which
+disables the panel button). `drive:list` (`search?`, `pageToken?`) returns
+`{ files, nextPageToken }` (50 per page, Google Docs plus .txt/.md/.html/.json,
+files over 500KB dropped). `drive:fetch` (`fileId`) returns `{ id, title, url,
+text }`: Google Docs via `files.export?mimeType=text/plain`, other files via
+`alt=media` (HTML through `htmlToText`), streamed with a 500KB cap. Tokens come
+from `chrome.identity.getAuthToken` with the `drive.readonly` scope; a 401 calls
+`removeCachedAuthToken` and retries once. Only `https://www.googleapis.com/drive/v3/`
+URLs are requested and file ids are validated. The panel appends fetched text
+(max 5 files per run) to the paste box, so it follows the normal chunk, extract,
+`delta:queue` path. Drive code never writes the vault or storage.
+
 All eight flow through one serialized promise queue (`createMutationQueue` in
 `lib/storage-mutations.js`): each task re-reads state, applies a pure
 transition, writes, and only then releases the next task. The observer's merge
