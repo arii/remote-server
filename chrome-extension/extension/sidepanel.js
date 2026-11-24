@@ -1198,7 +1198,7 @@ async function renderVault() {
         <div style="font-weight:600; color:#e2e8f0; margin-bottom:6px;">Your vault is empty</div>
         <div style="color:var(--text-muted); font-size:11px; margin-bottom:10px;">
           Import a previously exported Vault JSON file to restore your profile locally, or add facts manually below.
-          Nothing is bundled with the extension and nothing leaves this browser.
+          Facts stay in this browser unless you press Sync with Google Drive, which stores them in this extension's private Drive app folder.
         </div>
         <button id="btn-first-run-import" class="btn btn-secondary btn-sm">Import Profile JSON</button>
       </div>`;
