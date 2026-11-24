@@ -1437,6 +1437,34 @@ def budget_report(root):
     return "\n".join(lines)
 
 
+STALL_SECONDS = 1800
+
+
+def queue_status(config, now=None):
+    """Name the runner state and the operator's next action."""
+    root = Path(config["state_dir"])
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The supervisor holds queue.lock for its whole run, so a free lock means
+    # the heartbeat is missing.
+    with (root / "queue.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            return "DOWN runner heartbeat missing. Next action: Restart Service"
+    status_path = root / "status.json"
+    current = read_json(status_path).get("current") if status_path.exists() else None
+    if not current:
+        return "IDLE nothing claimed. Next action: Ready"
+    repo, number = current.rsplit("#", 1)
+    log = root / (repo.replace("/", "_") + "-" + number) / "run.log"
+    quiet = (now or time.time()) - (log.stat().st_mtime if log.exists() else 0)
+    if quiet > config.get("stall_seconds", STALL_SECONDS):
+        return f"STALLED {current} no activity for {int(quiet)}s. Next action: Investigate/Restart"
+    return f"RUNNING {current} active"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     default_config = os.environ.get("QUEUE_CONFIG")
@@ -1458,11 +1486,21 @@ def main():
         help="print verified completion rate per coder call bucket and exit",
     )
     parser.add_argument(
+        "--status",
+        action="store_true",
+        help="print runner state (idle, stalled or down) with the next action and exit",
+    )
+    parser.add_argument(
         "--clear-halt",
         action="store_true",
         help="acknowledge saved halts after successful reconciliation and resume",
     )
     args = parser.parse_args()
+    if args.status:
+        if args.worker or args.reconcile or args.archive_worktree or args.retry:
+            parser.error("--status requires supervisor configuration only")
+        print(queue_status(read_json(args.config)))
+        return 0
     if args.budget_report:
         if args.worker or args.reconcile or args.archive_worktree or args.retry:
             parser.error("--budget-report requires supervisor configuration only")

@@ -152,6 +152,14 @@ then clears the halt and `STOP`. Failed reconciliation cannot be overridden by
 this flag. Do not delete an unfinished directory to force a retry or
 edit ledger costs by hand. Keep state on persistent storage, not `/tmp`.
 
+### Check runner status
+
+`python3 scripts/queue_runner.py --config /absolute/queue-config.json --status`
+prints one state and its next action: `IDLE` (supervisor running, nothing
+claimed) -> Ready; `STALLED` (claimed, `run.log` quiet past `stall_seconds`,
+default 1800) -> Investigate/Restart; `DOWN` (supervisor not holding
+`queue.lock`) -> Restart Service.
+
 ### Retry a transiently blocked issue
 
 With the queue service idle, requeue one finished, failed issue (the plain service

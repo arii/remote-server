@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -2547,3 +2548,34 @@ class StrongRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QueueStatusTests(unittest.TestCase):
+    def status(self, held, current=None, age=0):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            if current:
+                (root / "status.json").write_text(json.dumps({"current": current}))
+                log = root / "arii_remote-server-1" / "run.log"
+                log.parent.mkdir()
+                log.write_text("x")
+                os.utime(log, (time.time() - age,) * 2)
+            with (root / "queue.lock").open("a") as lock:
+                if held:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                # flock locks are per open file description, so the probe sees it.
+                return runner.queue_status({"state_dir": tmp})
+
+    def test_down(self):
+        self.assertIn("Restart Service", self.status(held=False))
+
+    def test_idle(self):
+        self.assertIn("Ready", self.status(held=True))
+
+    def test_stalled(self):
+        out = self.status(held=True, current="arii/remote-server#1", age=3600)
+        self.assertIn("Investigate/Restart", out)
+
+    def test_running(self):
+        out = self.status(held=True, current="arii/remote-server#1")
+        self.assertNotIn("Next action", out)
