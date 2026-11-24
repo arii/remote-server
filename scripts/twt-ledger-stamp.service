@@ -1,0 +1,20 @@
+[Unit]
+Description=Kiro-gate ledger-ok stamps for ready queue issues (#1705)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Same environment as twt-queue.service: QUEUE_RUNNER, QUEUE_CONFIG, and
+# LEDGER_STAMP=/absolute/remote-server/scripts/ledger_stamp.py (the same checkout as
+# QUEUE_RUNNER: ledger_stamp loads queue_runner and its sibling ledger scripts from there).
+EnvironmentFile=%h/.config/twt-queue/environment
+ExecStart=/usr/bin/python3 ${LEDGER_STAMP}
+# The daemon already survives transient gh failures; this covers crashes and
+# kills so the queue gate never silently goes without fresh stamps.
+Restart=always
+RestartSec=30
+UMask=0077
+
+[Install]
+WantedBy=default.target

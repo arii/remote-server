@@ -1487,8 +1487,32 @@ def supervisor_alive(root):
     return True
 
 
+LEDGER_STAMP_STALE_SECONDS = 20 * 60
+
+
+def ledger_stamp_warning(config, now=None):
+    """" | LEDGER-STAMP STALE ..." when the stamp daemon's heartbeat is missing or old
+    (config key `ledger_stamp_heartbeat`), else "". Without fresh stamps the gate
+    skips every ready issue as "not ready" (#1705)."""
+    path = config.get("ledger_stamp_heartbeat")
+    if not path:
+        return ""
+    try:
+        age = (now or time.time()) - Path(path).stat().st_mtime
+    except OSError:
+        return " | LEDGER-STAMP DOWN no heartbeat. Next action: check twt-ledger-stamp.service"
+    limit = config.get("ledger_stamp_stale_seconds", LEDGER_STAMP_STALE_SECONDS)
+    if age > limit:
+        return f" | LEDGER-STAMP STALE last good pass {int(age)}s ago. Next action: check twt-ledger-stamp.service"
+    return ""
+
+
 def queue_status(config, now=None):
-    """Name the runner state and the operator's next action."""
+    """Name the runner state and the operator's next action, plus a stamp-daemon warning."""
+    return _queue_state(config, now) + ledger_stamp_warning(config, now)
+
+
+def _queue_state(config, now=None):
     root = Path(config["state_dir"])
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     status_path = root / "status.json"
