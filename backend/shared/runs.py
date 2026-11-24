@@ -147,8 +147,13 @@ def _failure_class(extra):
     """Failure category of a failed row: tests, agent_error, timeout,
     git_pr_error or claim_conflict. Explicit extra["failure_class"] wins."""
     explicit = extra.get("failure_class")
-    if explicit in ("tests", "agent_error", "timeout", "git_pr_error",
-                    "claim_conflict"):
+    if explicit in (
+        "tests",
+        "agent_error",
+        "timeout",
+        "git_pr_error",
+        "claim_conflict",
+    ):
         return explicit
     text = str(extra.get("error") or "").lower()
     for name, words in _FAILURE_CLASSES:
