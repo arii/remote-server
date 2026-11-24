@@ -26,6 +26,7 @@ import {
   recordDeltaFeedback,
   revertGuidance
 } from "./lib/prompt-guidance.js";
+import { normalizeCases, scoreOutput, suggestFromFailures, summarizeRun } from "./lib/prompt-eval.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
 import {
   REFINEMENT_SCHEMA,
@@ -686,6 +687,94 @@ document.getElementById("btn-run-sandbox").addEventListener("click", async () =>
     session.destroy();
   } catch (err) {
     box.textContent = `Prompt Error: ${err.message}`;
+  }
+});
+
+// Prompt eval samples: counts and scores only are stored, never model outputs.
+function evalTerms(id) {
+  return document.getElementById(id).value.split(",");
+}
+
+document.getElementById("btn-eval-save").addEventListener("click", async () => {
+  const out = document.getElementById("sandbox-eval-results");
+  const input = document.getElementById("sandbox-prompt-input").value;
+  const { promptEvalCases = [] } = await chrome.storage.local.get("promptEvalCases");
+  const cases = normalizeCases([
+    ...promptEvalCases,
+    {
+      input,
+      expect: {
+        mustContain: evalTerms("sandbox-expect-contain"),
+        mustNotContain: evalTerms("sandbox-expect-forbid"),
+        maxWords: document.getElementById("sandbox-expect-words").value
+      }
+    }
+  ]);
+  await chrome.storage.local.set({ promptEvalCases: cases });
+  out.textContent = `${cases.length} sample(s) saved.`;
+});
+
+document.getElementById("btn-eval-run").addEventListener("click", async () => {
+  const out = document.getElementById("sandbox-eval-results");
+  const list = document.getElementById("sandbox-eval-suggestions");
+  list.textContent = "";
+  const { promptEvalCases = [], promptEvalRuns = [], userContextVault = [] } =
+    await chrome.storage.local.get(["promptEvalCases", "promptEvalRuns", "userContextVault"]);
+  const cases = normalizeCases(promptEvalCases);
+  if (!cases.length) {
+    out.textContent = "No saved samples. Save one first.";
+    return;
+  }
+  const results = [];
+  try {
+    for (const [i, c] of cases.entries()) {
+      out.textContent = `Running sample ${i + 1} of ${cases.length}...`;
+      const session = await createPromptSession();
+      try {
+        const text = await session.prompt(getPrompt("ask", { guidance: promptGuidance, vars: { question: c.input } }));
+        results.push(scoreOutput(text, c.expect));
+      } finally {
+        session.destroy?.();
+      }
+    }
+  } catch (err) {
+    out.textContent = `Samples not run: ${err.message}`;
+    return;
+  }
+  const previous = promptEvalRuns.length ? promptEvalRuns[promptEvalRuns.length - 1].score : null;
+  const sum = summarizeRun(results, previous);
+  const runs = [...promptEvalRuns, { at: Date.now(), passed: sum.passed, total: sum.total, score: sum.score }].slice(-10);
+  await chrome.storage.local.set({ promptEvalRuns: runs });
+  const delta = sum.delta === null ? "first run" : `${sum.delta >= 0 ? "+" : ""}${Math.round(sum.delta * 100)} pts vs previous`;
+  out.textContent = `${sum.passed}/${sum.total} passed, score ${Math.round(sum.score * 100)}% (${delta}).\n` +
+    results.map((r, i) => `${r.pass ? "PASS" : "FAIL"} #${i + 1}: ${cases[i].input.slice(0, 50)}`).join("\n");
+  const suggestions = suggestFromFailures(results, { vaultValues: userContextVault.map((v) => v.value), guidance: promptGuidance });
+  for (const sug of suggestions) {
+    const row = document.createElement("div");
+    row.className = "item-card";
+    const label = document.createElement("div");
+    label.style.cssText = "font-size:11px; margin-bottom:4px;";
+    label.textContent = `[${sug.promptId}] ${sug.guidance} (${sug.reason})`;
+    const row2 = document.createElement("div");
+    row2.className = "btn-row";
+    const accept = document.createElement("button");
+    accept.className = "btn btn-primary btn-sm";
+    accept.textContent = "Accept";
+    accept.addEventListener("click", async () => {
+      try {
+        await saveGuidance(appendGuidanceLine(promptGuidance, sug.promptId, sug.guidance, { source: "suggestion" }));
+        row.remove();
+      } catch (e) {
+        out.textContent = e.message;
+      }
+    });
+    const dismiss = document.createElement("button");
+    dismiss.className = "btn btn-subtle btn-sm";
+    dismiss.textContent = "Dismiss";
+    dismiss.addEventListener("click", () => row.remove());
+    row2.append(accept, dismiss);
+    row.append(label, row2);
+    list.append(row);
   }
 });
 

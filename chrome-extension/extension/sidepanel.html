@@ -140,6 +140,16 @@
         <button id="btn-run-sandbox" class="btn btn-secondary">Run Test Prompt</button>
       </div>
       <pre id="sandbox-response-box" style="display: none;"></pre>
+      <div class="card-desc">Samples: save this input with expectations, then score all saved samples against the current "ask" guidance.</div>
+      <input id="sandbox-expect-contain" type="text" placeholder="Must contain (comma separated)">
+      <input id="sandbox-expect-forbid" type="text" placeholder="Must not contain (comma separated)">
+      <input id="sandbox-expect-words" type="number" min="1" placeholder="Max words">
+      <div class="btn-row">
+        <button id="btn-eval-save" class="btn btn-secondary">Save as sample</button>
+        <button id="btn-eval-run" class="btn btn-secondary">Run samples</button>
+      </div>
+      <div id="sandbox-eval-results" class="card-desc"></div>
+      <div id="sandbox-eval-suggestions"></div>
     </div>
 
     <div class="card">
