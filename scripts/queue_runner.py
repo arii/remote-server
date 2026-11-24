@@ -681,6 +681,15 @@ def worker(job_dir):
     )
     for key in ("CODER_MODEL", "S5_AUDIT_MODEL", "S5_START_MODEL_TIER"):
         os.environ.pop(key, None)
+    routing = job.get("routing") or {}
+    picks = routing.get("picks") or {}
+    for pick_tier, env_key in (
+        ("fast", "CODER_MODEL"),
+        ("strong", "CODER_STRONG_MODEL"),
+    ):
+        pin = (picks.get(pick_tier) or {}).get("model")
+        if pin:
+            os.environ[env_key] = pin
     tier = job.get("model_tier", "default")
     if tier == "strong":
         os.environ["S5_START_MODEL_TIER"] = "strong"
@@ -709,6 +718,18 @@ def worker(job_dir):
             file=sys.stderr,
             flush=True,
         )
+        if routing.get("picks"):
+            try:
+                from backend.shared import task_router
+
+                task_router.log_decision(
+                    routing,
+                    issue_key=f"{job['issue']['repo']}#{job['issue']['number']}",
+                )
+            except Exception as error:
+                print(
+                    f"routing audit skipped: {error}", file=sys.stderr, flush=True
+                )
         try:
             from backend.shared import model_router
 
@@ -1285,6 +1306,21 @@ def supervise(config_path, *, clear_halt=False):
             tier, tier_reason = start_tier(
                 fresh, status.get("tier_failures", {}).get(key, 0), strong_after
             )
+            # Deterministic task routing: pick concrete provider/model
+            # pins per tier from the live TwT catalog, and raise the
+            # start tier when the task itself looks hard — never lowered
+            # below the escalation/label tier. Router failure keeps the
+            # configured environment untouched.
+            routing = None
+            try:
+                from backend.shared import task_router
+
+                routing = task_router.route_issue(fresh, remaining_cap)
+                if routing["tier"] == "strong" and tier != "strong":
+                    tier = "strong"
+                    tier_reason = f"{tier_reason}+{routing['tier_rule']}"
+            except Exception as error:
+                routing = {"error": str(error)}
             job = {
                 "issue": {
                     "repo": issue["repo"],
@@ -1298,6 +1334,7 @@ def supervise(config_path, *, clear_halt=False):
                 "environment": config.get("environment", {}),
                 "model_tier": tier,
                 "tier_reason": tier_reason,
+                "routing": routing,
             }
             write_json(directory / "job.json", job)
             status.update(current=key, started_at=time.time())

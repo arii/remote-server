@@ -487,6 +487,43 @@ worker halts, budget or STOP interruptions. A successful run clears the counter;
 uncounted outcomes leave it unchanged. The counter is `status.json`
 `tier_failures["owner/repo#N"]`, so it survives restarts and `--retry`.
 
+### Deterministic task routing (`backend/shared/task_router.py`)
+
+At dispatch the supervisor also runs the task router on the issue's title and
+body (stdlib only; reads the live TwT catalog at `TWT_CATALOG_DB`, default
+`~/twt/catalog.sqlite3`, honoring `TWT_DISABLED_PROVIDERS` and retired models).
+It emits a decision into `job.json["routing"]`:
+
+- `tier`: a task-based start-tier suggestion. `strong` when the issue names
+  `STRONG_FILE_COUNT` (3) or more file paths (`task:many_files`) or the
+  estimated prompt crosses `STRONG_INPUT_TOKENS` (`task:large_spec`). The
+  supervisor uses the stronger of this and the escalation/label tier — the
+  router can only *raise* a start tier, never lower it — and appends the rule
+  to `tier_reason` (e.g. `default+task:many_files`).
+- `picks.fast` / `picks.strong`: one concrete `provider/model` pin per tier
+  chosen from catalog rows that are chat- and tool-capable, within the
+  context window the task needs, on enabled providers, and affordable under
+  the remaining issue cap (paid calls must fit `PAID_BUDGET_SHARE` of it;
+  unrated paid models are never picked). `fast` ranks free models by context
+  window; `strong` ranks every affordable model by input price descending —
+  the strongest model the budget supports across the whole catalog, not one
+  env-pinned endpoint.
+
+The worker applies the picks after clearing inherited `CODER_*` env vars:
+`picks.fast.model` → `CODER_MODEL`, `picks.strong.model` →
+`CODER_STRONG_MODEL`, so both tiers resolve to a `provider/id` pin TwT serves
+directly instead of the `default`/`route:strong` waterfalls. When the router
+cannot pick (catalog unreachable, no eligible model) `routing` carries an
+`error` and the run keeps the configured environment unchanged.
+
+Every decision is logged to the run ledger as a `routing-decision` event row
+(features, rules, candidate counts, picks, estimated call cost) via
+`log_decision`, so picks join with traced cost and run outcomes for later
+auditing and a learned router.
+
+Standalone check: `python3 -m backend.shared.task_router --issue-file
+<job-or-issue.json> --cap-usd 1.0` prints the decision JSON.
+
 Spend: strong attempts use the same per-issue cap (`NEBIUS_SPEND_CAP_USD` is set
 from the remaining issue budget) and the same `install_budget_guard`; there is
 no second cap. Before the pipeline starts, the worker reads recorded spend and
