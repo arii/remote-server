@@ -703,6 +703,7 @@ class Pipeline:
                     run_id=self.thread_id,
                     stage="code",
                     cli_verify_fn=self.pre_audit_check,
+                    verify_stalls=True,
                     **kwargs,
                 )
             except Exception as exc:

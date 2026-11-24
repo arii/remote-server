@@ -42,6 +42,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -660,7 +661,9 @@ VERIFIED_EDIT_NOTICE = (
 )
 
 
-def build_check_tool(worktree, written_files=None, repo=None, *, planned_files=()):
+def build_check_tool(
+    worktree, written_files=None, repo=None, *, planned_files=(), deadline=None
+):
     """run_check tool: allowlisted verification commands in worktree."""
     from langchain_core.tools import tool  # noqa: E402
 
@@ -695,22 +698,29 @@ def build_check_tool(worktree, written_files=None, repo=None, *, planned_files=(
             return recovery(f"REJECTED: bad command line: {exc}")
         tracker = written_files if isinstance(written_files, WriteTracker) else None
         generation = tracker.mutations if tracker is not None else None
+        timeout = (
+            CHECK_TIMEOUT
+            if deadline is None
+            else min(CHECK_TIMEOUT, deadline - time.monotonic())
+        )
 
         try:
+            if timeout <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout)
             with verification_env(worktree) as env:
                 proc = subprocess.run(
                     exec_argv(argv),
                     cwd=worktree,
                     capture_output=True,
                     text=True,
-                    timeout=CHECK_TIMEOUT,
+                    timeout=timeout,
                     env=env,
                     check=False,
                 )
         except subprocess.TimeoutExpired:
             if tracker is not None:
                 tracker.record_check(argv, False, generation)
-            return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
+            return f"TIMEOUT after {max(0, timeout):g}s: {command[:200]}"
         except FileNotFoundError as exc:
             if tracker is not None:
                 tracker.record_check(argv, False, generation)
@@ -1555,11 +1565,57 @@ def is_call_cap(error):
 
 
 class CoderBudgetExceeded(RuntimeError):
-    pass
+    def __init__(self, message, *, recoverable_stall=False):
+        super().__init__(message)
+        self.recoverable_stall = recoverable_stall
 
 
 class RepairBudgetExceeded(CoderBudgetExceeded):
     pass
+
+
+class StalledVerificationFailed(RuntimeError):
+    def __init__(self, message, *, fixable=False):
+        super().__init__(message)
+        self.fixable = fixable
+
+
+def verify_stalled_edits(worktree, written_files, repo, recorder, deadline):
+    run_check = build_check_tool(worktree, written_files, repo, deadline=deadline)
+    with written_files.verification_lock:
+        commands, uncovered = set(), []
+        for path in sorted(written_files):
+            targets = targeted_checks(worktree, [path], repo)
+            if not targets:
+                uncovered.append(path)
+            commands.update(targets)
+        if uncovered:
+            raise StalledVerificationFailed(
+                "BLOCKED: no targeted verification for edited files: "
+                + ", ".join(uncovered)
+            )
+        if written_files.check_generation == written_files.mutations:
+            commands.update(
+                shlex.join(argv)
+                for argv, passed in written_files.checks.items()
+                if not passed
+            )
+        failures = []
+        for command in sorted(commands):
+            started = time.monotonic()
+            args = {"command": command}
+            result = run_check.invoke(args)
+            recorder.tool_call(
+                "run_check", args, time.monotonic() - started, True, result=result
+            )
+            argv = tuple(parse_check_command(command, repo))
+            if not result.startswith("exit=0\n") or not written_files.checks.get(argv):
+                failures.append(f"{command}\n{result[-1600:]}")
+        if failures:
+            raise StalledVerificationFailed(
+                "BLOCKED: targeted verification failed:\n" + "\n\n".join(failures),
+                fixable=True,
+            )
 
 
 def issuing_message(request):
@@ -1627,7 +1683,8 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
                     if explored >= EXPLORE_LIMIT:
                         raise error(
                             f"BLOCKED: {label} made {explored} inspection calls "
-                            "without editing"
+                            "without editing",
+                            recoverable_stall=True,
                         )
                 if explored == EXPLORE_NUDGE:
                     nudged = nudged or message
@@ -1645,7 +1702,8 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
                 seen[key] = seen.get(key, int(key in acknowledged)) + 1
                 if seen[key] >= REPAIR_REPEAT_LIMIT:
                     raise error(
-                        f"BLOCKED: {label} repeated unchanged tool call: {key[0]} {key[1]}"
+                        f"BLOCKED: {label} repeated unchanged tool call: {key[0]} {key[1]}",
+                        recoverable_stall=True,
                     )
                 if seen[key] > 1:
                     content = (
@@ -2211,6 +2269,7 @@ def run_coder(
     run_id=None,
     stage="code",
     cli_verify_fn=None,
+    verify_stalls=False,
 ):
     """Code normally; on a model-call cap, resume, then allow one TwT fallback.
 
@@ -2221,6 +2280,10 @@ def run_coder(
     after the continuations. ``meter`` (a dict) accumulates "calls" and
     "continuations" across every turn, including failed ones. Cap
     exhaustion re-raises ModelCallLimitExceededError.
+
+    The pipeline can verify a stalled turn's edits without another model
+    call. Failing targeted checks can use one remaining continuation to fix
+    the edits before checking again.
 
     When every applicable TwT attempt has failed with a classified
     eligible trigger (gateway unavailability, exhausted TwT routes, or
@@ -2248,6 +2311,8 @@ def run_coder(
     issue_ref = re.search(r"#\d+\b", issue or brief)
     if issue_ref:
         kwargs["issue_ref"] = issue_ref[0]
+    if verify_stalls:
+        kwargs["verify_stalls"] = True
 
     def left():
         return None if call_budget is None else call_budget - meter["calls"]
@@ -2323,6 +2388,31 @@ def run_coder(
             fallback_model=fallback,
             prior_files=error.coder_written_files,
             call_cap=left(),
+            **kwargs,
+        )
+    except StalledVerificationFailed as error:
+        if (
+            not error.fixable
+            or meter["continuations"] >= continuations
+            or (call_budget is not None and left() <= 0)
+            or time.monotonic() >= deadline
+        ):
+            raise
+        meter["continuations"] += 1
+        kwargs["prior_tracker"] = error.coder_write_tracker
+        return _run_coder_attempt(
+            worktree,
+            f"{brief}\n\nFix the edits using the verification failures below. "
+            f"Make the needed changes, then reply DONE or BLOCKED.\n\n{error}",
+            system,
+            thread + "-verify-fix",
+            timeout,
+            deadline=deadline,
+            call_cap=REPAIR_MODEL_LIMIT
+            if left() is None
+            else min(REPAIR_MODEL_LIMIT, left()),
+            prior_files=error.coder_written_files,
+            fix_turn=True,
             **kwargs,
         )
     except ModelCallLimitExceededError:
@@ -2429,6 +2519,8 @@ def _run_coder_attempt(
     first_edit=None,
     prior_tracker=None,
     issue_ref="",
+    verify_stalls=False,
+    fix_turn=False,
 ):
     """Invoke the coder with a verify gate.
 
@@ -2560,13 +2652,22 @@ def _run_coder_attempt(
                 config={**config, "recursion_limit": RECURSION_LIMIT},
             )
 
+        declared_blocked = False
+
         def invoke_bounded(message):
+            nonlocal declared_blocked
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(f"timed out after {timeout}s")
-            return run_bounded(
+            result = run_bounded(
                 lambda: _invoke([HumanMessage(content=message)]), remaining
             )
+            if verify_stalls:
+                contract = terminal_contract(extract_reply(result))
+                declared_blocked = (
+                    contract is not None and contract.group(1) == "BLOCKED"
+                )
+            return result
 
         def latest_failed_check():
             checks = trace_verification_evidence(recorder.path, repo)
@@ -2610,30 +2711,59 @@ def _run_coder_attempt(
 
         max_rounds = verify_rounds()
         auto_completed = False
+        stall_reason = ""
+        reply = ""
         try:
-            result, rounds, verified = run_with_verify(
-                lambda: invoke_bounded(brief),
-                retry_verification,
-                lambda: trace_has_passing_check(recorder.path),
-                max_rounds,
-                dithered=lambda: trace_has_dither(recorder.path),
-                check_stagnant=is_stagnant,
-            )
-            reply = extract_reply(result)
-            if terminal_contract(reply) is None:
-                reply = extract_reply(invoke_bounded(TERMINAL_NUDGE))
-                verified = trace_has_passing_check(recorder.path)
+            if fix_turn:
+                reply = extract_reply(invoke_bounded(brief))
+                verified = False
+                contract = terminal_contract(reply)
+                if contract is None or contract.group(1) == "DONE":
+                    stall_reason = "targeted_verification_fix"
+            else:
+                result, rounds, verified = run_with_verify(
+                    lambda: invoke_bounded(brief),
+                    retry_verification,
+                    lambda: declared_blocked or trace_has_passing_check(recorder.path),
+                    max_rounds,
+                    dithered=lambda: trace_has_dither(recorder.path),
+                    check_stagnant=is_stagnant,
+                )
+                reply = extract_reply(result)
                 if terminal_contract(reply) is None:
-                    completion = verified_completion("missing_terminal_line")
-                    if completion:
-                        reply, verified, auto_completed = completion, True, True
+                    reply = extract_reply(invoke_bounded(TERMINAL_NUDGE))
+                    verified = trace_has_passing_check(recorder.path)
+                    if terminal_contract(reply) is None:
+                        stall_reason = "missing_terminal_line"
         except Exception as error:
-            if not is_call_cap(error):
+            if is_call_cap(error):
+                stall_reason = "model_call_budget_exhausted"
+            elif (
+                verify_stalls
+                and written_files
+                and isinstance(error, CoderBudgetExceeded)
+                and error.recoverable_stall
+            ):
+                stall_reason = "coder_tool_stall"
+            else:
                 raise
-            reply = verified_completion("model_call_budget_exhausted")
-            if not reply:
+            completion = "" if fix_turn else verified_completion(stall_reason)
+            if not completion and not (verify_stalls and written_files):
                 raise
-            verified, auto_completed = True, True
+            if completion:
+                reply, verified, auto_completed = completion, True, True
+                stall_reason = ""
+        if stall_reason:
+            completion = "" if fix_turn else verified_completion(stall_reason)
+            if not completion and verify_stalls and written_files:
+                verify_stalled_edits(worktree, written_files, repo, recorder, deadline)
+                completion = verified_completion(stall_reason)
+                if not completion:
+                    raise StalledVerificationFailed(
+                        "BLOCKED: targeted checks did not verify the current edits"
+                    )
+            if completion:
+                reply, verified, auto_completed = completion, True, True
         # Keep the checkpointer connection alive until the run returns.
         _ = holder
         if verified and repair_files:
