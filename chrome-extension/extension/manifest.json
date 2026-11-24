@@ -4,6 +4,15 @@
   "version": "1.0.0",
   "description": "On-device Chrome Built-in AI form exporter, importer, user-context vault, autonomous filler, and page observer.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzh2emZ/uS89gRlOHaqY/d9iwRWt41rD954fm6sesrOhFrpdzB/+YNcUhRtra+EQEaoV2ncNwVdrlDl4W3uIRDop5XoZWBcMjdQKq8GDOQNXS3ZGtEbGZT38zxlBY+SPqOwcghOpd2/j2Lo5C10mzV0etRnwoufpXU8vPsCYNGmm+7JmcsFVUcwUTanc5MiwPCO/s27TeuRx/W3JGFvuPO/SeB3fLMaTkG0KJ3Qz1dGLQe5N85no7hlXkv7sXfheSYRrgqiinxnpymbBDirOQ2z8Ad3ZV4b2zZOjTneHL9Fs9olfncwS6gNi5VNTaMnf+hlvb7vg57xe7EDQq7H0A0wIDAQAB",
+  "oauth2": {
+    "client_id": "237690545533-mek2rqk7k6k6g8pl53kn5hure8o9eega.apps.googleusercontent.com",
+    "scopes": [
+      "openid",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile",
+      "https://www.googleapis.com/auth/spreadsheets"
+    ]
+  },
   "permissions": [
     "sidePanel",
     "activeTab",
