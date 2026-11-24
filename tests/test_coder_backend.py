@@ -42,7 +42,6 @@ class TestCoderBackend(unittest.TestCase):
             if isinstance(step, str):
                 replies.append(AIMessage(content=step))
             else:
-                name, args = step
                 replies.append(
                     AIMessage(
                         content="",
@@ -50,9 +49,12 @@ class TestCoderBackend(unittest.TestCase):
                             {
                                 "name": name,
                                 "args": args,
-                                "id": str(i),
+                                "id": f"{i}-{j}",
                                 "type": "tool_call",
                             }
+                            for j, (name, args) in enumerate(
+                                step if isinstance(step, list) else [step]
+                            )
                         ],
                     )
                 )
@@ -291,6 +293,146 @@ class TestCoderBackend(unittest.TestCase):
                         "model_call_budget_exhausted"
                         if case == "budget"
                         else "missing_terminal_line",
+                    )
+
+    def test_28ccfe7dd057_verifies_edited_runner_after_a_stall(self):
+        runner = "scripts/queue_runner.py"
+        tests = "tests/test_queue_runner.py"
+        command = "python3 -m unittest tests.test_queue_runner"
+
+        def edit(path, old, new):
+            return "edit_file", dict(file_path=path, old_string=old, new_string=new)
+
+        inspections = [
+            ("grep", {"pattern": f"runner_state_{i}", "path": runner})
+            for i in range(20)
+        ]
+        for case in (
+            "pass",
+            "fix",
+            "still_failing",
+            "no_budget",
+            "uncovered",
+            "missing_done",
+            "cap",
+            "blocked",
+            "repeat",
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as root:
+                checkout = Path(root)
+                subprocess.run(["git", "init", "-q", root], check=True)
+                for package in ("scripts", "tests"):
+                    (checkout / package).mkdir()
+                    (checkout / package / "__init__.py").touch()
+                (checkout / runner).write_text("def state():\n    return 'old'\n")
+                (checkout / tests).write_text(
+                    "import unittest\n"
+                    "from scripts.queue_runner import state\n"
+                    "class Replay(unittest.TestCase):\n"
+                    "    def test_state(self):\n"
+                    "        self.assertEqual(state(), 'old')\n"
+                )
+                failing = case in ("fix", "still_failing", "no_budget")
+                steps = [
+                    edit(
+                        runner,
+                        "return 'old'",
+                        "return 'broken'" if failing else "return 'idle'",
+                    ),
+                    edit(tests, "state(), 'old'", "state(), 'idle'"),
+                ]
+                if case == "missing_done":
+                    steps += ["Edited both files.", "Finished the implementation."]
+                elif case == "blocked":
+                    steps += ["BLOCKED #1570"]
+                elif case == "repeat":
+                    steps += [edit(runner, "not present", "different")] * 3
+                elif case != "cap":
+                    if case == "uncovered":
+                        steps += [
+                            (
+                                "write_file",
+                                {"file_path": "uncovered.txt", "content": "changed"},
+                            )
+                        ]
+                    steps += [inspections[:5], *inspections[5:]]
+                    if case == "fix":
+                        steps += [
+                            edit(runner, "return 'broken'", "return 'idle'"),
+                            "DONE #1570",
+                        ]
+                    elif case == "still_failing":
+                        steps += ["No fix available."]
+                meter = {}
+                options = dict(
+                    repo="arii/remote-server",
+                    call_budget={"cap": 2, "no_budget": 18}.get(case, 40),
+                    continuations=1,
+                    meter=meter,
+                    verify_stalls=True,
+                )
+                if case in ("uncovered", "no_budget", "still_failing", "blocked"):
+                    failure = {
+                        "uncovered": "no targeted verification for edited files: uncovered.txt",
+                        "blocked": "coder reported BLOCKED #1570",
+                    }.get(case, "targeted verification failed")
+                    with self.assertRaisesRegex(RuntimeError, failure):
+                        self.run_completion(root, steps, 0, **options)
+                else:
+                    result, prompts = self.run_completion(root, steps, 0, **options)
+                    self.assertTrue(result[6])
+                    self.assertTrue(result[0].endswith("\nDONE #1570"))
+                    if case == "fix":
+                        self.assertEqual(len(prompts), 2)
+                        self.assertIn(command, prompts[1])
+                        self.assertIn("'broken' != 'idle'", prompts[1])
+                    elif case == "missing_done":
+                        self.assertEqual(prompts[-1], coder.TERMINAL_NUDGE)
+                    else:
+                        self.assertEqual(len(prompts), 1)
+
+                self.assertEqual(
+                    meter["continuations"], int(case in ("fix", "still_failing"))
+                )
+                self.assertLessEqual(meter["calls"], options["call_budget"])
+                events = [
+                    json.loads(line)
+                    for path in sorted(checkout.glob("trace-*.jsonl"))
+                    for line in path.read_text().splitlines()
+                ]
+                checks = [event for event in events if event.get("name") == "run_check"]
+                expected = (
+                    0
+                    if case in ("uncovered", "blocked")
+                    else 2
+                    if case in ("fix", "still_failing")
+                    else 1
+                )
+                self.assertEqual(len(checks), expected)
+                self.assertTrue(
+                    all(command in event["args_preview"] for event in checks)
+                )
+                if checks:
+                    self.assertTrue(
+                        checks[0]["check_output"].startswith(
+                            "exit=1" if failing else "exit=0"
+                        )
+                    )
+                    if case == "fix":
+                        self.assertTrue(checks[-1]["check_output"].startswith("exit=0"))
+                auto = [event for event in events if event.get("auto_completed")]
+                self.assertEqual(
+                    len(auto),
+                    int(case in ("pass", "fix", "missing_done", "cap", "repeat")),
+                )
+                if case == "pass":
+                    self.assertEqual(auto[0]["reason"], "coder_tool_stall")
+                    self.assertTrue(
+                        any(
+                            "20 inspection calls without editing"
+                            in event.get("error", "")
+                            for event in events
+                        )
                     )
 
     def test_1570_recorded_inspections_replay_to_first_edit(self):
