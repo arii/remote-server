@@ -14,6 +14,7 @@ import {
   selectVaultFacts
 } from "./lib/ask-context.js";
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
+import { errorInfo as syncErrorInfo, formatSyncFailure } from "./lib/drive-sync.js";
 import { INTERNALS_URL, MODEL_APIS, describeModelError, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
 import { modelPanelView, observeView } from "./lib/panel-state.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
@@ -1509,14 +1510,18 @@ chrome.storage.local.get(["driveSyncedAt"]).then((r) => showSyncedAt(r.driveSync
 syncButton.addEventListener("click", async () => {
   syncButton.disabled = true;
   syncStatus.textContent = "Syncing...";
+  const started = Date.now();
   try {
     const res = await chrome.runtime.sendMessage({ type: "drive:sync" });
-    if (!res || res.error) throw new Error(res?.error || "Google Drive sync failed.");
+    if (!res) throw new Error("The extension background worker did not answer. Reload the extension and try again.");
+    if (res.error) throw Object.assign(new Error(res.error), { info: res.errorInfo });
     if (res.promptGuidance) await chrome.storage.local.set({ promptGuidance: res.promptGuidance });
     showSyncedAt(res.syncedAt);
     renderVault();
   } catch (err) {
-    syncStatus.textContent = `Sync failed: ${err.message}`;
+    const info = err.info || syncErrorInfo(err);
+    syncStatus.textContent = formatSyncFailure(info);
+    Telemetry.logTrace({ type: "ERROR", title: `Drive sync failed: ${info.code}`, durationMs: Date.now() - started, details: info });
   } finally {
     syncButton.disabled = false;
   }

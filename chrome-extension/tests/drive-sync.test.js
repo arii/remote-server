@@ -4,6 +4,8 @@ import {
   SYNC_FILE_NAME,
   addTombstones,
   buildPayload,
+  errorInfo,
+  formatSyncFailure,
   mergeStates,
   syncWithDrive
 } from "../extension/lib/drive-sync.js";
@@ -203,11 +205,147 @@ describe("drive sync errors", () => {
     expect((await run(deps)).code).toBe("not-signed-in");
   });
 
-  it("scope denied (403)", async () => {
+  const gerr = (status, error) => () => json({ error }, status);
+
+  it("bare 403 with no body is forbidden, not scope denied", async () => {
     const { deps } = fakeDrive({ failWith: () => new Response("", { status: 403 }) });
+    const err = await run(deps);
+    expect(err.code).toBe("forbidden");
+    expect(err.status).toBe(403);
+    expect(err.step).toBe("pull");
+  });
+
+  it("403 insufficientPermissions is scope denied", async () => {
+    const { deps } = fakeDrive({ failWith: gerr(403, { message: "Insufficient Permission", errors: [{ reason: "insufficientPermissions" }] }) });
     const err = await run(deps);
     expect(err.code).toBe("scope-denied");
     expect(err.message).toMatch(/app data folder/);
+    expect(err.reason).toBe("insufficientPermissions");
+  });
+
+  it("403 accessNotConfigured names the disabled API and the fix", async () => {
+    const { deps } = fakeDrive({
+      failWith: gerr(403, { status: "PERMISSION_DENIED", message: "Google Drive API has not been used in project 123 before or it is disabled.", errors: [{ reason: "accessNotConfigured" }] })
+    });
+    const info = errorInfo(await run(deps));
+    expect(info).toMatchObject({ code: "api-disabled", status: 403, reason: "accessNotConfigured", step: "pull" });
+    expect(info.googleMessage).toMatch(/has not been used in project 123/);
+    expect(info.next).toMatch(/enable the Google Drive API/);
+    const text = formatSyncFailure(info);
+    expect(text).toMatch(/^Sync failed: The Google Drive API is not turned on/);
+    expect(text).toMatch(/HTTP 403, accessNotConfigured: Google Drive API has not been used/);
+    expect(text).toMatch(/Next: In Google Cloud console/);
+  });
+
+  it("403 SERVICE_DISABLED in details is api-disabled", async () => {
+    const { deps } = fakeDrive({ failWith: gerr(403, { status: "PERMISSION_DENIED", message: "API disabled", details: [{ reason: "SERVICE_DISABLED" }] }) });
+    const err = await run(deps);
+    expect(err.code).toBe("api-disabled");
+    expect(err.reason).toBe("SERVICE_DISABLED");
+  });
+
+  it("403 storageQuotaExceeded is quota", async () => {
+    const { deps } = fakeDrive({ failWith: gerr(403, { message: "quota", errors: [{ reason: "storageQuotaExceeded" }] }) });
+    expect((await run(deps)).code).toBe("quota");
+  });
+
+  it("403 userRateLimitExceeded and 429 are rate-limited", async () => {
+    const a = fakeDrive({ failWith: gerr(403, { message: "slow", errors: [{ reason: "userRateLimitExceeded" }] }) });
+    expect((await run(a.deps)).code).toBe("rate-limited");
+    const b = fakeDrive({ failWith: gerr(429, { message: "Too many requests" }) });
+    const err = await run(b.deps);
+    expect(err.code).toBe("rate-limited");
+    expect(err.status).toBe(429);
+  });
+
+  it("401 twice keeps the status", async () => {
+    const { deps } = fakeDrive({ failWith: gerr(401, { message: "Invalid Credentials" }) });
+    const err = await run(deps);
+    expect(err.code).toBe("not-signed-in");
+    expect(err.status).toBe(401);
+    expect(err.googleMessage).toBe("Invalid Credentials");
+  });
+
+  it("500 is drive-unavailable and a non-JSON body still reports the status", async () => {
+    const a = fakeDrive({ failWith: gerr(500, { message: "Backend Error" }) });
+    const err = await run(a.deps);
+    expect(err.code).toBe("drive-unavailable");
+    expect(err.googleMessage).toBe("Backend Error");
+    const b = fakeDrive({ failWith: () => new Response("<html>Bad gateway</html>", { status: 502 }) });
+    const e2 = await run(b.deps);
+    expect(e2.code).toBe("drive-unavailable");
+    expect(e2.status).toBe(502);
+    expect(e2.googleMessage).toBe("");
+  });
+
+  it("other statuses stay failed but carry the status", async () => {
+    const { deps } = fakeDrive({ failWith: gerr(404, { message: "File not found" }) });
+    const err = await run(deps);
+    expect(err.code).toBe("failed");
+    expect(err.message).toMatch(/HTTP 404/);
+  });
+
+  it("fetch timeout keeps the error name and message", async () => {
+    const { deps } = fakeDrive({
+      failWith: () => {
+        throw Object.assign(new Error("The operation timed out."), { name: "TimeoutError" });
+      }
+    });
+    const info = errorInfo(await run(deps));
+    expect(info.code).toBe("network");
+    expect(info.name).toBe("TimeoutError");
+    expect(info.detail).toMatch(/TimeoutError: The operation timed out/);
+    expect(formatSyncFailure(info)).toMatch(/TimeoutError \(network\), during pull/);
+  });
+
+  it("getToken failures keep the chrome.identity message", async () => {
+    const a = fakeDrive();
+    a.deps.getToken = async () => {
+      throw new Error("OAuth2 not granted or revoked.");
+    };
+    const e1 = await run(a.deps);
+    expect(e1.code).toBe("scope-denied");
+    expect(e1.message).toMatch(/OAuth2 not granted or revoked/);
+    expect(e1.step).toBe("sign-in");
+    const b = fakeDrive();
+    b.deps.getToken = async () => {
+      throw new Error("The user did not approve access.");
+    };
+    const e2 = await run(b.deps);
+    expect(e2.code).toBe("scope-denied");
+    expect(e2.detail).toMatch(/did not approve access/);
+  });
+
+  it("an error while merging reports the merge step and its name", async () => {
+    const { deps } = fakeDrive();
+    const err = await syncWithDrive(deps, {
+      applyRemote: async () => {
+        throw new RangeError("storage write failed");
+      }
+    }).catch((e) => e);
+    const info = errorInfo(err);
+    expect(info).toMatchObject({ code: "failed", name: "RangeError", step: "merge" });
+    expect(info.summary).toBe("Google Drive sync failed.");
+    expect(formatSyncFailure(info)).toMatch(/RangeError: storage write failed/);
+  });
+
+  it("schema mismatch has a next step", async () => {
+    const { deps } = fakeDrive({ file: JSON.stringify({ schemaVersion: 99 }) });
+    const info = errorInfo(await syncWithDrive(deps, { applyRemote: vi.fn() }).catch((e) => e));
+    expect(info.code).toBe("schema-mismatch");
+    expect(info.next).toMatch(/Update the extension/);
+  });
+
+  it("errorInfo handles plain errors and never leaks the token or file body", async () => {
+    const info = errorInfo(new Error("boom"));
+    expect(info).toMatchObject({ code: "failed", name: "Error" });
+    expect(info.summary && info.next).toBeTruthy();
+    const { deps } = fakeDrive({
+      failWith: (url, init) => json({ error: { message: "denied", errors: [{ reason: "forbidden" }] }, echo: init.headers.Authorization }, 403)
+    });
+    const err = await syncWithDrive(deps, { applyRemote: async () => ({ userContextVault: [{ value: "SECRET-VALUE" }] }) }).catch((e) => e);
+    const dump = JSON.stringify(errorInfo(err)) + err.message + formatSyncFailure(errorInfo(err));
+    expect(dump).not.toMatch(/tok\d|Bearer|SECRET-VALUE/);
   });
 
   it("network failure", async () => {
