@@ -31,7 +31,9 @@ export function applyVaultUpsert(state, entry) {
   if (!entry || typeof entry !== "object" || !entry.id) return state;
   const vault = [...(state.userContextVault || [])];
   const idx = vault.findIndex((e) => e.id === entry.id);
-  if (idx >= 0) vault[idx] = { ...vault[idx], ...entry, updatedAt: entry.updatedAt || nowIso() };
+  // An edit always stamps now: the incoming copy carries the stale updatedAt
+  // it was read with, and Drive sync merges by newest updatedAt.
+  if (idx >= 0) vault[idx] = { ...vault[idx], ...entry, updatedAt: nowIso() };
   else vault.unshift({ ...entry, updatedAt: entry.updatedAt || nowIso() });
   return { ...state, userContextVault: vault };
 }

@@ -7,6 +7,7 @@ import { normalizeForDedup, valueAlreadyHeld } from "./lib/delta-guards.js";
 import { deduplicateVault } from "./lib/vault.js";
 import { extractLinks, extractTitle, htmlToText, isPrivateHost } from "./lib/profile-ingest.js";
 import { fetchDriveFileText, isClientIdConfigured, listDriveFiles } from "./lib/drive-import.js";
+import { SYNC_STORAGE_KEYS, addTombstones, aliasId, buildPayload, mergeStates, syncWithDrive } from "./lib/drive-sync.js";
 import { isSensitiveLabel } from "./lib/sensitive.js";
 import {
   MAX_LEARNED_LOG,
@@ -121,6 +122,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.type === "drive:sync") {
+    driveSync()
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ error: err.message }));
+    return true;
+  }
+
   if (message.type === "drive:list" || message.type === "drive:fetch") {
     driveRequest(message)
       .then((res) => sendResponse(res))
@@ -198,11 +206,11 @@ async function fetchSource(rawUrl) {
 // --- Google Drive import (read-only) -----------------------------------------
 // Uses chrome.identity.getAuthToken with the manifest oauth2 client. Returns
 // file lists and plain text only; it never touches the vault.
-async function driveRequest(message) {
+function driveDeps() {
   if (!isClientIdConfigured(chrome.runtime.getManifest().oauth2?.client_id)) {
-    throw new Error("Google Drive import is not configured (set oauth2.client_id in manifest.json)");
+    throw new Error("Google Drive is not configured (set oauth2.client_id in manifest.json)");
   }
-  const deps = {
+  return {
     fetchFn: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(SOURCE_TIMEOUT_MS) }),
     getToken: async () => {
       const res = await chrome.identity.getAuthToken({ interactive: true });
@@ -212,10 +220,47 @@ async function driveRequest(message) {
     },
     removeToken: (token) => chrome.identity.removeCachedAuthToken({ token })
   };
+}
+
+async function driveRequest(message) {
+  const deps = driveDeps();
   if (message.type === "drive:list") {
     return listDriveFiles(deps, { pageToken: message.pageToken, search: message.search });
   }
   return fetchDriveFileText(message.fileId, deps);
+}
+
+// Drive sync (#1709): pull, then merge into local storage inside the single
+// writer queue, then push the merged payload. Network calls stay outside the
+// queue so a slow Drive never blocks vault edits.
+// promptGuidance is panel-owned, so the merged guidance goes back to the panel
+// in the response instead of being written here.
+async function driveSync() {
+  let promptGuidance = null;
+  const { syncedAt } = await syncWithDrive(driveDeps(), {
+    applyRemote: (remote) =>
+      enqueueMutation(async () => {
+        const local = await chrome.storage.local.get(SYNC_STORAGE_KEYS);
+        const merged = mergeStates(local, remote);
+        promptGuidance = merged.promptGuidance;
+        await writeVaultState({ userContextVault: merged.userContextVault, pendingDeltas: local.pendingDeltas || [] });
+        await chrome.storage.local.set({
+          learnedMappings: merged.learnedMappings,
+          learnedAliases: merged.learnedAliases,
+          fillOutcomes: merged.fillOutcomes,
+          syncTombstones: merged.syncTombstones
+        });
+        return buildPayload(merged);
+      })
+  });
+  await enqueueMutation(() => chrome.storage.local.set({ driveSyncedAt: syncedAt }));
+  return { ok: true, syncedAt, promptGuidance };
+}
+
+async function recordTombstones(kind, before, after, idOf) {
+  const { syncTombstones = [] } = await chrome.storage.local.get(["syncTombstones"]);
+  const next = addTombstones(syncTombstones, kind, before, after, idOf);
+  if (next !== syncTombstones) await chrome.storage.local.set({ syncTombstones: next });
 }
 
 // --- Single-writer mutation pipeline -----------------------------------------
@@ -286,6 +331,9 @@ async function handleMutation(message) {
       newCases = casesFromDeltas(targets, rule.outcome, state.userContextVault);
     }
     const next = await writeVaultState(build(message)(state));
+    if (message.type === "vault:delete" || message.type === "vault:replace") {
+      await recordTombstones("vault", state.userContextVault, next.userContextVault, (e) => e.id);
+    }
     if (newCases.length > 0) {
       const { learningCases } = await readLearningState();
       await chrome.storage.local.set({ learningCases: recordCases(learningCases, newCases) });
@@ -341,9 +389,11 @@ const LEARNING_HANDLERS = {
       if (records.length === 0) return { ok: true, recorded: 0 };
       // Mappings (#1540) are updated in the same queued mutation.
       const { learnedMappings = [] } = await chrome.storage.local.get(["learnedMappings"]);
+      const nextMappings = learnFromOutcomes(learnedMappings, records, userContextVault);
+      await recordTombstones("mapping", learnedMappings, nextMappings, (m) => m.sig);
       await chrome.storage.local.set({
         fillOutcomes: recordOutcomes(fillOutcomes, records),
-        learnedMappings: learnFromOutcomes(learnedMappings, records, userContextVault)
+        learnedMappings: nextMappings
       });
       return { ok: true, recorded: records.length };
     }),
@@ -364,7 +414,9 @@ const LEARNING_HANDLERS = {
     enqueueMutation(async () => {
       if (sender?.tab) return { ok: false, reason: "panel-only" };
       const { learnedMappings = [] } = await chrome.storage.local.get(["learnedMappings"]);
-      await chrome.storage.local.set({ learnedMappings: removeMapping(learnedMappings, String(msg.sig)) });
+      const nextMappings = removeMapping(learnedMappings, String(msg.sig));
+      await recordTombstones("mapping", learnedMappings, nextMappings, (m) => m.sig);
+      await chrome.storage.local.set({ learnedMappings: nextMappings });
       return { ok: true };
     }),
 
@@ -385,12 +437,13 @@ const LEARNING_HANDLERS = {
       const { learnedAliases } = await readLearningState();
       const alias = normalizeLabel(msg.alias);
       const vault = state.userContextVault.map((e) =>
-        e.id === msg.entryId ? { ...e, aliases: (e.aliases || []).filter((a) => normalizeLabel(a) !== alias) } : e
+        e.id === msg.entryId
+          ? { ...e, aliases: (e.aliases || []).filter((a) => normalizeLabel(a) !== alias), updatedAt: new Date().toISOString() }
+          : e
       );
-      await chrome.storage.local.set({
-        userContextVault: vault,
-        learnedAliases: learnedAliases.filter((l) => !(l.entryId === msg.entryId && normalizeLabel(l.alias) === alias))
-      });
+      const nextAliases = learnedAliases.filter((l) => !(l.entryId === msg.entryId && normalizeLabel(l.alias) === alias));
+      await recordTombstones("alias", learnedAliases, nextAliases, aliasId);
+      await chrome.storage.local.set({ userContextVault: vault, learnedAliases: nextAliases });
       return { ok: true };
     }),
 

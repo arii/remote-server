@@ -1201,7 +1201,7 @@ async function renderVault() {
         <div style="font-weight:600; color:#e2e8f0; margin-bottom:6px;">Your vault is empty</div>
         <div style="color:var(--text-muted); font-size:11px; margin-bottom:10px;">
           Import a previously exported Vault JSON file to restore your profile locally, or add facts manually below.
-          Nothing is bundled with the extension and nothing leaves this browser.
+          Facts stay in this browser unless you press Sync with Google Drive, which stores them in this extension's private Drive app folder.
         </div>
         <button id="btn-first-run-import" class="btn btn-secondary btn-sm">Import Profile JSON</button>
       </div>`;
@@ -1284,6 +1284,31 @@ document.getElementById("btn-add-fact").addEventListener("click", async () => {
   keyInput.value = "";
   valInput.value = "";
   renderVault();
+});
+
+// Drive sync (#1709): one button, one status line. The worker does the work.
+const syncButton = document.getElementById("btn-drive-sync");
+const syncStatus = document.getElementById("drive-sync-status");
+
+function showSyncedAt(ts) {
+  syncStatus.textContent = ts ? `Last synced: ${new Date(ts).toLocaleString()}` : "Last synced: never";
+}
+
+chrome.storage.local.get(["driveSyncedAt"]).then((r) => showSyncedAt(r.driveSyncedAt));
+syncButton.addEventListener("click", async () => {
+  syncButton.disabled = true;
+  syncStatus.textContent = "Syncing...";
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "drive:sync" });
+    if (!res || res.error) throw new Error(res?.error || "Google Drive sync failed.");
+    if (res.promptGuidance) await chrome.storage.local.set({ promptGuidance: res.promptGuidance });
+    showSyncedAt(res.syncedAt);
+    renderVault();
+  } catch (err) {
+    syncStatus.textContent = `Sync failed: ${err.message}`;
+  } finally {
+    syncButton.disabled = false;
+  }
 });
 
 // Export & Import Vault JSON

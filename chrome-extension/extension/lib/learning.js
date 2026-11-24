@@ -104,7 +104,7 @@ export function promoteAlias(vault, proposal) {
     if (e.id !== proposal?.entryId) return e;
     const aliases = e.aliases || [];
     if (aliases.some((a) => normalizeLabel(a) === alias)) return e;
-    return { ...e, aliases: [...aliases, alias] };
+    return { ...e, aliases: [...aliases, alias], updatedAt: new Date().toISOString() };
   });
 }
 
