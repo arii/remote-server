@@ -912,6 +912,45 @@ def python_module_names(tree):
     return names, exports
 
 
+def python_method_names(tree):
+    return {
+        f"{cls.name}.{node.name}"
+        for cls in ast.walk(tree)
+        if isinstance(cls, ast.ClassDef)
+        for node in cls.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def proposed_method_error(target, content):
+    if not target.is_file():
+        return None
+    try:
+        before = python_method_names(ast.parse(target.read_bytes()))
+        tree = ast.parse(content)
+    except (OSError, SyntaxError):
+        return None
+    removed = {name.split(".")[1] for name in before - python_method_names(tree)}
+    defined = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    references = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in removed - defined:
+            references.setdefault(node.attr, node.lineno)
+    if not references:
+        return None
+    details = ", ".join(
+        f"{name} (line {line})" for name, line in sorted(references.items())
+    )
+    return (
+        f"{SYNTAX_REJECTION}: {target.name}: removed methods still referenced: "
+        f"{details}\nKeep these methods or update their callers in the same edit."
+    )
+
+
 def python_import_references(tree, importer, modules, removed):
     package = tuple(importer.split("/")[:-1])
     bindings = {}
@@ -1050,6 +1089,18 @@ def build_filesystem_backend(worktree):
             from deepagents.backends.protocol import WriteResult
 
             error, indentation = proposed_syntax_diagnostic(file_path, content)
+            if old_text is not None and file_path.lower().endswith(".py"):
+                expected = common_indentation(old_text)
+                actual = common_indentation(new_text)
+                if expected != actual and new_text.strip() and not error:
+                    # Valid Python can still land in the wrong scope: a block
+                    # indented differently from the text it replaces.
+                    error = (
+                        f"{SYNTAX_REJECTION}: {file_path}: replacement block "
+                        f"indentation {actual!r} differs from the replaced block "
+                        f"{expected!r} and would change its enclosing scope."
+                        f"\nMatch the replaced block's base indentation: {expected!r}."
+                    )
             if indentation and old_text is not None:
                 expected = common_indentation(old_text)
                 actual = common_indentation(new_text)
@@ -1077,7 +1128,9 @@ def build_filesystem_backend(worktree):
                     target = self._resolve_path(file_path)
                 except (OSError, RuntimeError) as exc:
                     return WriteResult(error=f"Error writing file '{file_path}': {exc}")
-                error = proposed_import_error(worktree, target, content)
+                error = proposed_method_error(target, content) or proposed_import_error(
+                    worktree, target, content
+                )
                 if error:
                     return WriteResult(error=error)
             return super().write(file_path, content)
