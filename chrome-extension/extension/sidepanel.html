@@ -280,6 +280,23 @@
       <input type="text" id="new-fact-value" placeholder="Value (e.g., https://example.com)" style="margin-bottom: 8px;" />
       <button id="btn-add-fact" class="btn btn-secondary">Save Fact to Vault</button>
     </div>
+
+    <!-- NEW-USER ONBOARDING: shown only while the vault is empty. Facts go to the Review & Merge Queue, never straight to the vault. -->
+    <div class="card" id="vault-onboarding-card" style="display: none;">
+      <div class="card-title">New here? Start from your AI chatbot</div>
+      <div style="font-size:11px; color:#94a3b8; margin-bottom:6px;">
+        Copy this prompt into the chatbot you already use (ChatGPT, Claude, Gemini). It lists what it knows about you as JSON, so you do not have to type everything. Review its reply and delete anything private or wrong before pasting it below.
+      </div>
+      <textarea id="vault-onboarding-prompt" rows="6" readonly style="width:100%;"></textarea>
+      <button class="btn btn-subtle btn-sm" id="btn-copy-vault-prompt" style="margin-top:6px;">Copy prompt</button>
+      <div style="font-size:11px; color:#fbbf24; margin:8px 0 6px;">
+        Do not include passwords, social security numbers, card numbers or other secrets. Replies that look like they contain any are rejected.
+      </div>
+      <textarea id="vault-onboarding-input" rows="5" placeholder="Paste the chatbot's JSON reply here" style="width:100%;"></textarea>
+      <input type="file" id="vault-onboarding-file" accept=".json,.txt" style="margin-top:6px; font-size:11px;" />
+      <button class="btn btn-secondary" id="btn-vault-onboarding-import" style="margin-top:8px;">Check and send to review</button>
+      <div id="vault-onboarding-status" style="font-size:11px; margin-top:6px; white-space:pre-wrap;"></div>
+    </div>
   </main>
 
   <!-- TAB 5: OBSERVER (PHASE 7) -->

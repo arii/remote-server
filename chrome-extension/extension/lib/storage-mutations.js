@@ -8,7 +8,7 @@
 
 import { deduplicateVault } from "./vault.js";
 
-const MAX_PENDING_DELTAS = 100;
+export const MAX_PENDING_DELTAS = 100;
 
 function nowIso() {
   return new Date().toISOString();
