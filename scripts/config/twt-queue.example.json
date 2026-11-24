@@ -3,6 +3,7 @@
   "issues_file": "/absolute/remote-server/scripts/config/twt-queue-issues.json",
   "state_dir": "/absolute/queue-state",
   "runtime_state_dir": "/absolute/queue-state",
+  "ledger_stamp_heartbeat": "/absolute/home/twt/queue/ledger-stamp.heartbeat",
   "pipeline_checkout": "/absolute/remote-server",
   "repo_paths": {
     "arii/remote-server": "/absolute/remote-server",
