@@ -214,27 +214,31 @@ def export_text(doc_id, token_file=None):
 
 
 def main(argv=None):
-    _, _, default_doc = config()
     parser = argparse.ArgumentParser(description="Read/write one Google Doc.")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("auth-url", help="print browser consent URL")
     p_code = sub.add_parser("auth-code", help="exchange pasted code for token")
     p_code.add_argument("code", help="bare code or full localhost redirect URL")
     p_read = sub.add_parser("read", help="print doc title + text")
-    p_read.add_argument("--doc-id", default=default_doc)
+    p_read.add_argument("--doc-id")
     p_append = sub.add_parser("append", help="append text to end of doc")
     p_append.add_argument("text", help="text to append (include \\n as needed)")
-    p_append.add_argument("--doc-id", default=default_doc)
+    p_append.add_argument("--doc-id")
     p_export = sub.add_parser(
         "export", help="plain-text read via Drive export (works today)"
     )
-    p_export.add_argument("--doc-id", default=default_doc)
+    p_export.add_argument("--doc-id")
     p_export.add_argument(
         "--token-file",
         default=None,
         help="cached OAuth token to use read-only, without writing back",
     )
     args = parser.parse_args(argv)
+    load_env()
+    if hasattr(args, "doc_id") and args.doc_id is None:
+        args.doc_id = os.environ.get("GOOGLE_DOCUMENT_ID", "").strip()
+    if args.cmd != "export" or not args.token_file:
+        config()
 
     if args.cmd == "auth-url":
         auth_url()

@@ -33,12 +33,25 @@ python gdocs.py auth-code <code-from-localhost-redirect>
 ## Read today (no consent needed)
 
 Plain-text read via the Drive API works right now with the existing
-`previous_workouts` token (read-only use, nothing is written back there):
+`previous_workouts` token (read-only use, nothing is written back there,
+including when the token refreshes). With `--token-file`, no local OAuth
+client-secret file is required. Supply the document ID explicitly:
 
 ```bash
 source .venv/bin/activate
+python gdocs.py export --doc-id YOUR_DOCUMENT_ID --token-file /srv/repos/previous_workouts/exercise_data/token.json
+```
+
+Or set `GOOGLE_DOCUMENT_ID` in the environment or this folder's `.env`:
+
+```bash
+export GOOGLE_DOCUMENT_ID=YOUR_DOCUMENT_ID
 python gdocs.py export --token-file /srv/repos/previous_workouts/exercise_data/token.json
 ```
+
+Without `--token-file`, export keeps using this folder's normal OAuth
+configuration and cached token. `--help` and `export --help` work before
+OAuth setup.
 
 ## Read / write via Docs API (two one-time steps left)
 
