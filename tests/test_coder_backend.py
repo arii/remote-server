@@ -201,14 +201,19 @@ class TestCoderBackend(unittest.TestCase):
                 steps = [
                     edit(path, "test_runner", "test_runner_state") for path in paths
                 ]
+                uncovered_paths = ()
                 if case == "uncovered":
                     # The recorded Python checks cannot verify these TS edits.
-                    for name in ("ux-audit-runner.ts", "ux-lighthouse-runner.ts"):
+                    uncovered_paths = (
+                        "scripts/ux-audit-runner.ts",
+                        "scripts/ux-lighthouse-runner.ts",
+                    )
+                    for path in uncovered_paths:
                         steps.append(
                             (
                                 "write_file",
                                 {
-                                    "file_path": f"scripts/{name}",
+                                    "file_path": path,
                                     "content": "const state = 'idle';\n",
                                 },
                             )
@@ -241,9 +246,19 @@ class TestCoderBackend(unittest.TestCase):
                     else:
                         self.assertEqual(prompts[-1], coder.TERMINAL_NUDGE)
                 else:
-                    with self.assertRaises(Exception) as caught:
+                    with (
+                        mock.patch(
+                            "backend.ast_validator.validate_source_syntax",
+                            return_value={"valid": True},
+                        ),
+                        self.assertRaises(Exception) as caught,
+                    ):
                         self.run_completion(root, steps, 0, **opts)
                     self.assertTrue(coder.is_call_cap(caught.exception))
+                    for path in uncovered_paths:
+                        self.assertEqual(
+                            (checkout / path).read_text(), "const state = 'idle';\n"
+                        )
                 events = [
                     json.loads(line)
                     for path in meter["verification_traces"]

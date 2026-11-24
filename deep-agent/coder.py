@@ -1957,7 +1957,7 @@ def trace_verification_evidence(trace_path, repo=None, *, earlier=()):
                     }
                 )
     except (OSError, TypeError):
-        return evidence
+        pass
     return evidence
 
 
