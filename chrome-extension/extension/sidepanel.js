@@ -26,7 +26,7 @@ import {
   recordDeltaFeedback,
   revertGuidance
 } from "./lib/prompt-guidance.js";
-import { normalizeCases, scoreOutput, suggestFromFailures, summarizeRun } from "./lib/prompt-eval.js";
+import { MAX_EVAL_CASES, casesKey, normalizeCases, scoreOutput, suggestFromFailures, summarizeRun } from "./lib/prompt-eval.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
 import {
   REFINEMENT_SCHEMA,
@@ -699,8 +699,9 @@ document.getElementById("btn-eval-save").addEventListener("click", async () => {
   const out = document.getElementById("sandbox-eval-results");
   const input = document.getElementById("sandbox-prompt-input").value;
   const { promptEvalCases = [] } = await chrome.storage.local.get("promptEvalCases");
+  const before = normalizeCases(promptEvalCases);
   const cases = normalizeCases([
-    ...promptEvalCases,
+    ...before,
     {
       input,
       expect: {
@@ -710,6 +711,12 @@ document.getElementById("btn-eval-save").addEventListener("click", async () => {
       }
     }
   ]);
+  if (cases.length === before.length) {
+    out.textContent = before.length >= MAX_EVAL_CASES
+      ? `Not saved: limit of ${MAX_EVAL_CASES} samples reached.`
+      : "Not saved: enter a question and at least one expectation (must contain, must not contain, or max words).";
+    return;
+  }
   await chrome.storage.local.set({ promptEvalCases: cases });
   out.textContent = `${cases.length} sample(s) saved.`;
 });
@@ -741,11 +748,13 @@ document.getElementById("btn-eval-run").addEventListener("click", async () => {
     out.textContent = `Samples not run: ${err.message}`;
     return;
   }
-  const previous = promptEvalRuns.length ? promptEvalRuns[promptEvalRuns.length - 1].score : null;
-  const sum = summarizeRun(results, previous);
-  const runs = [...promptEvalRuns, { at: Date.now(), passed: sum.passed, total: sum.total, score: sum.score }].slice(-10);
+  const key = casesKey(cases);
+  const last = promptEvalRuns[promptEvalRuns.length - 1];
+  const comparable = last && last.key === key;
+  const sum = summarizeRun(results, comparable ? last.score : null);
+  const runs = [...promptEvalRuns, { at: Date.now(), key, passed: sum.passed, total: sum.total, score: sum.score }].slice(-10);
   await chrome.storage.local.set({ promptEvalRuns: runs });
-  const delta = sum.delta === null ? "first run" : `${sum.delta >= 0 ? "+" : ""}${Math.round(sum.delta * 100)} pts vs previous`;
+  const delta = sum.delta === null ? (last ? "samples changed, not comparable" : "first run") : `${sum.delta >= 0 ? "+" : ""}${Math.round(sum.delta * 100)} pts vs previous`;
   out.textContent = `${sum.passed}/${sum.total} passed, score ${Math.round(sum.score * 100)}% (${delta}).\n` +
     results.map((r, i) => `${r.pass ? "PASS" : "FAIL"} #${i + 1}: ${cases[i].input.slice(0, 50)}`).join("\n");
   const suggestions = suggestFromFailures(results, { vaultValues: userContextVault.map((v) => v.value), guidance: promptGuidance });
@@ -764,6 +773,7 @@ document.getElementById("btn-eval-run").addEventListener("click", async () => {
       try {
         await saveGuidance(appendGuidanceLine(promptGuidance, sug.promptId, sug.guidance, { source: "suggestion" }));
         row.remove();
+        out.textContent += "\nGuidance saved. Run samples again to check the effect on all samples.";
       } catch (e) {
         out.textContent = e.message;
       }

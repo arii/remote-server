@@ -28,14 +28,14 @@ export function normalizeCases(raw) {
     const input = String(c?.input ?? "").trim().slice(0, MAX_EVAL_INPUT_CHARS);
     if (!input) continue;
     const max = Number(c?.expect?.maxWords);
-    out.push({
-      input,
-      expect: {
-        mustContain: cleanTerms(c?.expect?.mustContain),
-        mustNotContain: cleanTerms(c?.expect?.mustNotContain),
-        maxWords: Number.isFinite(max) && max > 0 ? Math.floor(max) : null
-      }
-    });
+    const expect = {
+      mustContain: cleanTerms(c?.expect?.mustContain),
+      mustNotContain: cleanTerms(c?.expect?.mustNotContain),
+      maxWords: Number.isFinite(max) && max > 0 ? Math.floor(max) : null
+    };
+    // A case with no expectation can never fail and would inflate the score.
+    if (!expect.mustContain.length && !expect.mustNotContain.length && !expect.maxWords) continue;
+    out.push({ input, expect });
     if (out.length >= MAX_EVAL_CASES) break;
   }
   return out;
@@ -52,6 +52,14 @@ export function scoreOutput(output, expect = {}) {
   const checks = (expect.mustContain?.length || 0) + (expect.mustNotContain?.length || 0) + (limit ? 1 : 0);
   const score = checks ? (checks - failures.length) / checks : 1;
   return { pass: failures.length === 0, score, failures };
+}
+
+// Stable key for a case set (djb2 over its JSON), so runs are only compared when the set is unchanged.
+export function casesKey(cases) {
+  const str = JSON.stringify(cases);
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+  return h.toString(36);
 }
 
 // results: [{pass, score, failures}]. previous: prior summary score (number) or null.

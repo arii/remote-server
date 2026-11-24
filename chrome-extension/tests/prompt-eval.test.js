@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_EVAL_CASES, normalizeCases, scoreOutput, suggestFromFailures, summarizeRun } from "../extension/lib/prompt-eval.js";
+import { MAX_EVAL_CASES, casesKey, normalizeCases, scoreOutput, suggestFromFailures, summarizeRun } from "../extension/lib/prompt-eval.js";
 import { appendGuidanceLine, normalizeGuidance, revertGuidance, MAX_SUGGESTIONS } from "../extension/lib/prompt-guidance.js";
 import { getPrompt } from "../extension/lib/prompts.js";
 
@@ -10,9 +10,20 @@ describe("normalizeCases", () => {
     const out = normalizeCases(raw);
     expect(out).toHaveLength(MAX_EVAL_CASES);
     expect(out[0].expect).toEqual({ mustContain: ["a"], mustNotContain: [], maxWords: 20 });
-    expect(normalizeCases([{ input: "x".repeat(900) }])[0].input).toHaveLength(500);
-    expect(normalizeCases([{ input: "x", expect: { maxWords: -3 } }])[0].expect.maxWords).toBeNull();
+    expect(normalizeCases([{ input: "x".repeat(900), expect: { maxWords: 5 } }])[0].input).toHaveLength(500);
     expect(normalizeCases("nope")).toEqual([]);
+  });
+  it("drops cases with no usable expectation", () => {
+    expect(normalizeCases([{ input: "x" }, { input: "y", expect: { maxWords: -3, mustContain: [" "] } }])).toEqual([]);
+  });
+});
+
+describe("casesKey", () => {
+  it("is stable for equal sets and differs when the set changes", () => {
+    const a = normalizeCases([{ input: "q", expect: { maxWords: 5 } }]);
+    const b = normalizeCases([{ input: "q", expect: { maxWords: 6 } }]);
+    expect(casesKey(a)).toBe(casesKey(normalizeCases(a)));
+    expect(casesKey(a)).not.toBe(casesKey(b));
   });
 });
 
