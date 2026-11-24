@@ -1283,6 +1283,31 @@ document.getElementById("btn-add-fact").addEventListener("click", async () => {
   renderVault();
 });
 
+// Drive sync (#1709): one button, one status line. The worker does the work.
+const syncButton = document.getElementById("btn-drive-sync");
+const syncStatus = document.getElementById("drive-sync-status");
+
+function showSyncedAt(ts) {
+  syncStatus.textContent = ts ? `Last synced: ${new Date(ts).toLocaleString()}` : "Last synced: never";
+}
+
+chrome.storage.local.get(["driveSyncedAt"]).then((r) => showSyncedAt(r.driveSyncedAt));
+syncButton.addEventListener("click", async () => {
+  syncButton.disabled = true;
+  syncStatus.textContent = "Syncing...";
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "drive:sync" });
+    if (!res || res.error) throw new Error(res?.error || "Google Drive sync failed.");
+    if (res.promptGuidance) await chrome.storage.local.set({ promptGuidance: res.promptGuidance });
+    showSyncedAt(res.syncedAt);
+    renderVault();
+  } catch (err) {
+    syncStatus.textContent = `Sync failed: ${err.message}`;
+  } finally {
+    syncButton.disabled = false;
+  }
+});
+
 // Export & Import Vault JSON
 document.getElementById("btn-export-vault").addEventListener("click", async () => {
   const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);

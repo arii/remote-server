@@ -54,20 +54,31 @@ export function buildFileUrl(file) {
     : `${DRIVE_API}/files/${id}?alt=media`;
 }
 
-// One authorised GET. A 401 means the cached token is stale: drop it and retry
-// once with a fresh one.
-async function driveGet(url, { getToken, removeToken, fetchFn }) {
-  if (!url.startsWith(`${DRIVE_API}/`)) throw new Error("Only Google Drive API URLs are allowed");
+export const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
+
+// One authorised request (GET unless init says otherwise). A 401 means the
+// cached token is stale: drop it and retry once with a fresh one. Thrown errors
+// carry the HTTP status as `status` so callers can classify them.
+export async function driveGet(url, { getToken, removeToken, fetchFn }, init = {}) {
+  if (!url.startsWith(`${DRIVE_API}/`) && !url.startsWith(`${DRIVE_UPLOAD_API}/`)) {
+    throw new Error("Only Google Drive API URLs are allowed");
+  }
+  const fail = (message, status) => Object.assign(new Error(message), { status });
   for (let attempt = 0; attempt < 2; attempt++) {
     const token = await getToken();
-    const res = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` }, credentials: "omit", redirect: "manual" });
+    const res = await fetchFn(url, {
+      ...init,
+      headers: { ...init.headers, Authorization: `Bearer ${token}` },
+      credentials: "omit",
+      redirect: "manual"
+    });
     if (res.status === 401 && attempt === 0) {
       await removeToken?.(token);
       continue;
     }
-    if (res.status === 401) throw new Error("Google sign-in expired; try again");
-    if (res.status === 403) throw new Error("Drive access denied (check the Drive API and consent screen setup)");
-    if (!res.ok) throw new Error(`Drive request failed with status ${res.status}`);
+    if (res.status === 401) throw fail("Google sign-in expired; try again", 401);
+    if (res.status === 403) throw fail("Drive access denied (check the Drive API and consent screen setup)", 403);
+    if (!res.ok) throw fail(`Drive request failed with status ${res.status}`, res.status);
     return res;
   }
   throw new Error("Drive request failed");
