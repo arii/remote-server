@@ -74,6 +74,16 @@ describe("single-writer boundary (source guard)", () => {
     expect(written).toContain("observerDomainAllowlist");
   });
 
+  it("documents promptGuidance, deltaFeedback and profileSources as panel-owned, never worker-written", () => {
+    const panel = extractSetKeys(sidepanelSrc);
+    const worker = extractSetKeys(workerSrc);
+    for (const key of ["promptGuidance", "deltaFeedback", "profileSources"]) {
+      expect(panel, `sidepanel.js sets ${key}`).toContain(key);
+      expect(PROTECTED_KEYS).not.toContain(key);
+      expect(worker, `service-worker.js must not set ${key}`).not.toContain(key);
+    }
+  });
+
   it("keeps the vault/delta writes in the service worker", () => {
     const written = extractSetKeys(workerSrc);
     expect(written).toContain("userContextVault");
@@ -409,3 +419,110 @@ function sendUpdate(listener, message, sender = { tab: { id: 1 } }) {
     }
   });
 }
+
+describe("source:fetch", () => {
+  const send = (listener, msg) => new Promise((resolve) => listener(msg, {}, resolve));
+  const streamOf = (bytes) => ({
+    getReader: () => {
+      let sent = false;
+      return {
+        read: async () => (sent ? { done: true } : ((sent = true), { done: false, value: bytes })),
+        cancel: async () => {}
+      };
+    }
+  });
+
+  it("rejects non-http(s) URLs without fetching", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const listener = await loadWorker(makeChromeMock());
+    for (const url of ["file:///etc/passwd", "javascript:alert(1)", "chrome://settings", "nope"]) {
+      const res = await send(listener, { type: "source:fetch", url });
+      expect(res.error).toBeTruthy();
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects localhost, private and link-local hosts without fetching", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const listener = await loadWorker(makeChromeMock());
+    const urls = [
+      "http://localhost:8080/", "http://app.localhost/", "http://printer.local/", "http://127.0.0.1/",
+      "http://10.0.0.5/", "http://172.16.0.1/", "http://192.168.1.1/", "http://169.254.169.254/",
+      "http://0.0.0.0/", "http://2130706433/", "http://[::1]/"
+    ];
+    for (const url of urls) {
+      const res = await send(listener, { type: "source:fetch", url });
+      expect(res.error, url).toMatch(/private/);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not follow redirects", async () => {
+    const calls = [];
+    vi.stubGlobal("fetch", async (url, init) => {
+      calls.push(init.redirect);
+      return { ok: false, status: 302, type: "basic", headers: new Headers({ location: "http://127.0.0.1/" }) };
+    });
+    const listener = await loadWorker(makeChromeMock());
+    const res = await send(listener, { type: "source:fetch", url: "https://a.example/" });
+    expect(res.error).toMatch(/Redirects/);
+    expect(calls).toEqual(["manual"]);
+
+    vi.stubGlobal("fetch", async () => ({ ok: false, status: 0, type: "opaqueredirect", headers: new Headers() }));
+    const res2 = await send(listener, { type: "source:fetch", url: "https://a.example/" });
+    expect(res2.error).toMatch(/Redirects/);
+  });
+
+  it("decodes multibyte characters split across network chunks", async () => {
+    const bytes = new TextEncoder().encode("<p>Zoë Müller 日本</p>");
+    const cut = bytes.indexOf(0xc3) + 1; // split inside the two-byte "ë"
+    const chunks = [bytes.slice(0, cut), bytes.slice(cut)];
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "text/html" }),
+      body: {
+        getReader: () => {
+          let i = 0;
+          return { read: async () => (i < chunks.length ? { done: false, value: chunks[i++] } : { done: true }), cancel: async () => {} };
+        }
+      }
+    }));
+    const listener = await loadWorker(makeChromeMock());
+    const res = await send(listener, { type: "source:fetch", url: "https://a.example/" });
+    expect(res.text).toBe("Zoë Müller 日本");
+  });
+
+  it("rejects oversize responses", async () => {
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      headers: new Headers({ "content-length": String(600 * 1024) }),
+      body: streamOf(new Uint8Array(1))
+    }));
+    const listener = await loadWorker(makeChromeMock());
+    const res = await send(listener, { type: "source:fetch", url: "https://a.example/" });
+    expect(res.error).toMatch(/too large/);
+
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      headers: new Headers(),
+      body: streamOf(new Uint8Array(600 * 1024))
+    }));
+    const res2 = await send(listener, { type: "source:fetch", url: "https://a.example/" });
+    expect(res2.error).toMatch(/too large/);
+  });
+
+  it("returns title, text and links for html", async () => {
+    const html = '<title>Hi</title><body><p>Ari Doe</p><a href="/x">x</a></body>';
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      headers: new Headers({ "content-type": "text/html" }),
+      body: streamOf(new TextEncoder().encode(html))
+    }));
+    const listener = await loadWorker(makeChromeMock());
+    const res = await send(listener, { type: "source:fetch", url: "https://a.example/" });
+    expect(res).toEqual({ url: "https://a.example/", title: "Hi", text: "Ari Doe\nx", links: ["https://a.example/x"] });
+  });
+});
