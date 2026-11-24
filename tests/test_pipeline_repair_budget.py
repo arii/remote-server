@@ -19,24 +19,40 @@ class TestRepairBudget(unittest.TestCase):
     def call(self, name="grep", **args):
         return SimpleNamespace(tool_call={"name": name, "args": args, "id": "probe"})
 
-    def test_repeated_inspection_warns_then_stops_without_reexecution(self):
+    def test_1570_repeated_grep_replays_empty_result_without_reexecution(self):
         from langchain_core.messages import ToolMessage
 
-        guard = coder.coder_tool_middleware(repair=True).wrap_tool_call
-        handler = mock.Mock(
-            return_value=ToolMessage(content="No matches found", tool_call_id="probe")
-        )
-        call = self.call(path="a.py", pattern="removed_helper")
-        guard(call, handler)
-        warning = guard(call, handler)
-        self.assertIn("Already called", warning.content)
-        self.assertEqual(warning.status, "error")
-        guard(self.call("ls", path="."), handler)
-        with self.assertRaisesRegex(coder.RepairBudgetExceeded, "repeated unchanged"):
-            guard(call, handler)
-        self.assertEqual(handler.call_count, 2)
+        for repair in (False, True):
+            with self.subTest(repair=repair):
+                guard = coder.coder_tool_middleware(repair=repair).wrap_tool_call
 
-    def test_1627_repeat_warning_carries_the_earlier_result(self):
+                def execute(request):
+                    return ToolMessage(
+                        content="No matches found",
+                        tool_call_id=request.tool_call["id"],
+                    )
+
+                handler = mock.Mock(side_effect=execute)
+                call = self.call(pattern='"last_recovery"')
+                call.tool_call["id"] = "9f894daf"
+                first = guard(call, handler)
+                self.assertEqual(first.content, "No matches found")
+                other = self.call(pattern='"heartbeat"')
+                other.tool_call["id"] = "bd4adc59"
+                guard(other, handler)
+                for trace in ("2c0e109b", "7adebf4a"):
+                    call.tool_call["id"] = trace
+                    cached = guard(call, handler)
+                    self.assertEqual(cached.tool_call_id, trace)
+                    self.assertEqual(cached.status, "success")
+                    self.assertIn("Already called", cached.content)
+                    self.assertIn(
+                        "make the planned edit or report DONE/BLOCKED", cached.content
+                    )
+                    self.assertTrue(cached.content.endswith(first.content))
+                self.assertEqual(handler.call_count, 2)
+
+    def test_1627_repeated_inspections_carry_the_earlier_result(self):
         from langchain_core.messages import ToolMessage
 
         for repair in (False, True):
@@ -52,7 +68,7 @@ class TestRepairBudget(unittest.TestCase):
                 warning = guard(call, handler)
                 self.assertIn("Already called", warning.content)
                 self.assertIn("/backend/tests/test_queue.py", warning.content)
-                self.assertEqual(warning.status, "error")
+                self.assertEqual(warning.status, "success")
                 self.assertEqual(handler.call_count, 1)
 
     def test_1627_grep_on_a_file_defaults_to_content(self):
@@ -100,6 +116,7 @@ class TestRepairBudget(unittest.TestCase):
                 guard(self.call("edit_file", file_path="a.py"), handler)
                 result = guard(call, handler)
                 self.assertEqual("Already called" in result.content, status == "error")
+                self.assertEqual(handler.call_count, 3 if status == "success" else 2)
 
     def test_check_can_run_again_after_install(self):
         from langchain_core.messages import ToolMessage
@@ -221,7 +238,10 @@ class TestRepairBudget(unittest.TestCase):
                 "ok",
             )
 
-    def test_1550_initial_repeated_read_stops_before_graph_backstop(self):
+    def test_1550_initial_repeated_read_stops_at_model_budget(self):
+        from langchain.agents.middleware.model_call_limit import (
+            ModelCallLimitExceededError,
+        )
         from langchain_core.messages import AIMessage, HumanMessage
         from tests.test_coder_outcome import LocalModel
 
@@ -244,18 +264,18 @@ class TestRepairBudget(unittest.TestCase):
                             }
                         ],
                     )
-                    for n in range(20)
+                    for n in range(coder.INITIAL_MODEL_LIMIT)
                 ]
             )
             graph = coder.build_agent(root, "implement", model=model, repair=False)
+            limit = coder.INITIAL_MODEL_LIMIT
             with self.assertRaisesRegex(
-                coder.CoderBudgetExceeded, "BLOCKED.*repeated unchanged"
+                ModelCallLimitExceededError, rf"thread limit \({limit}/{limit}\)"
             ):
                 graph.invoke(
                     {"messages": [HumanMessage(content="fix #1550")]},
                     config={"recursion_limit": 128},
                 )
-            self.assertLessEqual(model.i, 3)
 
     def test_approved_plan_does_not_consume_implementation_model_budget(self):
         from langchain.agents.middleware.model_call_limit import (
@@ -341,7 +361,10 @@ class TestRepairBudget(unittest.TestCase):
                     {"messages": [HumanMessage(content="verify again")]}, config=config
                 )
 
-    def test_real_agent_stops_repeated_grep_before_recursion_limit(self):
+    def test_real_repair_agent_stops_repeated_grep_at_model_budget(self):
+        from langchain.agents.middleware.model_call_limit import (
+            ModelCallLimitExceededError,
+        )
         from langchain_core.messages import AIMessage, HumanMessage
         from tests.test_coder_outcome import LocalModel
 
@@ -360,11 +383,14 @@ class TestRepairBudget(unittest.TestCase):
                             }
                         ],
                     )
-                    for n in range(4)
+                    for n in range(coder.REPAIR_MODEL_LIMIT)
                 ]
             )
             graph = coder.build_agent(root, "repair", model=model, repair=True)
-            with self.assertRaises(coder.RepairBudgetExceeded):
+            limit = coder.REPAIR_MODEL_LIMIT
+            with self.assertRaisesRegex(
+                ModelCallLimitExceededError, rf"thread limit \({limit}/{limit}\)"
+            ):
                 graph.invoke(
                     {"messages": [HumanMessage(content="fix")]},
                     config={"recursion_limit": 100},
