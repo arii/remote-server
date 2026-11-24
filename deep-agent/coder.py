@@ -47,6 +47,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 
@@ -94,6 +95,7 @@ INITIAL_TOOL_LIMIT = 32
 INSPECTION_TOOLS = frozenset({"read_file", "grep", "ls", "glob"})
 EXPLORE_NUDGE = 12
 EXPLORE_LIMIT = 20
+CORRECTION_READ_LIMIT = 3
 DEFAULT_FALLBACK_MODEL = "nebius/zai-org/GLM-5.3-Flash"
 # Middleware adds graph steps beyond the model and tool calls themselves.
 RECURSION_LIMIT = int(
@@ -987,6 +989,83 @@ def python_import_references(tree, importer, modules, removed):
             yield node.attr, node.lineno
 
 
+def tracked_python_file(worktree, path):
+    return (
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                worktree,
+                "--literal-pathspecs",
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                path,
+            ],
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def undefined_name_diagnostics(worktree, path, content):
+    result = subprocess.run(
+        [
+            "ruff",
+            "check",
+            "--isolated",
+            "--select",
+            "F821",
+            "--ignore-noqa",
+            "--output-format",
+            "json",
+            "--stdin-filename",
+            path,
+            "-",
+        ],
+        cwd=worktree,
+        input=content,
+        capture_output=True,
+        timeout=5,
+    )
+    if result.returncode not in (0, 1):
+        raise ValueError("ruff could not check undefined names")
+    return [
+        (row["message"], row["location"]["row"])
+        for row in json.loads(result.stdout)
+        if row["code"] == "F821"
+    ]
+
+
+def proposed_undefined_name_error(worktree, target, content):
+    if not target.is_file():
+        return None
+    path = target.relative_to(os.path.realpath(worktree)).as_posix()
+    if not tracked_python_file(worktree, path):
+        return None
+    try:
+        proposed = undefined_name_diagnostics(worktree, path, content.encode())
+        if not proposed:
+            return None
+        existing = Counter(
+            name
+            for name, _ in undefined_name_diagnostics(
+                worktree, path, target.read_bytes()
+            )
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return f"{SYNTAX_REJECTION}: {path}: could not check undefined names with ruff F821."
+    added = []
+    for name, line in proposed:
+        if existing[name]:
+            existing[name] -= 1
+        else:
+            added.append(f"{path}:{line}: {name}")
+    if added:
+        return f"{SYNTAX_REJECTION}: new F821 diagnostics:\n" + "\n".join(added)
+    return None
+
+
 def proposed_import_error(worktree, target, content):
     if not target.is_file():
         return None
@@ -999,11 +1078,7 @@ def proposed_import_error(worktree, target, content):
     removed = (before - after) | (old_exports - new_exports)
     if not removed:
         return None
-    git = ["git", "-C", worktree, "--literal-pathspecs"]
-    tracked = subprocess.run(
-        [*git, "ls-files", "--error-unmatch", "--", path], capture_output=True
-    )
-    if tracked.returncode:
+    if not tracked_python_file(worktree, path):
         return None
 
     parts = tuple(os.path.splitext(path)[0].split("/"))
@@ -1128,8 +1203,10 @@ def build_filesystem_backend(worktree):
                     target = self._resolve_path(file_path)
                 except (OSError, RuntimeError) as exc:
                     return WriteResult(error=f"Error writing file '{file_path}': {exc}")
-                error = proposed_method_error(target, content) or proposed_import_error(
-                    worktree, target, content
+                error = (
+                    proposed_method_error(target, content)
+                    or proposed_undefined_name_error(worktree, target, content)
+                    or proposed_import_error(worktree, target, content)
                 )
                 if error:
                     return WriteResult(error=error)
@@ -1682,7 +1759,9 @@ def issuing_message(request):
     return None
 
 
-def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=None):
+def coder_tool_middleware(
+    *, repair=False, planning=False, first_edit_writes=None, correction_failure=""
+):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
 
@@ -1693,7 +1772,8 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
     calls = 0
     explored = 0
     nudged = None
-    bound_exploring = not (repair or planning)
+    edit_attempted = False
+    bound_exploring = not (repair or planning or correction_failure)
     lock = threading.Lock()
     limit = REPAIR_TOOL_LIMIT if repair else INITIAL_TOOL_LIMIT
     label = "Repair" if repair else "Initial implementation"
@@ -1701,7 +1781,7 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
 
     @wrap_tool_call
     def bound_calls(request, handler):
-        nonlocal calls, edit_generation, explored, nudged
+        nonlocal calls, edit_generation, explored, nudged, edit_attempted
         call = request.tool_call
         key = (call["name"], json.dumps(call["args"], sort_keys=True))
         inspection = call["name"] in INSPECTION_TOOLS
@@ -1710,6 +1790,21 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
             if calls > limit:
                 raise error(f"BLOCKED: {label} tool budget exhausted ({limit} calls)")
             generation = edit_generation
+            if correction_failure:
+                edit_attempted |= call["name"] in MUTATING_TOOLS
+                if inspection and (
+                    not edit_attempted or explored > CORRECTION_READ_LIMIT
+                ):
+                    explored += 1
+                    if explored > CORRECTION_READ_LIMIT:
+                        content = "Make the correction edit now or reply BLOCKED."
+                        if explored == CORRECTION_READ_LIMIT + 1:
+                            content += (
+                                f"\n\nFailing verification:\n{correction_failure}"
+                            )
+                        return ToolMessage(
+                            content=content, tool_call_id=call["id"], status="error"
+                        )
             if inspection and key in earlier:
                 previous = earlier[key]
                 return previous.model_copy(
@@ -1791,7 +1886,8 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
                 seen.clear()
                 acknowledged.clear()
                 earlier.clear()
-                explored = 0
+                if not correction_failure:
+                    explored = 0
                 nudged = None
         return result
 
@@ -1816,6 +1912,7 @@ def build_agent(
     call_cap=None,
     first_edit=None,
     planned_files=(),
+    correction_failure="",
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
@@ -1867,6 +1964,7 @@ def build_agent(
             repair=repair,
             planning=planning,
             first_edit_writes=written_files if first_edit is not None else None,
+            correction_failure=correction_failure,
         ),
     )
     if not planning:
@@ -2465,7 +2563,7 @@ def run_coder(
             if left() is None
             else min(REPAIR_MODEL_LIMIT, left()),
             prior_files=error.coder_written_files,
-            fix_turn=True,
+            correction_failure=str(error),
             **kwargs,
         )
     except ModelCallLimitExceededError:
@@ -2573,7 +2671,7 @@ def _run_coder_attempt(
     prior_tracker=None,
     issue_ref="",
     verify_stalls=False,
-    fix_turn=False,
+    correction_failure="",
 ):
     """Invoke the coder with a verify gate.
 
@@ -2694,6 +2792,7 @@ def _run_coder_attempt(
             call_cap=call_cap,
             first_edit=first_edit,
             planned_files=repair_files,
+            correction_failure=correction_failure,
         )
         config = {"configurable": {"thread_id": thread}}
 
@@ -2767,7 +2866,7 @@ def _run_coder_attempt(
         stall_reason = ""
         reply = ""
         try:
-            if fix_turn:
+            if correction_failure:
                 reply = extract_reply(invoke_bounded(brief))
                 verified = False
                 contract = terminal_contract(reply)
@@ -2800,14 +2899,14 @@ def _run_coder_attempt(
                 stall_reason = "coder_tool_stall"
             else:
                 raise
-            completion = "" if fix_turn else verified_completion(stall_reason)
+            completion = "" if correction_failure else verified_completion(stall_reason)
             if not completion and not (verify_stalls and written_files):
                 raise
             if completion:
                 reply, verified, auto_completed = completion, True, True
                 stall_reason = ""
         if stall_reason:
-            completion = "" if fix_turn else verified_completion(stall_reason)
+            completion = "" if correction_failure else verified_completion(stall_reason)
             if not completion and verify_stalls and written_files:
                 verify_stalled_edits(worktree, written_files, repo, recorder, deadline)
                 completion = verified_completion(stall_reason)
