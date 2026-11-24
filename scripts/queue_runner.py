@@ -1182,10 +1182,20 @@ def supervise(config_path, *, clear_halt=False):
     before the lock or any GitHub call, and makes the stop terminal (see _supervise)."""
     config = read_json(config_path)
     only = only_issue_keys(config["only_issues"]) if "only_issues" in config else None
-    return _supervise(config_path, clear_halt=clear_halt, only=only)
+    held = []
+    try:
+        return _supervise(config_path, clear_halt=clear_halt, only=only, held=held)
+    finally:
+        # Terminal stop once the lock was held, however the pass ended (done, halt or
+        # error). A second start that lost the lock race writes nothing.
+        if only is not None and held:
+            root = Path(config["state_dir"]).resolve()
+            (root / "STOP").touch(mode=0o600)
+            print("STOP only_issues pass ended; remove STOP to run again", flush=True)
 
 
-def _supervise(config_path, *, clear_halt=False, only=None):
+def _supervise(config_path, *, clear_halt=False, only=None, held=None):
+    held = [] if held is None else held
     config = read_json(config_path)
     cap = checked_cap(config.get("cap_usd", ISSUE_CAP_USD))
     failure_limit = config.get("max_common_failures", 3)
@@ -1209,334 +1219,314 @@ def _supervise(config_path, *, clear_halt=False, only=None):
     status_path = root / "status.json"
     with (root / "queue.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        # Lock held: from here, an only_issues pass always ends with a terminal STOP.
-        try:
-            # queue_status reads this to tell a live supervisor from a --retry
-            # holding the same lock while the service is stopped.
-            (root / "supervisor.pid").write_text(str(os.getpid()))
-            status = (
-                read_json(status_path) if status_path.exists() else {"completed": []}
+        held.append(True)  # the lock is ours: an only_issues pass now ends with STOP
+        # queue_status reads this to tell a live supervisor from a --retry
+        # holding the same lock while the service is stopped.
+        (root / "supervisor.pid").write_text(str(os.getpid()))
+        status = read_json(status_path) if status_path.exists() else {"completed": []}
+        if only is not None and status.get("current") and status["current"] not in only:
+            status.update(
+                halted=True,
+                reason=f"only_issues set but {status['current']} is claimed; inspect it first",
             )
-            if (
-                only is not None
-                and status.get("current")
-                and status["current"] not in only
-            ):
-                status.update(
-                    halted=True,
-                    reason=f"only_issues set but {status['current']} is claimed; inspect it first",
-                )
+            write_json(status_path, status)
+            return 2
+        finish_retry(root, status_path, status, config)
+        ledger = QueueLedger(config, status, status_path)
+        ledger.boundary(merges=True)
+        if status.get("current"):
+            current = status["current"]
+            try:
+                repo, number = current.rsplit("#", 1)
+                issue = {"repo": repo, "number": int(number)}
+                ordered_issues([issue])
+                name = repo.replace("/", "_") + "-" + str(issue["number"])
+                directory = root / name
+                saved = read_json(directory / "job.json")["issue"]
+                if (saved["repo"], saved["number"]) != (repo, issue["number"]):
+                    raise SafetyStop("current issue differs from saved job")
+                try:
+                    recovery = reconcile_job(
+                        config, source, directory, runtime_root / name
+                    )
+                finally:
+                    audit_failures(config)
+                summary_path = directory / "summary.json"
+                summary = read_json(summary_path) if summary_path.exists() else {}
+                if summary.get("halt_queue") is True:
+                    if not clear_halt:
+                        status.update(
+                            halted=True,
+                            reason=summary.get("halt_reasons")
+                            or "saved worker halt requires operator clearance",
+                        )
+                        write_json(status_path, status)
+                        return 2
+                    summary.update(
+                        halt_queue=False,
+                        acknowledged_halt_reasons=summary.get("halt_reasons", []),
+                        halt_reasons=[],
+                        halt_acknowledged_at=time.time(),
+                    )
+                    write_json(summary_path, summary)
+                if current not in status["completed"]:
+                    status["completed"].append(current)
+                status.update(current=None, last_recovery=recovery)
+                write_json(status_path, status)
+            except Exception as error:
+                status.update(halted=True, reason=f"startup reconciliation: {error}")
                 write_json(status_path, status)
                 return 2
-            finish_retry(root, status_path, status, config)
-            ledger = QueueLedger(config, status, status_path)
-            ledger.boundary(merges=True)
-            if status.get("current"):
-                current = status["current"]
-                try:
-                    repo, number = current.rsplit("#", 1)
-                    issue = {"repo": repo, "number": int(number)}
-                    ordered_issues([issue])
-                    name = repo.replace("/", "_") + "-" + str(issue["number"])
-                    directory = root / name
-                    saved = read_json(directory / "job.json")["issue"]
-                    if (saved["repo"], saved["number"]) != (repo, issue["number"]):
-                        raise SafetyStop("current issue differs from saved job")
-                    try:
-                        recovery = reconcile_job(
-                            config, source, directory, runtime_root / name
-                        )
-                    finally:
-                        audit_failures(config)
-                    summary_path = directory / "summary.json"
-                    summary = read_json(summary_path) if summary_path.exists() else {}
-                    if summary.get("halt_queue") is True:
-                        if not clear_halt:
-                            status.update(
-                                halted=True,
-                                reason=summary.get("halt_reasons")
-                                or "saved worker halt requires operator clearance",
-                            )
-                            write_json(status_path, status)
-                            return 2
-                        summary.update(
-                            halt_queue=False,
-                            acknowledged_halt_reasons=summary.get("halt_reasons", []),
-                            halt_reasons=[],
-                            halt_acknowledged_at=time.time(),
-                        )
-                        write_json(summary_path, summary)
-                    if current not in status["completed"]:
-                        status["completed"].append(current)
-                    status.update(current=None, last_recovery=recovery)
-                    write_json(status_path, status)
-                except Exception as error:
-                    status.update(
-                        halted=True, reason=f"startup reconciliation: {error}"
-                    )
-                    write_json(status_path, status)
-                    return 2
-            if status.get("halted") and not clear_halt:
-                raise SafetyStop(
-                    "queue is halted; inspect status before an explicit recovery"
-                )
-            if clear_halt:
-                status.update(
-                    halted=False, reason=None, halt_acknowledged_at=time.time()
-                )
-                (root / "STOP").unlink(missing_ok=True)
-                write_json(status_path, status)
-            # Startup pass runs only after the claimed issue is reconciled, so
-            # a crashed run's worktree is never swept before its recovery.
-            prune_landed_worktrees(config)
-            stopping = []
-
-            def stop(_number, _frame):
-                stopping.append(True)
-                (root / "STOP").touch(mode=0o600)
-
-            signal.signal(signal.SIGTERM, stop)
-            signal.signal(signal.SIGINT, stop)
-            issues = ordered_issues(read_json(config["issues_file"]))
-            issues += discover_ready(config, issues, status["completed"])
-            issues.sort(
-                key=lambda issue: (
-                    f"{issue['repo']}#{issue['number']}" != status.get("retry")
-                )
+        if status.get("halted") and not clear_halt:
+            raise SafetyStop(
+                "queue is halted; inspect status before an explicit recovery"
             )
-            if only is not None:
-                issues = [i for i in issues if f"{i['repo']}#{i['number']}" in only]
-                print("ONLY " + ", ".join(sorted(only)), flush=True)
-                found = {f"{i['repo']}#{i['number']}" for i in issues}
-                for key in sorted(only - found):
-                    print(
-                        f"ONLY {key} not in the manifest or ready discovery: nothing to run",
-                        flush=True,
-                    )
-            for issue in issues:
-                if stopping or (root / "STOP").exists():
-                    status.update(stopped=True, current=None)
-                    write_json(status_path, status)
-                    return 0
-                key = f"{issue['repo']}#{issue['number']}"
-                if key in status["completed"]:
-                    continue
-                reason = skip_reason(issue)
-                if reason:
-                    status.setdefault("skipped", {})[key] = reason
-                    if status.get("retry") == key:
-                        status.pop("retry")
-                    write_json(status_path, status)
-                    continue
-                if issue["repo"] not in config["repo_paths"]:
-                    raise ValueError("no configured checkout for " + issue["repo"])
-                try:
-                    fresh = json.loads(
-                        subprocess.check_output(
-                            config.get("gh_command", ["gh"])
-                            + [
-                                "api",
-                                f"repos/{issue['repo']}/issues/{issue['number']}",
-                            ],
-                            text=True,
-                        )
-                    )
-                    state = fresh["state"]
-                    labels = {
-                        label.get("name") if isinstance(label, dict) else label
-                        for label in fresh.get("labels") or []
-                    }
-                except (
-                    subprocess.CalledProcessError,
-                    OSError,
-                    ValueError,
-                    KeyError,
-                ) as e:
-                    print(f"SKIP {key} refresh failed: {e}", flush=True)
-                    continue
-                if state != "open":
-                    status["completed"].append(key)
-                    if status.get("retry") == key:
-                        status.pop("retry")
-                    write_json(status_path, status)
-                    continue
-                if "ready" not in labels:
-                    print(f"SKIP {key} not ready", flush=True)
-                    continue
-                name = issue["repo"].replace("/", "_") + "-" + str(issue["number"])
-                directory = root / name
-                if directory.exists():
-                    status.update(
-                        halted=True,
-                        reason="unfinished issue directory requires inspection",
-                        current=key,
-                    )
-                    write_json(status_path, status)
-                    return 2
-                try:
-                    remaining_cap = checked_cap(
-                        cap - status.get("retry_spend", {}).get(key, 0)
-                    )
-                except ValueError as error:
-                    status.update(
-                        halted=True, reason=f"issue budget prevents dispatch: {error}"
-                    )
-                    write_json(status_path, status)
-                    return 2
-                ledger.boundary()
-                held = ledger.claimed_elsewhere(key)
-                if held:
-                    ledger_log(f"skip {key}: {held}")
-                    status.setdefault("ledger_skipped", {})[key] = held
-                    write_json(status_path, status)
-                    continue
-                if stopping or (root / "STOP").exists():
-                    status.update(stopped=True, current=None)
-                    write_json(status_path, status)
-                    return 0
-                directory.mkdir(mode=0o700)
-                runtime_directory = runtime_root / name
-                tier, tier_reason = start_tier(
-                    fresh, status.get("tier_failures", {}).get(key, 0), strong_after
-                )
-                # Deterministic task routing: pick concrete provider/model
-                # pins per tier from the live TwT catalog, and raise the
-                # start tier when the task itself looks hard — never lowered
-                # below the escalation/label tier. Router failure keeps the
-                # configured environment untouched.
-                requested_tier = tier
-                routing = None
-                try:
-                    from backend.shared import task_router
+        if clear_halt:
+            status.update(halted=False, reason=None, halt_acknowledged_at=time.time())
+            (root / "STOP").unlink(missing_ok=True)
+            write_json(status_path, status)
+        # Startup pass runs only after the claimed issue is reconciled, so
+        # a crashed run's worktree is never swept before its recovery.
+        prune_landed_worktrees(config)
+        stopping = []
 
-                    routing = task_router.route_issue(fresh, remaining_cap)
-                    if routing["tier"] == "strong" and tier != "strong":
-                        tier = "strong"
-                        tier_reason = f"{tier_reason}+{routing['tier_rule']}"
-                        print(
-                            f"WARNING {key} requested tier={requested_tier} "
-                            f"but serving tier={tier} ({routing['tier_rule']})",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                except Exception as error:
-                    routing = {"error": str(error)}
-                job = {
-                    "issue": {
-                        "repo": issue["repo"],
-                        "number": issue["number"],
-                        "title": fresh["title"],
-                        "body": fresh.get("body") or "",
-                    },
-                    "cap_usd": remaining_cap,
-                    "checkout": config["repo_paths"][issue["repo"]],
-                    "pipeline_checkout": config["pipeline_checkout"],
-                    "environment": config.get("environment", {}),
-                    "model_tier": tier,
-                    "requested_tier": requested_tier,
-                    "tier_reason": tier_reason,
-                    "routing": routing,
-                }
-                write_json(directory / "job.json", job)
-                status.update(current=key, started_at=time.time())
+        def stop(_number, _frame):
+            stopping.append(True)
+            (root / "STOP").touch(mode=0o600)
+
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        issues = ordered_issues(read_json(config["issues_file"]))
+        issues += discover_ready(config, issues, status["completed"])
+        issues.sort(
+            key=lambda issue: (
+                f"{issue['repo']}#{issue['number']}" != status.get("retry")
+            )
+        )
+        if only is not None:
+            issues = [i for i in issues if f"{i['repo']}#{i['number']}" in only]
+            print("ONLY " + ", ".join(sorted(only)), flush=True)
+            found = {f"{i['repo']}#{i['number']}" for i in issues}
+            for key in sorted(only - found):
+                print(
+                    f"ONLY {key} not in the manifest or ready discovery: nothing to run",
+                    flush=True,
+                )
+        for issue in issues:
+            if stopping or (root / "STOP").exists():
+                status.update(stopped=True, current=None)
+                write_json(status_path, status)
+                return 0
+            key = f"{issue['repo']}#{issue['number']}"
+            if key in status["completed"]:
+                continue
+            reason = skip_reason(issue)
+            if reason:
+                status.setdefault("skipped", {})[key] = reason
                 if status.get("retry") == key:
                     status.pop("retry")
                 write_json(status_path, status)
-                ledger.claim(key)
-                print(f"START {key} tier={tier} reason={tier_reason}", flush=True)
-                print(f"START {key} tier={tier} reason={tier_reason}", flush=True)
-                with (directory / "run.log").open("w") as log:
-                    process = subprocess.Popen(
-                        worker_command(config, "--worker", runtime_directory),
-                        stdin=subprocess.PIPE,
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
+                continue
+            if issue["repo"] not in config["repo_paths"]:
+                raise ValueError("no configured checkout for " + issue["repo"])
+            try:
+                fresh = json.loads(
+                    subprocess.check_output(
+                        config.get("gh_command", ["gh"])
+                        + [
+                            "api",
+                            f"repos/{issue['repo']}/issues/{issue['number']}",
+                        ],
                         text=True,
                     )
-                    process.communicate(source)
-                audit_failures(config)
-                summary_path = directory / "summary.json"
-                if not summary_path.exists():
-                    status.update(
-                        halted=True,
-                        reason="worker exited without verifiable cost/reconciliation",
-                        current=key,
-                    )
-                    write_json(status_path, status)
-                    ledger.result(key, None)
-                    return 2
-                summary = read_json(summary_path)
-                if summary["halt_queue"] or not summary["reconciliation"]["reconciled"]:
-                    status.update(
-                        halted=True, reason=summary.get("halt_reasons"), current=key
-                    )
-                    write_json(status_path, status)
-                    ledger.result(key, None)
-                    return 2
-                if process.returncode != summary.get("exit_code"):
-                    status.update(
-                        halted=True,
-                        reason="worker exit disagrees with its summary",
-                        current=key,
-                    )
-                    write_json(status_path, status)
-                    ledger.result(key, None)
-                    return 2
+                )
+                state = fresh["state"]
+                labels = {
+                    label.get("name") if isinstance(label, dict) else label
+                    for label in fresh.get("labels") or []
+                }
+            except (
+                subprocess.CalledProcessError,
+                OSError,
+                ValueError,
+                KeyError,
+            ) as e:
+                print(f"SKIP {key} refresh failed: {e}", flush=True)
+                continue
+            if state != "open":
                 status["completed"].append(key)
-                status.update(last=summary, current=None)
-                if summary["exit_code"] == 0:
-                    # Failed runs keep their tree as evidence for --retry.
-                    prune_landed_worktrees(config)
-                failures = status.setdefault("tier_failures", {})
-                if counts_toward_escalation(summary):
-                    failures[key] = failures.get(key, 0) + 1
-                elif summary["exit_code"] == 0:
-                    failures.pop(key, None)
-                status.setdefault("attempts", {}).setdefault(key, []).append(
-                    {
-                        "tier": tier,
-                        "reason": tier_reason,
-                        "status": summary["result"].get("status"),
-                        "exit_code": summary["exit_code"],
-                    }
-                )
-                if summary["exit_code"]:
-                    blocker = {
-                        key: summary["result"].get(key) for key in ("status", "detail")
-                    }
-                    status["consecutive_failures"] = (
-                        status.get("consecutive_failures", 0) + 1
-                        if status.get("blocker") == blocker
-                        else 1
-                    )
-                    status["blocker"] = blocker
-                else:
-                    status.update(consecutive_failures=0, blocker=None)
+                if status.get("retry") == key:
+                    status.pop("retry")
                 write_json(status_path, status)
-                print(
-                    "FINISH " + key + " " + summary["result"].get("status", "UNKNOWN"),
-                    flush=True,
+                continue
+            if "ready" not in labels:
+                print(f"SKIP {key} not ready", flush=True)
+                continue
+            name = issue["repo"].replace("/", "_") + "-" + str(issue["number"])
+            directory = root / name
+            if directory.exists():
+                status.update(
+                    halted=True,
+                    reason="unfinished issue directory requires inspection",
+                    current=key,
                 )
-                ledger.result(
-                    key, summary, status["consecutive_failures"] >= failure_limit
+                write_json(status_path, status)
+                return 2
+            try:
+                remaining_cap = checked_cap(
+                    cap - status.get("retry_spend", {}).get(key, 0)
                 )
-                if status["consecutive_failures"] >= failure_limit:
-                    status.update(
-                        halted=True, reason="consecutive failures with a common blocker"
-                    )
-                    write_json(status_path, status)
-                    return 2
-                if only is None:
-                    time.sleep(config.get("inter_issue_delay_seconds", 60))
-            status.update(done=True, current=None)
-            write_json(status_path, status)
-        finally:
-            if only is not None:
-                (root / "STOP").touch(mode=0o600)
-                print(
-                    "STOP only_issues pass ended; remove STOP to run again", flush=True
+            except ValueError as error:
+                status.update(
+                    halted=True, reason=f"issue budget prevents dispatch: {error}"
                 )
+                write_json(status_path, status)
+                return 2
+            ledger.boundary()
+            held = ledger.claimed_elsewhere(key)
+            if held:
+                ledger_log(f"skip {key}: {held}")
+                status.setdefault("ledger_skipped", {})[key] = held
+                write_json(status_path, status)
+                continue
+            if stopping or (root / "STOP").exists():
+                status.update(stopped=True, current=None)
+                write_json(status_path, status)
+                return 0
+            directory.mkdir(mode=0o700)
+            runtime_directory = runtime_root / name
+            tier, tier_reason = start_tier(
+                fresh, status.get("tier_failures", {}).get(key, 0), strong_after
+            )
+            # Deterministic task routing: pick concrete provider/model
+            # pins per tier from the live TwT catalog, and raise the
+            # start tier when the task itself looks hard — never lowered
+            # below the escalation/label tier. Router failure keeps the
+            # configured environment untouched.
+            requested_tier = tier
+            routing = None
+            try:
+                from backend.shared import task_router
 
+                routing = task_router.route_issue(fresh, remaining_cap)
+                if routing["tier"] == "strong" and tier != "strong":
+                    tier = "strong"
+                    tier_reason = f"{tier_reason}+{routing['tier_rule']}"
+                    print(
+                        f"WARNING {key} requested tier={requested_tier} "
+                        f"but serving tier={tier} ({routing['tier_rule']})",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            except Exception as error:
+                routing = {"error": str(error)}
+            job = {
+                "issue": {
+                    "repo": issue["repo"],
+                    "number": issue["number"],
+                    "title": fresh["title"],
+                    "body": fresh.get("body") or "",
+                },
+                "cap_usd": remaining_cap,
+                "checkout": config["repo_paths"][issue["repo"]],
+                "pipeline_checkout": config["pipeline_checkout"],
+                "environment": config.get("environment", {}),
+                "model_tier": tier,
+                "requested_tier": requested_tier,
+                "tier_reason": tier_reason,
+                "routing": routing,
+            }
+            write_json(directory / "job.json", job)
+            status.update(current=key, started_at=time.time())
+            if status.get("retry") == key:
+                status.pop("retry")
+            write_json(status_path, status)
+            ledger.claim(key)
+            print(f"START {key} tier={tier} reason={tier_reason}", flush=True)
+            print(f"START {key} tier={tier} reason={tier_reason}", flush=True)
+            with (directory / "run.log").open("w") as log:
+                process = subprocess.Popen(
+                    worker_command(config, "--worker", runtime_directory),
+                    stdin=subprocess.PIPE,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                process.communicate(source)
+            audit_failures(config)
+            summary_path = directory / "summary.json"
+            if not summary_path.exists():
+                status.update(
+                    halted=True,
+                    reason="worker exited without verifiable cost/reconciliation",
+                    current=key,
+                )
+                write_json(status_path, status)
+                ledger.result(key, None)
+                return 2
+            summary = read_json(summary_path)
+            if summary["halt_queue"] or not summary["reconciliation"]["reconciled"]:
+                status.update(
+                    halted=True, reason=summary.get("halt_reasons"), current=key
+                )
+                write_json(status_path, status)
+                ledger.result(key, None)
+                return 2
+            if process.returncode != summary.get("exit_code"):
+                status.update(
+                    halted=True,
+                    reason="worker exit disagrees with its summary",
+                    current=key,
+                )
+                write_json(status_path, status)
+                ledger.result(key, None)
+                return 2
+            status["completed"].append(key)
+            status.update(last=summary, current=None)
+            if summary["exit_code"] == 0:
+                # Failed runs keep their tree as evidence for --retry.
+                prune_landed_worktrees(config)
+            failures = status.setdefault("tier_failures", {})
+            if counts_toward_escalation(summary):
+                failures[key] = failures.get(key, 0) + 1
+            elif summary["exit_code"] == 0:
+                failures.pop(key, None)
+            status.setdefault("attempts", {}).setdefault(key, []).append(
+                {
+                    "tier": tier,
+                    "reason": tier_reason,
+                    "status": summary["result"].get("status"),
+                    "exit_code": summary["exit_code"],
+                }
+            )
+            if summary["exit_code"]:
+                blocker = {
+                    key: summary["result"].get(key) for key in ("status", "detail")
+                }
+                status["consecutive_failures"] = (
+                    status.get("consecutive_failures", 0) + 1
+                    if status.get("blocker") == blocker
+                    else 1
+                )
+                status["blocker"] = blocker
+            else:
+                status.update(consecutive_failures=0, blocker=None)
+            write_json(status_path, status)
+            print(
+                "FINISH " + key + " " + summary["result"].get("status", "UNKNOWN"),
+                flush=True,
+            )
+            ledger.result(key, summary, status["consecutive_failures"] >= failure_limit)
+            if status["consecutive_failures"] >= failure_limit:
+                status.update(
+                    halted=True, reason="consecutive failures with a common blocker"
+                )
+                write_json(status_path, status)
+                return 2
+            if only is None:
+                time.sleep(config.get("inter_issue_delay_seconds", 60))
+        status.update(done=True, current=None)
+        write_json(status_path, status)
     return 0
 
 
