@@ -307,6 +307,16 @@ pre {
   transition: width 0.2s ease;
 }
 
+.progress-bar.indeterminate {
+  width: 40% !important;
+  animation: progress-slide 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes progress-slide {
+  from { margin-left: 0; }
+  to { margin-left: 60%; }
+}
+
 /* Vault List & Observer List */
 .item-card {
   background: var(--surface);

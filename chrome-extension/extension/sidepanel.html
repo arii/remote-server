@@ -82,13 +82,27 @@
         </div>
       </div>
 
-      <div id="download-progress-container" style="display: none;">
-        <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
-          <span>Downloading Gemini Nano Weights</span>
-          <span id="download-progress-text">0%</span>
+      <div id="download-progress-container">
+        <div class="model-progress-row" data-model="languageModel">
+          <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+            <span>Prompt (Gemini Nano)</span>
+            <span id="download-text-languageModel">...</span>
+          </div>
+          <div class="progress-bar-container"><div id="download-fill-languageModel" class="progress-bar" style="width: 0%;"></div></div>
         </div>
-        <div class="progress-bar-container">
-          <div id="download-progress-fill" class="progress-bar" style="width: 0%;"></div>
+        <div class="model-progress-row" data-model="summarizer">
+          <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+            <span>Summarizer</span>
+            <span id="download-text-summarizer">...</span>
+          </div>
+          <div class="progress-bar-container"><div id="download-fill-summarizer" class="progress-bar" style="width: 0%;"></div></div>
+        </div>
+        <div class="model-progress-row" data-model="writer">
+          <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+            <span>Writer</span>
+            <span id="download-text-writer">...</span>
+          </div>
+          <div class="progress-bar-container"><div id="download-fill-writer" class="progress-bar" style="width: 0%;"></div></div>
         </div>
       </div>
 

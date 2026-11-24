@@ -14,6 +14,7 @@ import {
   selectVaultFacts
 } from "./lib/ask-context.js";
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
+import { MODEL_APIS, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
   SUGGESTION_SCHEMA,
@@ -443,17 +444,24 @@ async function checkBuiltInAIStatus() {
     badgeText.textContent = "AI Unavailable";
   }
 
+  for (const api of MODEL_APIS) renderModelProgress(api.key, modelProgressState(report[api.key]));
+
   document.getElementById("model-details-box").textContent = JSON.stringify(report, null, 2);
   return report;
 }
 
+function renderModelProgress(key, { state, pct, label }, errorText = "") {
+  const fill = document.getElementById(`download-fill-${key}`);
+  const text = document.getElementById(`download-text-${key}`);
+  if (!fill || !text) return;
+  const indeterminate = state === "downloading" && pct === null;
+  fill.classList.toggle("indeterminate", indeterminate);
+  if (!indeterminate) fill.style.width = `${pct ?? 0}%`;
+  text.textContent = errorText || label;
+}
+
 async function createPromptSession(onProgress, options = {}) {
-  const monitor = (m) => {
-    m.addEventListener("downloadprogress", (e) => {
-      const pct = Math.round((e.loaded || 0) * 100);
-      if (onProgress) onProgress(pct);
-    });
-  };
+  const monitor = makeDownloadMonitor(onProgress);
 
   const sessionOptions = {
     monitor,
@@ -474,33 +482,41 @@ async function createPromptSession(onProgress, options = {}) {
   throw new Error("Prompt API (LanguageModel) not available in this browser context.");
 }
 
-// Model Bootstrap Button
+// Model Bootstrap Button: downloads only models that are downloadable/downloading.
 document.getElementById("btn-bootstrap-model").addEventListener("click", async () => {
   const box = document.getElementById("model-details-box");
-  const progressContainer = document.getElementById("download-progress-container");
-  const progressFill = document.getElementById("download-progress-fill");
-  const progressText = document.getElementById("download-progress-text");
+  box.textContent = "Checking which models need downloading...";
+  const before = await checkBuiltInAIStatus();
+  const errors = [];
 
-  progressContainer.style.display = "block";
-  progressFill.style.width = "5%";
-  progressText.textContent = "5%";
-  box.textContent = "Requesting Gemini Nano model download...";
+  for (const api of MODEL_APIS) {
+    if (before[api.key] !== "downloadable" && before[api.key] !== "downloading") continue;
+    const onPct = (pct) => {
+      renderModelProgress(api.key, modelProgressState("downloading", pct));
+      box.textContent = `Downloading ${api.label} model: ${pct}%...`;
+    };
+    renderModelProgress(api.key, modelProgressState("downloading", null));
+    try {
+      let session;
+      if (api.key === "languageModel") {
+        session = await createPromptSession(onPct);
+      } else {
+        session = await self[api.global].create({ monitor: makeDownloadMonitor(onPct), outputLanguage: "en" });
+      }
+      session.destroy?.();
+    } catch (err) {
+      errors.push(`${api.label}: ${err.message}`);
+      renderModelProgress(api.key, modelProgressState(before[api.key]), `Error: ${err.message}`);
+    }
+  }
 
-  try {
-    const session = await createPromptSession((pct) => {
-      progressFill.style.width = `${pct}%`;
-      progressText.textContent = `${pct}%`;
-      box.textContent = `Downloading Gemini Nano model weights: ${pct}%...`;
-    });
-
-    const ping = await session.prompt("Respond with READY.");
-    progressFill.style.width = "100%";
-    progressText.textContent = "100%";
-    box.textContent = `Model Ready! Diagnostic test response:\n${ping}`;
-    session.destroy();
-    await checkBuiltInAIStatus();
-  } catch (err) {
-    box.textContent = `Model initialization error: ${err.message}\n\nMake sure chrome://flags/#optimization-guide-on-device-model and chrome://flags/#prompt-api-for-gemini-nano are enabled.`;
+  const after = await checkBuiltInAIStatus();
+  for (const api of MODEL_APIS) {
+    const failed = errors.find((e) => e.startsWith(`${api.label}:`));
+    if (failed) renderModelProgress(api.key, modelProgressState(after[api.key]), failed);
+  }
+  if (errors.length) {
+    box.textContent = `Model initialization errors:\n${errors.join("\n")}\n\nMake sure chrome://flags/#optimization-guide-on-device-model and chrome://flags/#prompt-api-for-gemini-nano are enabled.\n\n${box.textContent}`;
   }
 });
 
