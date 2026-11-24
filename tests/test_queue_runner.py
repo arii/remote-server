@@ -21,9 +21,14 @@ from scripts import queue_runner as runner
 from scripts import ledger_post
 from scripts.run_root_tests import block_google_docs_requests
 
+# Supervisor tests mock subprocess wholesale; the real prune pass is
+# exercised by PruneLandedWorktreesTests through this saved reference.
+prune_landed_worktrees = runner.prune_landed_worktrees
+
 
 def setUpModule():
     unittest.enterModuleContext(block_google_docs_requests())
+    unittest.enterModuleContext(mock.patch.object(runner, "prune_landed_worktrees"))
 
 
 class ClaimsPrValidTests(unittest.TestCase):
@@ -302,6 +307,108 @@ class RetryWorktreeTests(unittest.TestCase):
                 self.assertTrue((worktree / "evidence.txt").exists())
 
 
+class PruneLandedWorktreesTests(unittest.TestCase):
+    def git(self, repo, *args):
+        return subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                *args,
+            ],
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+
+    def fixture(self, root):
+        root = Path(root)
+        origin = root / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)])
+        repo = root / "repo"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "main")
+        self.git(repo, "remote", "add", "origin", str(origin))
+        (repo / "a.txt").write_text("a")
+        self.git(repo, "add", "a.txt")
+        self.git(repo, "commit", "-q", "-m", "base")
+        self.git(repo, "push", "-q", "origin", "main")
+        return repo
+
+    def add_tree(self, repo, rel, branch, commit=None):
+        path = repo / rel
+        self.git(repo, "worktree", "add", "-q", "-b", branch, str(path))
+        if commit:
+            (path / commit).write_text(commit)
+            self.git(path, "add", commit)
+            self.git(path, "commit", "-q", "-m", commit)
+        return path
+
+    def test_prunes_landed_agent_trees_and_keeps_everything_else(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = self.fixture(root)
+            landed_zero = self.add_tree(repo, ".worktrees/issue-1", "agent/issue-1")
+            (landed_zero / "runner-cache.txt").write_text("untracked artifact")
+            retry = self.add_tree(
+                repo, ".worktrees/.queue-retry/o_r-2-1", "queue-retry/o_r-2-1", "r.txt"
+            )
+            self.git(repo, "push", "-q", "origin", "queue-retry/o_r-2-1:main")
+            unmerged = self.add_tree(
+                repo, ".worktrees/issue-3", "agent/issue-3", "u.txt"
+            )
+            dirty = self.add_tree(repo, ".worktrees/issue-4", "agent/issue-4")
+            (dirty / "a.txt").write_text("tracked edit")
+            user = self.add_tree(repo, ".worktrees/user-work", "feature/user")
+            (user / "scratch.txt").write_text("untracked")
+            queue_main = self.add_tree(repo, ".worktrees/queue-main", "agent/issue-5")
+            self.git(repo, "fetch", "-q", "origin", "main")
+            config = {
+                "pipeline_checkout": os.getcwd(),
+                "repo_paths": {"o/r": str(repo)},
+            }
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                prune_landed_worktrees(config)
+            self.assertFalse(landed_zero.exists())
+            self.assertFalse(retry.exists())
+            for kept in (unmerged, dirty, user, queue_main):
+                self.assertTrue(kept.exists(), kept)
+            branches = self.git(repo, "branch", "--format=%(refname:short)").split()
+            self.assertNotIn("agent/issue-1", branches)
+            self.assertNotIn("queue-retry/o_r-2-1", branches)
+            for kept in ("agent/issue-3", "agent/issue-4", "feature/user"):
+                self.assertIn(kept, branches)
+            self.assertIn("PRUNE o/r", out.getvalue())
+
+    def test_queue_main_is_never_pruned_even_when_landed_and_clean(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = self.fixture(root)
+            queue_main = self.add_tree(repo, ".worktrees/queue-main", "agent/issue-9")
+            config = {
+                "pipeline_checkout": os.getcwd(),
+                "repo_paths": {"o/r": str(repo)},
+            }
+            with contextlib.redirect_stdout(io.StringIO()):
+                prune_landed_worktrees(config)
+            self.assertTrue(queue_main.exists())
+            self.assertIn(
+                "agent/issue-9", self.git(repo, "branch", "--format=%(refname:short)")
+            )
+
+    def test_prune_failure_is_logged_and_does_not_raise(self):
+        config = {
+            "pipeline_checkout": os.getcwd(),
+            "repo_paths": {"o/r": "/nonexistent-checkout"},
+        }
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            prune_landed_worktrees(config)
+        self.assertIn("PRUNE o/r failed", out.getvalue())
+
+
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(
@@ -317,6 +424,9 @@ class RunnerTests(unittest.TestCase):
         archive = mock.patch.object(runner, "archive_retry_worktree")
         self.archive_worktree = archive.start()
         self.addCleanup(archive.stop)
+        prune = mock.patch.object(runner, "prune_landed_worktrees")
+        self.prune_worktrees = prune.start()
+        self.addCleanup(prune.stop)
 
     def test_retry_worktree_failure_keeps_durable_intent_and_evidence(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1214,6 +1324,8 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(runner.supervise(config), 0)
             self.assertEqual(dispatched, [11, 12, 10])
             self.assertEqual(len(runner.read_json(state / "status.json")["skipped"]), 7)
+            # one prune pass per startup plus one after each finished dispatch
+            self.assertEqual(self.prune_worktrees.call_count, 2 + 3)
 
     def ready_fake(self, listings, failing=()):
         def fake(command, **_kwargs):

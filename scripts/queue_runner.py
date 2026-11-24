@@ -1131,6 +1131,33 @@ def retry_issue(config_path, key):
     return 0
 
 
+def prune_landed_worktrees(config):
+    """Remove landed agent worktrees (incl. .queue-retry) in every configured checkout.
+
+    The script keeps unmerged, dirty and non-agent trees and the operator
+    `queue-main` tree. A failure is logged and never stops the queue.
+    """
+    script = Path(config["pipeline_checkout"]) / "scripts" / "prune-worktrees.sh"
+    for repo, checkout in config["repo_paths"].items():
+        try:
+            result = subprocess.run(
+                ["bash", str(script), "--prune"],
+                cwd=checkout,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            print(f"PRUNE {repo} failed: {error}", flush=True)
+            continue
+        if result.returncode != 0:
+            print(f"PRUNE {repo} failed: {result.stderr.strip()}", flush=True)
+        # Forward removals and the script's indented "(... failed/kept)" notes.
+        for line in result.stdout.splitlines():
+            if line.startswith(("PRUNE ", "      (")):
+                print(f"PRUNE {repo} {line.strip()}", flush=True)
+
+
 def supervise(config_path, *, clear_halt=False):
     config = read_json(config_path)
     cap = checked_cap(config.get("cap_usd", ISSUE_CAP_USD))
@@ -1213,6 +1240,9 @@ def supervise(config_path, *, clear_halt=False):
             status.update(halted=False, reason=None, halt_acknowledged_at=time.time())
             (root / "STOP").unlink(missing_ok=True)
             write_json(status_path, status)
+        # Startup pass runs only after the claimed issue is reconciled, so
+        # a crashed run's worktree is never swept before its recovery.
+        prune_landed_worktrees(config)
         stopping = []
 
         def stop(_number, _frame):
@@ -1391,6 +1421,9 @@ def supervise(config_path, *, clear_halt=False):
                 return 2
             status["completed"].append(key)
             status.update(last=summary, current=None)
+            if summary["exit_code"] == 0:
+                # Failed runs keep their tree as evidence for --retry.
+                prune_landed_worktrees(config)
             failures = status.setdefault("tier_failures", {})
             if counts_toward_escalation(summary):
                 failures[key] = failures.get(key, 0) + 1
