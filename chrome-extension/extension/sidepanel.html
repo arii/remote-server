@@ -82,19 +82,39 @@
         </div>
       </div>
 
-      <div id="download-progress-container" style="display: none;">
-        <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
-          <span>Downloading Gemini Nano Weights</span>
-          <span id="download-progress-text">0%</span>
+      <div id="download-progress-container">
+        <div class="model-progress-row" data-model="languageModel">
+          <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+            <span>Prompt (Gemini Nano)</span>
+            <span id="download-text-languageModel">...</span>
+          </div>
+          <div class="progress-bar-container"><div id="download-fill-languageModel" class="progress-bar" style="width: 0%;"></div></div>
+          <pre id="model-error-languageModel" class="model-error" hidden></pre>
         </div>
-        <div class="progress-bar-container">
-          <div id="download-progress-fill" class="progress-bar" style="width: 0%;"></div>
+        <div class="model-progress-row" data-model="summarizer">
+          <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+            <span>Summarizer</span>
+            <span id="download-text-summarizer">...</span>
+          </div>
+          <div class="progress-bar-container"><div id="download-fill-summarizer" class="progress-bar" style="width: 0%;"></div></div>
+          <pre id="model-error-summarizer" class="model-error" hidden></pre>
+        </div>
+        <div class="model-progress-row" data-model="writer">
+          <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+            <span>Writer</span>
+            <span id="download-text-writer">...</span>
+          </div>
+          <div class="progress-bar-container"><div id="download-fill-writer" class="progress-bar" style="width: 0%;"></div></div>
+          <pre id="model-error-writer" class="model-error" hidden></pre>
         </div>
       </div>
 
       <button id="btn-bootstrap-model" class="btn btn-primary">
         Initialize / Download Built-in Models
       </button>
+
+      <button id="btn-open-on-device-internals" class="btn">Open chrome://on-device-internals</button>
+      <div class="card-desc">Model status and the real failure cause: chrome://on-device-internals. Flags: chrome://flags.</div>
 
       <pre id="model-details-box">Checking capabilities...</pre>
     </div>
@@ -126,6 +146,17 @@
         <button id="btn-run-sandbox" class="btn btn-secondary">Run Test Prompt</button>
       </div>
       <pre id="sandbox-response-box" style="display: none;"></pre>
+      <div class="card-desc">Samples: save this input with expectations, then score all saved samples against the current "ask" guidance.</div>
+      <input id="sandbox-expect-contain" type="text" placeholder="Must contain (comma separated)">
+      <input id="sandbox-expect-forbid" type="text" placeholder="Must not contain (comma separated)">
+      <input id="sandbox-expect-words" type="number" min="1" placeholder="Max words">
+      <div class="btn-row">
+        <button id="btn-eval-save" class="btn btn-secondary">Save as sample</button>
+        <button id="btn-eval-run" class="btn btn-secondary">Run samples</button>
+      </div>
+      <div id="sandbox-eval-samples"></div>
+      <div id="sandbox-eval-results" class="card-desc"></div>
+      <div id="sandbox-eval-suggestions"></div>
     </div>
 
     <div class="card">

@@ -14,6 +14,7 @@ import {
   selectVaultFacts
 } from "./lib/ask-context.js";
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
+import { INTERNALS_URL, MODEL_APIS, describeModelError, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
   SUGGESTION_SCHEMA,
@@ -25,6 +26,7 @@ import {
   recordDeltaFeedback,
   revertGuidance
 } from "./lib/prompt-guidance.js";
+import { MAX_EVAL_CASES, casesKey, normalizeCases, removeCase, scoreOutput, suggestFromFailures, summarizeRun } from "./lib/prompt-eval.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
 import { MAX_PENDING_DELTAS } from "./lib/storage-mutations.js";
 import { buildVaultPrompt, parseVaultImport } from "./lib/vault-onboarding.js";
@@ -390,6 +392,8 @@ document.querySelectorAll(".nav button").forEach((btn) => {
 // ----------------------------------------------------------------------------
 // PHASE 1: BUILT-IN AI DETECTION & BOOTSTRAP
 // ----------------------------------------------------------------------------
+const failedModelDetails = {};
+
 async function checkBuiltInAIStatus() {
   const report = {
     languageModel: "unavailable",
@@ -445,17 +449,38 @@ async function checkBuiltInAIStatus() {
     badgeText.textContent = "AI Unavailable";
   }
 
+  for (const api of MODEL_APIS) {
+    renderModelProgress(api.key, modelProgressState(report[api.key]));
+    if (report[api.key] === "unavailable") {
+      renderModelError(api.key, describeModelError(null, { availability: "unavailable" }));
+    } else if (!failedModelDetails[api.key]) {
+      renderModelError(api.key, null);
+    }
+  }
+
   document.getElementById("model-details-box").textContent = JSON.stringify(report, null, 2);
   return report;
 }
 
+function renderModelError(key, detail) {
+  const el = document.getElementById(`model-error-${key}`);
+  if (!el) return;
+  el.hidden = !detail;
+  el.textContent = detail ? formatModelError(detail) : "";
+}
+
+function renderModelProgress(key, { state, pct, label }, errorText = "") {
+  const fill = document.getElementById(`download-fill-${key}`);
+  const text = document.getElementById(`download-text-${key}`);
+  if (!fill || !text) return;
+  const indeterminate = state === "downloading" && pct === null;
+  fill.classList.toggle("indeterminate", indeterminate);
+  if (!indeterminate) fill.style.width = `${pct ?? 0}%`;
+  text.textContent = errorText || label;
+}
+
 async function createPromptSession(onProgress, options = {}) {
-  const monitor = (m) => {
-    m.addEventListener("downloadprogress", (e) => {
-      const pct = Math.round((e.loaded || 0) * 100);
-      if (onProgress) onProgress(pct);
-    });
-  };
+  const monitor = makeDownloadMonitor(onProgress);
 
   const sessionOptions = {
     monitor,
@@ -476,34 +501,65 @@ async function createPromptSession(onProgress, options = {}) {
   throw new Error("Prompt API (LanguageModel) not available in this browser context.");
 }
 
-// Model Bootstrap Button
+// Model Bootstrap Button: downloads only models that are downloadable/downloading.
 document.getElementById("btn-bootstrap-model").addEventListener("click", async () => {
   const box = document.getElementById("model-details-box");
-  const progressContainer = document.getElementById("download-progress-container");
-  const progressFill = document.getElementById("download-progress-fill");
-  const progressText = document.getElementById("download-progress-text");
-
-  progressContainer.style.display = "block";
-  progressFill.style.width = "5%";
-  progressText.textContent = "5%";
-  box.textContent = "Requesting Gemini Nano model download...";
-
-  try {
-    const session = await createPromptSession((pct) => {
-      progressFill.style.width = `${pct}%`;
-      progressText.textContent = `${pct}%`;
-      box.textContent = `Downloading Gemini Nano model weights: ${pct}%...`;
-    });
-
-    const ping = await session.prompt("Respond with READY.");
-    progressFill.style.width = "100%";
-    progressText.textContent = "100%";
-    box.textContent = `Model Ready! Diagnostic test response:\n${ping}`;
-    session.destroy();
-    await checkBuiltInAIStatus();
-  } catch (err) {
-    box.textContent = `Model initialization error: ${err.message}\n\nMake sure chrome://flags/#optimization-guide-on-device-model and chrome://flags/#prompt-api-for-gemini-nano are enabled.`;
+  box.textContent = "Checking which models need downloading...";
+  const before = await checkBuiltInAIStatus();
+  const errors = [];
+  for (const api of MODEL_APIS) {
+    delete failedModelDetails[api.key];
+    renderModelError(api.key, null);
   }
+
+  for (const api of MODEL_APIS) {
+    if (before[api.key] !== "downloadable" && before[api.key] !== "downloading") continue;
+    const onPct = (pct) => {
+      renderModelProgress(api.key, modelProgressState("downloading", pct));
+      box.textContent = `Downloading ${api.label} model: ${pct}%...`;
+    };
+    renderModelProgress(api.key, modelProgressState("downloading", null));
+    try {
+      let session;
+      if (api.key === "languageModel") {
+        session = await createPromptSession(onPct);
+      } else {
+        session = await self[api.global].create({ monitor: makeDownloadMonitor(onPct), outputLanguage: "en" });
+      }
+      session.destroy?.();
+    } catch (err) {
+      errors.push(`${api.label}: ${err.message}`);
+      let availability;
+      try {
+        availability = await self[api.global]?.availability?.();
+      } catch {
+        availability = undefined;
+      }
+      const detail = describeModelError(err, { availability });
+      detail.availability = availability;
+      failedModelDetails[api.key] = detail;
+      renderModelProgress(api.key, modelProgressState(availability || before[api.key]), "Failed");
+      renderModelError(api.key, detail);
+      Telemetry.logTrace({
+        type: "ERROR",
+        title: `${api.label} model download failed`,
+        durationMs: 0,
+        details: `${formatModelError(detail)}\ncause=${detail.cause} availability=${availability ?? "unknown"}`
+      });
+    }
+  }
+
+  const after = await checkBuiltInAIStatus();
+  for (const api of MODEL_APIS) {
+    if (failedModelDetails[api.key]) renderModelProgress(api.key, modelProgressState(after[api.key]), "Failed");
+  }
+  if (errors.length) {
+    box.textContent = `Model initialization errors:\n${errors.join("\n")}\n\nMake sure chrome://flags/#optimization-guide-on-device-model and chrome://flags/#prompt-api-for-gemini-nano are enabled.\n\n${box.textContent}`;
+  }
+});
+
+document.getElementById("btn-open-on-device-internals").addEventListener("click", () => {
+  chrome.tabs.create({ url: INTERNALS_URL });
 });
 
 // ----------------------------------------------------------------------------
@@ -672,6 +728,138 @@ document.getElementById("btn-run-sandbox").addEventListener("click", async () =>
     session.destroy();
   } catch (err) {
     box.textContent = `Prompt Error: ${err.message}`;
+  }
+});
+
+// Prompt eval samples: counts and scores only are stored, never model outputs.
+function evalTerms(id) {
+  return document.getElementById(id).value.split(",");
+}
+
+async function renderEvalSamples() {
+  const box = document.getElementById("sandbox-eval-samples");
+  const { promptEvalCases = [] } = await chrome.storage.local.get("promptEvalCases");
+  const cases = normalizeCases(promptEvalCases);
+  box.textContent = "";
+  for (const [i, c] of cases.entries()) {
+    const row = document.createElement("div");
+    row.className = "btn-row";
+    const label = document.createElement("div");
+    label.style.cssText = "font-size:11px; flex:1;";
+    label.textContent = `#${i + 1}: ${c.input.slice(0, 50)}`;
+    const del = document.createElement("button");
+    del.className = "btn btn-subtle btn-sm";
+    del.textContent = "Delete";
+    del.setAttribute("aria-label", `Delete sample ${i + 1}`);
+    del.addEventListener("click", async () => {
+      const out = document.getElementById("sandbox-eval-results");
+      try {
+        const { promptEvalCases: stored = [] } = await chrome.storage.local.get("promptEvalCases");
+        const next = removeCase(stored, i);
+        await chrome.storage.local.set({ promptEvalCases: next });
+        out.textContent = `Sample deleted. ${next.length} sample(s) left. The next run starts a new comparison.`;
+      } catch (e) {
+        out.textContent = `Not deleted: ${e.message}`;
+      }
+      await renderEvalSamples();
+    });
+    row.append(label, del);
+    box.append(row);
+  }
+}
+renderEvalSamples();
+
+document.getElementById("btn-eval-save").addEventListener("click", async () => {
+  const out = document.getElementById("sandbox-eval-results");
+  const input = document.getElementById("sandbox-prompt-input").value;
+  const { promptEvalCases = [] } = await chrome.storage.local.get("promptEvalCases");
+  const before = normalizeCases(promptEvalCases);
+  const cases = normalizeCases([
+    ...before,
+    {
+      input,
+      expect: {
+        mustContain: evalTerms("sandbox-expect-contain"),
+        mustNotContain: evalTerms("sandbox-expect-forbid"),
+        maxWords: document.getElementById("sandbox-expect-words").value
+      }
+    }
+  ]);
+  if (cases.length === before.length) {
+    out.textContent = before.length >= MAX_EVAL_CASES
+      ? `Not saved: limit of ${MAX_EVAL_CASES} samples reached.`
+      : "Not saved: enter a question and at least one expectation (must contain, must not contain, or max words).";
+    return;
+  }
+  await chrome.storage.local.set({ promptEvalCases: cases });
+  out.textContent = `${cases.length} sample(s) saved.`;
+  await renderEvalSamples();
+});
+
+document.getElementById("btn-eval-run").addEventListener("click", async () => {
+  const out = document.getElementById("sandbox-eval-results");
+  const list = document.getElementById("sandbox-eval-suggestions");
+  list.textContent = "";
+  const { promptEvalCases = [], promptEvalRuns = [], userContextVault = [] } =
+    await chrome.storage.local.get(["promptEvalCases", "promptEvalRuns", "userContextVault"]);
+  const cases = normalizeCases(promptEvalCases);
+  if (!cases.length) {
+    out.textContent = "No saved samples. Save one first.";
+    return;
+  }
+  const results = [];
+  try {
+    for (const [i, c] of cases.entries()) {
+      out.textContent = `Running sample ${i + 1} of ${cases.length}...`;
+      const session = await createPromptSession();
+      try {
+        const text = await session.prompt(getPrompt("ask", { guidance: promptGuidance, vars: { question: c.input } }));
+        results.push(scoreOutput(text, c.expect));
+      } finally {
+        session.destroy?.();
+      }
+    }
+  } catch (err) {
+    out.textContent = `Samples not run: ${err.message}`;
+    return;
+  }
+  const key = casesKey(cases);
+  const last = promptEvalRuns[promptEvalRuns.length - 1];
+  const comparable = last && last.key === key;
+  const sum = summarizeRun(results, comparable ? last.score : null);
+  const runs = [...promptEvalRuns, { at: Date.now(), key, passed: sum.passed, total: sum.total, score: sum.score }].slice(-10);
+  await chrome.storage.local.set({ promptEvalRuns: runs });
+  const delta = sum.delta === null ? (last ? "samples changed, not comparable" : "first run") : `${sum.delta >= 0 ? "+" : ""}${Math.round(sum.delta * 100)} pts vs previous`;
+  out.textContent = `${sum.passed}/${sum.total} passed, score ${Math.round(sum.score * 100)}% (${delta}).\n` +
+    results.map((r, i) => `${r.pass ? "PASS" : "FAIL"} #${i + 1}: ${cases[i].input.slice(0, 50)}`).join("\n");
+  const suggestions = suggestFromFailures(results, { vaultValues: userContextVault.map((v) => v.value), guidance: promptGuidance });
+  for (const sug of suggestions) {
+    const row = document.createElement("div");
+    row.className = "item-card";
+    const label = document.createElement("div");
+    label.style.cssText = "font-size:11px; margin-bottom:4px;";
+    label.textContent = `[${sug.promptId}] ${sug.guidance} (${sug.reason})`;
+    const row2 = document.createElement("div");
+    row2.className = "btn-row";
+    const accept = document.createElement("button");
+    accept.className = "btn btn-primary btn-sm";
+    accept.textContent = "Accept";
+    accept.addEventListener("click", async () => {
+      try {
+        await saveGuidance(appendGuidanceLine(promptGuidance, sug.promptId, sug.guidance, { source: "suggestion" }));
+        row.remove();
+        out.textContent += "\nGuidance saved. Run samples again to check the effect on all samples.";
+      } catch (e) {
+        out.textContent = e.message;
+      }
+    });
+    const dismiss = document.createElement("button");
+    dismiss.className = "btn btn-subtle btn-sm";
+    dismiss.textContent = "Dismiss";
+    dismiss.addEventListener("click", () => row.remove());
+    row2.append(accept, dismiss);
+    row.append(label, row2);
+    list.append(row);
   }
 });
 
