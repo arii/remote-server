@@ -132,6 +132,67 @@ def _prompt_first_line(extra):
     return first[:119] + "…" if len(first) > 120 else first
 
 
+LOG_TAIL_LINES = 20
+# Ordered: first matching keyword set wins. Matched against the
+# lowercased error text of a failed row.
+_FAILURE_CLASSES = (
+    ("claim_conflict", ("claim", "already running", "conflict with")),
+    ("timeout", ("timeout", "timed out", "deadline")),
+    ("git_pr_error", ("git ", "push", "pull request", "gh pr", "merge", "branch")),
+    ("tests", ("test", "verify", "lint", "assert")),
+)
+
+
+def _failure_class(extra):
+    """Failure category of a failed row: tests, agent_error, timeout,
+    git_pr_error or claim_conflict. Explicit extra["failure_class"] wins."""
+    explicit = extra.get("failure_class")
+    if explicit in (
+        "tests",
+        "agent_error",
+        "timeout",
+        "git_pr_error",
+        "claim_conflict",
+    ):
+        return explicit
+    text = str(extra.get("error") or "").lower()
+    for name, words in _FAILURE_CLASSES:
+        if any(w in text for w in words):
+            return name
+    return "agent_error"
+
+
+def _log_tail(extra):
+    """Last LOG_TAIL_LINES lines of the run's own trace file (whole file
+    when shorter). Only files under traces/ are read."""
+    path = extra.get("trace")
+    if not isinstance(path, str) or not path:
+        return ""
+    full = os.path.realpath(path)
+    if not full.startswith(os.path.realpath(TRACES) + os.sep):
+        return ""
+    lines = [ln.rstrip("\n") for ln in _read_lines(full)]
+    return "\n".join(lines[-LOG_TAIL_LINES:])
+
+
+def _run_links(extra):
+    """Branch/PR links recorded on the row, as {"branch", "pr"} URLs
+    (None where the row has no such data)."""
+    repo = extra.get("repo")
+    branch = extra.get("branch")
+    pr = extra.get("pr_url") or extra.get("pr")
+    base = "https://github.com/%s" % repo if isinstance(repo, str) and repo else ""
+    branch_url = None
+    if base and isinstance(branch, str) and branch:
+        branch_url = "%s/tree/%s" % (base, branch)
+    pr_url = None
+    if isinstance(pr, str) and pr.startswith("https://"):
+        pr_url = pr
+    elif base and isinstance(pr, int) and not isinstance(pr, bool):
+        pr_url = "%s/pull/%d" % (base, pr)
+    return {"branch": branch_url, "pr": pr_url}
+
+
 def _entry_summary(index, row):
     extra = row.get("extra") or {}
     usage = row.get("usage")
@@ -139,6 +200,7 @@ def _entry_summary(index, row):
         usage = {}
     cost_usd, metered = _row_cost(row)
     repo = extra.get("repo") if isinstance(extra, dict) else None
+    ok = "error" not in extra
     return {
         "id": f"run-{index}",
         "script": row.get("script") or "?",
@@ -148,7 +210,10 @@ def _entry_summary(index, row):
         "repo": repo if isinstance(repo, str) and repo else None,
         "started_ts": row.get("ts", 0),
         "duration_s": _row_latency(row),
-        "ok": "error" not in extra,
+        "ok": ok,
+        "failure_class": None if ok else _failure_class(extra),
+        "log_tail": "" if ok else _log_tail(extra),
+        "links": _run_links(extra),
         "tools": [c.get("name", "?") for c in row.get("tool_calls", []) or []],
         "tokens": usage.get("total_tokens", 0) or 0,
         "preview": (row.get("final_preview", "") or "")[:200],
