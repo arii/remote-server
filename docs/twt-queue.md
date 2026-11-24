@@ -162,8 +162,9 @@ start) -> Investigate/Restart; `DOWN` (supervisor not holding `queue.lock`)
 -> Restart Service, or `DOWN halted: <reason>` -> inspect the halt, then
 restart with `--clear-halt`; `BUSY` (`queue.lock` held by a non-supervisor
 process such as `--retry`) -> wait for it to finish.
-When `ledger_stamp_heartbeat` is set in the queue config (the stamp daemon's
-heartbeat file, default `~/twt/queue/ledger-stamp.heartbeat`), the line also ends
+Set `ledger_stamp_heartbeat` in the queue config to the stamp daemon's heartbeat
+file (the daemon writes `~/twt/queue/ledger-stamp.heartbeat` by default). The status
+check is off until the key is set. Once it is, the line also ends
 with `| LEDGER-STAMP DOWN` (no heartbeat) or `| LEDGER-STAMP STALE` (no good
 stamp pass for `ledger_stamp_stale_seconds`, default 1200) -> check
 `twt-ledger-stamp.service`. Without fresh stamps the kiro gate reports every ready
@@ -606,9 +607,13 @@ cycle and its stamps are left alone. No error ends the process. After each pass 
 read the ledger and every repo, it touches its heartbeat file.
 
 Install `scripts/twt-ledger-stamp.service` in `~/.config/systemd/user/` and add
-`LEDGER_STAMP=/absolute/remote-server/scripts/ledger_stamp.py` (from the same checkout
-as `QUEUE_RUNNER`) to `~/.config/twt-queue/environment`. Unlike the queue, this service
-has `Restart=always`. Optional overrides: `LEDGER_STAMP_DIR`,
+`LEDGER_STAMP=/absolute/remote-server/scripts/ledger_stamp.py` to
+`~/.config/twt-queue/environment`. It must sit in the same `scripts/` directory as
+`QUEUE_RUNNER`. If it doesn't, the daemon refuses to start, because queue_runner's
+sibling ledger scripts would not import. If `LEDGER_STAMP` is unset or wrong, the unit
+fails at `ExecStartPre` instead of exiting quietly. Unlike the queue, this service has
+`Restart=always`. A stamp left in place after a failed listing is bounded by the gate's
+own freshness window. Optional overrides: `LEDGER_STAMP_DIR`,
 `LEDGER_STAMP_STAMPS`, `LEDGER_STAMP_HEARTBEAT`, `LEDGER_STAMP_LOG`. Log lines
 start with `STAMP` in `~/twt/queue/kiro-gate.log`.
 

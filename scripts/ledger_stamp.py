@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import time
+import traceback
 from pathlib import Path
 
 QUEUE_DIR = Path.home() / "twt" / "queue"
@@ -24,14 +25,27 @@ INTERVAL_SECONDS = 300
 GH_TIMEOUT_SECONDS = 120
 
 
-def load_runner(path):
-    """queue_runner.py from the path the queue itself runs (QUEUE_RUNNER). Its sibling
-    imports (ledger_read, ledger_post) resolve from this script's own directory, which
-    Python puts first on sys.path, so run the ledger_stamp.py from the same checkout."""
+def load_runner(path, here=None):
+    """queue_runner.py from the path the queue itself runs (QUEUE_RUNNER).
+
+    Its sibling imports (ledger_read, ledger_post) resolve from this script's own
+    directory, which Python puts first on sys.path. A QUEUE_RUNNER in another
+    directory would fail every ledger read, so that is refused at startup."""
+    here = Path(here or Path(__file__).resolve().parent)
+    if Path(path).resolve().parent != here:
+        raise SystemExit(
+            f"ledger_stamp: QUEUE_RUNNER must be in {here} (got {path}); "
+            "run ledger_stamp.py from the same scripts/ directory"
+        )
     spec = importlib.util.spec_from_file_location("queue_runner", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def describe(error):
+    """Class and message, short enough for one log line."""
+    return f"{type(error).__name__}: {error}"[:200]
 
 
 def make_logger(path):
@@ -88,21 +102,18 @@ def stamp_cycle(runner, repos, stamps, log, list_issues=ready_issues, now=None):
     try:
         rows = runner.ledger_rows()
     except Exception as error:
-        log(f"ledger unreadable ({type(error).__name__}), no stamps written")
+        log(f"ledger unreadable ({describe(error)}), no stamps written")
         return False
     now = now or datetime.datetime.now(datetime.timezone.utc)
     complete = True
     for repo in repos:
         try:
-            listed = list_issues(repo)
+            numbers = [int(issue["number"]) for issue in list_issues(repo)]
         except Exception as error:
-            log(
-                f"{repo} issue list failed ({type(error).__name__}), skipped this cycle"
-            )
+            log(f"{repo} issue list failed ({describe(error)}), skipped this cycle")
             complete = False
             continue
-        for issue in listed:
-            number = issue["number"]
+        for number in numbers:
             held = held_reason(
                 runner, rows, f"https://github.com/{repo}/issues/{number}", now
             )
@@ -124,7 +135,8 @@ def run_forever(runner, repos, stamps, heartbeat, log, sleep=time.sleep, cycles=
             if stamp_cycle(runner, repos, stamps, log):
                 heartbeat.touch()
         except Exception as error:  # never let one bad cycle end the daemon
-            log(f"cycle failed ({type(error).__name__}), retrying next cycle")
+            log(f"cycle failed ({describe(error)}), retrying next cycle")
+            log("traceback " + traceback.format_exc().replace("\n", " | ")[:1000])
         sleep(INTERVAL_SECONDS)
 
 

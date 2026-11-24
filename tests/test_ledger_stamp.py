@@ -71,7 +71,7 @@ class StampCycleTest(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                "arii/boomtick issue list failed (CalledProcessError)" in line
+                "arii/boomtick issue list failed (CalledProcessError" in line
                 for line in self.lines
             )
         )
@@ -87,7 +87,10 @@ class StampCycleTest(unittest.TestCase):
         )
         self.assertFalse(complete)
         self.assertEqual(list(self.stamps.iterdir()), [])
-        self.assertIn("ledger unreadable (RuntimeError), no stamps written", self.lines)
+        self.assertIn(
+            "ledger unreadable (RuntimeError: sheet down), no stamps written",
+            self.lines,
+        )
 
     def test_a_fresh_foreign_act_claim_removes_the_stamp(self):
         link = "https://github.com/arii/remote-server/issues/3"
@@ -112,6 +115,43 @@ class StampCycleTest(unittest.TestCase):
         self.assertFalse(self.stamp("arii/remote-server", 3).exists())
         self.assertTrue(self.stamp("arii/remote-server", 4).exists())
         self.assertIn("arii/remote-server#3 held: fresh Act claim by Devin", self.lines)
+
+    def test_a_malformed_issue_skips_only_that_repo(self):
+        def listing(repo):
+            return (
+                [{"title": "no number"}] if repo == "arii/boomtick" else [{"number": 5}]
+            )
+
+        complete = ledger_stamp.stamp_cycle(
+            FakeRunner(),
+            ["arii/boomtick", "arii/remote-server"],
+            self.stamps,
+            self.lines.append,
+            list_issues=listing,
+            now=NOW,
+        )
+        self.assertFalse(complete)
+        self.assertTrue(self.stamp("arii/remote-server", 5).exists())
+        self.assertTrue(
+            any(
+                "arii/boomtick issue list failed (KeyError: 'number')" in line
+                for line in self.lines
+            )
+        )
+
+
+class LoadRunnerTest(unittest.TestCase):
+    def test_loads_the_real_queue_runner_from_this_directory(self):
+        here = Path(ledger_stamp.__file__).resolve().parent
+        loaded = ledger_stamp.load_runner(here / "queue_runner.py")
+        self.assertEqual(loaded.LEDGER_AGENT, queue_runner.LEDGER_AGENT)
+        self.assertTrue(callable(loaded.ledger_rows))
+
+    def test_refuses_a_runner_in_another_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as stop:
+                ledger_stamp.load_runner(Path(tmp) / "queue_runner.py")
+        self.assertIn("same scripts/ directory", str(stop.exception))
 
 
 class RunForeverTest(unittest.TestCase):
@@ -155,7 +195,10 @@ class RunForeverTest(unittest.TestCase):
                     sleep=lambda s: None,
                     cycles=2,
                 )
-            self.assertIn("cycle failed (KeyError), retrying next cycle", lines)
+            self.assertIn(
+                "cycle failed (KeyError: 'number'), retrying next cycle", lines
+            )
+            self.assertTrue(any(line.startswith("traceback ") for line in lines))
             self.assertTrue(
                 heartbeat.exists(), "the next good cycle touches the heartbeat"
             )
