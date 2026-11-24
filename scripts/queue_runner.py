@@ -1491,7 +1491,7 @@ LEDGER_STAMP_STALE_SECONDS = 20 * 60
 
 
 def ledger_stamp_warning(config, now=None):
-    """" | LEDGER-STAMP STALE ..." when the stamp daemon's heartbeat is missing or old
+    """Return a " | LEDGER-STAMP ..." suffix when the stamp daemon's heartbeat is missing or old
     (config key `ledger_stamp_heartbeat`), else "". Without fresh stamps the gate
     skips every ready issue as "not ready" (#1705)."""
     path = config.get("ledger_stamp_heartbeat")

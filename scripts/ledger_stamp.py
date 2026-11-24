@@ -45,8 +45,21 @@ def make_logger(path):
 def ready_issues(repo):
     """Open issues labelled ready in repo. Raises on any gh or JSON failure."""
     out = subprocess.check_output(
-        ["/usr/bin/gh", "issue", "list", "-R", repo, "--state", "open",
-         "--label", "ready", "--json", "number", "--limit", "100"],
+        [
+            "/usr/bin/gh",
+            "issue",
+            "list",
+            "-R",
+            repo,
+            "--state",
+            "open",
+            "--label",
+            "ready",
+            "--json",
+            "number",
+            "--limit",
+            "100",
+        ],
         text=True,
         timeout=GH_TIMEOUT_SECONDS,
     )
@@ -83,12 +96,16 @@ def stamp_cycle(runner, repos, stamps, log, list_issues=ready_issues, now=None):
         try:
             listed = list_issues(repo)
         except Exception as error:
-            log(f"{repo} issue list failed ({type(error).__name__}), skipped this cycle")
+            log(
+                f"{repo} issue list failed ({type(error).__name__}), skipped this cycle"
+            )
             complete = False
             continue
         for issue in listed:
             number = issue["number"]
-            held = held_reason(runner, rows, f"https://github.com/{repo}/issues/{number}", now)
+            held = held_reason(
+                runner, rows, f"https://github.com/{repo}/issues/{number}", now
+            )
             stamp = stamps / f"{repo.replace('/', '_')}_{number}"
             if held:
                 stamp.unlink(missing_ok=True)
@@ -114,8 +131,12 @@ def run_forever(runner, repos, stamps, heartbeat, log, sleep=time.sleep, cycles=
 def main():
     queue_dir = Path(os.environ.get("LEDGER_STAMP_DIR", QUEUE_DIR))
     stamps = Path(os.environ.get("LEDGER_STAMP_STAMPS", queue_dir / "ledger-ok"))
-    heartbeat = Path(os.environ.get("LEDGER_STAMP_HEARTBEAT", queue_dir / "ledger-stamp.heartbeat"))
-    log = make_logger(Path(os.environ.get("LEDGER_STAMP_LOG", queue_dir / "kiro-gate.log")))
+    heartbeat = Path(
+        os.environ.get("LEDGER_STAMP_HEARTBEAT", queue_dir / "ledger-stamp.heartbeat")
+    )
+    log = make_logger(
+        Path(os.environ.get("LEDGER_STAMP_LOG", queue_dir / "kiro-gate.log"))
+    )
     repos = json.loads(Path(os.environ["QUEUE_CONFIG"]).read_text())["discover_repos"]
     runner = load_runner(Path(os.environ["QUEUE_RUNNER"]))
     stamps.mkdir(parents=True, exist_ok=True)
