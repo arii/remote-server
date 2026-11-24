@@ -13,6 +13,7 @@ import {
   isReadableTabUrl,
   selectVaultFacts
 } from "./lib/ask-context.js";
+import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
   SUGGESTION_SCHEMA,
@@ -2006,6 +2007,91 @@ document.getElementById("source-file-input")?.addEventListener("change", async (
   progress.textContent = `Loaded ${file.name} (${text.length} characters).`;
   e.target.value = "";
 });
+
+// Google Drive import: pick files, fetch their text through the worker and
+// append it to the text box, so it runs through the same chunk -> extract ->
+// Review & Merge Queue path as pasted text. Read-only; no vault writes.
+let drivePageToken = "";
+const driveButton = document.getElementById("btn-drive-import");
+
+async function initDriveImport() {
+  if (!driveButton) return;
+  let configured = false;
+  try {
+    configured = Boolean((await chrome.runtime.sendMessage({ type: "drive:status" }))?.configured);
+  } catch {
+    configured = false;
+  }
+  driveButton.disabled = !configured;
+  document.getElementById("drive-hint").textContent = configured
+    ? "Read-only. Pick Google Docs, .txt, .md, .html or .json files (500KB max each)."
+    : "Not configured: set oauth2.client_id in manifest.json (see README).";
+}
+
+async function loadDriveFiles({ append = false } = {}) {
+  const progress = document.getElementById("source-progress");
+  const list = document.getElementById("drive-file-list");
+  progress.textContent = "Loading Drive files...";
+  const res = await chrome.runtime.sendMessage({
+    type: "drive:list",
+    search: document.getElementById("drive-search").value,
+    pageToken: append ? drivePageToken : undefined
+  });
+  if (!res || res.error) {
+    progress.textContent = `Drive: ${res?.error || "No response from service worker"}`;
+    return;
+  }
+  if (!append) list.textContent = "";
+  for (const f of res.files) {
+    const row = document.createElement("label");
+    row.style.cssText = "display:flex; gap:6px; align-items:center; margin-bottom:3px; cursor:pointer;";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.fileId = f.id;
+    box.style.width = "auto";
+    const name = document.createElement("span");
+    name.textContent = f.name;
+    name.style.cssText = "overflow:hidden; text-overflow:ellipsis; white-space:nowrap;";
+    row.append(box, name);
+    list.append(row);
+  }
+  if (!list.children.length) list.textContent = "No supported files found.";
+  drivePageToken = res.nextPageToken || "";
+  document.getElementById("btn-drive-more").style.display = drivePageToken ? "" : "none";
+  progress.textContent = "";
+}
+
+driveButton?.addEventListener("click", async () => {
+  document.getElementById("drive-picker").style.display = "block";
+  await loadDriveFiles();
+});
+document.getElementById("btn-drive-search")?.addEventListener("click", () => loadDriveFiles());
+document.getElementById("btn-drive-more")?.addEventListener("click", () => loadDriveFiles({ append: true }));
+document.getElementById("btn-drive-add")?.addEventListener("click", async () => {
+  const progress = document.getElementById("source-progress");
+  const ids = [...document.querySelectorAll("#drive-file-list input[type=checkbox]:checked")].map((b) => b.dataset.fileId);
+  if (!ids.length) {
+    progress.textContent = "Tick at least one Drive file.";
+    return;
+  }
+  const failures = [];
+  const texts = [];
+  for (const id of ids.slice(0, MAX_DRIVE_FILES_PER_RUN)) {
+    progress.textContent = `Fetching Drive file ${texts.length + failures.length + 1}/${Math.min(ids.length, MAX_DRIVE_FILES_PER_RUN)}...`;
+    const res = await chrome.runtime.sendMessage({ type: "drive:fetch", fileId: id });
+    if (!res || res.error) failures.push(res?.error || "No response from service worker");
+    else texts.push(`${res.title}\n${res.text}`);
+  }
+  if (texts.length) {
+    const box = document.getElementById("source-pasted-text");
+    box.value = [box.value, ...texts].filter(Boolean).join("\n\n");
+  }
+  progress.textContent =
+    `Added ${texts.length} Drive file(s) to the text box; press Learn from all.` +
+    (ids.length > MAX_DRIVE_FILES_PER_RUN ? ` Only the first ${MAX_DRIVE_FILES_PER_RUN} were fetched.` : "") +
+    (failures.length ? ` Failed: ${failures.join("; ")}` : "");
+});
+initDriveImport();
 
 async function fetchSourcePage(url) {
   const res = await chrome.runtime.sendMessage({ type: "source:fetch", url });

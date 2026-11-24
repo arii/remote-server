@@ -6,6 +6,7 @@ import { aliasMatches, normalizeLabel } from "./lib/matcher.js";
 import { normalizeForDedup, valueAlreadyHeld } from "./lib/delta-guards.js";
 import { deduplicateVault } from "./lib/vault.js";
 import { extractLinks, extractTitle, htmlToText, isPrivateHost } from "./lib/profile-ingest.js";
+import { fetchDriveFileText, isClientIdConfigured, listDriveFiles } from "./lib/drive-import.js";
 import { isSensitiveLabel } from "./lib/sensitive.js";
 import {
   MAX_LEARNED_LOG,
@@ -115,6 +116,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "drive:status") {
+    sendResponse({ configured: isClientIdConfigured(chrome.runtime.getManifest().oauth2?.client_id) });
+    return false;
+  }
+
+  if (message.type === "drive:list" || message.type === "drive:fetch") {
+    driveRequest(message)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ error: err.message }));
+    return true;
+  }
+
   if (message.type && LEARNING_HANDLERS[message.type]) {
     LEARNING_HANDLERS[message.type](message, sender)
       .then((res) => sendResponse(res))
@@ -180,6 +193,29 @@ async function fetchSource(rawUrl) {
     return { url: url.href, title: extractTitle(html), text: htmlToText(html), links: extractLinks(html, url.href) };
   }
   return { url: url.href, title: url.hostname, text: html.trim(), links: [] };
+}
+
+// --- Google Drive import (read-only) -----------------------------------------
+// Uses chrome.identity.getAuthToken with the manifest oauth2 client. Returns
+// file lists and plain text only; it never touches the vault.
+async function driveRequest(message) {
+  if (!isClientIdConfigured(chrome.runtime.getManifest().oauth2?.client_id)) {
+    throw new Error("Google Drive import is not configured (set oauth2.client_id in manifest.json)");
+  }
+  const deps = {
+    fetchFn: (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(SOURCE_TIMEOUT_MS) }),
+    getToken: async () => {
+      const res = await chrome.identity.getAuthToken({ interactive: true });
+      const token = typeof res === "string" ? res : res?.token;
+      if (!token) throw new Error("Google sign-in was cancelled");
+      return token;
+    },
+    removeToken: (token) => chrome.identity.removeCachedAuthToken({ token })
+  };
+  if (message.type === "drive:list") {
+    return listDriveFiles(deps, { pageToken: message.pageToken, search: message.search });
+  }
+  return fetchDriveFileText(message.fileId, deps);
 }
 
 // --- Single-writer mutation pipeline -----------------------------------------

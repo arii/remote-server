@@ -335,6 +335,19 @@
         <input type="checkbox" id="chk-follow-links" style="width:auto;" />
         <label for="chk-follow-links" style="font-size:11px; color:#cbd5e1; cursor:pointer;">Follow profile links one level (same site, GitHub, LinkedIn; max 5 pages)</label>
       </div>
+      <div style="margin:8px 0;">
+        <button class="btn btn-secondary" id="btn-drive-import" style="margin:0;">Import from Google Drive</button>
+        <div id="drive-hint" style="font-size:10.5px; color:#94a3b8; margin-top:4px;"></div>
+        <div id="drive-picker" style="display:none; margin-top:6px; font-size:11px;">
+          <div style="display:flex; gap:6px; margin-bottom:6px;">
+            <input type="text" id="drive-search" placeholder="Search file names" style="flex:1;" />
+            <button class="btn btn-secondary" id="btn-drive-search" style="width:auto; margin:0;">Search</button>
+          </div>
+          <div id="drive-file-list" style="max-height:140px; overflow:auto; margin-bottom:6px;"></div>
+          <button class="btn btn-secondary" id="btn-drive-more" style="display:none; margin:0 0 6px;">Load more</button>
+          <button class="btn btn-primary" id="btn-drive-add" style="margin:0;">Add selected to text box</button>
+        </div>
+      </div>
       <button class="btn btn-primary" id="btn-learn-sources">Learn from all</button>
       <div id="source-progress" style="font-size:11px; color:#38bdf8; margin-top:6px;"></div>
     </div>

@@ -7,8 +7,15 @@
     "sidePanel",
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "identity"
   ],
+  "oauth2": {
+    "client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.readonly"
+    ]
+  },
   "host_permissions": [
     "<all_urls>"
   ],
