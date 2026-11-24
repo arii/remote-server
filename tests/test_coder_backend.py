@@ -295,6 +295,64 @@ class TestCoderBackend(unittest.TestCase):
                         else "missing_terminal_line",
                     )
 
+    def test_63095b93_correction_replay_stops_returning_overlapping_reads(self):
+        runner = "scripts/queue_runner.py"
+        with tempfile.TemporaryDirectory() as root:
+            checkout = Path(root)
+            subprocess.run(["git", "init", "-q", root], check=True)
+            for package in ("scripts", "tests"):
+                (checkout / package).mkdir()
+                (checkout / package / "__init__.py").touch()
+            (checkout / runner).write_text(
+                "\n" * 1200 + "def state():\n    return 'idle'\n"
+            )
+            (checkout / "tests/test_queue_runner.py").write_text(
+                "import unittest\nfrom scripts.queue_runner import state\n"
+                "class Replay(unittest.TestCase):\n"
+                "    def test_state(self):\n        self.assertEqual(state(), 'idle')\n"
+            )
+            steps = [
+                (
+                    "edit_file",
+                    dict(
+                        file_path=runner,
+                        old_string="return 'idle'",
+                        new_string="raise NameError(\"name 'issues' is not defined\")",
+                    ),
+                ),
+                *[
+                    ("grep", {"pattern": f"runner_state_{i}", "path": runner})
+                    for i in range(19)
+                ],
+                *[
+                    ("read_file", {"file_path": runner, "offset": offset})
+                    for offset in range(1180, 1069, -10)
+                ],
+            ]
+            with self.assertRaisesRegex(RuntimeError, "targeted verification failed"):
+                self.run_completion(
+                    root,
+                    steps,
+                    0,
+                    repo="arii/remote-server",
+                    call_budget=40,
+                    continuations=1,
+                    verify_stalls=True,
+                )
+            events = [
+                json.loads(line)
+                for line in (checkout / "trace-1.jsonl").read_text().splitlines()
+            ]
+            reads = [
+                e["result_preview"] for e in events if e.get("name") == "read_file"
+            ]
+            self.assertEqual(len(reads), 12)
+            self.assertTrue(all(r.startswith("@@ lines") for r in reads[:3]))
+            cue = "Make the correction edit now or reply BLOCKED."
+            self.assertTrue(reads[3].startswith(cue))
+            self.assertIn("NameError: name 'issues' is not defined", reads[3])
+            self.assertEqual(reads[4:], [cue] * 8)
+
     def test_28ccfe7dd057_verifies_edited_runner_after_a_stall(self):
         runner = "scripts/queue_runner.py"
         tests = "tests/test_queue_runner.py"
@@ -1097,6 +1155,89 @@ class TestCoderBackend(unittest.TestCase):
             self.assertIn("would change its enclosing scope", result.content)
             self.assertIn("base indentation: '    '", result.content)
             self.assertEqual(path.read_text(), original)
+
+    def test_4760f944_rejects_removing_issues_initialization(self):
+        runner = "scripts/queue_runner.py"
+        original = (
+            "import time\n\ndef supervise(clear_halt, status):\n"
+            + "\n" * 1180
+            + "        if clear_halt:\n"
+            "            status.update(halted=False, reason=None, halt_acknowledged_at=time.time())\n"
+            + "\n" * 19
+            + "        issues = []\n        issues.sort()\n"
+        )
+        replacement = (
+            "        if clear_halt:\n"
+            "            status.update(halted=False, reason=None, halt_acknowledged_at=time.time())\n\n"
+            "        def get_runner_state(self, status):\n"
+            '            """Determine runner state: Idle, Stalled, or Down."""\n'
+            "            now = time.time()\n"
+            '            heartbeat = status.get("heartbeat", 0)\n'
+            "            if now - heartbeat > 300:\n"
+            '                return "Down"\n'
+            '            if status.get("current"):\n'
+            '                return "Stalled"\n'
+            '            return "Idle"\n'
+        )
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, runner)
+            path.parent.mkdir()
+            path.write_text(original)
+            subprocess.run(["git", "init", "-q", root], check=True)
+            subprocess.run(["git", "-C", root, "add", "--", runner], check=True)
+            tool = coder.build_replace_lines_tool(
+                coder.build_filesystem_backend(root), {runner: True}
+            )
+            result = tool.invoke(
+                dict(
+                    name=tool.name,
+                    id="probe",
+                    type="tool_call",
+                    args=dict(
+                        file_path=runner,
+                        start_line=1184,
+                        end_line=1205,
+                        new_text=replacement,
+                    ),
+                )
+            )
+            self.assertEqual(result.status, "error")
+            self.assertIn(
+                "scripts/queue_runner.py:1196: Undefined name `issues`", result.content
+            )
+            self.assertEqual(path.read_text(), original)
+
+    def test_tracked_python_edit_ignores_shifted_existing_f821_but_rejects_new_f821(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root, "example.py")
+            path.write_text("def run():\n    return existing\n")
+            subprocess.run(["git", "init", "-q", root], check=True)
+            subprocess.run(["git", "-C", root, "add", "--", path.name], check=True)
+            result = self.tool_call(
+                root,
+                "edit_file",
+                dict(
+                    file_path=path.name,
+                    old_string="    return existing",
+                    new_string="    value = 1\n    return existing + value",
+                ),
+            )
+            self.assertEqual(result.status, "success", result.content)
+            before = path.read_text()
+            result = self.tool_call(
+                root,
+                "edit_file",
+                dict(
+                    file_path=path.name,
+                    old_string="    value = 1",
+                    new_string="    value = new_name  # noqa: F821",
+                ),
+            )
+            self.assertEqual(result.status, "error")
+            self.assertIn("example.py:2: Undefined name `new_name`", result.content)
+            self.assertEqual(path.read_text(), before)
 
     def test_removing_class_method_still_referenced_is_rejected(self):
         original = (
