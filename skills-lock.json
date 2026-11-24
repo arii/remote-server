@@ -8,6 +8,13 @@
       "computedHash": "92447f8c4f0ac4d1e023ca818811aea10aebf7e4ecfb61346e15d74df866ffc3",
       "ref": "1e1c05ac5dae1ff386814f8de65af8bb3e0a741a"
     },
+    "chrome-extensions": {
+      "source": "GoogleChrome/modern-web-guidance",
+      "sourceType": "github",
+      "skillPath": "skills/chrome-extensions/SKILL.md",
+      "computedHash": "802ef1e0135ebd69e0eec533914754ba8ed0f080af86e55400de6e7fb22e6bae",
+      "ref": "2b4aa13a72dd47cd135b06ce5abfccd92e19b24f"
+    },
     "deep-agents-core": {
       "source": "langchain-ai/langchain-skills",
       "sourceType": "github",
