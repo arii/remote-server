@@ -26,7 +26,7 @@ import {
   recordDeltaFeedback,
   revertGuidance
 } from "./lib/prompt-guidance.js";
-import { MAX_EVAL_CASES, casesKey, normalizeCases, scoreOutput, suggestFromFailures, summarizeRun } from "./lib/prompt-eval.js";
+import { MAX_EVAL_CASES, casesKey, normalizeCases, removeCase, scoreOutput, suggestFromFailures, summarizeRun } from "./lib/prompt-eval.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
 import {
   REFINEMENT_SCHEMA,
@@ -695,6 +695,39 @@ function evalTerms(id) {
   return document.getElementById(id).value.split(",");
 }
 
+async function renderEvalSamples() {
+  const box = document.getElementById("sandbox-eval-samples");
+  const { promptEvalCases = [] } = await chrome.storage.local.get("promptEvalCases");
+  const cases = normalizeCases(promptEvalCases);
+  box.textContent = "";
+  for (const [i, c] of cases.entries()) {
+    const row = document.createElement("div");
+    row.className = "btn-row";
+    const label = document.createElement("div");
+    label.style.cssText = "font-size:11px; flex:1;";
+    label.textContent = `#${i + 1}: ${c.input.slice(0, 50)}`;
+    const del = document.createElement("button");
+    del.className = "btn btn-subtle btn-sm";
+    del.textContent = "Delete";
+    del.setAttribute("aria-label", `Delete sample ${i + 1}`);
+    del.addEventListener("click", async () => {
+      const out = document.getElementById("sandbox-eval-results");
+      try {
+        const { promptEvalCases: stored = [] } = await chrome.storage.local.get("promptEvalCases");
+        const next = removeCase(stored, i);
+        await chrome.storage.local.set({ promptEvalCases: next });
+        out.textContent = `Sample deleted. ${next.length} sample(s) left. The next run starts a new comparison.`;
+      } catch (e) {
+        out.textContent = `Not deleted: ${e.message}`;
+      }
+      await renderEvalSamples();
+    });
+    row.append(label, del);
+    box.append(row);
+  }
+}
+renderEvalSamples();
+
 document.getElementById("btn-eval-save").addEventListener("click", async () => {
   const out = document.getElementById("sandbox-eval-results");
   const input = document.getElementById("sandbox-prompt-input").value;
@@ -719,6 +752,7 @@ document.getElementById("btn-eval-save").addEventListener("click", async () => {
   }
   await chrome.storage.local.set({ promptEvalCases: cases });
   out.textContent = `${cases.length} sample(s) saved.`;
+  await renderEvalSamples();
 });
 
 document.getElementById("btn-eval-run").addEventListener("click", async () => {

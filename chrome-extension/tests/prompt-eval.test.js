@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_EVAL_CASES, casesKey, normalizeCases, scoreOutput, suggestFromFailures, summarizeRun } from "../extension/lib/prompt-eval.js";
+import { MAX_EVAL_CASES, casesKey, normalizeCases, removeCase, scoreOutput, suggestFromFailures, summarizeRun } from "../extension/lib/prompt-eval.js";
 import { appendGuidanceLine, normalizeGuidance, revertGuidance, MAX_SUGGESTIONS } from "../extension/lib/prompt-guidance.js";
 import { getPrompt } from "../extension/lib/prompts.js";
 
@@ -24,6 +24,24 @@ describe("casesKey", () => {
     const b = normalizeCases([{ input: "q", expect: { maxWords: 6 } }]);
     expect(casesKey(a)).toBe(casesKey(normalizeCases(a)));
     expect(casesKey(a)).not.toBe(casesKey(b));
+  });
+});
+
+describe("removeCase", () => {
+  const set = normalizeCases([
+    { input: "a", expect: { maxWords: 5 } },
+    { input: "b", expect: { maxWords: 6 } }
+  ]);
+  it("removes the case at the index and frees a slot at the limit", () => {
+    expect(removeCase(set, 0).map((c) => c.input)).toEqual(["b"]);
+    const full = Array.from({ length: MAX_EVAL_CASES }, (_, i) => ({ input: `q${i}`, expect: { maxWords: 5 } }));
+    expect(removeCase(full, 3)).toHaveLength(MAX_EVAL_CASES - 1);
+  });
+  it("leaves the set unchanged for an out-of-range index", () => {
+    expect(removeCase(set, 5)).toEqual(set);
+  });
+  it("changes casesKey so earlier runs are not comparable", () => {
+    expect(casesKey(removeCase(set, 1))).not.toBe(casesKey(set));
   });
 });
 

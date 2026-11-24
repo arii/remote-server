@@ -41,6 +41,11 @@ export function normalizeCases(raw) {
   return out;
 }
 
+// Returns the normalized set without the case at index. Out-of-range index leaves the set unchanged.
+export function removeCase(raw, index) {
+  return normalizeCases(raw).filter((_, i) => i !== index);
+}
+
 export function scoreOutput(output, expect = {}) {
   const text = String(output ?? "");
   const lower = text.toLowerCase();
