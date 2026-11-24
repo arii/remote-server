@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -2547,3 +2548,63 @@ class StrongRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QueueStatusTests(unittest.TestCase):
+    def status(self, held, current=None, age=0, halted=None, supervisor=True, log=True):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = {}
+            if halted:
+                state.update(halted=True, reason=halted)
+            if current:
+                state.update(current=current, started_at=time.time() - age)
+            if state:
+                (root / "status.json").write_text(json.dumps(state))
+            if current and log:
+                run_log = root / "arii_remote-server-1" / "run.log"
+                run_log.parent.mkdir()
+                run_log.write_text("x")
+                os.utime(run_log, (time.time() - age,) * 2)
+            if held and supervisor:
+                (root / "supervisor.pid").write_text(str(os.getpid()))
+            with (root / "queue.lock").open("a") as lock:
+                if held:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                # flock locks are per open file description, so the probe sees it.
+                return runner.queue_status({"state_dir": tmp})
+
+    def test_down(self):
+        self.assertIn("Restart Service", self.status(held=False))
+
+    def test_down_halted(self):
+        out = self.status(
+            held=False, halted="consecutive failures with a common blocker"
+        )
+        self.assertIn("--clear-halt", out)
+        self.assertIn("common blocker", out)
+
+    def test_busy(self):
+        out = self.status(held=True, supervisor=False)
+        self.assertIn("wait", out)
+
+    def test_idle(self):
+        self.assertIn("Ready", self.status(held=True))
+
+    def test_stalled(self):
+        out = self.status(held=True, current="arii/remote-server#1", age=3600)
+        self.assertIn("Investigate/Restart", out)
+
+    def test_fresh_claim_without_log_is_not_stalled(self):
+        out = self.status(held=True, current="arii/remote-server#1", age=0, log=False)
+        self.assertNotIn("STALLED", out)
+
+    def test_old_claim_without_log_is_stalled(self):
+        out = self.status(
+            held=True, current="arii/remote-server#1", age=3600, log=False
+        )
+        self.assertIn("Investigate/Restart", out)
+
+    def test_running(self):
+        out = self.status(held=True, current="arii/remote-server#1")
+        self.assertNotIn("Next action", out)
