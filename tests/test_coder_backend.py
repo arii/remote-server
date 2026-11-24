@@ -259,6 +259,50 @@ class TestCoderBackend(unittest.TestCase):
                 self.assertIn("match exactly once", tools[id].content)
             self.assertEqual(tools["applied"].status, "success")
 
+    def test_identical_reads_replay_and_still_use_model_budget(self):
+        from langchain.agents.middleware.model_call_limit import (
+            ModelCallLimitExceededError,
+        )
+        from langchain_core.messages import AIMessage, HumanMessage
+        from tests.test_coder_outcome import LocalModel
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "runner.py").write_text("RUNNING = True\n")
+            for cap in (3, 4):
+                with self.subTest(cap=cap):
+                    model = LocalModel(
+                        responses=[
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "id": f"read-{i}",
+                                        "name": "read_file",
+                                        "args": {"file_path": "runner.py"},
+                                    }
+                                ],
+                            )
+                            for i in range(3)
+                        ]
+                        + [AIMessage(content="BLOCKED #1570")],
+                    )
+                    graph = coder.build_agent(root, "", model=model, call_cap=cap)
+                    inputs = {"messages": [HumanMessage(content="Fix #1570")]}
+                    if cap == 3:
+                        with self.assertRaises(ModelCallLimitExceededError):
+                            graph.invoke(inputs)
+                        continue
+                    result = graph.invoke(inputs)
+                    reads = [m for m in result["messages"] if m.type == "tool"]
+                    self.assertEqual(
+                        [m.tool_call_id for m in reads], ["read-0", "read-1", "read-2"]
+                    )
+                    self.assertIn("RUNNING = True", reads[0].content)
+                    for message in reads[1:]:
+                        self.assertEqual(message.status, "success")
+                        self.assertIn("Cached result", message.content)
+                        self.assertTrue(message.content.endswith(reads[0].content))
+
     def test_1570_missing_docstring_quotes_replay(self):
         from deepagents.middleware.filesystem import FilesystemMiddleware
         from langchain.agents.middleware import AgentMiddleware, ToolCallRequest

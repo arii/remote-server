@@ -1513,6 +1513,7 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
     seen = {}
     acknowledged = set()
     earlier = {}
+    edit_generation = 0
     calls = 0
     explored = 0
     nudged = None
@@ -1524,17 +1525,32 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
 
     @wrap_tool_call
     def bound_calls(request, handler):
-        nonlocal calls, explored, nudged
+        nonlocal calls, edit_generation, explored, nudged
         call = request.tool_call
         key = (call["name"], json.dumps(call["args"], sort_keys=True))
+        inspection = call["name"] in INSPECTION_TOOLS
         with lock:
             calls += 1
             if calls > limit:
                 raise error(f"BLOCKED: {label} tool budget exhausted ({limit} calls)")
+            generation = edit_generation
+            if inspection and key in earlier:
+                previous = earlier[key]
+                return previous.model_copy(
+                    update={
+                        "id": None,
+                        "tool_call_id": call["id"],
+                        "content": (
+                            "Already called with these args. Cached result below; "
+                            "make the planned edit or report DONE/BLOCKED.\n"
+                            + previous.content
+                        ),
+                    }
+                )
             if (
                 bound_exploring
                 and (first_edit_writes is None or first_edit_writes)
-                and call["name"] in INSPECTION_TOOLS
+                and inspection
             ):
                 # Calls batched with the nudged one get the nudge too, so the
                 # model sees it before the hard stop.
@@ -1558,7 +1574,7 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
                         tool_call_id=call["id"],
                         status="error",
                     )
-            if call["name"] != "run_check" and (repair or call["name"] != "read_file"):
+            if not inspection and call["name"] != "run_check":
                 seen[key] = seen.get(key, int(key in acknowledged)) + 1
                 if seen[key] >= REPAIR_REPEAT_LIMIT:
                     raise error(
@@ -1575,7 +1591,7 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
                             and call["name"] == "edit_file"
                         ):
                             content += "\nFor a planned existing file, use replace_lines instead."
-                        content += "\nEarlier result:\n" + earlier[key]
+                        content += "\nEarlier result:\n" + earlier[key].content
                     return ToolMessage(
                         content=content,
                         tool_call_id=call["id"],
@@ -1583,14 +1599,20 @@ def coder_tool_middleware(*, repair=False, planning=False, first_edit_writes=Non
                     )
         result = handler(request)
         with lock:
-            if isinstance(getattr(result, "content", None), str):
-                earlier[key] = result.content
+            if (
+                isinstance(result, ToolMessage)
+                and isinstance(result.content, str)
+                and (not inspection or generation == edit_generation)
+            ):
+                earlier[key] = result
             if is_applied_replay(call, result):
                 seen.pop(key, None)
                 acknowledged.add(key)
             elif is_file_mutation(call, result):
+                edit_generation += 1
                 seen.clear()
                 acknowledged.clear()
+                earlier.clear()
                 explored = 0
                 nudged = None
         return result
