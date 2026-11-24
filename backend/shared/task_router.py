@@ -164,6 +164,8 @@ def suggested_tier(features):
 
 
 def _est_call_cost(model, est_input_tokens):
+    if model.get("free"):
+        return 0.0
     ip = model.get("input_price")
     op = model.get("output_price")
     if ip is None or op is None:
@@ -198,10 +200,11 @@ def choose(tier, features, catalog, disabled=None, cap_usd=1.0, blocked=None):
     """Pick one model for one tier. Returns a decision record.
 
     'fast' ranks free tool-capable models by context window (the trim
-    budget is the binding constraint on long sessions). 'strong' ranks
-    every affordable model by price descending — the strongest model
-    that fits the issue budget — so the full paid catalog is in play,
-    not one env-pinned endpoint.
+    budget is the binding constraint on long sessions). 'strong' keeps
+    every model meeting the capability floor (chat, tools, context
+    window) and the spend rules, then picks the cheapest by estimated
+    call cost. With no such model the pick is None and the record says
+    so in ``no_pick_reason``.
     """
     disabled = disabled_providers() if disabled is None else disabled
     blocked = paid_blockers() if blocked is None else blocked
@@ -224,8 +227,9 @@ def choose(tier, features, catalog, disabled=None, cap_usd=1.0, blocked=None):
 
         def key(m):
             return (
-                -(m.get("input_price") or 0.0),
+                _est_call_cost(m, features["est_input_tokens"]),
                 -(m.get("context_length") or 0),
+                order.get(m.get("provider"), len(order)),
                 m.get("id") or "",
             )
 
@@ -236,7 +240,14 @@ def choose(tier, features, catalog, disabled=None, cap_usd=1.0, blocked=None):
         "model": f"{pick['provider']}/{pick['id']}" if pick else None,
         "free_only": free_only,
         "rule": (
-            "rank:free_context_desc" if free_only else "rank:affordable_price_desc"
+            "rank:free_context_desc" if free_only else "rank:cheapest_meeting_floor"
+        ),
+        "no_pick_reason": (
+            None
+            if pick
+            else f"no {tier} candidate meets the capability floor "
+            f"(context>={max(CONTEXT_FLOOR, features['est_input_tokens'] * 2)}, "
+            f"tools={features['needs_tools']}) within spend rules"
         ),
         "candidates": len(cands),
         "paid_providers": sorted(paid),

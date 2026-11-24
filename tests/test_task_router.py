@@ -104,44 +104,79 @@ class Choose(unittest.TestCase):
         )
         self.assertNotIn("@cf/granite-micro", pick["top3"][0] if pick["top3"] else "")
 
-    def test_strong_picks_priciest_affordable(self):
-        # nebius is the default spendable provider; openrouter/google
-        # paid models are catalog-priced but their keys are free-tier.
+    def test_strong_picks_cheapest_meeting_floor(self):
+        # Free tool-capable models meet the floor at zero cost, so they
+        # beat every paid model; the 32k-window model fails the 2x-input floor.
         pick = task_router.choose(
             "strong", self.features, CATALOG, disabled=self.disabled, cap_usd=1.0
         )
-        self.assertEqual(pick["model"], "nebius/Qwen/Qwen3-235B")
+        self.assertEqual(pick["model"], "google/gemini-flash-lite")
+        self.assertEqual(pick["rule"], "rank:cheapest_meeting_floor")
+        self.assertEqual(pick["est_call_cost_usd"], 0.0)
         self.assertFalse(pick["free_only"])
+        self.assertIsNone(pick["no_pick_reason"])
 
-    def test_strong_paid_env_extends_and_blockers_exclude(self):
-        # A funded OpenRouter key makes frontier/huge eligible (~$0.72/call
-        # est. fits half of a $2 cap); a 402 trace record blocks it again.
+    def test_strong_prefers_cheaper_paid_at_same_capability(self):
+        paid_only = [m for m in CATALOG if not m["free"]]
         with mock.patch.dict(os.environ, {"TWT_PAID_PROVIDERS": "openrouter,google"}):
             pick = task_router.choose(
                 "strong",
                 self.features,
-                CATALOG,
+                paid_only,
                 disabled=self.disabled,
                 cap_usd=2.0,
                 blocked=set(),
             )
-            self.assertEqual(pick["model"], "openrouter/frontier/huge")
+        # nebius Qwen (~$0.01/call) < gemini-pro < frontier/huge (~$0.72/call)
+        self.assertEqual(pick["model"], "nebius/Qwen/Qwen3-235B")
+        self.assertEqual(
+            pick["top3"],
+            ["nebius/Qwen/Qwen3-235B", "google/gemini-pro", "openrouter/frontier/huge"],
+        )
+
+    def test_strong_blockers_exclude_paid_provider(self):
+        paid_only = [m for m in CATALOG if not m["free"]]
+        pick = task_router.choose(
+            "strong",
+            self.features,
+            paid_only,
+            disabled=self.disabled,
+            cap_usd=2.0,
+            blocked={"nebius"},
+        )
+        self.assertIsNone(pick["model"])
+
+    def test_strong_excludes_unrated_and_unfunded_paid(self):
+        paid_only = [m for m in CATALOG if not m["free"]]
+        pick = task_router.choose(
+            "strong", self.features, paid_only, disabled=self.disabled, cap_usd=2.0
+        )
+        # only nebius can spend by default; unrated/paid fails closed
+        self.assertEqual(pick["top3"], ["nebius/Qwen/Qwen3-235B"])
+
+    def test_strong_paid_cap_enforced(self):
+        paid_only = [m for m in CATALOG if not m["free"]]
+        with mock.patch.dict(os.environ, {"TWT_PAID_PROVIDERS": "openrouter,google"}):
             pick = task_router.choose(
                 "strong",
                 self.features,
-                CATALOG,
+                paid_only,
                 disabled=self.disabled,
-                cap_usd=2.0,
-                blocked={"openrouter"},
+                cap_usd=0.05,
+                blocked=set(),
             )
-            self.assertEqual(pick["model"], "google/gemini-pro")
-
-    def test_strong_excludes_unrated_and_over_budget_paid(self):
+        # frontier/huge (~$0.72) and gemini-pro (~$0.09) exceed half of $0.05
+        self.assertEqual(pick["top3"], ["nebius/Qwen/Qwen3-235B"])
         pick = task_router.choose(
-            "strong", self.features, CATALOG, disabled=self.disabled, cap_usd=0.05
+            "strong",
+            self.features,
+            paid_only,
+            disabled=self.disabled,
+            cap_usd=0.001,
+            blocked=set(),
         )
-        self.assertNotEqual(pick["model"], "nebius/unrated/paid")
-        self.assertNotEqual(pick["model"], "openrouter/frontier/huge")
+        self.assertIsNone(pick["model"])
+        self.assertIn("capability floor", pick["no_pick_reason"])
 
     def test_empty_catalog_yields_no_pick(self):
         pick = task_router.choose("fast", self.features, [], disabled=self.disabled)
