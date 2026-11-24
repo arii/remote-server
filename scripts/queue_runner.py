@@ -340,6 +340,25 @@ def skip_reason(issue):
     return issue.get("skip_reason")
 
 
+def only_issue_keys(value):
+    """`only_issues` config: a list of exactly one "owner/repo#N". The pass dispatches
+    only that issue (still subject to ready, ledger and budget checks), then ends."""
+    if (
+        not isinstance(value, list)
+        or len(value) != 1
+        or not all(
+            isinstance(key, str)
+            and re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*#[1-9][0-9]*",
+                key,
+            )
+            for key in value
+        )
+    ):
+        raise ValueError('only_issues must be a list of exactly one "owner/repo#N"')
+    return set(value)
+
+
 def checked_cap(value):
     if (
         type(value) not in (int, float)
@@ -1159,6 +1178,24 @@ def prune_landed_worktrees(config):
 
 
 def supervise(config_path, *, clear_halt=False):
+    """One queue pass. `only_issues` (exactly one "owner/repo#N") is validated here,
+    before the lock or any GitHub call, and makes the stop terminal (see _supervise)."""
+    config = read_json(config_path)
+    only = only_issue_keys(config["only_issues"]) if "only_issues" in config else None
+    held = []
+    try:
+        return _supervise(config_path, clear_halt=clear_halt, only=only, held=held)
+    finally:
+        # Terminal stop once the lock was held, however the pass ended (done, halt or
+        # error). A second start that lost the lock race writes nothing.
+        if only is not None and held:
+            root = Path(config["state_dir"]).resolve()
+            (root / "STOP").touch(mode=0o600)
+            print("STOP only_issues pass ended; remove STOP to run again", flush=True)
+
+
+def _supervise(config_path, *, clear_halt=False, only=None, held=None):
+    held = [] if held is None else held
     config = read_json(config_path)
     cap = checked_cap(config.get("cap_usd", ISSUE_CAP_USD))
     failure_limit = config.get("max_common_failures", 3)
@@ -1182,10 +1219,18 @@ def supervise(config_path, *, clear_halt=False):
     status_path = root / "status.json"
     with (root / "queue.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held.append(True)  # the lock is ours: an only_issues pass now ends with STOP
         # queue_status reads this to tell a live supervisor from a --retry
         # holding the same lock while the service is stopped.
         (root / "supervisor.pid").write_text(str(os.getpid()))
         status = read_json(status_path) if status_path.exists() else {"completed": []}
+        if only is not None and status.get("current") and status["current"] not in only:
+            status.update(
+                halted=True,
+                reason=f"only_issues set but {status['current']} is claimed; inspect it first",
+            )
+            write_json(status_path, status)
+            return 2
         finish_retry(root, status_path, status, config)
         ledger = QueueLedger(config, status, status_path)
         ledger.boundary(merges=True)
@@ -1258,6 +1303,15 @@ def supervise(config_path, *, clear_halt=False):
                 f"{issue['repo']}#{issue['number']}" != status.get("retry")
             )
         )
+        if only is not None:
+            issues = [i for i in issues if f"{i['repo']}#{i['number']}" in only]
+            print("ONLY " + ", ".join(sorted(only)), flush=True)
+            found = {f"{i['repo']}#{i['number']}" for i in issues}
+            for key in sorted(only - found):
+                print(
+                    f"ONLY {key} not in the manifest or ready discovery: nothing to run",
+                    flush=True,
+                )
         for issue in issues:
             if stopping or (root / "STOP").exists():
                 status.update(stopped=True, current=None)
@@ -1279,7 +1333,10 @@ def supervise(config_path, *, clear_halt=False):
                 fresh = json.loads(
                     subprocess.check_output(
                         config.get("gh_command", ["gh"])
-                        + ["api", f"repos/{issue['repo']}/issues/{issue['number']}"],
+                        + [
+                            "api",
+                            f"repos/{issue['repo']}/issues/{issue['number']}",
+                        ],
                         text=True,
                     )
                 )
@@ -1288,7 +1345,12 @@ def supervise(config_path, *, clear_halt=False):
                     label.get("name") if isinstance(label, dict) else label
                     for label in fresh.get("labels") or []
                 }
-            except (subprocess.CalledProcessError, OSError, ValueError, KeyError) as e:
+            except (
+                subprocess.CalledProcessError,
+                OSError,
+                ValueError,
+                KeyError,
+            ) as e:
                 print(f"SKIP {key} refresh failed: {e}", flush=True)
                 continue
             if state != "open":
@@ -1461,7 +1523,8 @@ def supervise(config_path, *, clear_halt=False):
                 )
                 write_json(status_path, status)
                 return 2
-            time.sleep(config.get("inter_issue_delay_seconds", 60))
+            if only is None:
+                time.sleep(config.get("inter_issue_delay_seconds", 60))
         status.update(done=True, current=None)
         write_json(status_path, status)
     return 0

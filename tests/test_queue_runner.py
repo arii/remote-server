@@ -574,6 +574,136 @@ class RunnerTests(unittest.TestCase):
                 self.assertTrue(runner.skip_reason({"repo": repo, "number": number}))
 
     @mock.patch.object(runner.signal, "signal")
+    @mock.patch.object(
+        runner.subprocess,
+        "check_output",
+        return_value=json.dumps(
+            {
+                "state": "open",
+                "labels": [{"name": "ready"}],
+                "title": "Fix",
+                "body": "scope",
+            }
+        ),
+    )
+    def test_only_issues_dispatches_just_that_issue_then_the_pass_ends(
+        self, _read, _signal
+    ):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            runner.write_json(
+                Path(root) / "issues.json",
+                [
+                    {"repo": "owner/repo", "number": 7},
+                    {"repo": "owner/repo", "number": 8},
+                ],
+            )
+            settings = runner.read_json(config)
+            settings["only_issues"] = ["owner/repo#8"]
+            runner.write_json(config, settings)
+            dispatched = []
+
+            def spawn(command, **_kwargs):
+                name = Path(command[-1]).name
+                dispatched.append(name)
+                process = mock.Mock(returncode=0)
+                process.communicate.side_effect = lambda _: runner.write_json(
+                    state / name / "summary.json",
+                    {
+                        "halt_queue": False,
+                        "reconciliation": {"reconciled": True},
+                        "result": {"status": "DONE"},
+                        "exit_code": 0,
+                    },
+                )
+                return process
+
+            with mock.patch.object(runner.subprocess, "Popen", side_effect=spawn):
+                self.assertEqual(runner.supervise(config), 0)
+            self.assertEqual(dispatched, ["owner_repo-8"])
+            status = runner.read_json(state / "status.json")
+            self.assertIn("owner/repo#8", status["completed"])
+            self.assertNotIn("owner/repo#7", status["completed"])
+            self.assertTrue(status["done"])
+            # Terminal stop: the sentinel is written and a second start dispatches nothing.
+            self.assertTrue((state / "STOP").exists())
+            settings["only_issues"] = ["owner/repo#7"]
+            runner.write_json(config, settings)
+            with mock.patch.object(runner.subprocess, "Popen", side_effect=spawn):
+                self.assertEqual(runner.supervise(config), 0)
+            self.assertEqual(dispatched, ["owner_repo-8"])
+
+    @mock.patch.object(runner.signal, "signal")
+    def test_only_issues_must_be_well_formed_and_fails_before_any_dispatch(
+        self, _signal
+    ):
+        for bad in (
+            [],
+            "owner/repo#8",
+            ["owner/repo"],
+            ["owner/repo#0"],
+            [8],
+            ["owner/repo#7", "owner/repo#8"],
+        ):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as root:
+                config, _state = self.fixture(root)
+                settings = runner.read_json(config)
+                settings["only_issues"] = bad
+                settings["discover_repos"] = ["owner/repo"]
+                runner.write_json(config, settings)
+                with (
+                    mock.patch.object(runner.subprocess, "check_output") as github,
+                    mock.patch.object(runner.subprocess, "Popen") as spawn,
+                    self.assertRaises(ValueError),
+                ):
+                    runner.supervise(config)
+                spawn.assert_not_called()
+                github.assert_not_called()
+                self.assertFalse(
+                    (_state / "STOP").exists(), "rejected before the lock: nothing ran"
+                )
+
+    @mock.patch.object(runner.signal, "signal")
+    def test_only_issues_halts_when_another_issue_is_claimed(self, _signal):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            state.mkdir()
+            runner.write_json(
+                state / "status.json", {"completed": [], "current": "owner/repo#7"}
+            )
+            settings = runner.read_json(config)
+            settings["only_issues"] = ["owner/repo#8"]
+            runner.write_json(config, settings)
+            with (
+                mock.patch.object(runner.subprocess, "check_output") as github,
+                mock.patch.object(runner.subprocess, "Popen") as spawn,
+            ):
+                self.assertEqual(runner.supervise(config), 2)
+            spawn.assert_not_called()
+            github.assert_not_called()
+            status = runner.read_json(state / "status.json")
+            self.assertTrue(status["halted"])
+            self.assertIn("owner/repo#7 is claimed", status["reason"])
+            self.assertTrue((state / "STOP").exists())
+
+    @mock.patch.object(runner.signal, "signal")
+    def test_only_issues_lock_contention_writes_no_stop(self, _signal):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            state.mkdir()
+            settings = runner.read_json(config)
+            settings["only_issues"] = ["owner/repo#7"]
+            runner.write_json(config, settings)
+            with (state / "queue.lock").open("a") as held:
+                runner.fcntl.flock(held, runner.fcntl.LOCK_EX | runner.fcntl.LOCK_NB)
+                with self.assertRaises(BlockingIOError):
+                    runner.supervise(config)
+            self.assertFalse(
+                (state / "STOP").exists(),
+                "a losing second start must not stop the live pass",
+            )
+
+    @mock.patch.object(runner.signal, "signal")
     def test_stop_sentinel_prevents_dispatch(self, _signal):
         with tempfile.TemporaryDirectory() as root:
             config, state = self.fixture(root)
