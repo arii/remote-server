@@ -82,8 +82,12 @@ def get_agent_state() -> dict[str, Any]:
     state = read_control_state()
     now = time.time()
     data = state.model_dump()
-    data["phase_duration"] = (now - state.phase_started_at) if state.phase_started_at else 0
-    data["last_activity_seconds"] = (now - state.last_activity_at) if state.last_activity_at else 0
+    data["phase_duration"] = (
+        (now - state.phase_started_at) if state.phase_started_at else 0
+    )
+    data["last_activity_seconds"] = (
+        (now - state.last_activity_at) if state.last_activity_at else 0
+    )
     return data
 
 

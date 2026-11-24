@@ -16,7 +16,12 @@ class AgentControlTestCase(unittest.TestCase):
         )
 
     def test_state_api_response(self):
-        from backend.api.routers.agent_control import get_agent_state, write_control_state, AgentControlState
+        from backend.api.routers.agent_control import (
+            get_agent_state,
+            write_control_state,
+            AgentControlState,
+        )
+
         state = AgentControlState(
             state="RUNNING",
             active_issue=123,
