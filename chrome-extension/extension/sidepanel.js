@@ -26,6 +26,8 @@ import {
   revertGuidance
 } from "./lib/prompt-guidance.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
+import { MAX_PENDING_DELTAS } from "./lib/storage-mutations.js";
+import { buildVaultPrompt, parseVaultImport } from "./lib/vault-onboarding.js";
 import {
   REFINEMENT_SCHEMA,
   buildRefinementPrompt,
@@ -1189,6 +1191,7 @@ async function renderVault() {
   });
 
   document.getElementById("vault-count-badge").textContent = `${cleanedVault.length} facts`;
+  document.getElementById("vault-onboarding-card").style.display = cleanedVault.length === 0 ? "" : "none";
 
   // First-run flow: the vault ships empty (no seed PII). Point the user at the
   // import path — the file format is exactly what "Export Vault JSON" produces.
@@ -1813,6 +1816,47 @@ async function queueVerifiedDeltas(rawFacts, sourceTitle = "", sourceUrl = "") {
 
   return queued.length;
 }
+
+// Vault onboarding: prompt for the user's own chatbot, then validated import
+// into the Review & Merge Queue (queueVerifiedDeltas sends delta:queue).
+document.getElementById("vault-onboarding-prompt").value = buildVaultPrompt();
+
+document.getElementById("btn-copy-vault-prompt").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-copy-vault-prompt");
+  try {
+    await navigator.clipboard.writeText(buildVaultPrompt());
+    btn.textContent = "Copied!";
+  } catch {
+    btn.textContent = "Copy failed. Select the text and copy it.";
+  }
+  setTimeout(() => (btn.textContent = "Copy prompt"), 1500);
+});
+
+document.getElementById("vault-onboarding-file").addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  document.getElementById("vault-onboarding-input").value = await file.text();
+});
+
+document.getElementById("btn-vault-onboarding-import").addEventListener("click", async () => {
+  const status = document.getElementById("vault-onboarding-status");
+  const result = parseVaultImport(document.getElementById("vault-onboarding-input").value);
+  if (!result.ok) {
+    status.style.color = "#f87171";
+    status.textContent = `Nothing was queued. Fix these and try again:\n${result.errors.slice(0, 10).join("\n")}`;
+    return;
+  }
+  const { pendingDeltas = [] } = await chrome.storage.local.get(["pendingDeltas"]);
+  if (pendingDeltas.length + result.facts.length > MAX_PENDING_DELTAS) {
+    status.style.color = "#f87171";
+    status.textContent = `The review queue holds ${pendingDeltas.length} of ${MAX_PENDING_DELTAS} facts. Review or clear it in the Observer tab, then try again.`;
+    return;
+  }
+  const queued = await queueVerifiedDeltas(result.facts, "Pasted from my AI chatbot");
+  await renderObserverQueue();
+  status.style.color = "#34d399";
+  status.textContent = `Queued ${queued} of ${result.facts.length} facts (duplicates skipped). Open the Observer tab > Review & Merge Queue to approve.`;
+});
 
 // Clear Active Target Context Button
 document.getElementById("btn-clear-target-context")?.addEventListener("click", async () => {
