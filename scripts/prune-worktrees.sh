@@ -10,6 +10,11 @@
 #   - its branch is landed: every branch commit is in origin/main,
 #     or GitHub reports a MERGED PR for the branch head
 #     (squash-merges rewrite SHAs, so ancestry alone misses them).
+# Agent-owned trees (agent/issue-*, queue-retry/*, kiro/issue-*) are
+# the exception for two rules: a landed 0-delta branch is pruned, and
+# untracked runner artifacts do not block pruning (tracked changes
+# still do). Non-agent trees keep both rules unchanged.
+# The operator runner worktree `queue-main` is never pruned.
 # Unmerged or non-empty-but-unlanded work is NEVER removed.
 # After a worktree goes, its branch is deleted with `git branch -d`
 # (which itself refuses unmerged branches: second safety).
@@ -52,6 +57,14 @@ delete_branch() {
     return 1
 }
 
+# agent_owned <branch>: 0 for branches created by agent runs.
+agent_owned() {
+    case "$1" in
+        agent/issue-*|queue-retry/*|kiro/issue-*) return 0 ;;
+    esac
+    return 1
+}
+
 path=""
 head=""
 branch=""
@@ -62,11 +75,17 @@ flush_tree() {
         echo "SELF  $path [$branch] -- the tree running this script, never touched"
     elif [ "$locked" -eq 1 ]; then
         echo "KEEP  $path [$branch] -- locked"
+    elif [ "$(basename "$path")" = "queue-main" ]; then
+        echo "KEEP  $path [$branch] -- operator runner worktree, never pruned"
     elif [ -z "$branch" ]; then
         echo "KEEP  $path [(detached)] -- detached HEAD, owner decides"
-    elif [ -n "$(git -C "$path" status --porcelain)" ]; then
+    elif [ -n "$(git -C "$path" status --porcelain --untracked-files=no)" ]; then
         echo "KEEP  $path [$branch] -- dirty tree"
-    elif [ "$(git rev-list --count "$head" --not origin/main \
+    elif ! agent_owned "$branch" \
+            && [ -n "$(git -C "$path" status --porcelain)" ]; then
+        echo "KEEP  $path [$branch] -- dirty tree"
+    elif ! agent_owned "$branch" \
+            && [ "$(git rev-list --count "$head" --not origin/main \
             2>/dev/null || echo 1)" -eq 0 ]; then
         echo "KEEP  $path [$branch] -- empty branch, owner decides"
     elif landed "$branch" "$head"; then
