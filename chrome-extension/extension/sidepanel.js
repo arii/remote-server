@@ -7,14 +7,15 @@ import { matchField } from "./lib/matcher.js";
 import { deduplicateVault } from "./lib/vault.js";
 import { MAX_CHUNKS_PER_PAGE, MAX_CHUNKS_PER_RUN, PROFILE_FACTS_SCHEMA, collectSourcePages, extractFactsFromText, htmlToText } from "./lib/profile-ingest.js";
 import {
+  askTabEntries,
   buildAskPrompt,
   formatTargetContext,
   formatVaultFacts,
-  isReadableTabUrl,
   selectVaultFacts
 } from "./lib/ask-context.js";
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
 import { INTERNALS_URL, MODEL_APIS, describeModelError, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
+import { modelPanelView, observeView } from "./lib/panel-state.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
   SUGGESTION_SCHEMA,
@@ -457,7 +458,25 @@ async function checkBuiltInAIStatus() {
   }
 
   document.getElementById("model-details-box").textContent = JSON.stringify(report, null, 2);
+  applyModelView(report);
   return report;
+}
+
+// Show only what the current model state needs: progress and download button
+// until everything is ready, prompt tools only once the Prompt model is ready.
+function applyModelView(report) {
+  const view = modelPanelView(report);
+  const show = (id, on) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = on ? "" : "none";
+  };
+  show("download-section", view.showProgress);
+  show("btn-bootstrap-model", view.showDownloadButton);
+  show("model-ready-line", view.allReady);
+  show("prompt-tools", view.promptReady);
+  show("prompt-cta", !view.promptReady);
+  document.getElementById("model-ready-line").textContent = view.summary;
+  document.getElementById("prompt-cta-text").textContent = view.ctaText;
 }
 
 function renderModelError(key, detail) {
@@ -572,22 +591,26 @@ async function renderAskTabList() {
   if (!list) return;
   list.textContent = "";
   const active = await getActiveTab();
-  const tabs = (await chrome.tabs.query({ currentWindow: true })).filter((t) => t.id !== active?.id);
-  if (!tabs.length) {
-    list.textContent = "No other tabs open.";
-    return;
+  const { entries, unreadableCount } = askTabEntries(await chrome.tabs.query({ currentWindow: true }), active?.id);
+  if (!entries.length) {
+    list.textContent = "No other readable tabs open.";
   }
-  for (const tab of tabs) {
+  for (const tab of entries) {
     const label = document.createElement("label");
     label.className = "card-desc";
     const box = document.createElement("input");
     box.type = "checkbox";
     box.dataset.tabId = String(tab.id);
-    box.dataset.title = tab.title || "";
-    box.dataset.url = tab.url || "";
-    box.disabled = !isReadableTabUrl(tab.url);
-    label.append(box, ` ${(tab.title || tab.url || "Untitled").slice(0, 60)}${box.disabled ? " (cannot be read)" : ""}`);
+    box.dataset.title = tab.title;
+    box.dataset.url = tab.url;
+    label.append(box, ` ${tab.label}`);
     list.appendChild(label);
+  }
+  if (unreadableCount > 0) {
+    const note = document.createElement("div");
+    note.className = "card-desc";
+    note.textContent = `${unreadableCount} other ${unreadableCount === 1 ? "tab cannot" : "tabs cannot"} be read (browser pages).`;
+    list.appendChild(note);
   }
 }
 document.getElementById("ask-tabs-details")?.addEventListener("toggle", (e) => {
@@ -1730,58 +1753,54 @@ document.getElementById("btn-discard-all-deltas").addEventListener("click", asyn
 // for that domain here; the content script checks the same allowlist at
 // submit time and fails closed.
 // ----------------------------------------------------------------------------
-async function renderObserverDomainToggle() {
-  const chk = document.getElementById("chk-observer-domain");
-  const domainEl = document.getElementById("observer-current-domain");
-  if (!chk || !domainEl) return;
-
-  const tab = await getActiveTab();
-  let hostname = "";
-  try {
-    hostname = tab?.url ? new URL(tab.url).hostname : "";
-  } catch {
-    hostname = ""; // chrome:// and other non-standard URLs have no hostname
-  }
-
-  if (!hostname) {
-    domainEl.textContent = "this site";
-    chk.checked = false;
-    chk.disabled = true;
-    return;
-  }
-
-  domainEl.textContent = hostname;
-  chk.disabled = false;
-  const { observerDomainAllowlist = [] } = await chrome.storage.local.get(["observerDomainAllowlist"]);
-  chk.checked = Array.isArray(observerDomainAllowlist) && observerDomainAllowlist.includes(hostname);
-}
-
-document.getElementById("chk-observer-domain")?.addEventListener("change", async (e) => {
-  const chk = e.target;
-  let hostname = "";
+async function getActiveHostname() {
   try {
     const tab = await getActiveTab();
-    hostname = tab?.url ? new URL(tab.url).hostname : "";
+    return tab?.url ? new URL(tab.url).hostname : "";
   } catch {
-    hostname = "";
+    return ""; // chrome:// and other non-standard URLs have no hostname
   }
-  if (!hostname) {
-    chk.checked = false;
-    return;
-  }
+}
 
+async function renderObserverDomainToggle() {
+  const btn = document.getElementById("btn-observe-toggle");
+  if (!btn) return;
+  const hostname = await getActiveHostname();
+  let enabled = false;
+  if (hostname) {
+    const { observerDomainAllowlist = [] } = await chrome.storage.local.get(["observerDomainAllowlist"]);
+    enabled = Array.isArray(observerDomainAllowlist) && observerDomainAllowlist.includes(hostname);
+  }
+  const view = observeView({ hostname, enabled });
+  btn.textContent = view.label;
+  btn.disabled = view.disabled;
+  btn.setAttribute("aria-pressed", String(view.pressed));
+  btn.classList.toggle("btn-primary", !view.pressed);
+  btn.classList.toggle("btn-secondary", view.pressed);
+  const hint = document.getElementById("observe-hint");
+  if (hint) hint.textContent = view.hint;
+}
+
+async function setObserveDomain(hostname, enabled) {
   const { observerDomainAllowlist = [] } = await chrome.storage.local.get(["observerDomainAllowlist"]);
   const updated = new Set(Array.isArray(observerDomainAllowlist) ? observerDomainAllowlist : []);
-  if (chk.checked) updated.add(hostname);
+  if (enabled) updated.add(hostname);
   else updated.delete(hostname);
   await chrome.storage.local.set({ observerDomainAllowlist: Array.from(updated) });
 
   Telemetry.logTrace({
     type: "OBSERVER",
-    title: `Submit observer ${chk.checked ? "enabled" : "disabled"} for ${hostname}`,
+    title: `Submit observer ${enabled ? "enabled" : "disabled"} for ${hostname}`,
     durationMs: 0,
-    details: { hostname, enabled: chk.checked }
+    details: { hostname, enabled }
   });
+}
+
+document.getElementById("btn-observe-toggle")?.addEventListener("click", async (e) => {
+  const hostname = await getActiveHostname();
+  if (!hostname) return;
+  await setObserveDomain(hostname, e.currentTarget.getAttribute("aria-pressed") !== "true");
+  await renderObserverDomainToggle();
 });
 
 // ----------------------------------------------------------------------------
@@ -1798,6 +1817,8 @@ async function renderSessionContext() {
   const autofillDesc = document.getElementById("autofill-target-desc");
 
   if (activeSessionContext) {
+    const targetLabel = document.getElementById("ask-src-target-label");
+    if (targetLabel) targetLabel.style.display = "";
     if (observerCard && observerSummary) {
       observerCard.style.display = "block";
       const parts = [];
@@ -1840,6 +1861,10 @@ async function renderSessionContext() {
       autofillDesc.textContent = descText;
     }
   } else {
+    const targetLabel = document.getElementById("ask-src-target-label");
+    if (targetLabel) targetLabel.style.display = "none";
+    const targetBox = document.getElementById("ask-src-target");
+    if (targetBox) targetBox.checked = false;
     if (observerCard) observerCard.style.display = "none";
     if (autofillCard) autofillCard.style.display = "none";
   }
@@ -2342,7 +2367,7 @@ document.getElementById("btn-learn-sources")?.addEventListener("click", async ()
 document.getElementById("btn-snapshot-user-facts")?.addEventListener("click", async () => {
   const btn = document.getElementById("btn-snapshot-user-facts");
   const originalText = btn.textContent;
-  btn.textContent = "Extracting my profile facts...";
+  btn.textContent = "Learning from this page...";
   btn.disabled = true;
 
   try {
@@ -2378,7 +2403,7 @@ document.getElementById("btn-snapshot-user-facts")?.addEventListener("click", as
     });
 
     renderObserverQueue();
-    btn.textContent = "👤 Extracted!";
+    btn.textContent = "👤 Learned!";
     setTimeout(() => {
       btn.textContent = originalText;
       btn.disabled = false;
@@ -2396,6 +2421,7 @@ document.getElementById("btn-snapshot-user-facts")?.addEventListener("click", as
 async function init() {
   // Vault sanitization moved to the worker (startup + on-write); the panel is
   // read-only for vault/delta state.
+  applyModelView(null);
   checkBuiltInAIStatus();
   renderVault();
   renderObserverQueue();

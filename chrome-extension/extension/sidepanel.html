@@ -67,6 +67,9 @@
         Runs 100% on-device via Chrome's native Prompt and Summarizer APIs. No external API keys or cloud calls required.
       </div>
 
+      <div id="model-ready-line" class="card-desc" style="display:none;"></div>
+
+      <div id="download-section">
       <div class="status-grid">
         <div class="status-pill">
           <div class="label">Prompt API</div>
@@ -112,12 +115,22 @@
       <button id="btn-bootstrap-model" class="btn btn-primary">
         Initialize / Download Built-in Models
       </button>
+      </div>
 
-      <button id="btn-open-on-device-internals" class="btn">Open chrome://on-device-internals</button>
-      <div class="card-desc">Model status and the real failure cause: chrome://on-device-internals. Flags: chrome://flags.</div>
+      <details id="model-details">
+        <summary class="card-desc">Model details</summary>
+        <button id="btn-open-on-device-internals" class="btn">Open chrome://on-device-internals</button>
+        <div class="card-desc">Model status and the real failure cause: chrome://on-device-internals. Flags: chrome://flags.</div>
 
-      <pre id="model-details-box">Checking capabilities...</pre>
+        <pre id="model-details-box">Checking capabilities...</pre>
+      </details>
     </div>
+
+    <div id="prompt-cta" class="card" style="display:none;">
+      <div id="prompt-cta-text" class="card-desc"></div>
+    </div>
+
+    <div id="prompt-tools">
 
     <div class="card">
       <div class="card-title">Ask</div>
@@ -125,7 +138,7 @@
       <textarea id="ask-question" rows="3" placeholder="e.g. Summarize this page, or what do I still need to fill in here?"></textarea>
       <label class="card-desc"><input type="checkbox" id="ask-src-page" checked> Current page</label>
       <label class="card-desc"><input type="checkbox" id="ask-src-vault"> My vault facts</label>
-      <label class="card-desc"><input type="checkbox" id="ask-src-target"> Target context</label>
+      <label id="ask-src-target-label" class="card-desc" style="display:none;"><input type="checkbox" id="ask-src-target"> Target context</label>
       <details id="ask-tabs-details">
         <summary class="card-desc">Other open tabs</summary>
         <div id="ask-tab-list"></div>
@@ -139,8 +152,9 @@
       <div id="ask-sources-used" class="card-desc"></div>
     </div>
 
-    <div class="card">
-      <div class="card-title">Prompt API Diagnostic Sandbox</div>
+    <details class="card" id="prompt-tuning">
+      <summary class="card-title">Prompt tuning (advanced)</summary>
+      <div class="card-title">Test a prompt</div>
       <textarea id="sandbox-prompt-input" rows="2" placeholder="Ask on-device Gemini Nano a test question...">Why is local on-device form autofill safer for privacy?</textarea>
       <div class="btn-row">
         <button id="btn-run-sandbox" class="btn btn-secondary">Run Test Prompt</button>
@@ -157,9 +171,7 @@
       <div id="sandbox-eval-samples"></div>
       <div id="sandbox-eval-results" class="card-desc"></div>
       <div id="sandbox-eval-suggestions"></div>
-    </div>
 
-    <div class="card">
       <div class="card-title">Prompt Guidance</div>
       <div class="card-desc">Your guidance is added to every on-device prompt. Format instructions always stay in force.</div>
       <select id="guidance-target"><option value="global">Global (all prompts)</option></select>
@@ -173,6 +185,7 @@
       <div id="guidance-suggestions"></div>
       <div class="card-desc">Effective prompt preview</div>
       <pre id="guidance-preview"></pre>
+    </details>
     </div>
   </main>
 
@@ -316,27 +329,18 @@
   <!-- TAB 5: OBSERVER (PHASE 7) -->
   <main id="tab-observer" class="tab-pane" style="display: none;">
     <div class="card">
-      <div class="card-title">Observer — Target Context & Profile Learning</div>
-      <div class="card-desc">
-        Capture job/target context to ground your next application, or extract your own profile facts from your resume/portfolio into the Review Queue.
-      </div>
+      <div class="card-title">Observe</div>
+      <div class="card-desc">Record your edits when you submit forms on a site, then review them below before anything reaches your vault.</div>
+      <button class="btn btn-primary" id="btn-observe-toggle" aria-pressed="false">Open a website to start observing</button>
+      <div id="observe-hint" class="card-desc"></div>
+    </div>
 
-      <!-- Per-domain opt-in for passive submit observation -->
-      <div style="border:1px solid #1e293b; border-radius:6px; padding:8px 10px; margin-bottom:10px; display:flex; align-items:center; gap:8px;">
-        <input type="checkbox" id="chk-observer-domain" style="width:auto;" />
-        <label for="chk-observer-domain" style="font-size:11px; color:#cbd5e1; cursor:pointer;">
-          Observe form submits on <strong id="observer-current-domain">this site</strong>
-        </label>
-      </div>
-
-      <div style="display:flex; gap:6px; margin-bottom:10px;">
-        <button class="btn btn-primary" id="btn-capture-target-context" style="flex:1;">
-          🎯 Capture Target / Job Context
-        </button>
-        <button class="btn btn-secondary" id="btn-snapshot-user-facts" style="flex:1;">
-          👤 Extract My Profile Facts
-        </button>
-      </div>
+    <div class="card">
+      <div class="card-title">Target context</div>
+      <div class="card-desc">Capture a job or topic page to ground your next form fill and Ask answers.</div>
+      <button class="btn btn-primary" id="btn-capture-target-context">
+        🎯 Capture Target / Job Context
+      </button>
 
       <!-- Active Target Context Card -->
       <div class="card" id="session-context-card" style="display:none; border-color:#3b82f6; background:rgba(30,58,138,0.15);">
@@ -355,11 +359,14 @@
       <div style="font-size:11px; color:#94a3b8; margin-bottom:6px;">
         Add your website, GitHub, public LinkedIn page or portfolio. Facts found go to the Review &amp; Merge Queue below, never straight to your vault.
       </div>
+      <button class="btn btn-secondary" id="btn-snapshot-user-facts">👤 Learn from this page</button>
       <div style="display:flex; gap:6px; margin-bottom:6px;">
         <input type="url" id="source-url-input" placeholder="https://your-site.example" style="flex:1;" />
         <button class="btn btn-secondary" id="btn-add-source" style="width:auto; margin:0;">Add</button>
       </div>
       <div id="source-list" style="font-size:11px; margin-bottom:8px;"></div>
+      <details>
+      <summary class="card-desc">Paste text, upload a file or import from Google Drive</summary>
       <textarea id="source-pasted-text" rows="4" placeholder="Paste resume or bio text here. PDFs are not supported: open the PDF, copy its text and paste it here." style="width:100%;"></textarea>
       <input type="file" id="source-file-input" accept=".txt,.md,.html,.json" style="margin-top:6px; font-size:11px;" />
       <div style="display:flex; align-items:center; gap:8px; margin:8px 0;">
@@ -379,6 +386,7 @@
           <button class="btn btn-primary" id="btn-drive-add" style="margin:0;">Add selected to text box</button>
         </div>
       </div>
+      </details>
       <button class="btn btn-primary" id="btn-learn-sources">Learn from all</button>
       <div id="source-progress" style="font-size:11px; color:#38bdf8; margin-top:6px;"></div>
     </div>
@@ -398,7 +406,7 @@
 
       <div id="observer-deltas-container">
         <div style="text-align: center; color: var(--text-muted); padding: 16px 0;">
-          No pending fact updates. Snapshot a page or submit a form to learn new facts.
+          No pending fact updates. Learn from a page or submit a form to learn new facts.
         </div>
       </div>
     </div>
