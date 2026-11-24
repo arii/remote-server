@@ -14,6 +14,7 @@ import {
   selectVaultFacts
 } from "./lib/ask-context.js";
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
+import { improvementSummary } from "./lib/improvement-summary.js";
 import { errorInfo as syncErrorInfo, formatSyncFailure } from "./lib/drive-sync.js";
 import { INTERNALS_URL, MODEL_APIS, describeModelError, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
 import { modelPanelView, observeView } from "./lib/panel-state.js";
@@ -65,6 +66,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     setPromptGuidance(changes.promptGuidance.newValue);
     renderGuidanceCard();
   }
+  if (area === "local" && IMPROVE_KEYS.some((k) => changes[k])) renderImprovement();
 });
 
 async function getClonedSession() {
@@ -387,9 +389,66 @@ document.querySelectorAll(".nav button").forEach((btn) => {
     }
     if (targetId === "tab-observer") {
       renderObserverDomainToggle();
+      renderImprovement();
     }
   });
 });
+
+// ----------------------------------------------------------------------------
+// HOW LOCALFORM IMPROVES: read-only summary at the top of the Observer tab.
+// ----------------------------------------------------------------------------
+const IMPROVE_KEYS = ["userContextVault", "pendingDeltas", "learnedMappings", "learnedAliases", "fillOutcomes", "promptGuidance", "promptEvalCases", "promptEvalRuns"];
+
+function goToImprovementLink(link) {
+  document.querySelector(`.nav button[data-tab="${link.tab}"]`)?.click();
+  if (link.open) document.getElementById("prompt-tuning").open = true;
+  document.getElementById(link.el)?.scrollIntoView({ block: "center" });
+}
+
+function improvementLinkButton(link) {
+  const btn = document.createElement("button");
+  btn.className = "btn btn-subtle btn-sm";
+  btn.textContent = "Go";
+  btn.addEventListener("click", () => goToImprovementLink(link));
+  return btn;
+}
+
+async function renderImprovement() {
+  const s = await chrome.storage.local.get(IMPROVE_KEYS);
+  const view = improvementSummary({
+    vault: s.userContextVault,
+    pendingDeltas: s.pendingDeltas,
+    learnedMappings: s.learnedMappings,
+    learnedAliases: s.learnedAliases,
+    fillOutcomes: s.fillOutcomes,
+    promptGuidance: s.promptGuidance,
+    promptEvalCases: s.promptEvalCases,
+    promptEvalRuns: s.promptEvalRuns
+  });
+  const loop = document.getElementById("improve-loop");
+  loop.textContent = "";
+  for (const l of view.loop) {
+    const p = document.createElement("div");
+    p.style.marginBottom = "4px";
+    p.textContent = `${l.kind === "auto" ? "Automatic: " : "Needs you: "}${l.text}`;
+    loop.appendChild(p);
+  }
+  const items = document.getElementById("improve-items");
+  items.textContent = "";
+  for (const it of view.items) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:11px; margin:4px 0;";
+    const text = document.createElement("span");
+    text.textContent = it.text;
+    row.append(text, improvementLinkButton(it.link));
+    items.appendChild(row);
+  }
+  const next = document.getElementById("improve-next");
+  next.textContent = "";
+  const label = document.createElement("strong");
+  label.textContent = "Next: ";
+  next.append(label, document.createTextNode(`${view.next.text} `), improvementLinkButton(view.next.link));
+}
 
 // ----------------------------------------------------------------------------
 // PHASE 1: BUILT-IN AI DETECTION & BOOTSTRAP
