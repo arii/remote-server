@@ -1,5 +1,6 @@
 import asyncio
 import ast
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ except ImportError:
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderBackend(unittest.TestCase):
-    def run_completion(self, root, steps, rounds):
+    def run_completion(self, root, steps, rounds, **kwargs):
         import deep_chat
         import observe
         from backend.shared import ledger
@@ -28,6 +29,7 @@ class TestCoderBackend(unittest.TestCase):
         from tests.test_coder_outcome import LocalModel
 
         prompts = []
+        attempts = iter(range(3))
 
         class Model(LocalModel):
             def _generate(self, messages, *args, **kwargs):
@@ -72,11 +74,13 @@ class TestCoderBackend(unittest.TestCase):
             mock.patch.object(
                 observe,
                 "default_trace_path",
-                return_value=str(Path(root, "trace.jsonl")),
+                side_effect=lambda *_: str(Path(root, f"trace-{next(attempts)}.jsonl")),
             ),
             mock.patch.object(ledger, "record"),
         ):
-            result = coder.run_coder(root, "Implement #1570", "system", "thread", 10)
+            result = coder.run_coder(
+                root, "Implement #1570", "system", "thread", 10, **kwargs
+            )
         return result, prompts
 
     def test_failed_self_check_is_sent_back_for_a_fix(self):
@@ -155,6 +159,139 @@ class TestCoderBackend(unittest.TestCase):
         self.assertEqual(prompts, ["Implement #1570", coder.TERMINAL_NUDGE])
         self.assertEqual(result[0], "Changed result.txt.\nDONE #1570")
         self.assertFalse(result[6])
+
+    def test_8251c95990eb_verified_completion(self):
+        modules = (
+            "backend.tests.test_repo_action",
+            "backend.tests.test_viewer_empty_state",
+            "tests.test_queue_runner",
+            "backend.tests.test_notify",
+        )
+        source = (
+            "import unittest\n"
+            "class Replay(unittest.TestCase):\n"
+            "    def test_runner(self):\n"
+            "        self.assertEqual('idle', 'idle')\n"
+        )
+        repo = "arii/remote-server"
+
+        def check(command):
+            return "run_check", {"command": command}
+
+        def edit(path, old, new):
+            return "edit_file", {
+                "file_path": path,
+                "old_string": old,
+                "new_string": new,
+            }
+
+        for case in ("budget", "missing_terminal", "uncovered", "stale", "failed"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as root:
+                checkout = Path(root)
+                subprocess.run(["git", "init", "-q", root], check=True)
+                paths = [module.replace(".", "/") + ".py" for module in modules]
+                for path in paths:
+                    file = checkout / path
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    for directory in file.parents:
+                        if directory == checkout:
+                            break
+                        (directory / "__init__.py").touch()
+                    file.write_text(source)
+                steps = [
+                    edit(path, "test_runner", "test_runner_state") for path in paths
+                ]
+                uncovered_paths = ()
+                if case == "uncovered":
+                    # The recorded Python checks cannot verify these TS edits.
+                    uncovered_paths = (
+                        "scripts/ux-audit-runner.ts",
+                        "scripts/ux-lighthouse-runner.ts",
+                    )
+                    for path in uncovered_paths:
+                        steps.append(
+                            (
+                                "write_file",
+                                {
+                                    "file_path": path,
+                                    "content": "const state = 'idle';\n",
+                                },
+                            )
+                        )
+                commands = [f"python3 -m unittest {module}" for module in modules]
+                inspections = [check("git status"), check("git diff")]
+                if case == "budget":
+                    steps += inspections * 7  # Final checks land in the continuation.
+                steps += [check(command) for command in commands]
+                if case == "stale":
+                    steps.append(
+                        edit(paths[0], "test_runner_state", "test_runner_idle")
+                    )
+                if case == "failed":
+                    steps.append(check("python3 -m unittest tests.test_nonexistent"))
+                if case == "missing_terminal":
+                    steps += ["Tests passed.", "Verification is complete."]
+                else:
+                    steps += inspections * 20
+                meter = {}
+                opts = dict(repo=repo, call_budget=40, continuations=1, meter=meter)
+                if case in ("budget", "missing_terminal"):
+                    result, prompts = self.run_completion(root, steps, 0, **opts)
+                    self.assertTrue(result[6])
+                    self.assertIn("Auto-completed: verified edits", result[0])
+                    self.assertTrue(result[0].endswith("\nDONE #1570"))
+                    if case == "budget":
+                        self.assertEqual(meter["calls"], 40)
+                        self.assertEqual(meter["continuations"], 1)
+                    else:
+                        self.assertEqual(prompts[-1], coder.TERMINAL_NUDGE)
+                else:
+                    with (
+                        mock.patch(
+                            "backend.ast_validator.validate_source_syntax",
+                            return_value={"valid": True},
+                        ),
+                        self.assertRaises(Exception) as caught,
+                    ):
+                        self.run_completion(root, steps, 0, **opts)
+                    self.assertTrue(coder.is_call_cap(caught.exception))
+                    for path in uncovered_paths:
+                        self.assertEqual(
+                            (checkout / path).read_text(), "const state = 'idle';\n"
+                        )
+                events = [
+                    json.loads(line)
+                    for path in meter["verification_traces"]
+                    for line in Path(path).read_text().splitlines()
+                ]
+                nudges = [
+                    event
+                    for event in events
+                    if coder.VERIFIED_EDIT_NOTICE in event.get("check_output", "")
+                ]
+                self.assertEqual(len(nudges), 0 if case == "uncovered" else 1)
+                if nudges:
+                    self.assertIn(commands[-1], nudges[0]["args_preview"])
+                auto = [event for event in events if event.get("auto_completed")]
+                self.assertEqual(len(auto), int(case in ("budget", "missing_terminal")))
+                if auto:
+                    self.assertEqual(auto[0]["summary"], result[0])
+                    self.assertEqual(
+                        [
+                            check["command"]
+                            for check in coder.turn_verification_evidence(meter, repo)
+                            if check["passed"]
+                            and not check.get("stale")
+                            and check["command"] in commands
+                        ],
+                        commands,
+                    )
+                    self.assertEqual(
+                        auto[0]["reason"],
+                        "model_call_budget_exhausted"
+                        if case == "budget"
+                        else "missing_terminal_line",
+                    )
 
     def test_1570_recorded_inspections_replay_to_first_edit(self):
         """Replay calls from fa2e25a6cb54, then simulate the prompted correction."""
