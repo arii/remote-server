@@ -97,13 +97,16 @@ for this refresh. If a repo returns 100 issues, the log warns that older ones
 may be missing.
 ### One issue only
 
-To run exactly one issue, set `"only_issues": ["owner/repo#N"]` in the queue config.
-The pass then dispatches only the listed issues. Each one still goes through the
-`ready`, ledger and budget checks, and the pass ends when they finish: the service has
-`Restart=no`, so nothing else runs. A malformed value fails at startup, before any
-GitHub call or dispatch. The stop is terminal: however an `only_issues` pass ends (done,
-halt or error), it writes the `STOP` sentinel in `state_dir`, so a later start dispatches
-nothing. To run again, remove the key and delete `STOP` (or use `--clear-halt`).
+To run exactly one issue, set `"only_issues": ["owner/repo#N"]` (exactly one entry) in the
+queue config. The issue must already be in `issues_file` or found by ready discovery, with
+the same `owner/repo` spelling. An unmatched key is logged as `ONLY ... nothing to run`.
+The pass dispatches only that issue, which still goes through the `ready`, ledger and
+budget checks. The pass then ends with no inter-issue delay. A malformed value fails at
+startup, before the lock or any GitHub call. If another issue is claimed
+(`status.current`), the pass halts instead of reconciling it. The stop is terminal: once the pass holds the queue lock, however it ends (done, halt or
+error), it writes the `STOP` sentinel in `state_dir`, so a later start dispatches nothing.
+A second start that loses the lock race writes nothing. SIGKILL or power loss skip the
+sentinel; touch `STOP` by hand after an unclean exit. To run again, remove the key and delete `STOP` (or use `--clear-halt`).
 
 ## Dispatch gate
 
