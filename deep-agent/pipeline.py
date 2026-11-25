@@ -426,16 +426,233 @@ def final_interrupt(interrupts):
     )
 
 
+class PrepareResult:
+    def __init__(self, ok, detail="", evidence=None):
+        self.ok = bool(ok)
+        self.detail = detail
+        self.evidence = evidence or {}
+
+    def __bool__(self):
+        return self.ok
+
+    def __iter__(self):
+        return iter((self.ok, self.detail))
+
+    def __repr__(self):
+        return f"PrepareResult(ok={self.ok}, detail={self.detail!r})"
+
+
+def find_changed_python_files(worktree_root, base_ref="origin/main"):
+    """Find changed Python files in worktree vs base_ref (committed, staged, untracked)."""
+    base = base_ref
+    try:
+        mb = subprocess.run(
+            ["git", "-C", worktree_root, "merge-base", "HEAD", base_ref],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if mb.returncode == 0 and mb.stdout.strip():
+            base = mb.stdout.strip()
+    except Exception:
+        base = base_ref
+
+    files = []
+    try:
+        diff_res = subprocess.run(
+            [
+                "git",
+                "-C",
+                worktree_root,
+                "diff",
+                "--name-only",
+                "--diff-filter=ACMRTU",
+                "-z",
+                base,
+                "--",
+                "*.py",
+            ],
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+        if diff_res.returncode == 0:
+            files.extend(
+                [
+                    f.decode("utf-8", "replace")
+                    for f in diff_res.stdout.split(b"\0")
+                    if f
+                ]
+            )
+    except Exception:
+        pass
+
+    try:
+        untracked_res = subprocess.run(
+            [
+                "git",
+                "-C",
+                worktree_root,
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                "*.py",
+            ],
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+        if untracked_res.returncode == 0:
+            files.extend(
+                [
+                    f.decode("utf-8", "replace")
+                    for f in untracked_res.stdout.split(b"\0")
+                    if f
+                ]
+            )
+    except Exception:
+        pass
+
+    seen = set()
+    result = []
+    for f in files:
+        if f not in seen and os.path.isfile(os.path.join(worktree_root, f)):
+            seen.add(f)
+            result.append(f)
+    return result
+
+
+def run_format_gate(repo_root, worktree_root, base_ref="origin/main", log_fn=None):
+    """Diff-aware format check and formatting step (#1744)."""
+
+    def _log(msg):
+        if log_fn:
+            log_fn(msg)
+
+    script_candidates = [
+        os.path.join(worktree_root, "scripts", "check-format-diff.sh"),
+        os.path.join(repo_root, "scripts", "check-format-diff.sh"),
+    ]
+    script_path = None
+    for cand in script_candidates:
+        if os.path.isfile(cand):
+            script_path = cand
+            break
+
+    env = dict(os.environ)
+    env["FORMAT_ROOT"] = worktree_root
+
+    def _exec_check():
+        if script_path:
+            return subprocess.run(
+                ["bash", script_path, base_ref],
+                cwd=worktree_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        py_files = find_changed_python_files(worktree_root, base_ref)
+        if not py_files:
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="no python files changed", stderr=""
+            )
+        import shutil
+
+        ruff_bin = "ruff" if shutil.which("ruff") else sys.executable
+        cmd = [ruff_bin] if ruff_bin == "ruff" else [sys.executable, "-m", "ruff"]
+        return subprocess.run(
+            cmd + ["format", "--check", "--"] + py_files,
+            cwd=worktree_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    check_proc = _exec_check()
+    if check_proc.returncode == 0:
+        ev = {
+            "command": f"bash scripts/check-format-diff.sh {base_ref}",
+            "files": [],
+            "exit_code": 0,
+            "status": "passed",
+        }
+        _log("format gate: check passed (no formatting required)")
+        return PrepareResult(True, "format check passed", evidence=ev)
+
+    changed_files = find_changed_python_files(worktree_root, base_ref)
+    if not changed_files:
+        err_msg = check_proc.stderr.strip() or check_proc.stdout.strip()
+        ev = {
+            "command": f"bash scripts/check-format-diff.sh {base_ref}",
+            "files": [],
+            "exit_code": check_proc.returncode,
+            "status": "failed",
+            "output": err_msg,
+        }
+        _log(f"format gate: check failed with no changed files: {err_msg}")
+        return PrepareResult(False, err_msg, evidence=ev)
+
+    import shutil
+
+    ruff_bin = "ruff" if shutil.which("ruff") else sys.executable
+    format_base_cmd = (
+        [ruff_bin] if ruff_bin == "ruff" else [sys.executable, "-m", "ruff"]
+    )
+    format_cmd = format_base_cmd + ["format", "--"] + changed_files
+    format_proc = subprocess.run(
+        format_cmd,
+        cwd=worktree_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    _log(
+        f"format gate: formatted {len(changed_files)} changed files ({', '.join(changed_files)})"
+    )
+
+    recheck_proc = _exec_check()
+    if recheck_proc.returncode == 0:
+        ev = {
+            "command": "ruff format",
+            "files": changed_files,
+            "exit_code": 0,
+            "status": "formatted_and_passed",
+        }
+        _log("format gate: check passed after formatting")
+        return PrepareResult(True, "check passed after formatting", evidence=ev)
+
+    err_output = (
+        recheck_proc.stderr.strip()
+        or recheck_proc.stdout.strip()
+        or format_proc.stderr.strip()
+    )
+    ev = {
+        "command": f"bash scripts/check-format-diff.sh {base_ref}",
+        "files": changed_files,
+        "exit_code": recheck_proc.returncode,
+        "status": "failed",
+        "output": err_output,
+    }
+    _log(f"format gate: format failure could not be resolved: {err_output}")
+    return PrepareResult(False, f"ruff format check failed: {err_output}", evidence=ev)
+
+
 def prepare_worktree_for_submit(
-    repo_root, worktree_root, base_ref="origin/main", log_fn=None
+    repo_root, worktree_root, base_ref="origin/main", log_fn=None, evidence_fn=None
 ):
-    """Prepare worktree for PR submission (#1394).
+    """Prepare worktree for PR submission (#1394, #1744).
 
     1. Rebases the worktree cleanly onto origin/main (with --autostash and
        aborting on conflict so worktree is never left broken).
     2. Atomically mirrors .agent_tool_receipt.json from repo root into worktree
        root if present so td agent submit-pr finds it without failing
        mandatory tool receipts check.
+    3. Runs the diff-aware format gate (#1744): runs scripts/check-format-diff.sh,
+       formats changed Python files only if check fails, re-checks, and blocks
+       submit if formatting cannot pass.
     """
     import shutil
 
@@ -484,7 +701,19 @@ def prepare_worktree_for_submit(
     except Exception as exc:
         _log(f"warning: receipt mirror error: {exc}")
 
-    return True
+    # 3. Format gate (#1744)
+    format_res = run_format_gate(
+        repo_root, worktree_root, base_ref=base_ref, log_fn=_log
+    )
+    if evidence_fn and format_res.evidence:
+        evidence_fn(format_res.evidence)
+    if not format_res.ok:
+        _log(f"format gate blocked: {format_res.detail}")
+        return PrepareResult(False, format_res.detail, evidence=format_res.evidence)
+
+    return PrepareResult(
+        True, "prepared worktree cleanly", evidence=format_res.evidence
+    )
 
 
 class Pipeline:
@@ -548,6 +777,7 @@ class Pipeline:
         self.verification_evidence = []
         self._test_checks = {}
         self._opened_pr_url = ""
+        self.format_evidence = None
         self.drive_limit = drive_limit
         self.preview_url = preview_url
         self.events = []
@@ -573,6 +803,13 @@ class Pipeline:
 
     def log(self, stage, message):
         self.events.append({"stage": stage, "message": message})
+
+    def _record_format_evidence(self, ev):
+        self.format_evidence = ev
+        self.log(
+            "format",
+            f"cmd={ev.get('command')} files={ev.get('files')} exit={ev.get('exit_code')} status={ev.get('status')}",
+        )
 
     # -- stage runners ------------------------------------------------
 
@@ -1067,9 +1304,14 @@ class Pipeline:
 
     def stage_submit(self, worktree_root, title, body=""):
         """Submit via td agent submit-pr. Returns (ok, url-or-error)."""
-        prepare_worktree_for_submit(
-            self.repo, worktree_root, log_fn=lambda msg: self.log("submit", msg)
+        prep = prepare_worktree_for_submit(
+            self.repo,
+            worktree_root,
+            log_fn=lambda msg: self.log("submit", msg),
+            evidence_fn=self._record_format_evidence,
         )
+        if not prep:
+            return False, f"format gate failed: {prep.detail}"
         argv = [
             "--json",
             "agent",
@@ -1494,4 +1736,6 @@ class Pipeline:
         }
         if partial is not None:
             result["partial"] = partial
+        if getattr(self, "format_evidence", None):
+            result["format_evidence"] = self.format_evidence
         return result

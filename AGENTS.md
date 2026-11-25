@@ -28,14 +28,14 @@ Why: cruft from earlier agent sessions (generated assets, unused pins, duplicate
 - Edit before you add. New files need a one-line reason in the PR.
 - No new dependency without saying what it replaces or enables.
 - No placeholder code that returns fake success. Fail loudly or don't ship.
-- Run the smoke test (`npm run lint && npm test`, plus `npm run test:root`) before reporting done, and paste the result.
+- Run the smoke test (`bash scripts/check-format-diff.sh && npm run lint && npm test`, plus `npm run test:root`) before reporting done, and paste the result.
 - Keep PRs small enough to read. Component status lives in [STATUS.md](STATUS.md); update it when a component's state changes.
 
 ## Commands
 
 - `./scripts/buttons-up.sh` — restart the buttons service (buttons only; never bare `docker compose up -d` or the terminal service — that kills the shell you run in)
 - `pnpm run lint` — run the lint task
-- `npm run lint && npm test` — reproduce the CI gates locally (shell + compile-check + ruff + tsc, then backend + frontend suites; backend needs `pip install -r backend/requirements.txt -r backend/requirements-test.txt` first, lint:python needs `pip install ruff`)
+- `bash scripts/check-format-diff.sh && npm run lint && npm test` — reproduce the CI gates locally (diff-aware ruff format check, shell + compile-check + ruff + tsc, then backend + frontend suites; backend needs `pip install -r backend/requirements.txt -r backend/requirements-test.txt` first, lint:python needs `pip install ruff`)
 - `bash scripts/prune-worktrees.sh [--prune]` — sweep stale worktrees (report-only by default). After a PR merges, remove its worktree and delete the branch the same turn; never leave merged worktrees behind. The script only removes clean trees whose branch landed, never the main checkout, dirty trees, or unmerged work.
 
 ## Agent lanes

@@ -17,7 +17,7 @@
 # pip install "ruff==0.17.4").
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${FORMAT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
 
 BASE="${1:-${FORMAT_BASE:-}}"
