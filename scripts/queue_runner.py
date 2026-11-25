@@ -223,7 +223,10 @@ CEILING_FEATURE = "request_cost_ceiling"
 
 
 def install_budget_guard(cap, directory, fatal, stops=None):
-    """Hard per-issue cap: recorded spend plus every call's worst case stays <= cap.
+    """Per-issue cap: recorded spend plus each call's estimated worst case stays <= cap.
+
+    The worst case is TwT's heuristic upper bound (catalog prices, one token per
+    request byte, full output limit), not certified provider billing.
 
     Before each model call the guard settles recorded spend (every earlier TwT
     trace must have an actual or upper-bound receipt), then sends the remaining

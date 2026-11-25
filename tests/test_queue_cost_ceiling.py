@@ -1,4 +1,4 @@
-"""Hard per-issue cap: the queue's budget guard sends each call's headroom to TwT."""
+"""Per-issue cap: the queue's budget guard sends each call's headroom to TwT."""
 
 import asyncio
 import random
