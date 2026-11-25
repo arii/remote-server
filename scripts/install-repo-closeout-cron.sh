@@ -8,6 +8,7 @@ command -v flock >/dev/null || { echo 'flock required; nothing installed'; exit 
 command -v python3 >/dev/null || { echo 'Python 3 required; nothing installed'; exit 1; }
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 USER_NAME="${CLOSEOUT_USER:?Set CLOSEOUT_USER to the account that owns these repos}"
+[[ "$USER_NAME" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo 'Unsupported owner name'; exit 1; }
 id "$USER_NAME" >/dev/null
 [[ "$ROOT" =~ ^/[a-zA-Z0-9_./-]+$ ]] || { echo 'Unsupported checkout path'; exit 1; }
 # Explicit repository list, no discovery or traversal of unrelated checkouts.
