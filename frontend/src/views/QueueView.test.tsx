@@ -28,7 +28,10 @@ describe('queue row (issue #853)', () => {
         onGates={noop}
       />,
     );
-    expect(failed).toContain('>Re-dispatch<');
+    expect(failed).toContain('data-testid="queue-retry"');
+    expect(failed).toContain('>Retry<');
+    expect(failed).not.toContain('>Re-dispatch<');
+    expect(failed).not.toContain('data-testid="queue-dispatch"');
     expect(failed).toContain('failed · exit 3');
   });
 

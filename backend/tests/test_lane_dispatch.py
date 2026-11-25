@@ -259,6 +259,36 @@ class LaneQueueTest(_QueueStoreTmpDir, unittest.TestCase):
         )
         self.assertTrue(ready_after["ready"])
 
+    def test_retry_validates_mode_and_unknown_item(self):
+        item, err = lane_dispatch.retry("remote-server", 1, mode="invalid")
+        self.assertIsNone(item)
+        self.assertEqual(err, "invalid retry mode")
+
+        item, err = lane_dispatch.retry("remote-server", 999, mode="fresh")
+        self.assertIsNone(item)
+        self.assertEqual(err, "unknown item")
+
+    def test_retry_failed_item_and_double_tap_guard(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        with lane_dispatch._lock:
+            lane_dispatch._items[("remote-server", "1")]["state"] = lane_dispatch.FAILED
+            lane_dispatch._items[("remote-server", "1")]["finished_at"] = 123.45
+
+        # First retry: flips to queued
+        item, err = lane_dispatch.retry("remote-server", 1, mode="resume")
+        self.assertIsNone(err)
+        self.assertIsNotNone(item)
+        self.assertEqual(item["state"], lane_dispatch.QUEUED)
+        self.assertIsNone(item["finished_at"])
+        self.assertEqual(item["retry_mode"], "resume")
+        self.assertEqual(item["detail"], "retry queued (resume)")
+
+        # Second tap: item is now QUEUED, so retry returns unchanged item (idempotent double-tap guard)
+        dup, err2 = lane_dispatch.retry("remote-server", 1, mode="resume")
+        self.assertIsNone(err2)
+        self.assertEqual(dup["state"], lane_dispatch.QUEUED)
+        self.assertEqual(dup["detail"], "retry queued (resume)")
+
 
 class DispatchQueueStoreTest(_QueueStoreTmpDir, unittest.TestCase):
     """Durable queue store (issue #883): persist on mutation,
@@ -360,6 +390,20 @@ class DispatchQueueStoreTest(_QueueStoreTmpDir, unittest.TestCase):
             dispatch_mod.DispatchItem(**item).artifact_url,
             "https://github.com/arii/portfolio/issues/12",
         )
+
+    def test_retry_persists_across_restart(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        with lane_dispatch._lock:
+            lane_dispatch._items[("remote-server", "1")]["state"] = lane_dispatch.FAILED
+            lane_dispatch._items[("remote-server", "1")]["branch_name"] = (
+                "repair/issue-1-prev"
+            )
+        lane_dispatch.retry("remote-server", 1, mode="resume")
+        self._restart()
+        loaded = lane_dispatch.get_item("remote-server", 1)
+        self.assertEqual(loaded["state"], lane_dispatch.QUEUED)
+        self.assertEqual(loaded["retry_mode"], "resume")
+        self.assertEqual(loaded["branch_name"], "repair/issue-1-prev")
 
 
 class RepoGatesTest(unittest.TestCase):
@@ -642,6 +686,34 @@ class DispatchTest(_QueueStoreTmpDir, unittest.TestCase):
         )
         self.assertIsNone(item)
         self.assertEqual(err, "invalid repo")
+
+    def test_dispatch_passes_mode_and_branch_to_launcher(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        with lane_dispatch._lock:
+            lane_dispatch._items[("remote-server", "1")]["state"] = lane_dispatch.FAILED
+            lane_dispatch._items[("remote-server", "1")]["branch_name"] = (
+                "repair/issue-1-existing"
+            )
+        lane_dispatch.retry("remote-server", 1, mode="resume")
+
+        calls = []
+
+        def launcher(number, repo, branch="", mode="fresh"):
+            calls.append((number, repo, branch, mode))
+
+        snapshot, err = lane_dispatch.dispatch(
+            "remote-server",
+            1,
+            launcher=launcher,
+            monitor=lambda r, i: None,
+            **self._seams(),
+        )
+        self.assertIsNone(err)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0],
+            (1, "remote-server", "repair/issue-1-existing", "resume"),
+        )
 
 
 class MonitorTest(_QueueStoreTmpDir, unittest.TestCase):
@@ -934,6 +1006,78 @@ class DispatchRouterTest(_QueueStoreTmpDir, unittest.TestCase):
         self.assertEqual(
             matching[0]["detail"], "cancelled-by-operator; issue returns to ready"
         )
+
+    def test_retry_endpoint_requires_confirm_and_validates(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        with lane_dispatch._lock:
+            lane_dispatch._items[("remote-server", "1")]["state"] = lane_dispatch.FAILED
+
+        # Without confirm -> 400
+        with self.assertRaises(Exception) as ctx:
+            dispatch_mod.retry(
+                dispatch_mod.RetryRequest(
+                    repo="remote-server",
+                    issue=1,
+                    mode="fresh",
+                    intent="dispatch-retry",
+                    confirmed=False,
+                )
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        # Bad mode -> 400
+        with self.assertRaises(Exception) as ctx:
+            dispatch_mod.retry(
+                dispatch_mod.RetryRequest(
+                    repo="remote-server",
+                    issue=1,
+                    mode="bad-mode",
+                    intent="dispatch-retry",
+                    confirmed=True,
+                )
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        # Unknown item -> 404
+        with self.assertRaises(Exception) as ctx:
+            dispatch_mod.retry(
+                dispatch_mod.RetryRequest(
+                    repo="remote-server",
+                    issue=999,
+                    mode="fresh",
+                    intent="dispatch-retry",
+                    confirmed=True,
+                )
+            )
+        self.assertEqual(ctx.exception.status_code, 404)
+
+        # Successful retry -> 200 with status queued
+        res = dispatch_mod.retry(
+            dispatch_mod.RetryRequest(
+                repo="remote-server",
+                issue=1,
+                mode="resume",
+                intent="dispatch-retry",
+                confirmed=True,
+            )
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["status"], "queued")
+        self.assertEqual(res["repo"], "remote-server")
+        self.assertEqual(res["issue"], 1)
+
+        # Double tap -> idempotent 200 with status queued
+        res2 = dispatch_mod.retry(
+            dispatch_mod.RetryRequest(
+                repo="remote-server",
+                issue=1,
+                mode="resume",
+                intent="dispatch-retry",
+                confirmed=True,
+            )
+        )
+        self.assertTrue(res2["ok"])
+        self.assertEqual(res2["status"], "queued")
 
     def test_router_registered_in_server(self):
         from pathlib import Path

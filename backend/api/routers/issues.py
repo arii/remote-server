@@ -256,7 +256,11 @@ def _extract_failure_reason(log_buffer: str) -> str | None:
 
 
 def _repair_worker_thread(
-    issue_number: int, repo: str = "remote-server", focus: str = ""
+    issue_number: int,
+    repo: str = "remote-server",
+    focus: str = "",
+    branch: str = "",
+    mode: str = "fresh",
 ) -> None:
     """Run the repo-scoped repair worker and record state and logs.
 
@@ -292,6 +296,10 @@ def _repair_worker_thread(
     ]
     if focus:
         cmd += ["--body", focus]
+    if branch:
+        cmd += ["--branch", branch]
+    if mode and mode != "fresh":
+        cmd += ["--mode", mode]
     try:
         # cwd = live checkout: the worker path is repo-relative and the
         # image workdir (/app) has no scripts/ dir.
@@ -463,10 +471,18 @@ def _repair_verify_preview(issue_number: int, repo: str = "remote-server") -> di
     }
 
 
-def trigger_repair(issue_number: int, repo: str = "remote-server", focus: str = ""):
+def trigger_repair(
+    issue_number: int,
+    repo: str = "remote-server",
+    focus: str = "",
+    branch: str = "",
+    mode: str = "fresh",
+):
     global _repair_thread
     t = threading.Thread(
-        target=_repair_worker_thread, args=(issue_number, repo, focus), daemon=True
+        target=_repair_worker_thread,
+        args=(issue_number, repo, focus, branch, mode),
+        daemon=True,
     )
     _repair_thread = t
     t.start()

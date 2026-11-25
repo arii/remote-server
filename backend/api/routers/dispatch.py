@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api/dispatch", tags=["dispatch"])
 
 START_INTENT = "dispatch-start"
 CANCEL_INTENT = "dispatch-cancel"
+RETRY_INTENT = "dispatch-retry"
 
 
 class DispatchHealth(BaseModel):
@@ -85,6 +86,21 @@ class CancelRequest(BaseModel):
 class CancelResult(BaseModel):
     ok: bool = True
     removed: bool = False
+
+
+class RetryRequest(BaseModel):
+    repo: str
+    issue: int | str
+    mode: str = "fresh"
+    intent: str = ""
+    confirmed: bool = False
+
+
+class RetryResult(BaseModel):
+    ok: bool = True
+    repo: str
+    issue: int
+    status: str
 
 
 @router.get("/health", response_model=DispatchHealth)
@@ -185,3 +201,35 @@ def cancel(body: CancelRequest) -> dict:
     if err is not None:
         raise HTTPException(status_code=404, detail=err)
     return {"ok": True, "removed": removed}
+
+
+@router.post("/retry", response_model=RetryResult)
+def retry(body: RetryRequest) -> dict:
+    from backend.core.validation import require_confirm
+
+    require_confirm(body, RETRY_INTENT)
+    from backend.api.routers.issues import parse_issue_number
+    from backend.core.validation import validate_repo_name
+
+    try:
+        name = validate_repo_name(body.repo)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid repo")
+    number = parse_issue_number(body.issue)
+    if number is None:
+        raise HTTPException(status_code=400, detail="invalid issue")
+    if body.mode not in ("fresh", "resume"):
+        raise HTTPException(status_code=400, detail="invalid mode")
+    item, err = lane_dispatch.retry(name, number, mode=body.mode)
+    if err is not None:
+        if err == "unknown item":
+            raise HTTPException(status_code=404, detail=err)
+        raise HTTPException(status_code=400, detail=err)
+    if item is None:
+        raise HTTPException(status_code=404, detail="unknown item")
+    return {
+        "ok": True,
+        "repo": item["repo"],
+        "issue": item["issue"],
+        "status": item["state"],
+    }

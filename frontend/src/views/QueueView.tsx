@@ -5,6 +5,7 @@ import {
   fetchAllIssues,
   fetchDispatchGates,
   fetchDispatchQueue,
+  retryDispatch,
   startAuthedInterval,
   startDispatch,
 } from '../apiClient';
@@ -84,6 +85,7 @@ export function QueueRow({
   onDispatch,
   onCancel,
   onGates,
+  onRetry,
 }: {
   item: DispatchItem;
   gates: string[] | null;
@@ -91,9 +93,12 @@ export function QueueRow({
   onDispatch: (item: DispatchItem) => void;
   onCancel: (item: DispatchItem, disposition?: 'ready' | 'parked') => void;
   onGates: (item: DispatchItem) => void;
+  onRetry?: (item: DispatchItem, mode: 'fresh' | 'resume') => void;
 }) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [disposition, setDisposition] = useState<'ready' | 'parked'>('ready');
+  const [confirmingRetry, setConfirmingRetry] = useState(false);
+  const [retryMode, setRetryMode] = useState<'fresh' | 'resume'>('fresh');
   const actions = queueRowActions(item.state);
   const terminal = item.state === 'done' || item.state === 'failed';
   const label = (
@@ -148,6 +153,61 @@ export function QueueRow({
           >
             {item.state === 'queued' ? 'Dispatch' : 'Re-dispatch'}
           </button>
+        )}{' '}
+        {actions.retry && !confirmingRetry && (
+          <button
+            type="button"
+            data-testid="queue-retry"
+            onClick={() => setConfirmingRetry(true)}
+          >
+            Retry
+          </button>
+        )}{' '}
+        {confirmingRetry && (
+          <div
+            className="confirm-inline"
+            data-testid={`queue-retry-confirm-${item.repo}-${item.issue}`}
+          >
+            <label className="row-meta">
+              <input
+                type="radio"
+                name={`retry-mode-${item.repo}-${item.issue}`}
+                value="fresh"
+                checked={retryMode === 'fresh'}
+                onChange={() => setRetryMode('fresh')}
+                data-testid="queue-retry-mode-fresh"
+              />{' '}
+              Fresh branch
+            </label>{' '}
+            <label className="row-meta">
+              <input
+                type="radio"
+                name={`retry-mode-${item.repo}-${item.issue}`}
+                value="resume"
+                checked={retryMode === 'resume'}
+                onChange={() => setRetryMode('resume')}
+                data-testid="queue-retry-mode-resume"
+              />{' '}
+              Resume existing branch
+            </label>{' '}
+            <button
+              type="button"
+              data-testid="queue-retry-confirm"
+              onClick={() => {
+                onRetry?.(item, retryMode);
+                setConfirmingRetry(false);
+              }}
+            >
+              Confirm retry
+            </button>{' '}
+            <button
+              type="button"
+              data-testid="queue-retry-abort"
+              onClick={() => setConfirmingRetry(false)}
+            >
+              Dismiss
+            </button>
+          </div>
         )}{' '}
         {item.state === 'queued' && (
           <button type="button" data-testid="queue-gates-check" onClick={() => onGates(item)}>
@@ -228,6 +288,7 @@ export function QueueRepoGroup({
   onDispatchNext,
   onCancel,
   onGates,
+  onRetry,
 }: {
   group: DispatchRepoGroup;
   gatesByKey: Record<string, string[] | null>;
@@ -236,6 +297,7 @@ export function QueueRepoGroup({
   onDispatchNext: (group: DispatchRepoGroup) => void;
   onCancel: (item: DispatchItem, disposition?: 'ready' | 'parked') => void;
   onGates: (item: DispatchItem) => void;
+  onRetry?: (item: DispatchItem, mode: 'fresh' | 'resume') => void;
 }) {
   const next = nextDispatchable(group);
   return (
@@ -263,6 +325,7 @@ export function QueueRepoGroup({
             onDispatch={onDispatch}
             onCancel={onCancel}
             onGates={onGates}
+            onRetry={onRetry}
           />
         ))}
       </ul>
@@ -509,6 +572,12 @@ export default function QueueView({ repo }: { repo: string }) {
     await load();
   }
 
+  async function onRetry(item: DispatchItem, mode: 'fresh' | 'resume' = 'fresh') {
+    await retryDispatch(item.repo, item.issue, mode);
+    setNotice(`Retried ${item.repo}#${item.issue} (${mode} branch).`);
+    await load();
+  }
+
   async function onGates(item: DispatchItem) {
     const key = queueItemKey(item.repo, item.issue);
     const g = await fetchDispatchGates(item.repo, item.issue);
@@ -610,6 +679,7 @@ export default function QueueView({ repo }: { repo: string }) {
             onDispatchNext={onDispatchNext}
             onCancel={(item) => void guarded(() => onCancel(item))}
             onGates={(item) => void guarded(() => onGates(item))}
+            onRetry={(item, mode) => void guarded(() => onRetry(item, mode))}
           />
         ))
       )}
