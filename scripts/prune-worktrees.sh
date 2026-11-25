@@ -1,6 +1,12 @@
 #!/bin/bash
 # Sweep stale git worktrees and report stale branches.
-# Usage: bash scripts/prune-worktrees.sh [--prune]
+# Usage: bash scripts/prune-worktrees.sh [--prune] [--agent-mode]
+#
+# --agent-mode (queue runner only): agent-owned branches
+#   (agent/issue-*, queue-retry/*, kiro/issue-*) are pruned even with
+#   untracked/ignored files present — runner artifacts are disposable.
+#   Tracked uncommitted changes still block. Interactive closeout must
+#   NOT pass this flag: unknown files in agent trees block pruning.
 #
 # A linked worktree is pruned only when ALL hold:
 #   - it is not the tree the script runs from,
@@ -16,9 +22,13 @@
 set -u
 
 PRUNE=0
-if [ "${1:-}" = "--prune" ]; then
-    PRUNE=1
-fi
+AGENT_MODE=0
+for arg in "$@"; do
+    case "$arg" in
+        --prune) PRUNE=1 ;;
+        --agent-mode) AGENT_MODE=1 ;;
+    esac
+done
 
 TOPLEVEL="$(git rev-parse --show-toplevel)" || exit 1
 git fetch -q origin main 2>/dev/null || { echo "KEEP all -- fetch failed; no deletion against stale refs"; exit 1; }
@@ -77,6 +87,21 @@ flush_tree() {
         echo "KEEP  $path [(detached)] -- detached HEAD, owner decides"
     elif ! git -C "$path" status --porcelain --untracked-files=all --ignored > "$status_file" 2>/dev/null; then
         echo "KEEP  $path [$branch] -- status failed"
+    elif [ "$AGENT_MODE" -eq 1 ] && agent_owned "$branch"; then
+        if [ -n "$(git -C "$path" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+            echo "KEEP  $path [$branch] -- dirty tracked files"
+        elif landed "$branch" "$head"; then
+            echo "PRUNE $path [$branch] (agent-mode: untracked artifacts ignored)"
+            if [ "$PRUNE" -eq 1 ]; then
+                if git worktree remove --force "$path" 2>/dev/null; then
+                    delete_branch "$branch" "$head"
+                else
+                    echo "      (worktree remove failed; left in place)"
+                fi
+            fi
+        else
+            echo "KEEP  $path [$branch] -- branch not merged"
+        fi
     elif [ -s "$status_file" ]; then
         echo "KEEP  $path [$branch] -- dirty or unknown files (including ignored)"
     elif ! agent_owned "$branch" && [ "$(git rev-list --count "$head" --not origin/main 2>/dev/null || echo 1)" -eq 0 ]; then
