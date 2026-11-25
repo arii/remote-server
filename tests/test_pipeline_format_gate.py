@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from backend.shared.cli import repo_root
 import pipeline
 
 
@@ -36,11 +37,7 @@ class PipelineFormatGateTests(unittest.TestCase):
         # Copy check-format-diff.sh into repo scripts
         scripts_dir = os.path.join(self.repo, "scripts")
         os.makedirs(scripts_dir, exist_ok=True)
-        real_script = os.path.abspath(
-            os.path.join(
-                os.path.dirname(__file__), "..", "scripts", "check-format-diff.sh"
-            )
-        )
+        real_script = os.path.join(repo_root(), "scripts", "check-format-diff.sh")
         shutil.copy2(real_script, os.path.join(scripts_dir, "check-format-diff.sh"))
 
         # Initial commit on main
