@@ -32,7 +32,9 @@ class TestStallEscalation(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as root,
             mock.patch.object(coder, "_run_coder_attempt", side_effect=fake_attempt),
-            mock.patch.object(coder, "select_strong_route", return_value="route:strong"),
+            mock.patch.object(
+                coder, "select_strong_route", return_value="route:strong"
+            ),
         ):
             result = coder.run_coder(
                 root,
@@ -75,7 +77,9 @@ class TestStallEscalation(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as root,
             mock.patch.object(coder, "_run_coder_attempt", side_effect=fake_attempt),
-            mock.patch.object(coder, "select_strong_route", return_value="route:strong"),
+            mock.patch.object(
+                coder, "select_strong_route", return_value="route:strong"
+            ),
             self.assertRaises(coder.CoderBudgetExceeded) as ctx,
         ):
             coder.run_coder(
@@ -92,7 +96,10 @@ class TestStallEscalation(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIsNone(calls[0].get("model_tier"))
         self.assertEqual(calls[1].get("model_tier"), "strong")
-        self.assertIn("stalled after 5 model calls with neither a plan nor an edit", str(ctx.exception))
+        self.assertIn(
+            "stalled after 5 model calls with neither a plan nor an edit",
+            str(ctx.exception),
+        )
         # Total calls across both attempts: 5 + 5 = 10
         self.assertEqual(meter["calls"], 10)
         self.assertEqual(meter["stall_escalations"], 1)
@@ -156,18 +163,25 @@ class TestStallEscalation(unittest.TestCase):
             },
         ]
         with mock.patch.dict("os.environ", {"CODER_STRONG_MODEL": ""}, clear=False):
-            model = coder.select_strong_route(brief="implement complex algorithm across multiple files", catalog=catalog)
+            model = coder.select_strong_route(
+                brief="implement complex algorithm across multiple files",
+                catalog=catalog,
+            )
             self.assertEqual(model, "nebius/deepseek-ai/DeepSeek-V3")
 
     def test_select_strong_route_uses_env_override_when_set(self):
-        with mock.patch.dict("os.environ", {"CODER_STRONG_MODEL": "custom/strong-model"}, clear=False):
+        with mock.patch.dict(
+            "os.environ", {"CODER_STRONG_MODEL": "custom/strong-model"}, clear=False
+        ):
             model = coder.select_strong_route(brief="test")
             self.assertEqual(model, "custom/strong-model")
 
     def test_select_strong_route_gateway_fallback(self):
         with (
             mock.patch.dict("os.environ", {"CODER_STRONG_MODEL": ""}, clear=False),
-            mock.patch.object(task_router, "load_catalog", side_effect=RuntimeError("no db")),
+            mock.patch.object(
+                task_router, "load_catalog", side_effect=RuntimeError("no db")
+            ),
         ):
             model = coder.select_strong_route(brief="test")
             self.assertEqual(model, model_router.TWT_STRONG_ROUTE)
