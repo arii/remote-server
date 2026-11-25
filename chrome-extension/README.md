@@ -5,7 +5,7 @@ LocalForm AI fills web forms from a local, on-device profile vault and improves 
 ## Five-minute smoke test
 
 1. `cd chrome-extension && npm run build` — validates the manifest and referenced assets, writes the ready-to-load extension to `dist/` and packages `dist/localform-ai-extension.zip`.
-2. Load `dist/` into Chrome 138+ with the built-in-AI flags enabled (see **Loading into Google Chrome** below). The first model use downloads the Gemini Nano weights, which can take several minutes.
+2. Load `dist/` into a supported desktop Chrome (see **Loading into Google Chrome** below). Prompt API support and model readiness are separate: eligible devices may still need to download Gemini Nano before local inference works.
 3. Serve the test fixtures over HTTP (fill outcomes only record on real hostnames, not `file://`): `python3 -m http.server 8000` from the repo root, then open `http://localhost:8000/chrome-extension/tests/fixtures/greenhouse-form.html`.
 4. Open the LocalForm AI side panel, press **Start observing localhost**, and add 3 vault facts (for example your name, email and phone number).
 5. Fill the form, edit one filled field to a corrected value, then submit. The Fill tab records the outcome: `Last fill: N kept, M edited, K cleared`.
@@ -95,15 +95,17 @@ This validates `manifest.json`, checks all referenced scripts and icons, outputs
 
 ## Loading into Google Chrome
 
-1. Ensure you are running **Google Chrome 138+** (or Chrome Canary/Dev).
-2. Enable Chrome Built-in AI flags:
-   - Navigate to `chrome://flags/#optimization-guide-on-device-model` and set to **Enabled BypassPerfRequirement**.
-   - Navigate to `chrome://flags/#prompt-api-for-gemini-nano` and set to **Enabled**.
-   - Relaunch Chrome.
-3. Open `chrome://extensions/` in Chrome.
-4. Toggle **Developer mode** (top-right corner).
-5. Click **Load unpacked** and select the `/dist` (or `/extension`) directory.
-6. Click the extension toolbar icon to open the **LocalForm AI Side Panel**.
+1. Use an up-to-date **desktop Google Chrome**. The Prompt API is stable for extensions from **Chrome 138**; the web-page API has a separate Chrome 148 baseline. No experimental flags are required for the stable extension Prompt API. Writer is still a developer-trial API and may be unavailable even when Prompt works.
+2. Run `npm install` and `npm run build` from `chrome-extension/`. Open `chrome://extensions/`, enable **Developer mode**, click **Load unpacked**, and select `chrome-extension/dist/`. Load the built directory, not the source `extension/`, so the optional Firebase SDK bundle is present.
+3. Open the **LocalForm AI Side Panel**, then the **AI Model** tab. Check each model separately:
+   - `available`: ready for local use.
+   - `downloadable` or `downloading`: use **Initialize / Download Built-in Models** and wait for completion. Initial download needs a user click and an unmetered connection. API support alone does not mean the model has downloaded.
+   - `unavailable`: Chrome cannot use that model with the current device/options. This does not identify the exact cause. Check `chrome://on-device-internals` for model status and logs; do not bypass hardware requirements.
+4. For Gemini Nano, Chrome currently requires Windows 10/11, macOS 13+, Linux, or a supported Chromebook Plus; at least **22 GB free** on the Chrome-profile volume; and either **more than 4 GB GPU VRAM** or **16 GB RAM with at least 4 CPU cores**. Mobile Chrome and non-Plus Chromebooks are not supported. Chrome removes the model if free space falls below 10 GB after download, so a later download may be needed. Initial download needs network access; local model inference after download does not. Other extension features can still use the network.
+
+Optional Firebase hybrid mode needs its own configuration and cloud connection. A successful cloud fallback does not prove Gemini Nano is available locally, and a model initialization failure does not establish cloud reliance.
+
+Requirements checked against Chrome's [Prompt API documentation](https://developer.chrome.com/docs/ai/prompt-api) and [model-download guidance](https://developer.chrome.com/docs/ai/inform-users-of-model-download). Model availability also depends on the requested language/options. Other built-in APIs have their own [release status](https://developer.chrome.com/docs/ai/built-in-apis).
 
 ---
 

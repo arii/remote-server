@@ -22,3 +22,25 @@ describe("hybrid UI copy", () => {
     expect(js).toMatch(/if \(hybrid\) \{\s*showHybridModeLine\(\);/);
   });
 });
+
+// Setup instructions must not turn model readiness into a flags requirement.
+describe("stable extension setup copy", () => {
+  const readme = fs.readFileSync(path.join(here, "..", "README.md"), "utf8");
+  const modelErrors = fs.readFileSync(path.join(here, "..", "extension", "lib", "model-download.js"), "utf8");
+  it("removes obsolete flag setup from docs and error paths", () => {
+    for (const source of [readme, html, js, modelErrors]) {
+      expect(source).not.toContain("chrome://flags");
+      expect(source).toContain("chrome://on-device-internals");
+    }
+    expect(readme).toContain("Chrome 138");
+    expect(readme).toContain("Writer is still a developer-trial API");
+  });
+  it("keeps availability, download and cloud evidence separate", () => {
+    for (const state of ["available", "downloadable", "downloading", "unavailable"]) {
+      expect(readme).toContain("`" + state + "`");
+    }
+    expect(readme).toContain("does not prove Gemini Nano is available locally");
+    expect(readme).toContain("more than 4 GB GPU VRAM");
+    expect(readme).toContain("22 GB free");
+  });
+});
