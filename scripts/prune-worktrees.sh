@@ -10,16 +10,9 @@
 #   - its branch is landed: every branch commit is in origin/main,
 #     or GitHub reports a MERGED PR for the branch head
 #     (squash-merges rewrite SHAs, so ancestry alone misses them).
-# Agent-owned trees (agent/issue-*, queue-retry/*, kiro/issue-*) are
-# the exception for two rules: a landed 0-delta branch is pruned, and
-# untracked runner artifacts do not block pruning (tracked changes
-# still do). Non-agent trees keep both rules unchanged.
-# The operator runner worktree `queue-main` is never pruned.
-# Unmerged or non-empty-but-unlanded work is NEVER removed.
-# After a worktree goes, its branch is deleted with `git branch -d`
-# (which itself refuses unmerged branches: second safety).
-# Standalone local branches (no worktree) are report-only always:
-# the owner, not this script, decides they are done.
+# Every unknown or ignored file blocks deletion, including agent artifacts.
+# Main/master, locked, detached and operator trees are never removed.
+# Standalone local branches remain report-only.
 set -u
 
 PRUNE=0
@@ -27,9 +20,8 @@ if [ "${1:-}" = "--prune" ]; then
     PRUNE=1
 fi
 
-TOPLEVEL="$(git rev-parse --show-toplevel)"
-git fetch -q origin main 2>/dev/null \
-    || echo "(fetch failed; judging against cached origin/main)"
+TOPLEVEL="$(git rev-parse --show-toplevel)" || exit 1
+git fetch -q origin main 2>/dev/null || { echo "KEEP all -- fetch failed; no deletion against stale refs"; exit 1; }
 HAVE_GH=0
 command -v gh >/dev/null 2>&1 && HAVE_GH=1
 
@@ -38,8 +30,9 @@ command -v gh >/dev/null 2>&1 && HAVE_GH=1
 landed() {
     git merge-base --is-ancestor "$2" origin/main 2>/dev/null && return 0
     if [ "$HAVE_GH" -eq 1 ]; then
-        [ "$(gh pr list --head "$1" --state merged --json number \
-            -q 'length' 2>/dev/null)" -gt 0 ] 2>/dev/null && return 0
+        # Match the actual merged head, never just a reused branch name.
+        gh pr list --head "$1" --state merged --json headRefOid \
+            --jq '.[].headRefOid' 2>/dev/null | grep -Fxq "$2" && return 0
     fi
     return 1
 }
@@ -57,14 +50,8 @@ delete_branch() {
     return 1
 }
 
-# agent_owned <branch>: 0 for branches created by agent runs.
-agent_owned() {
-    case "$1" in
-        agent/issue-*|queue-retry/*|kiro/issue-*) return 0 ;;
-    esac
-    return 1
-}
-
+status_file="$(mktemp)"
+trap 'rm -f "$status_file"' EXIT
 path=""
 head=""
 branch=""
@@ -73,25 +60,22 @@ flush_tree() {
     [ -z "$path" ] && return 0
     if [ "$path" = "$TOPLEVEL" ]; then
         echo "SELF  $path [$branch] -- the tree running this script, never touched"
+    elif [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+        echo "KEEP  $path [$branch] -- protected branch"
     elif [ "$locked" -eq 1 ]; then
         echo "KEEP  $path [$branch] -- locked"
     elif [ "$(basename "$path")" = "queue-main" ]; then
         echo "KEEP  $path [$branch] -- operator runner worktree, never pruned"
     elif [ -z "$branch" ]; then
         echo "KEEP  $path [(detached)] -- detached HEAD, owner decides"
-    elif [ -n "$(git -C "$path" status --porcelain --untracked-files=no)" ]; then
-        echo "KEEP  $path [$branch] -- dirty tree"
-    elif ! agent_owned "$branch" \
-            && [ -n "$(git -C "$path" status --porcelain)" ]; then
-        echo "KEEP  $path [$branch] -- dirty tree"
-    elif ! agent_owned "$branch" \
-            && [ "$(git rev-list --count "$head" --not origin/main \
-            2>/dev/null || echo 1)" -eq 0 ]; then
-        echo "KEEP  $path [$branch] -- empty branch, owner decides"
+    elif ! git -C "$path" status --porcelain --untracked-files=all --ignored > "$status_file" 2>/dev/null; then
+        echo "KEEP  $path [$branch] -- status failed"
+    elif [ -s "$status_file" ]; then
+        echo "KEEP  $path [$branch] -- dirty or unknown files (including ignored)"
     elif landed "$branch" "$head"; then
         echo "PRUNE $path [$branch]"
         if [ "$PRUNE" -eq 1 ]; then
-            if git worktree remove --force "$path" 2>/dev/null; then
+            if git worktree remove "$path" 2>/dev/null; then
                 delete_branch "$branch" "$head"
             else
                 echo "      (worktree remove failed; left in place)"
@@ -131,3 +115,5 @@ git branch --format='%(refname:short)' | while IFS= read -r b; do
 done
 rm -f /tmp/prune_wt_branches.$$
 [ "$PRUNE" -eq 0 ] && echo "(report only; re-run with --prune to remove PRUNE lines)"
+
+exit 0
