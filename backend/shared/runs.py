@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import time
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from backend.shared import cli
 from backend.shared import ledger
@@ -133,19 +134,21 @@ def _prompt_first_line(extra):
 
 
 LOG_TAIL_LINES = 20
-# Ordered: first matching keyword set wins. Matched against the
-# lowercased error text of a failed row.
+# First matching category wins. Match words, not fragments such as
+# "claimant", "pushup" or "digital" in unrelated agent errors.
 _FAILURE_CLASSES = (
-    ("claim_conflict", ("claim", "already running", "conflict with")),
-    ("timeout", ("timeout", "timed out", "deadline")),
-    ("git_pr_error", ("git ", "push", "pull request", "gh pr", "merge", "branch")),
-    ("tests", ("test", "verify", "lint", "assert")),
+    (
+        "claim_conflict",
+        r"\b(?:claim(?:ed)?(?:\s+\w+){0,3}\s+conflict|claim conflict|already running|conflict with)\b",
+    ),
+    ("timeout", r"\b(?:timeout|timed out|deadline)\b"),
+    ("git_pr_error", r"\b(?:git|push|pull request|gh pr|merge|branch)\b"),
+    ("tests", r"\b(?:tests?|verify|verification|lint|assert(?:ion)?)\b"),
 )
 
 
 def _failure_class(extra):
-    """Failure category of a failed row: tests, agent_error, timeout,
-    git_pr_error or claim_conflict. Explicit extra["failure_class"] wins."""
+    """Use recorded flags/codes first, then bounded error keywords."""
     explicit = extra.get("failure_class")
     if explicit in (
         "tests",
@@ -155,11 +158,90 @@ def _failure_class(extra):
         "claim_conflict",
     ):
         return explicit
-    text = str(extra.get("error") or "").lower()
-    for name, words in _FAILURE_CLASSES:
-        if any(w in text for w in words):
+    code = extra.get("exit_code")
+    if isinstance(code, str) and re.fullmatch(r"[+-]?\d{1,4}", code.strip()):
+        code = int(code)
+    if extra.get("claim_conflict") is True or type(code) is int and code == 75:
+        return "claim_conflict"
+    if (
+        extra.get("timed_out") is True
+        or extra.get("timeout") is True
+        or type(code) is int
+        and code == 124
+    ):
+        return "timeout"
+    text = str(extra.get("error") or extra.get("reason") or "").lower()
+    for name, pattern in _FAILURE_CLASSES:
+        if re.search(pattern, text):
             return name
     return "agent_error"
+
+
+_CREDENTIAL_KEY = re.compile(
+    r"^(?:password|passwd|token|access[_-]?token|refresh[_-]?token|secret|api[-_]?key|auth(?:orization)?|cookies?|session|signature)$",
+    re.IGNORECASE,
+)
+_URL = re.compile(r"https?://[^\s<>\"']+")
+_CREDENTIAL_VALUE = re.compile(
+    r"(\b(?:password|passwd|token|secret|api[-_]?key|authorization|cookie)"
+    r"\s*[:=]\s*)(?:Bearer\s+)?([^\s,;&]+)",
+    re.IGNORECASE,
+)
+
+
+def _safe_log_line(line):
+    """Hide structured credentials and labelled/URL credentials in previews.
+
+    This is a display boundary, not a rewrite of the original trace. Arbitrary
+    unlabelled secrets cannot be inferred from text.
+    """
+
+    def clean_url(match):
+        try:
+            url = urlsplit(match.group())
+            query = [
+                (k, "[redacted]" if _CREDENTIAL_KEY.search(k) else v)
+                for k, v in parse_qsl(url.query, keep_blank_values=True)
+            ]
+            return urlunsplit(
+                (
+                    url.scheme,
+                    url.netloc.rsplit("@", 1)[-1],
+                    url.path,
+                    urlencode(query),
+                    "" if _CREDENTIAL_KEY.search(url.fragment) else url.fragment,
+                )
+            )
+        except ValueError:
+            return "[redacted]"
+
+    def clean(value):
+        if isinstance(value, dict):
+            return {
+                k: "[redacted]" if _CREDENTIAL_KEY.search(k) else clean(v)
+                for k, v in value.items()
+            }
+        if isinstance(value, list):
+            return [clean(v) for v in value]
+        if isinstance(value, str):
+            try:
+                nested = json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                nested = None
+            if isinstance(nested, (dict, list)):
+                return json.dumps(clean(nested), ensure_ascii=False)
+            value = _URL.sub(clean_url, value)
+            value = re.sub(
+                r"\bBearer\s+[^\s,;]+", "Bearer [redacted]", value, flags=re.IGNORECASE
+            )
+            return _CREDENTIAL_VALUE.sub(lambda m: m[1] + "[redacted]", value)
+        return value
+
+    try:
+        value = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return clean(line)
+    return json.dumps(clean(value), ensure_ascii=False)
 
 
 def _log_tail(extra):
@@ -172,7 +254,7 @@ def _log_tail(extra):
     if not full.startswith(os.path.realpath(TRACES) + os.sep):
         return ""
     lines = [ln.rstrip("\n") for ln in _read_lines(full)]
-    return "\n".join(lines[-LOG_TAIL_LINES:])
+    return "\n".join(_safe_log_line(line) for line in lines[-LOG_TAIL_LINES:])
 
 
 def _run_links(extra):
