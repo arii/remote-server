@@ -372,12 +372,15 @@ class PruneLandedWorktreesTests(unittest.TestCase):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 prune_landed_worktrees(config)
-            self.assertFalse(landed_zero.exists())
+            self.assertTrue(landed_zero.exists())
+            self.assertEqual(
+                (landed_zero / "runner-cache.txt").read_text(), "untracked artifact"
+            )
             self.assertFalse(retry.exists())
             for kept in (unmerged, dirty, user, queue_main):
                 self.assertTrue(kept.exists(), kept)
             branches = self.git(repo, "branch", "--format=%(refname:short)").split()
-            self.assertNotIn("agent/issue-1", branches)
+            self.assertIn("agent/issue-1", branches)
             self.assertNotIn("queue-retry/o_r-2-1", branches)
             for kept in ("agent/issue-3", "agent/issue-4", "feature/user"):
                 self.assertIn(kept, branches)
