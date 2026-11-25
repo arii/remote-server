@@ -1899,6 +1899,26 @@ class LedgerTests(unittest.TestCase):
         self.assertIn("BLOCKED_DETERMINISTIC", note)
         self.assertNotIn("secret repo text", note)
 
+    def test_1731_stalled_coder_records_reason_in_ledger_and_not_successful(self):
+        detail = (
+            "pipeline error: BLOCKED: Initial implementation stalled after 5 model "
+            "calls with neither a plan nor an edit"
+        )
+        summary = {
+            "exit_code": 1,
+            "result": {
+                "status": "BLOCKED_DETERMINISTIC",
+                "detail": detail,
+            },
+        }
+        _code, status, _config = self.run_one(summary)
+        _agent, note, state, link = self.posts[-1]
+        self.assertEqual((state, link), ("Later", ISSUE_URL))
+        self.assertIn("BLOCKED_DETERMINISTIC", note)
+        self.assertFalse([p for p in self.posts if p[2] == "Act" and "opened" in p[1]])
+        self.assertEqual(status["blocker"]["status"], "BLOCKED_DETERMINISTIC")
+        self.assertEqual(status["blocker"]["detail"], detail)
+
     def test_common_failure_limit_posts_max_common_failures(self):
         summary = {"exit_code": 1, "result": {"status": "BLOCKED_DETERMINISTIC"}}
         code, _status, _config = self.run_one(summary, count=4)

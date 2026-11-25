@@ -273,7 +273,11 @@ class TestRepairBudget(unittest.TestCase):
                     for n in range(coder.INITIAL_MODEL_LIMIT)
                 ]
             )
-            graph = coder.build_agent(root, "implement", model=model, repair=False)
+            tracker = coder.WriteTracker()
+            tracker.add("tests/test_queue_runner.py")
+            graph = coder.build_agent(
+                root, "implement", model=model, repair=False, written_files=tracker
+            )
             limit = coder.INITIAL_MODEL_LIMIT
             with self.assertRaisesRegex(
                 ModelCallLimitExceededError, rf"thread limit \({limit}/{limit}\)"
@@ -282,6 +286,93 @@ class TestRepairBudget(unittest.TestCase):
                     {"messages": [HumanMessage(content="fix #1550")]},
                     config={"recursion_limit": 128},
                 )
+
+    def test_1731_initial_stalled_run_stops_after_five_model_calls(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from tests.test_coder_outcome import LocalModel
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "tests").mkdir()
+            Path(root, "tests/test_queue_runner.py").write_text("pass\n")
+            model = LocalModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {
+                                    "file_path": "tests/test_queue_runner.py",
+                                    "limit": 80,
+                                },
+                                "id": f"read-{n}",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                    for n in range(10)
+                ]
+            )
+            graph = coder.build_agent(root, "implement", model=model, repair=False)
+            with self.assertRaisesRegex(
+                coder.CoderBudgetExceeded,
+                r"BLOCKED:.*stalled after 5 model calls with neither a plan nor an edit",
+            ):
+                graph.invoke(
+                    {"messages": [HumanMessage(content="fix #1731")]},
+                    config={"recursion_limit": 128},
+                )
+
+    def test_1731_progress_with_plan_or_edit_proceeds_past_five_calls(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from tests.test_coder_outcome import LocalModel
+
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "tests").mkdir()
+            Path(root, "tests/test_queue_runner.py").write_text("pass\n")
+            # 6 calls: call 0 outputs plan, calls 1-4 read, call 5 finishes
+            plan_model = LocalModel(
+                responses=[
+                    AIMessage(
+                        content="Plan:\n1. Update test [files: tests/test_queue_runner.py]",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {
+                                    "file_path": "tests/test_queue_runner.py",
+                                    "limit": 80,
+                                },
+                                "id": "read-0",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    *[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "read_file",
+                                    "args": {
+                                        "file_path": "tests/test_queue_runner.py",
+                                        "limit": 80,
+                                    },
+                                    "id": f"read-{n}",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        )
+                        for n in range(1, 5)
+                    ],
+                    AIMessage(content="DONE #1731"),
+                ]
+            )
+            graph = coder.build_agent(root, "implement", model=plan_model, repair=False)
+            res = graph.invoke(
+                {"messages": [HumanMessage(content="fix #1731 with plan")]},
+                config={"recursion_limit": 128},
+            )
+            self.assertIn("DONE #1731", res["messages"][-1].content)
 
     def test_approved_plan_does_not_consume_implementation_model_budget(self):
         from langchain.agents.middleware.model_call_limit import (
