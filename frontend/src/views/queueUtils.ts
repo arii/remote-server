@@ -66,12 +66,13 @@ export function queueRowMeta(item: DispatchItem): string {
 }
 
 // Dispatch tap enablement per row: queued rows dispatch, running
-// rows wait (can cancel with confirm), terminal rows re-dispatch
-// (retry) or clear.
-export function queueRowActions(state: string): { dispatch: boolean; cancel: boolean } {
-  if (state === 'queued') return { dispatch: true, cancel: true };
-  if (state === 'running') return { dispatch: false, cancel: true };
-  return { dispatch: true, cancel: true };
+// rows wait (can cancel with confirm), failed rows offer Retry
+// (fresh vs resume), other terminal rows re-dispatch or clear.
+export function queueRowActions(state: string): { dispatch: boolean; cancel: boolean; retry: boolean } {
+  if (state === 'queued') return { dispatch: true, cancel: true, retry: false };
+  if (state === 'running') return { dispatch: false, cancel: true, retry: false };
+  if (state === 'failed') return { dispatch: false, cancel: true, retry: true };
+  return { dispatch: true, cancel: true, retry: false };
 }
 
 // Blocked-dispatch notice from a 409 reason: the server joins gate

@@ -29,5 +29,70 @@ class FetchCorruptionTest(unittest.TestCase):
         self.assertNotIsInstance(exc, repair_worker_mod.UnscaffoldedIssueError)
 
 
+class SetupWorktreeNodeTest(unittest.TestCase):
+    def test_resume_mode_existing_branch(self):
+        state = {
+            "issue_number": 42,
+            "mode": "resume",
+            "branch_name": "repair/issue-42-existing",
+            "target_files": [],
+        }
+        commands = []
+
+        def fake_run(cmd, *args, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("backend.repair_worker.subprocess.run", side_effect=fake_run):
+            out = repair_worker_mod.setup_worktree_node(state)
+        self.assertEqual(out["branch_name"], "repair/issue-42-existing")
+        self.assertEqual(
+            commands[0],
+            ["git", "rev-parse", "--verify", "repair/issue-42-existing"],
+        )
+        self.assertEqual(
+            commands[1],
+            ["git", "worktree", "add", out["worktree_dir"], "repair/issue-42-existing"],
+        )
+
+    def test_resume_mode_deleted_branch_falls_back_to_fresh(self):
+        state = {
+            "issue_number": 42,
+            "mode": "resume",
+            "branch_name": "repair/issue-42-deleted",
+            "target_files": [],
+        }
+        commands = []
+
+        def fake_run(cmd, *args, **kwargs):
+            commands.append(cmd)
+            if cmd[:3] == ["git", "rev-parse", "--verify"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="not found")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("backend.repair_worker.subprocess.run", side_effect=fake_run):
+            out = repair_worker_mod.setup_worktree_node(state)
+        self.assertTrue(out["branch_name"].startswith("repair/issue-42-"))
+        self.assertNotEqual(out["branch_name"], "repair/issue-42-deleted")
+        self.assertEqual(commands[1][:4], ["git", "worktree", "add", "-b"])
+
+    def test_fresh_mode_mints_branch(self):
+        state = {
+            "issue_number": 42,
+            "mode": "fresh",
+            "target_files": [],
+        }
+        commands = []
+
+        def fake_run(cmd, *args, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("backend.repair_worker.subprocess.run", side_effect=fake_run):
+            out = repair_worker_mod.setup_worktree_node(state)
+        self.assertTrue(out["branch_name"].startswith("repair/issue-42-"))
+        self.assertEqual(commands[0][:4], ["git", "worktree", "add", "-b"])
+
+
 if __name__ == "__main__":
     unittest.main()

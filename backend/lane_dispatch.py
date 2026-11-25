@@ -169,6 +169,12 @@ def _load_locked() -> None:
             "artifact_url": rec.get("artifact_url")
             if isinstance(rec.get("artifact_url"), str)
             else "",
+            "retry_mode": rec.get("retry_mode")
+            if isinstance(rec.get("retry_mode"), str)
+            else None,
+            "branch_name": rec.get("branch_name")
+            if isinstance(rec.get("branch_name"), str)
+            else None,
         }
         if item["state"] == RUNNING:
             item["state"] = FAILED
@@ -302,6 +308,30 @@ def cancel_running(
         item["state"] = FAILED
         item["finished_at"] = _now()
         item["detail"] = detail
+        _persist_locked()
+        return _copy(item), None
+
+
+def retry(repo: str, issue: int, mode: str = "fresh") -> tuple[dict | None, str | None]:
+    """Atomic retry for a failed queue item. Requires mode in ('fresh', 'resume').
+    Validates item exists and is 'failed'; flips it to 'queued' in one locked mutation.
+    If the item is not 'failed' (e.g. concurrent tap or already re-queued/running),
+    returns the existing item unchanged (idempotent double-tap guard).
+    """
+    if mode not in ("fresh", "resume"):
+        return None, "invalid retry mode"
+    with _lock:
+        _ensure_loaded_locked()
+        key = _key(repo, issue)
+        item = _items.get(key)
+        if item is None:
+            return None, "unknown item"
+        if item.get("state") != FAILED:
+            return _copy(item), None
+        item["state"] = QUEUED
+        item["finished_at"] = None
+        item["retry_mode"] = mode
+        item["detail"] = f"retry queued ({mode})"
         _persist_locked()
         return _copy(item), None
 
@@ -553,10 +583,17 @@ def dispatch(
         current["started_at"] = _now()
         current["finished_at"] = None
         current["detail"] = ""
+        mode = current.get("retry_mode") or "fresh"
+        if mode == "fresh" or not current.get("branch_name"):
+            current["branch_name"] = f"repair/issue-{number}-{int(time.time())}"
+        branch = current["branch_name"]
         snapshot = _copy(current)
         _persist_locked()
     try:
-        launcher(number, name)
+        try:
+            launcher(number, name, branch=branch, mode=mode)
+        except TypeError:
+            launcher(number, name)
     except Exception as exc:
         with _lock:
             current = _items.get(_key(name, number))

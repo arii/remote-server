@@ -63,10 +63,10 @@ describe('queueRowMeta (issue #853)', () => {
 
 describe('queueRowActions (issue #853)', () => {
   it('dispatches queued rows, enables cancel on running, retries terminal', () => {
-    expect(queueRowActions('queued')).toEqual({ dispatch: true, cancel: true });
-    expect(queueRowActions('running')).toEqual({ dispatch: false, cancel: true });
-    expect(queueRowActions('failed')).toEqual({ dispatch: true, cancel: true });
-    expect(queueRowActions('done')).toEqual({ dispatch: true, cancel: true });
+    expect(queueRowActions('queued')).toEqual({ dispatch: true, cancel: true, retry: false });
+    expect(queueRowActions('running')).toEqual({ dispatch: false, cancel: true, retry: false });
+    expect(queueRowActions('failed')).toEqual({ dispatch: false, cancel: true, retry: true });
+    expect(queueRowActions('done')).toEqual({ dispatch: true, cancel: true, retry: false });
   });
 });
 

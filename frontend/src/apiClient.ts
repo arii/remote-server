@@ -1474,6 +1474,20 @@ export function cancelDispatch(
   });
 }
 
+export function retryDispatch(
+  repo: string,
+  issue: number,
+  mode: 'fresh' | 'resume' = 'fresh',
+): Promise<{ ok: boolean; repo: string; issue: number; status: string }> {
+  return postJson<{ ok: boolean; repo: string; issue: number; status: string }>(
+    'api/dispatch/retry',
+    { repo, issue, mode, intent: 'dispatch-retry', confirmed: true },
+  ).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
 async function deleteJson<T>(path: string, body: unknown, timeoutMs: number = API_TIMEOUT_MS): Promise<T> {
   return mutateWith<T>('DELETE', path, body, (resp) => readJson<T>(resp, 'DELETE', path), timeoutMs);
 }
