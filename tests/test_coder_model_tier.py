@@ -103,6 +103,26 @@ class TestTierModel(unittest.TestCase):
             with self.assertRaises(ValueError):
                 coder.tier_model("x")
 
+    def test_default_plan_fn_respects_strong_tier(self):
+        built = []
+
+        def fake_build(model_override=None):
+            built.append(model_override)
+            mock_model = mock.MagicMock()
+            mock_model.invoke.return_value = mock.MagicMock(
+                content="1. Step one\n[files: a.py]\n"
+            )
+            return mock_model, {"model": model_override or "default"}
+
+        with (
+            mock.patch.dict(
+                "os.environ", {"CODER_STRONG_MODEL": "strong-planner-model"}
+            ),
+            mock.patch.object(coder, "build_model", side_effect=fake_build),
+        ):
+            coder._default_plan_fn("task brief", "/tmp/demo", {"model_tier": "strong"})
+        self.assertEqual(built, ["strong-planner-model"])
+
 
 CATALOG = [
     {"id": "nebius/big-m", "owned_by": "nebius"},

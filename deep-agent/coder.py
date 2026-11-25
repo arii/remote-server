@@ -433,8 +433,14 @@ def _default_plan_fn(brief, worktree_root, context):
     """Out-of-the-box planner: model proposes plan + files, parsed
     deterministically. Injectable seam is build_model (monkeypatch in
     tests); the graph signature stays (brief, root, context)."""
-    model, spec = build_model()
     context = dict(context or {})
+    tier = (
+        context.get("model_tier")
+        or os.environ.get("S5_START_MODEL_TIER")
+        or os.environ.get("CODER_MODEL_TIER")
+    )
+    model_override = tier_model("strong") if tier == "strong" else None
+    model, spec = build_model(model_override=model_override)
     skills = (context.get("skills") or "").strip()
     skills_block = "\n\n---\n\nSkills:\n" + skills if skills else ""
     path_hints = (

@@ -9,7 +9,7 @@
 3. Job dispatch with live progress and the repair worker.
 4. Chat with the agent (SSE stream, approvals, resume).
 5. History: unified ledger of jobs and webhooks, plus health and traces.
-6. Model routing (local Ollama, then provider waterfall) and cost tracking (`twt`, TokensWithTaste).
+6. Model routing (task-based predictive routing: capable free tiers first, strong tier for complex specs; no blind failure waterfalls) and cost tracking (`twt`, TokensWithTaste).
 7. Phone-friendly terminal behind GitHub OAuth (ttyd, zellij, Caddy).
 9. LocalForm AI (`chrome-extension/`): hybrid AI form and job-application filling workflow. Kept and built on.
 12. Webhook auto-pull, certbot hook and Tailscale access.

@@ -999,7 +999,12 @@ class Pipeline:
             return summary
 
         def plan(task, root, context):
-            context = {**self.answers, **context, "first_edit_plan": not repair_notes}
+            context = {
+                **self.answers,
+                **context,
+                "first_edit_plan": not repair_notes,
+                "model_tier": self.model_tier,
+            }
             if repair_notes:
                 context["repair_notes"] = repair_notes
             if self._repo_slug():
