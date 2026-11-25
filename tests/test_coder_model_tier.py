@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -115,10 +116,16 @@ class TestTierModel(unittest.TestCase):
             return mock_model, {"model": model_override or "default"}
 
         with (
+            tempfile.TemporaryDirectory() as root,
             mock.patch.dict(
-                "os.environ", {"CODER_STRONG_MODEL": "strong-planner-model"}
+                "os.environ",
+                {
+                    "CODER_STRONG_MODEL": "strong-planner-model",
+                    "EVAL_LEDGER": os.path.join(root, "ledger.jsonl"),
+                },
             ),
             mock.patch.object(coder, "build_model", side_effect=fake_build),
+            mock.patch.object(ledger, "record"),
         ):
             coder._default_plan_fn("task brief", "/tmp/demo", {"model_tier": "strong"})
         self.assertEqual(built, ["strong-planner-model"])
