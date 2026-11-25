@@ -119,8 +119,6 @@ class PipelineFormatGateTests(unittest.TestCase):
         with open(formatted_py, "w") as f:
             f.write(content)
 
-        mtime_before = os.path.getmtime(formatted_py)
-
         evidence = []
         logs = []
         res = pipeline.prepare_worktree_for_submit(
