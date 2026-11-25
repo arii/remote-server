@@ -75,6 +75,7 @@ _repair_runner = None
 # In-flight worker proc + abort flag, guarded by repair_state_lock.
 _repair_proc = None
 _repair_abort = False
+_repair_thread = None
 
 # Per-issue repair schedules: {issue_number: {"cadence": "daily"|"weekly",
 # "next_run": epoch_seconds, "last_run": epoch_seconds|None}}.
@@ -463,9 +464,11 @@ def _repair_verify_preview(issue_number: int, repo: str = "remote-server") -> di
 
 
 def trigger_repair(issue_number: int, repo: str = "remote-server", focus: str = ""):
+    global _repair_thread
     t = threading.Thread(
         target=_repair_worker_thread, args=(issue_number, repo, focus), daemon=True
     )
+    _repair_thread = t
     t.start()
     return t
 
@@ -947,15 +950,13 @@ def abort_in_flight_repair() -> dict:
     """Abort the in-flight repair worker, if any. Mirrors the agent
     turn abort: flag first (the worker records "aborted", not an
     error), then terminate with a kill fallback."""
-    global _repair_abort, _repair_proc
+    global _repair_abort
     with repair_state_lock:
         if repair_state["status"] != "running":
             return {"ok": True, "killed": False}
         _repair_abort = True
         proc = _repair_proc
     if proc is None:
-        with repair_state_lock:
-            repair_state["status"] = "aborted"
         return {"ok": True, "killed": False}
     try:
         if proc.poll() is not None:
@@ -972,17 +973,8 @@ def abort_in_flight_repair() -> dict:
     except Exception:
         try:
             proc.kill()
-            proc.wait(1)
         except Exception:
             pass
-    with repair_state_lock:
-        if repair_state.get("status") == "running":
-            repair_state["status"] = "aborted"
-            _repair_proc = None
-            if "Aborted by user" not in repair_state.get("log_buffer", ""):
-                repair_state["log_buffer"] = (
-                    repair_state.get("log_buffer", "") + "\nAborted by user.\n"
-                )
     return {"ok": True, "killed": True}
 
 

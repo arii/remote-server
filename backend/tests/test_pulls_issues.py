@@ -1268,7 +1268,7 @@ class BlockingProc:
     @property
     def stdout(self):
         yield "working\n"
-        self._done.wait(60)
+        self._done.wait(10)
 
     def poll(self):
         return None if not self._done.is_set() else -15
@@ -1282,7 +1282,6 @@ class BlockingProc:
         self._done.set()
 
     def kill(self):
-        self.terminated = True
         self._done.set()
 
 
@@ -1326,6 +1325,9 @@ class TimeoutProc(FakeProc):
 
 
 def reset_repair_state():
+    t = getattr(issues_mod, "_repair_thread", None)
+    if t is not None and t.is_alive() and t is not threading.current_thread():
+        t.join(timeout=2)
     with repair_state_lock:
         repair_state.update(
             {
@@ -1597,16 +1599,16 @@ class RepairTest(unittest.TestCase):
                         issue="#5", intent="repair-dispatch", confirmed=True
                     )
                 )
-                self.assertEqual(
-                    (out["ok"], out["issue"], out["status"]), (True, 5, "running")
-                )
-                deadline = time.time() + 5
-                while time.time() < deadline:
-                    with repair_state_lock:
-                        st = repair_state["status"]
-                    if st in ("done", "failed"):
-                        break
-                    time.sleep(0.05)
+            self.assertEqual(
+                (out["ok"], out["issue"], out["status"]), (True, 5, "running")
+            )
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                with repair_state_lock:
+                    st = repair_state["status"]
+                if st in ("done", "failed"):
+                    break
+                time.sleep(0.05)
             status = issues_mod.repair_status()
             self.assertEqual(status["issue"], 5)
             self.assertEqual(status["status"], "done")
