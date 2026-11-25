@@ -20,7 +20,7 @@ class AiReviewGateTests(unittest.TestCase):
 
     def test_owned_action_uses_reviewed_main_not_retired_feature_pin(self):
         source = Path(".github/workflows/ai-review.yml").read_text()
-        self.assertIn("arii/boomtick@df2f59bd34192424c315aa99f8a45cf14989db75", source)
+        self.assertIn("arii/boomtick@aab29dc2c3339b3420af9cfd1c46b63a3182da41", source)
         self.assertNotIn("8a413b25a47cf251f6472c46becfeeba7fbb3e67", source)
         self.assertNotIn("re-pin to the boomtick main", source)
 

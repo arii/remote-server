@@ -43,7 +43,7 @@ jobs:
         run: command -v td
 
       - name: Automated AI Code Review
-        uses: arii/boomtick@df2f59bd34192424c315aa99f8a45cf14989db75 # reviewed main, 2026-11-25 (#1605)
+        uses: arii/boomtick@aab29dc2c3339b3420af9cfd1c46b63a3182da41 # reviewed main, 2026-11-25 (#1605)
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
