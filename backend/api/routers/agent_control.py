@@ -32,6 +32,10 @@ def state_file() -> Path:
 class AgentControlState(BaseModel):
     state: Literal["RUNNING", "PAUSED_BY_USER", "IDLE"] = "IDLE"
     active_issue: int | None = None
+    phase: str | None = None
+    phase_started_at: float | None = None
+    last_activity_at: float | None = None
+    waiting_count: int = 0
     current_step: str = ""
     requires_dom_refresh: bool = False
     updated_at: float = 0.0
@@ -75,7 +79,16 @@ def write_control_state(state: AgentControlState) -> AgentControlState:
 
 @router.get("/state")
 def get_agent_state() -> dict[str, Any]:
-    return read_control_state().model_dump()
+    state = read_control_state()
+    now = time.time()
+    data = state.model_dump()
+    data["phase_duration"] = (
+        (now - state.phase_started_at) if state.phase_started_at else 0
+    )
+    data["last_activity_seconds"] = (
+        (now - state.last_activity_at) if state.last_activity_at else 0
+    )
+    return data
 
 
 @router.post("/pause")

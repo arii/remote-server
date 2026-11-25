@@ -66,8 +66,9 @@ DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 DEFAULT_TWT_BASE_URL = "http://127.0.0.1:8000/v1"
-# The TwT gateway accepts provider_models only on this route.
+# The TwT gateway accepts provider_models only on the default route.
 TWT_DEFAULT_MODEL = "default"
+TWT_DEFAULT_ROUTES = frozenset({TWT_DEFAULT_MODEL, "route:default"})
 TWT_STRONG_ROUTE = "route:strong"
 PIPELINE_MAX_TOKENS = 8192
 PIPELINE_HISTORY_CHARS = 64000
@@ -100,9 +101,36 @@ def bounded_history(messages):
             None,
         )
         if removable is None:
-            raise ValueError("Pipeline history exceeds the instruction/context budget")
+            break
         groups.pop(removable)
-    return [message for group in groups for message in group]
+    # The live tail group cannot be dropped — its tool results answer
+    # tool_calls the model must still see resolved — but it can bust the
+    # budget alone when one turn fans out dozens of reads (#1571). Shrink
+    # those contents to a stub before failing; instruction messages
+    # (system/human) are never touched, so an oversized prompt still raises.
+    flat = [message for group in groups for message in group]
+    cap = 2048
+    while size(flat) > PIPELINE_HISTORY_CHARS and cap >= 256:
+        for index, message in enumerate(flat):
+            if message.type in ("tool", "ai") and len(str(message.content)) > cap:
+                text = str(message.content)
+                flat[index] = message.model_copy(
+                    update={
+                        "content": text[: cap // 2]
+                        + "\n[history trimmed]\n"
+                        + text[-cap // 2 :]
+                    }
+                )
+        cap //= 2
+    if size(flat) > PIPELINE_HISTORY_CHARS:
+        for index, message in enumerate(flat):
+            if message.type in ("tool", "ai"):
+                flat[index] = message.model_copy(
+                    update={"content": "[history trimmed: oversized result]"}
+                )
+    if size(flat) > PIPELINE_HISTORY_CHARS:
+        raise ValueError("Pipeline history exceeds the instruction/context budget")
+    return flat
 
 
 class _BoundedHistory:
@@ -304,20 +332,50 @@ def _openrouter_spec():
     return _remote_spec("openrouter", model, DEFAULT_OPENROUTER_BASE_URL)
 
 
+def _note_substitution(spec, requested):
+    """Mark and warn when the served provider differs from the requested one.
+
+    Which model wins is unchanged; the spec gains requested/served_by/
+    substituted so callers and the ledger can audit the swap.
+    """
+    if not requested or spec["provider"] == requested:
+        return spec
+    logger.warning(
+        "model_router: requested provider %s but serving %s (%s)",
+        requested,
+        spec["provider"],
+        spec.get("model", "?"),
+    )
+    return dict(spec, requested=requested, served_by=spec["provider"], substituted=True)
+
+
 def resolve_llm(prefer=None):
     """Pick the cheapest feasible LLM. Returns {"provider","model","base_url"}.
+
+    When the served provider differs from the requested one (``prefer``,
+    NEBIUS_ONLY, or S5_ISSUE_PROVIDER), the spec also carries
+    ``requested``, ``served_by`` and ``substituted`` and a warning is logged.
 
     ``prefer`` selects a provider strictly. Default order is local Ollama,
     then TwT. TwT owns the free-tier/paid waterfall.
     OLLAMA_STRICT=1 disables the fallback on the default path too.
     """
+    requested = (
+        (
+            prefer
+            or ("twt" if _env("NEBIUS_ONLY") == "1" else "")
+            or _env("S5_ISSUE_PROVIDER")
+        )
+        .strip()
+        .lower()
+    )
     if local_only():
         spec = validate_local_spec(_ollama_spec())
         if not ollama_reachable():
             raise RuntimeError(
                 "S5_LOCAL_ONLY=1: Ollama unreachable at " + _ollama_base()
             )
-        return spec
+        return _note_substitution(spec, requested)
     only_nebius = _env("NEBIUS_ONLY") == "1"
     strict_ollama = _env("OLLAMA_STRICT") == "1"
     want = (prefer or ("twt" if only_nebius else "")).strip().lower()
@@ -336,7 +394,7 @@ def resolve_llm(prefer=None):
             "Ollama unreachable at " + _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
         )
     if ollama_reachable():
-        return _ollama_spec()
+        return _note_substitution(_ollama_spec(), requested)
     if strict_ollama:
         raise RuntimeError(
             "Ollama unreachable and OLLAMA_STRICT=1 refuses remote fallback"
@@ -578,12 +636,12 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
 
     base_url = spec.get("base_url") or _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL)
     uds = spec.get("uds") or (_env("TWT_UDS") or None)
-    provider_models = dict(spec.get("provider_models") or {})
-    if (
-        stage is not None
-        and not provider_models
-        and spec.get("model") == TWT_DEFAULT_MODEL
-    ):
+    model = spec.get("model")
+    is_default_route = model in TWT_DEFAULT_ROUTES
+    provider_models = (
+        dict(spec.get("provider_models") or {}) if is_default_route else {}
+    )
+    if stage is not None and not provider_models and is_default_route:
         provider_models = {
             "nvidia": _env(
                 f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
@@ -593,12 +651,11 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
             ),
         }
     extra = {}
-    model = spec.get("model")
     if model == TWT_STRONG_ROUTE:
         # route:strong is resolved gateway-side and is absent from /v1/models;
         # validate the gateway's own strong map when we can see it.
         provider_models = _gateway_strong_models()
-    elif model and model != TWT_DEFAULT_MODEL:
+    elif model and not is_default_route:
         extra["model_ids"] = [model]
     sha = expected_sha or _env("TWT_EXPECTED_SHA")
     twt_provenance.verify_gateway_capabilities(
@@ -624,11 +681,10 @@ def build_chat_model(
     spec = dict(spec) if spec else resolve_llm()
     if stage is not None and stage not in STAGE_NEBIUS_MODELS:
         raise ValueError(f"unknown pipeline model stage: {stage}")
-    if (
-        spec.get("provider") == "twt"
-        and stage is not None
-        and spec.get("model") == TWT_DEFAULT_MODEL
-    ):
+    is_twt_default = (
+        spec.get("provider") == "twt" and spec.get("model") in TWT_DEFAULT_ROUTES
+    )
+    if is_twt_default and stage is not None:
         provider_models = {
             "nvidia": _env(
                 f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
@@ -650,11 +706,14 @@ def build_chat_model(
                 provider_models[provider_name] = override
         spec["provider_models"] = provider_models
         spec["provider_reasoning_effort"] = dict.fromkeys(("nvidia", "nebius"), "low")
+    elif spec.get("provider") == "twt":
+        spec.pop("provider_models", None)
+        spec.pop("provider_reasoning_effort", None)
     kwargs = chat_kwargs(spec)
     if max_tokens is not None:
         budget_key = "num_predict" if spec.get("provider") == "ollama" else "max_tokens"
         kwargs[budget_key] = min(max_tokens, PIPELINE_MAX_TOKENS)
-    if spec.get("provider") == "twt" and spec.get("provider_models"):
+    if is_twt_default and spec.get("provider_models"):
         kwargs["extra_body"] = {"provider_models": spec["provider_models"]}
         if spec.get("provider_reasoning_effort"):
             kwargs["extra_body"]["provider_reasoning_effort"] = spec[

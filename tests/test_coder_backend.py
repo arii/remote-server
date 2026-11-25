@@ -1,6 +1,7 @@
 import asyncio
 import ast
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -20,7 +21,9 @@ except ImportError:
 
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderBackend(unittest.TestCase):
-    def run_completion(self, root, steps, rounds, **kwargs):
+    def run_completion(
+        self, root, steps, rounds, *, bindings=None, model_overrides=None, **kwargs
+    ):
         import deep_chat
         import observe
         from backend.shared import ledger
@@ -32,6 +35,11 @@ class TestCoderBackend(unittest.TestCase):
         attempts = iter(range(3))
 
         class Model(LocalModel):
+            def bind_tools(self, tools, *args, **kwargs):
+                if bindings is not None:
+                    bindings.append({tool.name for tool in tools})
+                return super().bind_tools(tools, *args, **kwargs)
+
             def _generate(self, messages, *args, **kwargs):
                 if messages[-1].type == "human":
                     prompts.append(messages[-1].content)
@@ -58,14 +66,18 @@ class TestCoderBackend(unittest.TestCase):
                         ],
                     )
                 )
+        model = Model(responses=replies)
+
+        def build(override=None):
+            if model_overrides is not None:
+                model_overrides.append(override)
+            return model, {"provider": "twt", "model": "test"}
+
         with (
             mock.patch.object(
                 coder,
                 "build_model",
-                return_value=(
-                    Model(responses=replies),
-                    {"provider": "twt", "model": "test"},
-                ),
+                side_effect=build,
             ),
             mock.patch.object(coder, "verify_rounds", return_value=rounds),
             mock.patch.object(
@@ -295,63 +307,167 @@ class TestCoderBackend(unittest.TestCase):
                         else "missing_terminal_line",
                     )
 
-    def test_63095b93_correction_replay_stops_returning_overlapping_reads(self):
+    def test_336_correction_replay_has_no_inspection_tools(self):
         runner = "scripts/queue_runner.py"
-        with tempfile.TemporaryDirectory() as root:
-            checkout = Path(root)
-            subprocess.run(["git", "init", "-q", root], check=True)
-            for package in ("scripts", "tests"):
-                (checkout / package).mkdir()
-                (checkout / package / "__init__.py").touch()
-            (checkout / runner).write_text(
-                "\n" * 1200 + "def state():\n    return 'idle'\n"
-            )
-            (checkout / "tests/test_queue_runner.py").write_text(
-                "import unittest\nfrom scripts.queue_runner import state\n"
-                "class Replay(unittest.TestCase):\n"
-                "    def test_state(self):\n        self.assertEqual(state(), 'idle')\n"
-            )
-            steps = [
-                (
-                    "edit_file",
-                    dict(
-                        file_path=runner,
-                        old_string="return 'idle'",
-                        new_string="raise NameError(\"name 'issues' is not defined\")",
-                    ),
-                ),
-                *[
-                    ("grep", {"pattern": f"runner_state_{i}", "path": runner})
-                    for i in range(19)
-                ],
-                *[
-                    ("read_file", {"file_path": runner, "offset": offset})
-                    for offset in range(1180, 1069, -10)
-                ],
-            ]
-            with self.assertRaisesRegex(RuntimeError, "targeted verification failed"):
-                self.run_completion(
-                    root,
-                    steps,
-                    0,
-                    repo="arii/remote-server",
-                    call_budget=40,
-                    continuations=1,
-                    verify_stalls=True,
+        for action in ("ignore", "edit", "blocked"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as root:
+                checkout = Path(root)
+                subprocess.run(["git", "init", "-q", root], check=True)
+                for package in ("scripts", "tests"):
+                    (checkout / package).mkdir()
+                    (checkout / package / "__init__.py").touch()
+                (checkout / runner).write_text(
+                    "\n" * 1200 + "def clear_halt(stop):\n    stop.unlink()\n"
                 )
-            events = [
-                json.loads(line)
-                for line in (checkout / "trace-1.jsonl").read_text().splitlines()
-            ]
-            reads = [
-                e["result_preview"] for e in events if e.get("name") == "read_file"
-            ]
-            self.assertEqual(len(reads), 12)
-            self.assertTrue(all(r.startswith("@@ lines") for r in reads[:3]))
-            cue = "Make the correction edit now or reply BLOCKED."
-            self.assertTrue(reads[3].startswith(cue))
-            self.assertIn("NameError: name 'issues' is not defined", reads[3])
-            self.assertEqual(reads[4:], [cue] * 8)
+                (checkout / "tests/test_queue_runner.py").write_text(
+                    "import tempfile\nimport unittest\nfrom pathlib import Path\n"
+                    "from scripts.queue_runner import clear_halt\n"
+                    "class Replay(unittest.TestCase):\n"
+                    "    def test_successful_recovery_preserves_worker_halt_until_operator_clears_it(self):\n"
+                    "        with tempfile.TemporaryDirectory() as root:\n"
+                    "            stop = Path(root) / 'STOP'\n"
+                    "            stop.touch()\n"
+                    "            clear_halt(stop)\n"
+                    "            self.assertFalse(stop.exists())\n"
+                )
+                subprocess.run(["git", "-C", root, "add", "--", runner], check=True)
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        root,
+                        "-c",
+                        "user.name=Test",
+                        "-c",
+                        "user.email=test@example.com",
+                        "commit",
+                        "-qm",
+                        "baseline",
+                    ],
+                    check=True,
+                )
+                steps = [
+                    (
+                        "edit_file",
+                        dict(
+                            file_path=runner,
+                            old_string="stop.unlink()",
+                            new_string="pass",
+                        ),
+                    ),
+                    *[
+                        ("grep", {"pattern": f"runner_state_{i}", "path": runner})
+                        for i in range(19)
+                    ],
+                ]
+                if action == "ignore":
+                    steps += [
+                        ("ls", {"path": "/"}),
+                        ("ls", {"path": "/scripts"}),
+                        ("read_file", {"file_path": runner, "offset": 0}),
+                        *[("grep", {"pattern": "clear_halt", "path": runner})] * 4,
+                        *[
+                            ("read_file", {"file_path": runner, "offset": offset})
+                            for offset in (1180, 1170, 1160, 1150, 1140, 1130)
+                        ],
+                    ]
+                elif action == "edit":
+                    steps.append(
+                        (
+                            "replace_lines",
+                            dict(
+                                file_path=runner,
+                                start_line=1202,
+                                end_line=1202,
+                                new_text="    stop.unlink()",
+                            ),
+                        )
+                    )
+                    steps.append("Corrected the halt cleanup.")
+                else:
+                    steps.append("Cannot safely edit.\nBLOCKED #1570")
+                bindings, model_overrides, meter = [], [], {}
+
+                def run():
+                    with mock.patch.dict(
+                        os.environ,
+                        CODER_MODEL="route:default",
+                        CODER_STRONG_MODEL="route:strong",
+                    ):
+                        return self.run_completion(
+                            root,
+                            steps,
+                            0,
+                            repo="arii/remote-server",
+                            call_budget=40,
+                            continuations=1,
+                            verify_stalls=True,
+                            bindings=bindings,
+                            model_overrides=model_overrides,
+                            meter=meter,
+                        )
+
+                if action == "edit":
+                    result, prompts = run()
+                    self.assertTrue(result[6])
+                    self.assertIn("1202 |     pass", prompts[1])
+                    self.assertIn("1202 |     stop.unlink()", prompts[1])
+                    self.assertIn("AssertionError: True is not false", prompts[1])
+                    self.assertIn("self.assertFalse(stop.exists())", prompts[1])
+                else:
+                    error = (
+                        "targeted verification failed"
+                        if action == "ignore"
+                        else "coder reported BLOCKED #1570"
+                    )
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        run()
+                expected = {"edit_file", "replace_lines", "write_file"}
+                self.assertEqual(model_overrides, ["route:default", "route:strong"])
+                # The verify-fix turn's out-of-band strong escalation is
+                # counted so the pipeline's escalation budget stays honest.
+                self.assertEqual(meter.get("strong_escalations"), 1)
+                self.assertEqual(
+                    bindings[20:],
+                    [expected] * {"ignore": 12, "edit": 2, "blocked": 1}[action],
+                )
+                events = [
+                    json.loads(line)
+                    for line in (checkout / "trace-1.jsonl").read_text().splitlines()
+                ]
+                for event in events:
+                    if event.get("name") in {"ls", "grep", "read_file"}:
+                        self.assertIn("not a valid tool", event["result_preview"])
+
+    def test_correction_context_finds_and_bounds_test_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            tests = Path(root, "tests")
+            tests.mkdir()
+            (tests / "__init__.py").touch()
+            (tests / "test_big.py").write_text(
+                "\n".join(f"# filler {i}" for i in range(1, 2001)) + "\n"
+            )
+            unittest_argv = (
+                "python3",
+                "-m",
+                "unittest",
+                "tests.test_big.Replay.test_missing",
+            )
+            context = coder.correction_context(root, set(), [(unittest_argv, "FAIL")])
+            self.assertIn("Current failing test source: tests/test_big.py", context)
+            self.assertIn("further lines omitted", context)
+            self.assertIn("1 | # filler 1", context)
+            self.assertNotIn("2000 | # filler 2000", context)
+
+            pytest_argv = (
+                "python3",
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_big.py::Replay::test_missing",
+            )
+            context = coder.correction_context(root, set(), [(pytest_argv, "FAIL")])
+            self.assertIn("Current failing test source: tests/test_big.py", context)
 
     def test_28ccfe7dd057_verifies_edited_runner_after_a_stall(self):
         runner = "scripts/queue_runner.py"
@@ -492,6 +608,67 @@ class TestCoderBackend(unittest.TestCase):
                             for event in events
                         )
                     )
+
+    def test_1571_tool_cap_stall_gets_verify_fix_after_a_resume(self):
+        """#1571 replay: a spent cap-resume must not starve the correction turn.
+
+        The initial turn burns the tool budget with written-but-unverified
+        edits; the stall becomes a correction turn even though the meter's
+        continuation slot was already consumed by a cap-resume.
+        """
+        runner = "scripts/queue_runner.py"
+        tests = "tests/test_queue_runner.py"
+        command = "python3 -m unittest tests.test_queue_runner"
+
+        def edit(path, old, new):
+            return "edit_file", dict(file_path=path, old_string=old, new_string=new)
+
+        with tempfile.TemporaryDirectory() as root:
+            checkout = Path(root)
+            subprocess.run(["git", "init", "-q", root], check=True)
+            for package in ("scripts", "tests"):
+                (checkout / package).mkdir()
+                (checkout / package / "__init__.py").touch()
+            (checkout / runner).write_text("def state():\n    return 'old'\n")
+            (checkout / tests).write_text(
+                "import unittest\n"
+                "from scripts.queue_runner import state\n"
+                "class Replay(unittest.TestCase):\n"
+                "    def test_state(self):\n"
+                "        self.assertEqual(state(), 'idle')\n"
+            )
+            greps = [
+                ("grep", {"pattern": f"needle_{i}", "path": runner}) for i in range(28)
+            ]
+            steps = [
+                edit(runner, "return 'old'", "return 'broken1'"),
+                edit(tests, "state(), 'old'", "state(), 'idle'"),
+                greps[:10],
+                edit(runner, "return 'broken1'", "return 'broken2'"),
+                greps[10:20],
+                edit(runner, "return 'broken2'", "return 'broken3'"),
+                greps[20:28],
+                ("grep", {"pattern": "over_budget", "path": runner}),
+                # verify-fix correction turn.
+                edit(runner, "return 'broken3'", "return 'idle'"),
+                "Corrected the return value.",
+            ]
+            meter = {"continuations": 1}
+            result, prompts = self.run_completion(
+                root,
+                steps,
+                0,
+                repo="arii/remote-server",
+                call_budget=40,
+                continuations=1,
+                verify_stalls=True,
+                meter=meter,
+            )
+            self.assertTrue(result[6])
+            self.assertTrue(result[0].endswith("\nDONE #1570"))
+            self.assertEqual(meter["verify_fixes"], 1)
+            self.assertIn(command, prompts[-1])
+            self.assertIn("'broken3' != 'idle'", prompts[-1])
 
     def test_1570_recorded_inspections_replay_to_first_edit(self):
         """Replay calls from fa2e25a6cb54, then simulate the prompted correction."""

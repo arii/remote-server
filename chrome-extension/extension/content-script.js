@@ -587,7 +587,7 @@
     const filledFormFields = formScan.fields.filter(
       (f) => f.value !== null && f.value !== "" && f.value !== false
     );
-    const cleanText = (document.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 5000);
+    const cleanText = (document.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 40000);
 
     return {
       url: window.location.href,

@@ -104,3 +104,8 @@ frontend/dist/
 .agent_tool_receipt.json
 .agents/plans/
 project_config.json
+
+# Firebase AI Logic (#BuildHybridAI): local web-app config + App Check debug
+# token (never commit either) and the generated vendor bundle.
+chrome-extension/extension/lib/firebase-config.js
+chrome-extension/extension/vendor/

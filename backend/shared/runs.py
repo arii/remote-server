@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import time
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from backend.shared import cli
 from backend.shared import ledger
@@ -132,6 +133,148 @@ def _prompt_first_line(extra):
     return first[:119] + "…" if len(first) > 120 else first
 
 
+LOG_TAIL_LINES = 20
+# First matching category wins. Match words, not fragments such as
+# "claimant", "pushup" or "digital" in unrelated agent errors.
+_FAILURE_CLASSES = (
+    (
+        "claim_conflict",
+        r"\b(?:claim(?:ed)?(?:\s+\w+){0,3}\s+conflict|claim conflict|already running|conflict with)\b",
+    ),
+    ("timeout", r"\b(?:timeout|timed out|deadline)\b"),
+    ("git_pr_error", r"\b(?:git|push|pull request|gh pr|merge|branch)\b"),
+    ("tests", r"\b(?:tests?|verify|verification|lint|assert(?:ion)?)\b"),
+)
+
+
+def _failure_class(extra):
+    """Use recorded flags/codes first, then bounded error keywords."""
+    explicit = extra.get("failure_class")
+    if explicit in (
+        "tests",
+        "agent_error",
+        "timeout",
+        "git_pr_error",
+        "claim_conflict",
+    ):
+        return explicit
+    code = extra.get("exit_code")
+    if isinstance(code, str) and re.fullmatch(r"[+-]?\d{1,4}", code.strip()):
+        code = int(code)
+    if extra.get("claim_conflict") is True or type(code) is int and code == 75:
+        return "claim_conflict"
+    if (
+        extra.get("timed_out") is True
+        or extra.get("timeout") is True
+        or type(code) is int
+        and code == 124
+    ):
+        return "timeout"
+    text = str(extra.get("error") or extra.get("reason") or "").lower()
+    for name, pattern in _FAILURE_CLASSES:
+        if re.search(pattern, text):
+            return name
+    return "agent_error"
+
+
+_CREDENTIAL_KEY = re.compile(
+    r"^(?:password|passwd|token|access[_-]?token|refresh[_-]?token|secret|api[-_]?key|auth(?:orization)?|cookies?|session|signature)$",
+    re.IGNORECASE,
+)
+_URL = re.compile(r"https?://[^\s<>\"']+")
+_CREDENTIAL_VALUE = re.compile(
+    r"(\b(?:password|passwd|token|secret|api[-_]?key|authorization|cookie)"
+    r"\s*[:=]\s*)(?:Bearer\s+)?([^\s,;&]+)",
+    re.IGNORECASE,
+)
+
+
+def _safe_log_line(line):
+    """Hide structured credentials and labelled/URL credentials in previews.
+
+    This is a display boundary, not a rewrite of the original trace. Arbitrary
+    unlabelled secrets cannot be inferred from text.
+    """
+
+    def clean_url(match):
+        try:
+            url = urlsplit(match.group())
+            query = [
+                (k, "[redacted]" if _CREDENTIAL_KEY.search(k) else v)
+                for k, v in parse_qsl(url.query, keep_blank_values=True)
+            ]
+            return urlunsplit(
+                (
+                    url.scheme,
+                    url.netloc.rsplit("@", 1)[-1],
+                    url.path,
+                    urlencode(query),
+                    "" if _CREDENTIAL_KEY.search(url.fragment) else url.fragment,
+                )
+            )
+        except ValueError:
+            return "[redacted]"
+
+    def clean(value):
+        if isinstance(value, dict):
+            return {
+                k: "[redacted]" if _CREDENTIAL_KEY.search(k) else clean(v)
+                for k, v in value.items()
+            }
+        if isinstance(value, list):
+            return [clean(v) for v in value]
+        if isinstance(value, str):
+            try:
+                nested = json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                nested = None
+            if isinstance(nested, (dict, list)):
+                return json.dumps(clean(nested), ensure_ascii=False)
+            value = _URL.sub(clean_url, value)
+            value = re.sub(
+                r"\bBearer\s+[^\s,;]+", "Bearer [redacted]", value, flags=re.IGNORECASE
+            )
+            return _CREDENTIAL_VALUE.sub(lambda m: m[1] + "[redacted]", value)
+        return value
+
+    try:
+        value = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return clean(line)
+    return json.dumps(clean(value), ensure_ascii=False)
+
+
+def _log_tail(extra):
+    """Last LOG_TAIL_LINES lines of the run's own trace file (whole file
+    when shorter). Only files under traces/ are read."""
+    path = extra.get("trace")
+    if not isinstance(path, str) or not path:
+        return ""
+    full = os.path.realpath(path)
+    if not full.startswith(os.path.realpath(TRACES) + os.sep):
+        return ""
+    lines = [ln.rstrip("\n") for ln in _read_lines(full)]
+    return "\n".join(_safe_log_line(line) for line in lines[-LOG_TAIL_LINES:])
+
+
+def _run_links(extra):
+    """Branch/PR links recorded on the row, as {"branch", "pr"} URLs
+    (None where the row has no such data)."""
+    repo = extra.get("repo")
+    branch = extra.get("branch")
+    pr = extra.get("pr_url") or extra.get("pr")
+    base = "https://github.com/%s" % repo if isinstance(repo, str) and repo else ""
+    branch_url = None
+    if base and isinstance(branch, str) and branch:
+        branch_url = "%s/tree/%s" % (base, branch)
+    pr_url = None
+    if isinstance(pr, str) and pr.startswith("https://"):
+        pr_url = pr
+    elif base and isinstance(pr, int) and not isinstance(pr, bool):
+        pr_url = "%s/pull/%d" % (base, pr)
+    return {"branch": branch_url, "pr": pr_url}
+
+
 def _entry_summary(index, row):
     extra = row.get("extra") or {}
     usage = row.get("usage")
@@ -139,6 +282,7 @@ def _entry_summary(index, row):
         usage = {}
     cost_usd, metered = _row_cost(row)
     repo = extra.get("repo") if isinstance(extra, dict) else None
+    ok = "error" not in extra
     return {
         "id": f"run-{index}",
         "script": row.get("script") or "?",
@@ -148,7 +292,10 @@ def _entry_summary(index, row):
         "repo": repo if isinstance(repo, str) and repo else None,
         "started_ts": row.get("ts", 0),
         "duration_s": _row_latency(row),
-        "ok": "error" not in extra,
+        "ok": ok,
+        "failure_class": None if ok else _failure_class(extra),
+        "log_tail": "" if ok else _log_tail(extra),
+        "links": _run_links(extra),
         "tools": [c.get("name", "?") for c in row.get("tool_calls", []) or []],
         "tokens": usage.get("total_tokens", 0) or 0,
         "preview": (row.get("final_preview", "") or "")[:200],

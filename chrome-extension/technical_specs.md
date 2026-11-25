@@ -27,6 +27,10 @@ Shared pure logic lives in `extension/lib/`:
   serialized mutation queue (§3).
 - `delta-guards.js` — observer dedupe guards (`normalizeForDedup`,
   `valueAlreadyHeld`).
+- `profile-ingest.js` — pure profile learning helpers: `chunkText`,
+  `PROFILE_FACTS_SCHEMA`, `buildProfileExtractionPrompt`, `parseProfileFacts`,
+  `extractFactsFromText` (runs a caller-supplied model call per chunk),
+  `htmlToText`, `extractLinks`.
 - `hydration.js` — verified-fill verdicts and summaries (`verifyValueLanded`,
   `summarizeHydrationResult`).
 - `vault.js` — `deduplicateVault` merge rules.
@@ -55,7 +59,10 @@ writer:
 | `fillOutcomes` | **service worker only** | `learning:recordOutcomes` |
 | `learnedMappings` | **service worker only** | `learning:recordOutcomes` (same queued write as `fillOutcomes`), `learning:confirmMapping`, `learning:deleteMapping` |
 | `observerDomainAllowlist` | side panel only (Observer tab toggle, fail-closed read in content script) | single-owner, no contention |
+| `profileSources` | side panel only (Learn from my sources URL list) | single-owner, no contention |
 | `activeSessionContext` | side panel only (job-description capture) | single-owner, no contention |
+| `promptGuidance` | side panel only (Prompt Guidance card) | single-owner, no contention |
+| `deltaFeedback` | side panel only (approve/discard counters per category, counts only) | single-owner, no contention |
 
 The side panel never writes vault or delta state. It sends typed mutation
 messages (§3) and re-renders its vault/delta views after each mutation's
@@ -88,6 +95,32 @@ The service worker's `chrome.runtime.onMessage` handler dispatches:
 | `delta:approveAll` | — | Apply every pending delta in queue order |
 | `delta:discardAll` | — | Empty the queue |
 | `delta:queue` | `deltas` | Prepend panel-extracted deltas, cap 100 |
+
+**Source fetch** (`type: "source:fetch"`, `url`): read-only. The worker fetches
+one http(s) URL (15 s timeout, 500KB cap, no credentials) and returns
+`{ url, title, text, links }`, where `links` are same-origin, GitHub or LinkedIn
+links. Other schemes, localhost/private-network hosts, redirects (fetched with
+`redirect: "manual"`) and oversize bodies return `{ error }`. Extraction is capped
+at 20 chunks per page and 60 per run. `promptGuidance`, `deltaFeedback` and
+`profileSources` are panel-owned keys (guarded by a test). It never writes
+vault or delta state; the panel chunks the text, runs the on-device model once
+per chunk (fresh session, `responseConstraint` = `PROFILE_FACTS_SCHEMA`) and
+queues results with `delta:queue` for review. `capturePageSnapshot` now keeps up
+to 40000 characters; the target-context and ask prompts slice it explicitly.
+
+**Google Drive import** (read-only; `lib/drive-import.js`, handlers in
+`service-worker.js`): `drive:status` returns `{ configured }` (false while
+`oauth2.client_id` in the manifest is the `YOUR_CLIENT_ID...` placeholder, which
+disables the panel button). `drive:list` (`search?`, `pageToken?`) returns
+`{ files, nextPageToken }` (50 per page, Google Docs plus .txt/.md/.html/.json,
+files over 500KB dropped). `drive:fetch` (`fileId`) returns `{ id, title, url,
+text }`: Google Docs via `files.export?mimeType=text/plain`, other files via
+`alt=media` (HTML through `htmlToText`), streamed with a 500KB cap. Tokens come
+from `chrome.identity.getAuthToken` with the `drive.readonly` scope; a 401 calls
+`removeCachedAuthToken` and retries once. Only `https://www.googleapis.com/drive/v3/`
+URLs are requested and file ids are validated. The panel appends fetched text
+(max 5 files per run) to the paste box, so it follows the normal chunk, extract,
+`delta:queue` path. Drive code never writes the vault or storage.
 
 All eight flow through one serialized promise queue (`createMutationQueue` in
 `lib/storage-mutations.js`): each task re-reads state, applies a pure
@@ -442,3 +475,40 @@ The plain baseline is untouched. CI fails if `eval/last-run.json` changes.
 (500 outcomes / 100 mappings / 10 hosts); what counts as an edit versus a typo
 fix (today any normalized difference is an edit, and only an exact match to
 another entry's value teaches a mapping).
+
+## 12. Prompt registry and guidance (`lib/prompts.js`, `lib/prompt-guidance.js`)
+
+Every on-device prompt is built by `getPrompt(id, {guidance, vars})` for ids
+`profile_extract`, `fill_answer`, `target_context`, `ask`, `system`. A prompt is
+a body plus a format tail. Guidance is placed between them as
+`global` then `perPrompt[id]`, sanitized (control and bidi characters removed)
+and capped at 800 characters each, so it cannot remove the schema or format
+instructions.
+
+`promptGuidance` = `{global, perPrompt, history}` (history capped at 20, each
+entry `{at, before, after, source: "user"|"suggestion"}`). The panel listens to
+`chrome.storage.onChanged` and destroys the warm base session when guidance
+changes, because the system prompt is baked into it.
+
+Suggest improvements builds a request from aggregate signals only (per-field
+edited/cleared counts from `fillOutcomes`, `deltaFeedback` approve/discard per
+category, alias count), asks for `SUGGESTION_SCHEMA` output, and
+`parseGuidanceSuggestions` drops anything with an unknown prompt id, over 200
+characters, a URL, email, phone-like number or a vault value. Accept applies
+the line through `appendGuidanceLine` with source `suggestion`; it is revertible.
+
+## 13. Ask card (`lib/ask-context.js`)
+
+`buildAskPrompt({question, sources, guidance, budgetChars})` builds the Ask
+prompt through the `ask` registry prompt and guarantees `prompt.length <=
+budgetChars` (default 6000, question capped at 1000). The budget left after the
+instructions, headers, question and guidance is split fairly across sources
+(`allocateBudget`: equal shares, unused share redistributed). Each source is
+labelled `[Source N: kind - title (url)]` and the model is told to answer only
+from them and say what is missing. `selectVaultFacts` ranks vault entries by
+keyword overlap (key match 2, value match 1) after dropping any entry whose
+key, id or value matches `lib/sensitive.js`. Other tabs are read only when
+ticked, via `chrome.tabs.sendMessage(tabId, CAPTURE_PAGE_SNAPSHOT)` in frame 0,
+covered by the existing `<all_urls>` host permission (no `tabs` permission
+needed). Answers are never written to the vault; Save answer as fact calls
+`queueVerifiedDeltas`, which sends `delta:queue` to the service worker.

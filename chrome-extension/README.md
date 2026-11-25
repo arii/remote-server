@@ -1,6 +1,15 @@
 # LocalForm AI — Chrome Extension Suite (Manifest V3)
 
-A local-first Chrome Extension using Chrome's Built-in On-Device AI foundation models (Gemini Nano via Prompt API and Summarizer API). All LLM inference runs locally inside the browser with zero cloud spend, zero data leakage, and zero latency.
+LocalForm AI fills web forms from a local, on-device profile vault and improves every time you correct it. When you submit a filled form, the extension records per field whether you kept, edited or cleared the fill (never the values themselves). Corrections become learned field rules, quarantined until you confirm them or three of your submissions agree, and those rules make the next fill more accurate: the offline eval replays recorded corrections against the repo's job-board fixtures and lifts fill accuracy from 79.3% to 100% (upper bound; the replay assumes an on-device model answer for the fields the vault abstains on). By default, inference uses Chrome's built-in Gemini Nano APIs on-device. Optional Firebase AI Logic configuration enables cloud fallback for prompts, so selected page or vault text can leave the browser. See the hybrid mode section before enabling it.
+
+## Five-minute smoke test
+
+1. `cd chrome-extension && npm run build` — validates the manifest and referenced assets, writes the ready-to-load extension to `dist/` and packages `dist/localform-ai-extension.zip`.
+2. Load `dist/` into a supported desktop Chrome (see **Loading into Google Chrome** below). Prompt API support and model readiness are separate: eligible devices may still need to download Gemini Nano before local inference works.
+3. Serve the test fixtures over HTTP (fill outcomes only record on real hostnames, not `file://`): `python3 -m http.server 8000` from the repo root, then open `http://localhost:8000/chrome-extension/tests/fixtures/greenhouse-form.html`.
+4. Open the LocalForm AI side panel, press **Start observing localhost**, and add 3 vault facts (for example your name, email and phone number).
+5. Fill the form, edit one filled field to a corrected value, then submit. The Fill tab records the outcome: `Last fill: N kept, M edited, K cleared`.
+6. In the Learned section, press **Confirm** on the new quarantined mapping and fill the form again: the corrected value is used and the kept-rate over recent fills goes up.
 
 ---
 
@@ -39,11 +48,27 @@ A local-first Chrome Extension using Chrome's Built-in On-Device AI foundation m
 
 7. **Phase 7: Observer (Knowledge Collector & Diff Approval Queue)**
    - **Active snapshot**: Captures filled form fields and page text on demand.
-   - **Passive submit observer**: Detects form submissions and compares values against the vault.
+   - **Passive submit observer**: Detects form submissions and compares values against the vault. Turn it on per site with the **Start observing <site>** button (it becomes **Stop observing <site>**).
    - Zero silent overwrites: presents proposed updates in the **Review & Merge Queue** with approve/discard actions and toolbar badge counters.
+   - **Learn from my sources**: add your website, GitHub, public LinkedIn page or portfolio URLs (kept in `profileSources`), paste resume text or load a `.txt`/`.md`/`.html`/`.json` file (PDFs are not parsed; paste their text), optionally follow profile links one level (max 5 pages), then press **Learn from all**. Text is split into chunks, each chunk gets a fresh on-device session with a schema-constrained prompt asking for every distinct fact, and results go to the Review & Merge Queue only. The same pipeline backs **Learn from this page** on the active tab. Paste, file and Drive inputs sit in a collapsed section of the card.
    - **Correction learning**: repeated approved corrections for the same field label become alias proposals in a "Learned" section (on-device, aliases only, verified before promotion).
    - **Fill outcomes**: on allowlisted domains, submitting a filled form records per field whether it was kept, edited or cleared (never the values). The Fill tab shows `Last fill: N kept, M edited, K cleared` and the kept-rate over the last 20 fills.
    - **Learned mappings**: when you correct a fill to another vault entry's value, the field is remembered as a quarantined mapping. It is only used after 3 agreeing submissions (you keep or re-enter that entry) or your Confirm click, and the first time you overwrite it, it is deleted. The Learned section lists aliases and mappings in one flat list with Delete (and Confirm for unconfirmed rows). Never stores values.
+   - **Prompt guidance**: on the AI Model tab (inside the collapsed **Prompt tuning (advanced)** card, together with **Test a prompt**; all prompt cards stay hidden until the Prompt model is ready), add global or per-prompt guidance (max 800 characters each). It is inserted into every on-device prompt (profile extraction, form answers, target context, ask, system) under a "User guidance" heading, always before the format instructions, so it cannot replace the output schema. **Revert last** undoes the latest edit (20-step history). **Suggest improvements** asks the on-device model for guidance lines based on fill outcomes and approve/discard counts; each suggestion is checked (known prompt id, short, no URLs, emails, phone numbers or vault values) and only applied when you press Accept.
+
+   - **Import from Google Drive**: in the same card, pick Google Docs, `.txt`, `.md`, `.html` or `.json` files (500KB max each, 5 per run). Their text is added to the text box and then follows the same path as pasted text into the Review & Merge Queue. Read-only (`drive.readonly`); nothing is written to Drive or the vault. The button is disabled until a Google OAuth client is configured (below).
+   - **Model status**: once all three on-device models are available the download button and progress rows give way to one ready line; the raw status JSON and the on-device-internals link live under **Model details**.
+   - **Ask**: on the AI Model tab, type any question and the on-device model answers using only the sources you tick: the current page, other open tabs (each ticked individually; tabs the browser does not let the extension read are counted in one muted line, and raw or empty tab titles fall back to the site name), relevant vault facts (keyword ranked, sensitive entries never included) and the captured target context (shown only once one is captured). Output streams and can be stopped. **Save answer as fact** sends the answer to the Review & Merge Queue; Ask never writes to the vault.
+
+---
+
+## Firebase AI Logic hybrid mode (#BuildHybridAI)
+
+Model inference runs on-device by default via Chrome's built-in Gemini Nano APIs. Source fetching and optional Drive features still use their own network connections. As an optional hybrid mode (built during the November 2026 #BuildHybridAI hackathon), the extension can instead route prompts through Firebase AI Logic in `PREFER_ON_DEVICE` mode: on-device Gemini Nano when available, cloud fallback to Gemini via Firebase when it is not.
+
+- Setup: copy `extension/lib/firebase-config.example.js` to `extension/lib/firebase-config.js` (gitignored), fill in your own Firebase project's web config, then `npm run build` (this also bundles the vendored Firebase SDK). Full setup steps: `extension/lib/firebase-config.example.js`.
+- Firebase AI Logic requires App Check; it is initialized from the same config. For local development use an App Check debug token from your own Firebase project, kept on your machine only and never committed.
+- Whenever this config is active the AI Model tab shows a "Hybrid mode active" line, so it is explicit that prompts may use cloud inference. Without the config file the extension behaves exactly as before: built-in APIs only, no keys, no cloud calls.
 
 ---
 
@@ -70,15 +95,17 @@ This validates `manifest.json`, checks all referenced scripts and icons, outputs
 
 ## Loading into Google Chrome
 
-1. Ensure you are running **Google Chrome 138+** (or Chrome Canary/Dev).
-2. Enable Chrome Built-in AI flags:
-   - Navigate to `chrome://flags/#optimization-guide-on-device-model` and set to **Enabled BypassPerfRequirement**.
-   - Navigate to `chrome://flags/#prompt-api-for-gemini-nano` and set to **Enabled**.
-   - Relaunch Chrome.
-3. Open `chrome://extensions/` in Chrome.
-4. Toggle **Developer mode** (top-right corner).
-5. Click **Load unpacked** and select the `/dist` (or `/extension`) directory.
-6. Click the extension toolbar icon to open the **LocalForm AI Side Panel**.
+1. Use an up-to-date **desktop Google Chrome**. The Prompt API is stable for extensions from **Chrome 138**; the web-page API has a separate Chrome 148 baseline. No experimental flags are required for the stable extension Prompt API. Writer is still a developer-trial API and may be unavailable even when Prompt works.
+2. Run `npm install` and `npm run build` from `chrome-extension/`. Open `chrome://extensions/`, enable **Developer mode**, click **Load unpacked**, and select `chrome-extension/dist/`. Load the built directory, not the source `extension/`, so the optional Firebase SDK bundle is present.
+3. Open the **LocalForm AI Side Panel**, then the **AI Model** tab. Check each model separately:
+   - `available`: ready for local use.
+   - `downloadable` or `downloading`: use **Initialize / Download Built-in Models** and wait for completion. Initial download needs a user click and an unmetered connection. API support alone does not mean the model has downloaded.
+   - `unavailable`: Chrome cannot use that model with the current device/options. This does not identify the exact cause. Check `chrome://on-device-internals` for model status and logs; do not bypass hardware requirements.
+4. For Gemini Nano, Chrome currently requires Windows 10/11, macOS 13+, Linux, or a supported Chromebook Plus; at least **22 GB free** on the Chrome-profile volume; and either **more than 4 GB GPU VRAM** or **16 GB RAM with at least 4 CPU cores**. Mobile Chrome and non-Plus Chromebooks are not supported. Chrome removes the model if free space falls below 10 GB after download, so a later download may be needed. Initial download needs network access; local model inference after download does not. Other extension features can still use the network.
+
+Optional Firebase hybrid mode needs its own configuration and cloud connection. A successful cloud fallback does not prove Gemini Nano is available locally, and a model initialization failure does not establish cloud reliance.
+
+Requirements checked against Chrome's [Prompt API documentation](https://developer.chrome.com/docs/ai/prompt-api) and [model-download guidance](https://developer.chrome.com/docs/ai/inform-users-of-model-download). Model availability also depends on the requested language/options. Other built-in APIs have their own [release status](https://developer.chrome.com/docs/ai/built-in-apis).
 
 ---
 
@@ -104,3 +131,18 @@ chrome-extension/
 ├── dist/                     # Built and validated unpacked extension + zip
 └── technical_specs.md        # Complete PRD and technical design document
 ```
+
+## Google Drive import setup
+
+Drive import uses `chrome.identity.getAuthToken`, which reads the client from `oauth2.client_id` in `extension/manifest.json`. The repo ships the placeholder `YOUR_CLIENT_ID.apps.googleusercontent.com`, which the extension treats as unset (the Drive button stays disabled). To enable it, reuse your existing Chrome OAuth client or create one:
+
+1. In Google Cloud Console, open the project that owns the client and enable the **Google Drive API** (APIs & Services, Library).
+2. Under APIs & Services, Credentials, create (or reuse) an OAuth client of type **Chrome Extension** and set its **Item ID** to this extension's ID (shown at `chrome://extensions`). Load the extension with a stable ID, for example by adding a `key` to the manifest, so the ID does not change between installs.
+3. On the OAuth consent screen, add the `https://www.googleapis.com/auth/drive.readonly` scope. While the app is in Testing, add your Google account under **Test users**.
+4. Put the client ID in `oauth2.client_id` in `extension/manifest.json` and rebuild with `npm run check`.
+
+An OAuth client of type Web or Desktop will not work with `getAuthToken`; it must be the Chrome Extension type bound to the extension ID.
+
+## License
+
+The MIT license in `chrome-extension/LICENSE` covers this extension directory only, not the rest of the remote-server repository. Third-party dependencies keep their own licenses.

@@ -201,7 +201,7 @@ class TestTwtStageModels(unittest.TestCase):
     def test_concrete_model_sends_no_provider_controls_default_route_keeps_them(self):
         base = {"provider": "twt", "base_url": "http://127.0.0.1:8000/v1"}
         concrete = "nebius/Qwen/Qwen3-235B-A22B-Instruct-2507"
-        cases = (("default", True), (concrete, False))
+        cases = (("default", True), ("route:default", True), (concrete, False))
         for model_id, expects_controls in cases:
             with (
                 self.subTest(model=model_id),
@@ -218,3 +218,66 @@ class TestTwtStageModels(unittest.TestCase):
                 for key in ("provider_models", "provider_reasoning_effort"):
                     self.assertEqual(key in extra_body, expects_controls)
                     self.assertEqual(key in spec, expects_controls)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("langchain_openai"), "needs deep-agent venv"
+    )
+    def test_concrete_pin_strips_inherited_provider_models(self):
+        spec = {
+            "provider": "twt",
+            "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "provider_models": {"nebius": "zai-org/GLM-5.3-Flash"},
+            "provider_reasoning_effort": {"nebius": "low"},
+        }
+        with mock.patch.dict(os.environ, {}, clear=True):
+            model, resolved = model_router.build_chat_model(spec=spec, stage="coder")
+        body = model._get_request_payload([{"role": "user", "content": "hello"}])
+        extra_body = body.get("extra_body") or {}
+        self.assertNotIn("provider_models", extra_body)
+        self.assertNotIn("provider_reasoning_effort", extra_body)
+        self.assertNotIn("provider_models", resolved)
+        self.assertNotIn("provider_reasoning_effort", resolved)
+
+    def test_preflight_strips_provider_models_on_explicit_pin_and_keeps_route_default(
+        self,
+    ):
+        from backend.shared import twt_provenance
+
+        calls = []
+
+        def fake_verify(**kwargs):
+            calls.append(kwargs)
+
+        with (
+            mock.patch.object(
+                twt_provenance, "verify_gateway_capabilities", side_effect=fake_verify
+            ),
+            mock.patch.dict(os.environ, {}, clear=True),
+        ):
+            model_router.preflight_gateway(
+                spec={
+                    "provider": "twt",
+                    "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "provider_models": {"nebius": "zai-org/GLM-5.3-Flash"},
+                },
+                stage="coder",
+            )
+            model_router.preflight_gateway(
+                spec={
+                    "provider": "twt",
+                    "model": "route:default",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                },
+                stage="coder",
+            )
+        self.assertEqual(calls[0]["provider_models"], {})
+        self.assertEqual(
+            calls[0]["model_ids"], ["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"]
+        )
+        self.assertEqual(
+            calls[1]["provider_models"],
+            {"nvidia": "z-ai/glm-5.3-flash", "nebius": "zai-org/GLM-5.3-Flash"},
+        )
+        self.assertNotIn("model_ids", calls[1])

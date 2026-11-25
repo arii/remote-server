@@ -132,6 +132,11 @@ describe("promoteAlias", () => {
     expect(next.find((x) => x.id === "identity.mobile")).toBe(mobile);
     expect(promoteAlias(next, { entryId: "identity.phone", alias: "cell number" })).toEqual(next);
   });
+
+  it("stamps updatedAt on the changed entry so Drive sync sees the new alias", () => {
+    const e = promoteAlias(vault, { entryId: "identity.phone", alias: "Cell Number" }).find((x) => x.id === "identity.phone");
+    expect(Date.parse(e.updatedAt)).toBeGreaterThan(Date.parse("2026-01-01"));
+  });
 });
 
 describe("parseRefinement (untrusted LLM output)", () => {
