@@ -909,7 +909,7 @@ def worker(job_dir):
                                 for key in ("valid", "verdict", "findings", "errors")
                             }
                         if stage == "submit":
-                            entry["submit_url"] = output[1]
+                            entry["submit_url"] = slop.get("pr_url") or output[1]
                         return output
                     except BaseException as error:
                         entry["error"] = f"{type(error).__name__}: {error}"

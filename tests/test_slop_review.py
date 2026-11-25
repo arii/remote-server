@@ -94,6 +94,7 @@ class SlopReviewTests(unittest.TestCase):
         self.reply = FAIL_REPLY
         value, _ = self.run_pipeline()
         self.assertEqual(value["status"], "SLOP_REVIEW_FAILED")
+        self.assertEqual(value.get("submit_url"), "https://github.com/o/r/pull/9")
         self.assertNotIn("handoff", self.log)
         self.assertEqual(self.log.count("comment"), 1)
         self.assertIn("a.py:3", self.bodies[0])
@@ -116,6 +117,7 @@ class SlopReviewTests(unittest.TestCase):
         (self.root / slop_review.SKILL_PATH).unlink()
         value, _ = self.run_pipeline()
         self.assertEqual(value["status"], "SLOP_REVIEW_CONFIG")
+        self.assertEqual(value.get("submit_url"), "https://github.com/o/r/pull/9")
         self.assertEqual(self.model_calls, 0)
         self.assertEqual(self.log.count("comment"), 1)
         self.assertNotIn("handoff", self.log)
@@ -174,6 +176,7 @@ class SlopReviewTests(unittest.TestCase):
         self.post_ok = False
         value, _ = self.run_pipeline()
         self.assertEqual(value["status"], "SLOP_REVIEW_FAILED")
+        self.assertEqual(value.get("submit_url"), "https://github.com/o/r/pull/9")
         self.assertIn("comment not posted", value["detail"])
         self.assertNotIn("handoff", self.log)
 
@@ -219,6 +222,198 @@ class SlopReviewTests(unittest.TestCase):
     def test_checkout_root_reads_s5_checkout(self):
         with mock.patch.dict(os.environ, {"S5_CHECKOUT": "/x"}):
             self.assertEqual(slop_review.checkout_root(), Path("/x"))
+
+
+class TestWorkerSlopIntegration(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.checkout = self.root / "checkout"
+        (self.checkout / "repo").mkdir(parents=True)
+        skill = self.checkout / slop_review.SKILL_PATH
+        skill.parent.mkdir(parents=True)
+        skill.write_text("# hostile slop review skill\nBe hostile.\n")
+        self.posted_comments = []
+
+    def make_job(self, tier="default"):
+        directory = self.root / "state" / "owner_repo-1"
+        directory.mkdir(parents=True)
+        from scripts import queue_runner
+
+        queue_runner.write_json(
+            directory / "job.json",
+            {
+                "issue": {
+                    "repo": "owner/repo",
+                    "number": 1,
+                    "title": "Fix bug",
+                    "body": "details",
+                },
+                "cap_usd": 0.5,
+                "checkout": str(self.checkout),
+                "environment": {},
+                "model_tier": tier,
+                "tier_reason": "default",
+            },
+        )
+        return directory
+
+    def run_worker_with_mocks(
+        self,
+        directory,
+        reply=PASS_REPLY,
+        post_ok=True,
+        submit_url="https://github.com/owner/repo/pull/101",
+    ):
+        from scripts import queue_runner
+        import pipeline
+
+        self.posted_comments = []
+
+        def fake_post(gh, url, body):
+            self.posted_comments.append((url, body))
+            return (True, "") if post_ok else (False, "gh api error")
+
+        class MockRealPipeline(pipeline.Pipeline):
+            def stage_init(self, *a, **k):
+                return True, {}
+
+            def stage_spec(self, *a, **k):
+                return True, {"valid": True}, "## Spec\n1. Do thing"
+
+            def stage_code(self, *a, **k):
+                return True, {}, str(self.repo)
+
+            def pre_audit_check(self, worktree):
+                return True, "", ""
+
+            def stage_audit(self, *a, **k):
+                return (
+                    pipeline.APPROVED,
+                    {"valid": True, "verdict": {"status": "APPROVED"}},
+                    "ok",
+                )
+
+            def stage_submit(self, worktree_root, title, body=""):
+                return True, submit_url
+
+            def stage_cleanup(self, *a, **k):
+                return True, ""
+
+        def fake_model_factory():
+            def model_fn(prompt):
+                if isinstance(reply, Exception):
+                    raise reply
+                return reply
+
+            def ledger_fn():
+                pass
+
+            return model_fn, ledger_fn
+
+        with (
+            mock.patch.dict(os.environ, {"S5_CHECKOUT": str(self.checkout)}),
+            mock.patch.object(queue_runner, "install_budget_guard"),
+            mock.patch.object(
+                queue_runner, "coverage", return_value={"reconciled": True}
+            ),
+            mock.patch.object(slop_review, "post_comment", side_effect=fake_post),
+            mock.patch.object(
+                slop_review,
+                "branch_diff",
+                return_value="diff --git a/a.py b/a.py\n+x\n",
+            ),
+            mock.patch.object(
+                slop_review,
+                "default_model",
+                side_effect=lambda thread: fake_model_factory(),
+            ),
+            mock.patch.object(pipeline, "Pipeline", MockRealPipeline),
+        ):
+            code = queue_runner.worker(directory)
+            summary = queue_runner.read_json(directory / "summary.json")
+            result = queue_runner.read_json(directory / "pipeline-result.json")
+            stages = queue_runner.read_json(directory / "stages.json")
+            return code, summary, result, stages
+
+    def test_worker_pass_posts_comment_before_handoff(self):
+        code, summary, result, stages = self.run_worker_with_mocks(
+            self.make_job(), reply=PASS_REPLY, post_ok=True
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["result"]["status"], "APPROVED")
+        self.assertEqual(
+            summary["result"]["submit_url"], "https://github.com/owner/repo/pull/101"
+        )
+        self.assertEqual(result["status"], "APPROVED")
+        self.assertEqual(result["submit_url"], "https://github.com/owner/repo/pull/101")
+        self.assertEqual(len(self.posted_comments), 1)
+        self.assertEqual(
+            self.posted_comments[0][0], "https://github.com/owner/repo/pull/101"
+        )
+        self.assertIn("PASS", self.posted_comments[0][1])
+        submit_stage = [s for s in stages if s["stage"] == "submit"][0]
+        self.assertEqual(
+            submit_stage["submit_url"], "https://github.com/owner/repo/pull/101"
+        )
+
+    def test_worker_fail_never_reports_approved_and_preserves_pr_url(self):
+        code, summary, result, stages = self.run_worker_with_mocks(
+            self.make_job(), reply=FAIL_REPLY
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(summary["result"]["status"], "SLOP_REVIEW_FAILED")
+        self.assertEqual(
+            summary["result"]["submit_url"], "https://github.com/owner/repo/pull/101"
+        )
+        self.assertEqual(result["status"], "SLOP_REVIEW_FAILED")
+        self.assertEqual(result["submit_url"], "https://github.com/owner/repo/pull/101")
+        self.assertEqual(len(self.posted_comments), 1)
+        self.assertIn("a.py:3", self.posted_comments[0][1])
+        submit_stage = [s for s in stages if s["stage"] == "submit"][0]
+        self.assertEqual(
+            submit_stage["submit_url"], "https://github.com/owner/repo/pull/101"
+        )
+
+    def test_worker_missing_skill_never_reports_approved_and_preserves_pr_url(self):
+        (self.checkout / slop_review.SKILL_PATH).unlink()
+        code, summary, result, stages = self.run_worker_with_mocks(self.make_job())
+        self.assertEqual(code, 1)
+        self.assertEqual(summary["result"]["status"], "SLOP_REVIEW_CONFIG")
+        self.assertEqual(
+            summary["result"]["submit_url"], "https://github.com/owner/repo/pull/101"
+        )
+        self.assertEqual(result["status"], "SLOP_REVIEW_CONFIG")
+        self.assertEqual(result["submit_url"], "https://github.com/owner/repo/pull/101")
+
+    def test_worker_model_error_never_reports_approved_and_preserves_pr_url(self):
+        code, summary, result, stages = self.run_worker_with_mocks(
+            self.make_job(), reply=RuntimeError("gateway unavailable")
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(summary["result"]["status"], "SLOP_REVIEW_FAILED")
+        self.assertEqual(
+            summary["result"]["submit_url"], "https://github.com/owner/repo/pull/101"
+        )
+        self.assertEqual(result["status"], "SLOP_REVIEW_FAILED")
+        self.assertEqual(result["submit_url"], "https://github.com/owner/repo/pull/101")
+        self.assertIn("gateway unavailable", summary["result"]["detail"])
+
+    def test_worker_failed_comment_posting_never_reports_approved_and_preserves_pr_url(
+        self,
+    ):
+        code, summary, result, stages = self.run_worker_with_mocks(
+            self.make_job(), reply=PASS_REPLY, post_ok=False
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(summary["result"]["status"], "SLOP_REVIEW_FAILED")
+        self.assertEqual(
+            summary["result"]["submit_url"], "https://github.com/owner/repo/pull/101"
+        )
+        self.assertEqual(result["status"], "SLOP_REVIEW_FAILED")
+        self.assertEqual(result["submit_url"], "https://github.com/owner/repo/pull/101")
+        self.assertIn("comment not posted", summary["result"]["detail"])
 
 
 if __name__ == "__main__":
