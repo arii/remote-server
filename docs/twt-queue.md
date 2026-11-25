@@ -95,6 +95,19 @@ removes labels. Every `discover_repos` entry must also be in `repo_paths`
 If `gh` fails for a repo, a `DISCOVERY` line is logged and that repo is skipped
 for this refresh. If a repo returns 100 issues, the log warns that older ones
 may be missing.
+### One issue only
+
+To run exactly one issue, set `"only_issues": ["owner/repo#N"]` (exactly one entry) in the
+queue config. The issue must already be in `issues_file` or found by ready discovery, with
+the same `owner/repo` spelling. An unmatched key is logged as `ONLY ... nothing to run`.
+The pass dispatches only that issue, which still goes through the `ready`, ledger and
+budget checks. The pass then ends with no inter-issue delay. A malformed value fails at
+startup, before the lock or any GitHub call. If another issue is claimed
+(`status.current`), the pass halts instead of reconciling it. The stop is terminal: once the pass holds the queue lock, however it ends (done, halt or
+error), it writes the `STOP` sentinel in `state_dir`, so a later start dispatches nothing.
+A second start that loses the lock race writes nothing. SIGKILL or power loss skip the
+sentinel; touch `STOP` by hand after an unclean exit. To run again, remove the key and delete `STOP` (or use `--clear-halt`).
+
 ## Dispatch gate
 
 The queue dispatches an issue only if, when it is refreshed just before dispatch,
@@ -157,14 +170,18 @@ edit ledger costs by hand. Keep state on persistent storage, not `/tmp`.
 `python3 scripts/queue_runner.py --config /absolute/queue-config.json --status`
 prints one state and its next action: `IDLE` (supervisor running, nothing
 claimed) -> Ready; `STALLED` (claimed, `run.log` quiet past `stall_seconds`,
-default 1800) -> Investigate/Restart; `DOWN` (supervisor not holding
-`queue.lock`) -> Restart Service.
-A `STOP` marker reports `STOPPED`, and a saved halt reports `HALTED` with its
-reason, before the heartbeat probe. Neither status recommends a plain restart:
-inspect and reconcile the saved run before the explicit recovery procedure above.
-Status checks leave those safety gates in place. The saved `stopped` and `done`
-flags describe earlier supervisor exits and can remain set during a later run;
-they do not override the marker, halt, lock, or current activity checks.
+default 1800; a fresh claim without a log yet counts from its recorded
+start) -> Investigate/Restart; `DOWN` (supervisor not holding `queue.lock`)
+-> Restart Service, or `DOWN halted: <reason>` -> inspect the halt, then
+restart with `--clear-halt`; `BUSY` (`queue.lock` held by a non-supervisor
+process such as `--retry`) -> wait for it to finish.
+Set `ledger_stamp_heartbeat` in the queue config to the stamp daemon's heartbeat
+file (the daemon writes `~/twt/queue/ledger-stamp.heartbeat` by default). The status
+check is off until the key is set. Once it is, the line also ends
+with `| LEDGER-STAMP DOWN` (no heartbeat) or `| LEDGER-STAMP STALE` (no good
+stamp pass for `ledger_stamp_stale_seconds`, default 1200) -> check
+`twt-ledger-stamp.service`. Without fresh stamps the kiro gate reports every ready
+issue as `not ready`.
 
 ### Retry a transiently blocked issue
 
@@ -490,6 +507,43 @@ worker halts, budget or STOP interruptions. A successful run clears the counter;
 uncounted outcomes leave it unchanged. The counter is `status.json`
 `tier_failures["owner/repo#N"]`, so it survives restarts and `--retry`.
 
+### Deterministic task routing (`backend/shared/task_router.py`)
+
+At dispatch the supervisor also runs the task router on the issue's title and
+body (stdlib only; reads the live TwT catalog at `TWT_CATALOG_DB`, default
+`~/twt/catalog.sqlite3`, honoring `TWT_DISABLED_PROVIDERS` and retired models).
+It emits a decision into `job.json["routing"]`:
+
+- `tier`: a task-based start-tier suggestion. `strong` when the issue names
+  `STRONG_FILE_COUNT` (3) or more file paths (`task:many_files`) or the
+  estimated prompt crosses `STRONG_INPUT_TOKENS` (`task:large_spec`). The
+  supervisor uses the stronger of this and the escalation/label tier — the
+  router can only *raise* a start tier, never lower it — and appends the rule
+  to `tier_reason` (e.g. `default+task:many_files`).
+- `picks.fast` / `picks.strong`: one concrete `provider/model` pin per tier
+  chosen from catalog rows that are chat- and tool-capable, within the
+  context window the task needs, on enabled providers, and affordable under
+  the remaining issue cap (paid calls must fit `PAID_BUDGET_SHARE` of it;
+  unrated paid models are never picked). `fast` ranks free models by context
+  window; `strong` ranks every affordable model by input price descending —
+  the strongest model the budget supports across the whole catalog, not one
+  env-pinned endpoint.
+
+The worker applies the picks after clearing inherited `CODER_*` env vars:
+`picks.fast.model` → `CODER_MODEL`, `picks.strong.model` →
+`CODER_STRONG_MODEL`, so both tiers resolve to a `provider/id` pin TwT serves
+directly instead of the `default`/`route:strong` waterfalls. When the router
+cannot pick (catalog unreachable, no eligible model) `routing` carries an
+`error` and the run keeps the configured environment unchanged.
+
+Every decision is logged to the run ledger as a `routing-decision` event row
+(features, rules, candidate counts, picks, estimated call cost) via
+`log_decision`, so picks join with traced cost and run outcomes for later
+auditing and a learned router.
+
+Standalone check: `python3 -m backend.shared.task_router --issue-file
+<job-or-issue.json> --cap-usd 1.0` prints the decision JSON.
+
 Spend: strong attempts use the same per-issue cap (`NEBIUS_SPEND_CAP_USD` is set
 from the remaining issue budget) and the same `install_budget_guard`; there is
 no second cap. Before the pipeline starts, the worker reads recorded spend and
@@ -554,6 +608,27 @@ Then run `systemctl --user daemon-reload` and
 should start at login. Configure user lingering separately if needed. The service
 deliberately has `Restart=no`; failures require inspection. Monitor
 `journalctl --user -u twt-queue.service` and the persistent issue directories.
+
+### Ledger stamp daemon
+
+`scripts/ledger_stamp.py` writes the `~/twt/queue/ledger-ok/<owner>_<repo>_<N>` stamps
+the kiro gate needs before a `ready` issue goes through. Every 5 minutes it reads the
+Agent Ledger and lists `ready` issues in each `discover_repos` entry. A stamp is
+removed while another agent holds a fresh `Act` claim. If the ledger can't be read, no
+stamps are written. If one repo's `gh issue list` fails, that repo is skipped for the
+cycle and its stamps are left alone. No error ends the process. After each pass that
+read the ledger and every repo, it touches its heartbeat file.
+
+Install `scripts/twt-ledger-stamp.service` in `~/.config/systemd/user/` and add
+`LEDGER_STAMP=/absolute/remote-server/scripts/ledger_stamp.py` to
+`~/.config/twt-queue/environment`. It must sit in the same `scripts/` directory as
+`QUEUE_RUNNER`. If it doesn't, the daemon refuses to start, because queue_runner's
+sibling ledger scripts would not import. If `LEDGER_STAMP` is unset or wrong, the unit
+fails at `ExecStartPre` instead of exiting quietly. Unlike the queue, this service has
+`Restart=always`. A stamp left in place after a failed listing is bounded by the gate's
+own freshness window. Optional overrides: `LEDGER_STAMP_DIR`,
+`LEDGER_STAMP_STAMPS`, `LEDGER_STAMP_HEARTBEAT`, `LEDGER_STAMP_LOG`. Log lines
+start with `STAMP` in `~/twt/queue/kiro-gate.log`.
 
 ## Checks
 
