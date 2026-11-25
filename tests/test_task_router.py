@@ -48,6 +48,13 @@ class TaskFeatures(unittest.TestCase):
     def test_explicit_file_list_wins(self):
         features = task_router.task_features("no paths here", files=["a.py", "b.py"])
         self.assertEqual(features["file_count"], 2)
+        self.assertFalse(features["is_architectural"])
+
+    def test_detects_architectural_signals(self):
+        features = task_router.task_features(
+            "Refactor authentication and redesign token schema"
+        )
+        self.assertTrue(features["is_architectural"])
 
 
 class SuggestedTier(unittest.TestCase):
@@ -67,6 +74,14 @@ class SuggestedTier(unittest.TestCase):
         self.assertEqual(
             task_router.suggested_tier({"file_count": 0, "est_input_tokens": 13000}),
             ("strong", "task:large_spec"),
+        )
+
+    def test_architectural_starts_strong(self):
+        self.assertEqual(
+            task_router.suggested_tier(
+                {"file_count": 1, "est_input_tokens": 7000, "is_architectural": True}
+            ),
+            ("strong", "task:architectural"),
         )
 
 
@@ -347,6 +362,18 @@ class RouteIssue(unittest.TestCase):
             {"title": "typo", "body": "fix a typo"}, 1.0, catalog=CATALOG
         )
         self.assertEqual(decision["tier"], "default")
+
+    def test_architectural_issue_starts_strong(self):
+        decision = task_router.route_issue(
+            {
+                "title": "Refactor architecture",
+                "body": "migrate subsystem to new engine",
+            },
+            1.0,
+            catalog=CATALOG,
+        )
+        self.assertEqual(decision["tier"], "strong")
+        self.assertEqual(decision["tier_rule"], "task:architectural")
 
 
 class LogDecision(unittest.TestCase):

@@ -66,6 +66,10 @@ PROVIDER_ORDER = [
 ]
 
 _FILE_RE = re.compile(r"[\w./-]+\.(?:py|ts|tsx|js|jsx|md|json|yaml|yml|toml|sh)")
+_ARCHITECTURAL_KEYWORDS = re.compile(
+    r"\b(refactor|refactoring|rewrite|architecture|architectural|redesign|migrate|migration|concurrency|deadlock|race\s+condition|distributed|breaking\s+change)\b",
+    re.IGNORECASE,
+)
 _PARAM_SIZE_RE = re.compile(
     r"(?<![a-z0-9])(?:(\d+(?:\.\d+)?)b|(\d{2,3})m)(?![a-z0-9])", re.IGNORECASE
 )
@@ -106,7 +110,18 @@ def coding_floor_rejection(model):
 
 
 def catalog_path():
-    return os.path.expanduser(os.environ.get("TWT_CATALOG_DB") or DEFAULT_CATALOG_DB)
+    env = os.environ.get("TWT_CATALOG_DB")
+    if env:
+        return os.path.expanduser(env)
+    for candidate in (
+        os.path.expanduser(DEFAULT_CATALOG_DB),
+        os.path.expanduser("~/.local/share/twt/catalog.sqlite3"),
+        "/root/.local/share/twt/catalog.sqlite3",
+        "/var/lib/buttons/twt/catalog.sqlite3",
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.expanduser(DEFAULT_CATALOG_DB)
 
 
 def disabled_providers(raw=None):
@@ -187,16 +202,20 @@ def task_features(text="", files=None):
     model pick. ``files`` is an explicit path list when a caller has one
     (a spec); otherwise paths are counted from the text."""
     files = list(files or []) or _FILE_RE.findall(text)
+    is_architectural = bool(_ARCHITECTURAL_KEYWORDS.search(text))
     return {
         "est_input_tokens": len(text) // 4 + PROMPT_OVERHEAD_TOKENS,
         "file_count": len(set(files)),
         "needs_tools": True,  # every queue stage binds edit/read tools
+        "is_architectural": is_architectural,
     }
 
 
 def suggested_tier(features):
     """Task-based start tier: hard-looking work starts 'strong' instead
     of burning cheap attempts first. 'default' when nothing fires."""
+    if features.get("is_architectural"):
+        return "strong", "task:architectural"
     if features["file_count"] >= STRONG_FILE_COUNT:
         return "strong", "task:many_files"
     if features["est_input_tokens"] >= STRONG_INPUT_TOKENS:
