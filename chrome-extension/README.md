@@ -1,6 +1,15 @@
 # LocalForm AI — Chrome Extension Suite (Manifest V3)
 
-A local-first Chrome Extension using Chrome's Built-in On-Device AI foundation models (Gemini Nano via Prompt API and Summarizer API). All LLM inference runs locally inside the browser with zero cloud spend, zero data leakage, and zero latency.
+LocalForm AI fills web forms from a local, on-device profile vault and improves every time you correct it. When you submit a filled form, the extension records per field whether you kept, edited or cleared the fill (never the values themselves). Corrections become learned field rules, quarantined until you confirm them or three of your submissions agree, and those rules make the next fill more accurate: the offline eval replays recorded corrections against the repo's job-board fixtures and lifts fill accuracy from 79.3% to 100% (upper bound; the replay assumes an on-device model answer for the fields the vault abstains on). By default, inference uses Chrome's built-in Gemini Nano APIs on-device. Optional Firebase AI Logic configuration enables cloud fallback for prompts, so selected page or vault text can leave the browser. See the hybrid mode section before enabling it.
+
+## Five-minute smoke test
+
+1. `cd chrome-extension && npm run build` — validates the manifest and referenced assets, writes the ready-to-load extension to `dist/` and packages `dist/localform-ai-extension.zip`.
+2. Load `dist/` into Chrome 138+ with the built-in-AI flags enabled (see **Loading into Google Chrome** below). The first model use downloads the Gemini Nano weights, which can take several minutes.
+3. Serve the test fixtures over HTTP (fill outcomes only record on real hostnames, not `file://`): `python3 -m http.server 8000` from the repo root, then open `http://localhost:8000/chrome-extension/tests/fixtures/greenhouse-form.html`.
+4. Open the LocalForm AI side panel, press **Start observing localhost**, and add 3 vault facts (for example your name, email and phone number).
+5. Fill the form, edit one filled field to a corrected value, then submit. The Fill tab records the outcome: `Last fill: N kept, M edited, K cleared`.
+6. In the Learned section, press **Confirm** on the new quarantined mapping and fill the form again: the corrected value is used and the kept-rate over recent fills goes up.
 
 ---
 
@@ -50,6 +59,16 @@ A local-first Chrome Extension using Chrome's Built-in On-Device AI foundation m
    - **Import from Google Drive**: in the same card, pick Google Docs, `.txt`, `.md`, `.html` or `.json` files (500KB max each, 5 per run). Their text is added to the text box and then follows the same path as pasted text into the Review & Merge Queue. Read-only (`drive.readonly`); nothing is written to Drive or the vault. The button is disabled until a Google OAuth client is configured (below).
    - **Model status**: once all three on-device models are available the download button and progress rows give way to one ready line; the raw status JSON and the on-device-internals link live under **Model details**.
    - **Ask**: on the AI Model tab, type any question and the on-device model answers using only the sources you tick: the current page, other open tabs (each ticked individually; tabs the browser does not let the extension read are counted in one muted line, and raw or empty tab titles fall back to the site name), relevant vault facts (keyword ranked, sensitive entries never included) and the captured target context (shown only once one is captured). Output streams and can be stopped. **Save answer as fact** sends the answer to the Review & Merge Queue; Ask never writes to the vault.
+
+---
+
+## Firebase AI Logic hybrid mode (#BuildHybridAI)
+
+Model inference runs on-device by default via Chrome's built-in Gemini Nano APIs. Source fetching and optional Drive features still use their own network connections. As an optional hybrid mode (built during the November 2026 #BuildHybridAI hackathon), the extension can instead route prompts through Firebase AI Logic in `PREFER_ON_DEVICE` mode: on-device Gemini Nano when available, cloud fallback to Gemini via Firebase when it is not.
+
+- Setup: copy `extension/lib/firebase-config.example.js` to `extension/lib/firebase-config.js` (gitignored), fill in your own Firebase project's web config, then `npm run build` (this also bundles the vendored Firebase SDK). Full setup steps: `extension/lib/firebase-config.example.js`.
+- Firebase AI Logic requires App Check; it is initialized from the same config. For local development use an App Check debug token from your own Firebase project, kept on your machine only and never committed.
+- Whenever this config is active the AI Model tab shows a "Hybrid mode active" line, so it is explicit that prompts may use cloud inference. Without the config file the extension behaves exactly as before: built-in APIs only, no keys, no cloud calls.
 
 ---
 
@@ -121,3 +140,7 @@ Drive import uses `chrome.identity.getAuthToken`, which reads the client from `o
 4. Put the client ID in `oauth2.client_id` in `extension/manifest.json` and rebuild with `npm run check`.
 
 An OAuth client of type Web or Desktop will not work with `getAuthToken`; it must be the Chrome Extension type bound to the extension ID.
+
+## License
+
+The MIT license in `chrome-extension/LICENSE` covers this extension directory only, not the rest of the remote-server repository. Third-party dependencies keep their own licenses.

@@ -12,7 +12,7 @@ from unittest import mock
 import coder
 import deep_chat
 import observe
-from backend.shared import ledger, model_router, runs
+from backend.shared import ledger, model_router, runs, twt_receipts
 from backend.shared.cli import repo_root
 
 try:
@@ -518,6 +518,17 @@ class TestCoderFallback(unittest.TestCase):
                     "_bounded_kwargs",
                     model_router._BoundedHistory._bounded_kwargs,
                 ),
+                mock.patch.object(
+                    model_router._BoundedHistory,
+                    "_generate",
+                    model_router._BoundedHistory._generate,
+                ),
+                mock.patch.object(
+                    model_router._BoundedHistory,
+                    "_agenerate",
+                    model_router._BoundedHistory._agenerate,
+                ),
+                mock.patch.object(twt_receipts, "ceiling_required", False),
                 mock.patch.object(model_router, "build_chat_model") as paid,
             ):
                 queue_runner.install_budget_guard(0.5, Path(root, "job"), [])

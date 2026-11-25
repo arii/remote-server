@@ -9,6 +9,7 @@ No provider credentials belong in configuration or issue manifests.
 import argparse
 import collections
 import datetime
+from decimal import Decimal, ROUND_FLOOR
 import fcntl
 import functools
 import importlib
@@ -20,6 +21,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import zoneinfo
@@ -209,7 +211,29 @@ def check_budget(scope, cap):
     return paid
 
 
+def ceiling_text(cap, paid):
+    """Headroom under the cap, rounded down to a nanodollar, as header text."""
+    headroom = (Decimal(repr(float(cap))) - Decimal(repr(float(paid)))).quantize(
+        Decimal("0.000000001"), rounding=ROUND_FLOOR
+    )
+    return str(headroom) if headroom > 0 else None
+
+
+CEILING_FEATURE = "request_cost_ceiling"
+
+
 def install_budget_guard(cap, directory, fatal, stops=None):
+    """Per-issue cap: recorded spend plus each call's estimated worst case stays <= cap.
+
+    The worst case is TwT's heuristic upper bound (catalog prices, one token per
+    request byte, full output limit), not certified provider billing.
+
+    Before each model call the guard settles recorded spend (every earlier TwT
+    trace must have an actual or upper-bound receipt), then sends the remaining
+    headroom as X-Max-Cost-Usd. TwT never dispatches a paid attempt whose worst
+    case, added to the request's earlier attempts, exceeds it. One call at a
+    time, so headroom is never handed out twice.
+    """
     from backend.shared import model_router
     from backend.shared import twt_receipts
 
@@ -221,7 +245,7 @@ def install_budget_guard(cap, directory, fatal, stops=None):
         if fatal:
             raise SafetyStop(fatal[0])
         try:
-            check_budget(twt_receipts.current.get(), cap)
+            return check_budget(twt_receipts.current.get(), cap)
         except BudgetStop:
             if stops is not None:
                 stops.append("cap")
@@ -229,6 +253,62 @@ def install_budget_guard(cap, directory, fatal, stops=None):
         except Exception as error:
             fatal.append(str(error))
             raise SafetyStop(str(error)) from error
+
+    def headroom():
+        limit = ceiling_text(cap, guard())
+        if limit is None:
+            if stops is not None:
+                stops.append("cap")
+            raise BudgetStop(f"no headroom left under the ${cap:.2f} cap")
+        return limit
+
+    gate = threading.Lock()
+    active = []
+    supported = set()
+
+    def admit(model):
+        with gate:
+            if active:
+                error = "concurrent model calls are refused under the hard spend cap"
+                fatal.append(error)
+                raise SafetyStop(error)
+            first = [headroom()]
+            base = getattr(model, "openai_api_base", None)
+            if base is not None and base not in supported:
+                try:
+                    from backend.shared import twt_provenance
+                    from backend.shared import twt_transport
+
+                    twt_provenance.require_gateway_feature(
+                        CEILING_FEATURE, base, twt_transport.uds_path()
+                    )
+                except Exception as error:
+                    fatal.append(str(error))
+                    raise SafetyStop(str(error)) from error
+                supported.add(base)
+            active.append(model)
+
+        def limit():
+            # The first request uses the admitted headroom; any further request in
+            # the same call (a retry) re-settles spend first.
+            return first.pop() if first else headroom()
+
+        return limit
+
+    def release():
+        with gate:
+            active.clear()
+
+    def refused(error):
+        if "request cost ceiling" not in str(error):
+            return None
+        if stops is not None:
+            stops.append("cap")
+        stop = BudgetStop(f"TwT refused every attempt under the ${cap:.2f} cap")
+        # Keep the trace link so the ledger row reconciles against its $0 receipt.
+        stop.twt_trace_id = getattr(error, "twt_trace_id", None)
+        stop.response = getattr(error, "response", None)
+        return stop
 
     def guarded(original):
         @functools.wraps(original)
@@ -238,10 +318,45 @@ def install_budget_guard(cap, directory, fatal, stops=None):
 
         return call
 
+    def gated(original):
+        @functools.wraps(original)
+        def call(self, *args, **kwargs):
+            token = twt_receipts.ceiling.set(admit(self))
+            try:
+                return original(self, *args, **kwargs)
+            except Exception as error:
+                stop = refused(error)
+                if stop is None:
+                    raise
+                raise stop from error
+            finally:
+                twt_receipts.ceiling.reset(token)
+                release()
+
+        return call
+
+    def agated(original):
+        @functools.wraps(original)
+        async def call(self, *args, **kwargs):
+            token = twt_receipts.ceiling.set(admit(self))
+            try:
+                return await original(self, *args, **kwargs)
+            except Exception as error:
+                stop = refused(error)
+                if stop is None:
+                    raise
+                raise stop from error
+            finally:
+                twt_receipts.ceiling.reset(token)
+                release()
+
+        return call
+
+    twt_receipts.ceiling_required = True
     model_router._remote_spec = guarded(model_router._remote_spec)
-    model_router._BoundedHistory._bounded_kwargs = guarded(
-        model_router._BoundedHistory._bounded_kwargs
-    )
+    history = model_router._BoundedHistory
+    history._generate = gated(history._generate)
+    history._agenerate = agated(history._agenerate)
 
 
 def ordered_issues(issues):
@@ -338,6 +453,25 @@ def skip_reason(issue):
     if issue.get("requires_human") is True:
         return "requires a human decision"
     return issue.get("skip_reason")
+
+
+def only_issue_keys(value):
+    """`only_issues` config: a list of exactly one "owner/repo#N". The pass dispatches
+    only that issue (still subject to ready, ledger and budget checks), then ends."""
+    if (
+        not isinstance(value, list)
+        or len(value) != 1
+        or not all(
+            isinstance(key, str)
+            and re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*#[1-9][0-9]*",
+                key,
+            )
+            for key in value
+        )
+    ):
+        raise ValueError('only_issues must be a list of exactly one "owner/repo#N"')
+    return set(value)
 
 
 def checked_cap(value):
@@ -1159,6 +1293,24 @@ def prune_landed_worktrees(config):
 
 
 def supervise(config_path, *, clear_halt=False):
+    """One queue pass. `only_issues` (exactly one "owner/repo#N") is validated here,
+    before the lock or any GitHub call, and makes the stop terminal (see _supervise)."""
+    config = read_json(config_path)
+    only = only_issue_keys(config["only_issues"]) if "only_issues" in config else None
+    held = []
+    try:
+        return _supervise(config_path, clear_halt=clear_halt, only=only, held=held)
+    finally:
+        # Terminal stop once the lock was held, however the pass ended (done, halt or
+        # error). A second start that lost the lock race writes nothing.
+        if only is not None and held:
+            root = Path(config["state_dir"]).resolve()
+            (root / "STOP").touch(mode=0o600)
+            print("STOP only_issues pass ended; remove STOP to run again", flush=True)
+
+
+def _supervise(config_path, *, clear_halt=False, only=None, held=None):
+    held = [] if held is None else held
     config = read_json(config_path)
     cap = checked_cap(config.get("cap_usd", ISSUE_CAP_USD))
     failure_limit = config.get("max_common_failures", 3)
@@ -1182,10 +1334,18 @@ def supervise(config_path, *, clear_halt=False):
     status_path = root / "status.json"
     with (root / "queue.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held.append(True)  # the lock is ours: an only_issues pass now ends with STOP
         # queue_status reads this to tell a live supervisor from a --retry
         # holding the same lock while the service is stopped.
         (root / "supervisor.pid").write_text(str(os.getpid()))
         status = read_json(status_path) if status_path.exists() else {"completed": []}
+        if only is not None and status.get("current") and status["current"] not in only:
+            status.update(
+                halted=True,
+                reason=f"only_issues set but {status['current']} is claimed; inspect it first",
+            )
+            write_json(status_path, status)
+            return 2
         finish_retry(root, status_path, status, config)
         ledger = QueueLedger(config, status, status_path)
         ledger.boundary(merges=True)
@@ -1258,6 +1418,15 @@ def supervise(config_path, *, clear_halt=False):
                 f"{issue['repo']}#{issue['number']}" != status.get("retry")
             )
         )
+        if only is not None:
+            issues = [i for i in issues if f"{i['repo']}#{i['number']}" in only]
+            print("ONLY " + ", ".join(sorted(only)), flush=True)
+            found = {f"{i['repo']}#{i['number']}" for i in issues}
+            for key in sorted(only - found):
+                print(
+                    f"ONLY {key} not in the manifest or ready discovery: nothing to run",
+                    flush=True,
+                )
         for issue in issues:
             if stopping or (root / "STOP").exists():
                 status.update(stopped=True, current=None)
@@ -1279,7 +1448,10 @@ def supervise(config_path, *, clear_halt=False):
                 fresh = json.loads(
                     subprocess.check_output(
                         config.get("gh_command", ["gh"])
-                        + ["api", f"repos/{issue['repo']}/issues/{issue['number']}"],
+                        + [
+                            "api",
+                            f"repos/{issue['repo']}/issues/{issue['number']}",
+                        ],
                         text=True,
                     )
                 )
@@ -1288,7 +1460,12 @@ def supervise(config_path, *, clear_halt=False):
                     label.get("name") if isinstance(label, dict) else label
                     for label in fresh.get("labels") or []
                 }
-            except (subprocess.CalledProcessError, OSError, ValueError, KeyError) as e:
+            except (
+                subprocess.CalledProcessError,
+                OSError,
+                ValueError,
+                KeyError,
+            ) as e:
                 print(f"SKIP {key} refresh failed: {e}", flush=True)
                 continue
             if state != "open":
@@ -1461,7 +1638,8 @@ def supervise(config_path, *, clear_halt=False):
                 )
                 write_json(status_path, status)
                 return 2
-            time.sleep(config.get("inter_issue_delay_seconds", 60))
+            if only is None:
+                time.sleep(config.get("inter_issue_delay_seconds", 60))
         status.update(done=True, current=None)
         write_json(status_path, status)
     return 0
