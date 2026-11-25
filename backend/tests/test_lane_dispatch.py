@@ -45,10 +45,14 @@ class FakeGh:
 
 
 def _gh_ok():
-    return (FakeGh()
-            .on("/branches/main/protection", json.dumps(
-                {"required_status_checks": {"contexts": ["ci", "lint"]}}))
-            .on("api repos/", json.dumps({"default_branch": "main"})))
+    return (
+        FakeGh()
+        .on(
+            "/branches/main/protection",
+            json.dumps({"required_status_checks": {"contexts": ["ci", "lint"]}}),
+        )
+        .on("api repos/", json.dumps({"default_branch": "main"}))
+    )
 
 
 def _clean_status(repo):
@@ -56,8 +60,13 @@ def _clean_status(repo):
 
 
 def _verify_ok(issue, repo="remote-server"):
-    return {"ok": True, "issue": issue, "command": "make test",
-            "allowlisted": True, "error": ""}
+    return {
+        "ok": True,
+        "issue": issue,
+        "command": "make test",
+        "allowlisted": True,
+        "error": "",
+    }
 
 
 class _QueueStoreTmpDir:
@@ -71,7 +80,8 @@ class _QueueStoreTmpDir:
         self._q_tmp = tempfile.TemporaryDirectory()
         self._q_old = os.environ.get("BUTTONS_DISPATCH_QUEUE_PATH")
         os.environ["BUTTONS_DISPATCH_QUEUE_PATH"] = os.path.join(
-            self._q_tmp.name, "queue.json")
+            self._q_tmp.name, "queue.json"
+        )
 
     def _queue_store_teardown(self):
         import os
@@ -122,21 +132,18 @@ class LaneQueueTest(_QueueStoreTmpDir, unittest.TestCase):
     def test_enqueue_terminal_requeues(self):
         lane_dispatch.enqueue("remote-server", 1)
         with lane_dispatch._lock:
-            lane_dispatch._items[("remote-server", "1")]["state"] = \
-                lane_dispatch.DONE
+            lane_dispatch._items[("remote-server", "1")]["state"] = lane_dispatch.DONE
         item, err = lane_dispatch.enqueue("remote-server", 1)
         self.assertIsNone(err)
         self.assertEqual(item["state"], "queued")
 
     def test_enqueue_stores_title_idempotent_keeps_first(self):
-        item, err = lane_dispatch.enqueue(
-            "remote-server", 1, title="Fix the thing")
+        item, err = lane_dispatch.enqueue("remote-server", 1, title="Fix the thing")
         self.assertIsNone(err)
         self.assertEqual(item["title"], "Fix the thing")
         # Idempotent re-enqueue returns the item unchanged: the
         # first title wins, a retry re-stamps.
-        again, err = lane_dispatch.enqueue(
-            "remote-server", "#1", title="Other title")
+        again, err = lane_dispatch.enqueue("remote-server", "#1", title="Other title")
         self.assertIsNone(err)
         self.assertEqual(again["title"], "Fix the thing")
 
@@ -157,8 +164,9 @@ class LaneQueueTest(_QueueStoreTmpDir, unittest.TestCase):
     def test_cancel_running_refuses(self):
         lane_dispatch.enqueue("remote-server", 1)
         with lane_dispatch._lock:
-            lane_dispatch._items[("remote-server", "1")]["state"] = \
+            lane_dispatch._items[("remote-server", "1")]["state"] = (
                 lane_dispatch.RUNNING
+            )
         removed, err = lane_dispatch.cancel("remote-server", 1)
         self.assertFalse(removed)
         self.assertEqual(err, "item is running")
@@ -234,9 +242,7 @@ class LaneQueueTest(_QueueStoreTmpDir, unittest.TestCase):
             gh_runner=_gh_ok(),
         )
         self.assertFalse(ready["ready"])
-        self.assertIn(
-            "repo already has a lane item running (#1)", ready["reasons"]
-        )
+        self.assertIn("repo already has a lane item running (#1)", ready["reasons"])
 
         lane_dispatch.cancel_running("remote-server", 1, disposition="ready")
         ready_after = lane_dispatch.readiness(
@@ -288,12 +294,12 @@ class DispatchQueueStoreTest(_QueueStoreTmpDir, unittest.TestCase):
         self.assertEqual(len(snap["items"]), 1)
         row = snap["items"][0]
         self.assertEqual(
-            (row["repo"], row["issue"], row["state"],
-             row["title"]),
-            ("tech-dancer", 48, "queued", "Gates work"))
+            (row["repo"], row["issue"], row["state"], row["title"]),
+            ("tech-dancer", 48, "queued", "Gates work"),
+        )
         self.assertEqual(
-            row["artifact_url"],
-            "https://github.com/arii/tech-dancer/issues/48")
+            row["artifact_url"], "https://github.com/arii/tech-dancer/issues/48"
+        )
         self._restart()
         items = lane_dispatch.queue_list()
         self.assertEqual(len(items), 1)
@@ -302,14 +308,14 @@ class DispatchQueueStoreTest(_QueueStoreTmpDir, unittest.TestCase):
     def test_running_reconciles_to_failed_with_verdict(self):
         lane_dispatch.enqueue("remote-server", 1, title="T")
         with lane_dispatch._lock:
-            lane_dispatch._items[("remote-server", "1")][
-                "state"] = lane_dispatch.RUNNING
+            lane_dispatch._items[("remote-server", "1")]["state"] = (
+                lane_dispatch.RUNNING
+            )
             lane_dispatch._persist_locked()
         self._restart()
         item = lane_dispatch.get_item("remote-server", 1)
         self.assertEqual(item["state"], "failed")
-        self.assertEqual(item["detail"],
-                         lane_dispatch.RESTART_DETAIL)
+        self.assertEqual(item["detail"], lane_dispatch.RESTART_DETAIL)
         self.assertIsNotNone(item["finished_at"])
         # Titles survive the reconcile; the verdict persisted back.
         self.assertEqual(item["title"], "T")
@@ -335,8 +341,7 @@ class DispatchQueueStoreTest(_QueueStoreTmpDir, unittest.TestCase):
         self.assertEqual([r["issue"] for r in rows], [2])
 
     def test_cap_evicts_oldest_first(self):
-        with patch.object(lane_dispatch,
-                          "DISPATCH_QUEUE_MAX_ITEMS", 2):
+        with patch.object(lane_dispatch, "DISPATCH_QUEUE_MAX_ITEMS", 2):
             lane_dispatch.enqueue("remote-server", 1)
             lane_dispatch.enqueue("remote-server", 2)
             lane_dispatch.enqueue("remote-server", 3)
@@ -349,17 +354,17 @@ class DispatchQueueStoreTest(_QueueStoreTmpDir, unittest.TestCase):
         item, err = lane_dispatch.enqueue("portfolio", 12)
         self.assertIsNone(err)
         self.assertEqual(
-            item["artifact_url"],
-            "https://github.com/arii/portfolio/issues/12")
+            item["artifact_url"], "https://github.com/arii/portfolio/issues/12"
+        )
         self.assertEqual(
             dispatch_mod.DispatchItem(**item).artifact_url,
-            "https://github.com/arii/portfolio/issues/12")
+            "https://github.com/arii/portfolio/issues/12",
+        )
 
 
 class RepoGatesTest(unittest.TestCase):
     def test_reads_base_and_required_checks(self):
-        gates = lane_dispatch.read_repo_gates("tech-dancer",
-                                              gh_runner=_gh_ok())
+        gates = lane_dispatch.read_repo_gates("tech-dancer", gh_runner=_gh_ok())
         self.assertTrue(gates["ok"])
         self.assertEqual(gates["base"], "main")
         self.assertEqual(gates["required_checks"], ["ci", "lint"])
@@ -370,18 +375,17 @@ class RepoGatesTest(unittest.TestCase):
 
     def test_default_branch_failure_blocks(self):
         gh = FakeGh().on("api repos/", RuntimeError("boom"))
-        gates = lane_dispatch.read_repo_gates("remote-server",
-                                              gh_runner=gh)
+        gates = lane_dispatch.read_repo_gates("remote-server", gh_runner=gh)
         self.assertFalse(gates["ok"])
         self.assertIn("default branch", gates["error"])
 
     def test_unprotected_branch_is_an_empty_bar(self):
-        gh = (FakeGh()
-              .on("/branches/main/protection",
-                  RuntimeError("404 not found"))
-              .on("api repos/", json.dumps({"default_branch": "main"})))
-        gates = lane_dispatch.read_repo_gates("remote-server",
-                                              gh_runner=gh)
+        gh = (
+            FakeGh()
+            .on("/branches/main/protection", RuntimeError("404 not found"))
+            .on("api repos/", json.dumps({"default_branch": "main"}))
+        )
+        gates = lane_dispatch.read_repo_gates("remote-server", gh_runner=gh)
         self.assertTrue(gates["ok"])
         self.assertEqual(gates["required_checks"], [])
 
@@ -393,8 +397,7 @@ class GhArgvTest(unittest.TestCase):
         # subcommands reject --repo (unknown flag, #865), while the
         # #544 guard still requires repo scoping per call.
         gh = _gh_ok()
-        gates = lane_dispatch.read_repo_gates("remote-server",
-                                              gh_runner=gh)
+        gates = lane_dispatch.read_repo_gates("remote-server", gh_runner=gh)
         self.assertTrue(gates["ok"])
         self.assertEqual(len(gh.calls), 2)
         for call in gh.calls:
@@ -403,9 +406,9 @@ class GhArgvTest(unittest.TestCase):
             if argv[0] in ("repo", "api"):
                 self.assertNotIn("--repo", argv)
             self.assertTrue(
-                "--repo" in argv
-                or any(str(a).startswith("repos/") for a in argv),
-                f"unscoped gh argv breaks the #544 guard: {argv}")
+                "--repo" in argv or any(str(a).startswith("repos/") for a in argv),
+                f"unscoped gh argv breaks the #544 guard: {argv}",
+            )
 
 
 class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
@@ -418,10 +421,12 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
         self._queue_store_teardown()
 
     def _ready(self, **over):
-        kw = {"repo_status": _clean_status,
-              "verify_preview": _verify_ok,
-              "worker_busy": lambda: False,
-              "gh_runner": _gh_ok()}
+        kw = {
+            "repo_status": _clean_status,
+            "verify_preview": _verify_ok,
+            "worker_busy": lambda: False,
+            "gh_runner": _gh_ok(),
+        }
         kw.update(over)
         return lane_dispatch.readiness("remote-server", 1, **kw)
 
@@ -433,8 +438,7 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
 
     def test_dirty_checkout_blocks(self):
         def dirty(repo):
-            return {"repo": repo, "branch": "main", "short": " M x",
-                    "clean": False}
+            return {"repo": repo, "branch": "main", "short": " M x", "clean": False}
 
         ready = self._ready(repo_status=dirty)
         self.assertFalse(ready["ready"])
@@ -451,16 +455,21 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
     def test_repo_conflict_blocks(self):
         lane_dispatch.enqueue("remote-server", 2)
         with lane_dispatch._lock:
-            lane_dispatch._items[("remote-server", "2")]["state"] = \
+            lane_dispatch._items[("remote-server", "2")]["state"] = (
                 lane_dispatch.RUNNING
+            )
         ready = self._ready()
         self.assertFalse(ready["ready"])
         self.assertTrue(any("already has" in r for r in ready["reasons"]))
         # Another repo is unaffected (per-repo conflict detection).
         other = lane_dispatch.readiness(
-            "tech-dancer", 1, repo_status=_clean_status,
-            verify_preview=_verify_ok, worker_busy=lambda: False,
-            gh_runner=_gh_ok())
+            "tech-dancer",
+            1,
+            repo_status=_clean_status,
+            verify_preview=_verify_ok,
+            worker_busy=lambda: False,
+            gh_runner=_gh_ok(),
+        )
         self.assertTrue(other["ready"])
 
     def test_busy_worker_blocks(self):
@@ -470,8 +479,13 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
 
     def test_rejected_verify_blocks(self):
         def rejected(issue, repo="remote-server"):
-            return {"ok": True, "issue": issue, "command": "rm -rf /",
-                    "allowlisted": False, "error": "not allowlisted"}
+            return {
+                "ok": True,
+                "issue": issue,
+                "command": "rm -rf /",
+                "allowlisted": False,
+                "error": "not allowlisted",
+            }
 
         ready = self._ready(verify_preview=rejected)
         self.assertFalse(ready["ready"])
@@ -483,36 +497,48 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
         # seconds, so ready must be false with the scaffold reason
         # — never green-gates-to-instant-fail.
         def missing(issue, repo="remote-server"):
-            return {"ok": True, "issue": issue, "command": "",
-                    "allowlisted": False,
-                    "error": "Missing required section: 'Target Files'"}
+            return {
+                "ok": True,
+                "issue": issue,
+                "command": "",
+                "allowlisted": False,
+                "error": "Missing required section: 'Target Files'",
+            }
 
         ready = self._ready(verify_preview=missing)
         self.assertFalse(ready["ready"])
-        self.assertTrue(any("not scaffolded" in r
-                            for r in ready["reasons"]),
-                        ready["reasons"])
-        self.assertTrue(any("Target Files" in r
-                            for r in ready["reasons"]),
-                        ready["reasons"])
-        self.assertTrue(any("Deterministic Task" in r
-                            for r in ready["reasons"]),
-                        ready["reasons"])
+        self.assertTrue(
+            any("not scaffolded" in r for r in ready["reasons"]), ready["reasons"]
+        )
+        self.assertTrue(
+            any("Target Files" in r for r in ready["reasons"]), ready["reasons"]
+        )
+        self.assertTrue(
+            any("Deterministic Task" in r for r in ready["reasons"]), ready["reasons"]
+        )
 
     def test_unscaffolded_dispatch_changes_nothing(self):
         # The blocked dispatch returns the reason and never spawns.
         def missing(issue, repo="remote-server"):
-            return {"ok": True, "issue": issue, "command": "",
-                    "allowlisted": False,
-                    "error": "Missing required section: 'Target Files'"}
+            return {
+                "ok": True,
+                "issue": issue,
+                "command": "",
+                "allowlisted": False,
+                "error": "Missing required section: 'Target Files'",
+            }
 
         launched = []
         item, err = lane_dispatch.dispatch(
-            "remote-server", 1,
+            "remote-server",
+            1,
             launcher=lambda i, r: launched.append((i, r)),
             monitor=lambda r, i: None,
-            repo_status=_clean_status, verify_preview=missing,
-            worker_busy=lambda: False, gh_runner=_gh_ok())
+            repo_status=_clean_status,
+            verify_preview=missing,
+            worker_busy=lambda: False,
+            gh_runner=_gh_ok(),
+        )
         self.assertIsNone(item)
         self.assertIn("not scaffolded", err)
         self.assertEqual(launched, [])
@@ -535,20 +561,24 @@ class DispatchTest(_QueueStoreTmpDir, unittest.TestCase):
         self._queue_store_teardown()
 
     def _seams(self, **over):
-        kw = {"repo_status": _clean_status,
-              "verify_preview": _verify_ok,
-              "worker_busy": lambda: False,
-              "gh_runner": _gh_ok()}
+        kw = {
+            "repo_status": _clean_status,
+            "verify_preview": _verify_ok,
+            "worker_busy": lambda: False,
+            "gh_runner": _gh_ok(),
+        }
         kw.update(over)
         return kw
 
     def test_blocked_dispatch_changes_nothing(self):
         launched = []
         item, err = lane_dispatch.dispatch(
-            "remote-server", 1,
+            "remote-server",
+            1,
             launcher=lambda i, r: launched.append((i, r)),
             monitor=lambda r, i: None,
-            **self._seams(worker_busy=lambda: True))
+            **self._seams(worker_busy=lambda: True),
+        )
         self.assertIsNone(item)
         self.assertIn("busy", err)
         self.assertEqual(launched, [])
@@ -559,10 +589,12 @@ class DispatchTest(_QueueStoreTmpDir, unittest.TestCase):
         launched = []
         watched = []
         item, err = lane_dispatch.dispatch(
-            "tech-dancer", 4848,
+            "tech-dancer",
+            4848,
             launcher=lambda i, r: launched.append((i, r)),
             monitor=lambda r, i: watched.append((r, i)),
-            **self._seams())
+            **self._seams(),
+        )
         self.assertIsNone(err)
         self.assertEqual(item["state"], "running")
         self.assertEqual(launched, [(4848, "tech-dancer")])
@@ -575,8 +607,12 @@ class DispatchTest(_QueueStoreTmpDir, unittest.TestCase):
             raise RuntimeError("spawn boom")
 
         item, err = lane_dispatch.dispatch(
-            "remote-server", 1, launcher=fail,
-            monitor=lambda r, i: None, **self._seams())
+            "remote-server",
+            1,
+            launcher=fail,
+            monitor=lambda r, i: None,
+            **self._seams(),
+        )
         self.assertIsNone(item)
         self.assertIn("launch failed", err)
         stored = lane_dispatch.get_item("remote-server", 1)
@@ -584,18 +620,26 @@ class DispatchTest(_QueueStoreTmpDir, unittest.TestCase):
 
     def test_running_item_refuses_second_dispatch(self):
         lane_dispatch.dispatch(
-            "remote-server", 1, launcher=lambda i, r: None,
-            monitor=lambda r, i: None, **self._seams())
+            "remote-server",
+            1,
+            launcher=lambda i, r: None,
+            monitor=lambda r, i: None,
+            **self._seams(),
+        )
         item, err = lane_dispatch.dispatch(
-            "remote-server", 1, launcher=lambda i, r: None,
-            monitor=lambda r, i: None, **self._seams())
+            "remote-server",
+            1,
+            launcher=lambda i, r: None,
+            monitor=lambda r, i: None,
+            **self._seams(),
+        )
         self.assertIsNone(item)
         self.assertEqual(err, "item is already running")
 
     def test_invalid_inputs(self):
         item, err = lane_dispatch.dispatch(
-            "nope/..", 1, launcher=lambda i, r: None,
-            monitor=lambda r, i: None)
+            "nope/..", 1, launcher=lambda i, r: None, monitor=lambda r, i: None
+        )
         self.assertIsNone(item)
         self.assertEqual(err, "invalid repo")
 
@@ -617,16 +661,23 @@ class MonitorTest(_QueueStoreTmpDir, unittest.TestCase):
     def _running_item(self):
         lane_dispatch.enqueue("remote-server", 1)
         with lane_dispatch._lock:
-            lane_dispatch._items[("remote-server", "1")]["state"] = \
+            lane_dispatch._items[("remote-server", "1")]["state"] = (
                 lane_dispatch.RUNNING
+            )
 
-    def _worker(self, status, issue=1, repo="remote-server",
-                exit_code=None, failure_reason=None):
+    def _worker(
+        self, status, issue=1, repo="remote-server", exit_code=None, failure_reason=None
+    ):
         with issues_mod.repair_state_lock:
             issues_mod.repair_state.update(
-                {"status": status, "issue": issue, "repo": repo,
-                 "exit_code": exit_code,
-                 "failure_reason": failure_reason})
+                {
+                    "status": status,
+                    "issue": issue,
+                    "repo": repo,
+                    "exit_code": exit_code,
+                    "failure_reason": failure_reason,
+                }
+            )
 
     def test_done_worker_marks_done(self):
         self._running_item()
@@ -673,9 +724,14 @@ class MonitorTest(_QueueStoreTmpDir, unittest.TestCase):
         # Unscaffolded runs (#908) surface the titled reason in
         # the queue row instead of "exit 2".
         self._running_item()
-        self._worker("failed", exit_code=1, failure_reason=(
-            "issue #380 is not scaffolded for repair: Missing "
-            "required section: 'Target Files'"))
+        self._worker(
+            "failed",
+            exit_code=1,
+            failure_reason=(
+                "issue #380 is not scaffolded for repair: Missing "
+                "required section: 'Target Files'"
+            ),
+        )
         lane_dispatch._monitor_item("remote-server", 1)
         stored = lane_dispatch.get_item("remote-server", 1)
         self.assertEqual(stored["state"], "failed")
@@ -720,29 +776,31 @@ class DispatchRouterTest(_QueueStoreTmpDir, unittest.TestCase):
 
     def test_enqueue_ok_and_bad(self):
         row = dispatch_mod.enqueue(
-            dispatch_mod.EnqueueRequest(repo="remote-server",
-                                       issue="12"))
+            dispatch_mod.EnqueueRequest(repo="remote-server", issue="12")
+        )
         self.assertEqual(row["issue"], 12)
         with self.assertRaises(Exception) as ctx:
             dispatch_mod.enqueue(
-                dispatch_mod.EnqueueRequest(repo="remote-server",
-                                            issue="abc"))
+                dispatch_mod.EnqueueRequest(repo="remote-server", issue="abc")
+            )
         self.assertEqual(ctx.exception.status_code, 400)
 
     def test_enqueue_passes_title_through(self):
         row = dispatch_mod.enqueue(
-            dispatch_mod.EnqueueRequest(repo="tech-dancer",
-                                       issue="48",
-                                       title="Cross-repo gates"))
+            dispatch_mod.EnqueueRequest(
+                repo="tech-dancer", issue="48", title="Cross-repo gates"
+            )
+        )
         self.assertEqual(row["title"], "Cross-repo gates")
         stored = lane_dispatch.get_item("tech-dancer", 48)
         self.assertEqual(stored["title"], "Cross-repo gates")
 
     def test_gates_ok_and_bad_inputs(self):
         with patch.object(
-                lane_dispatch, "readiness",
-                return_value={"ready": True, "reasons": [],
-                              "gates": {}}) as ready:
+            lane_dispatch,
+            "readiness",
+            return_value={"ready": True, "reasons": [], "gates": {}},
+        ) as ready:
             body = dispatch_mod.gates(repo="tech-dancer", issue="48")
         ready.assert_called_once_with("tech-dancer", 48)
         self.assertTrue(body["ready"])
@@ -755,48 +813,69 @@ class DispatchRouterTest(_QueueStoreTmpDir, unittest.TestCase):
 
     def test_start_requires_confirm(self):
         with self.assertRaises(Exception) as ctx:
-            dispatch_mod.start(dispatch_mod.StartRequest(
-                repo="remote-server", issue=1))
+            dispatch_mod.start(dispatch_mod.StartRequest(repo="remote-server", issue=1))
         self.assertEqual(ctx.exception.status_code, 400)
 
     def test_start_ok_blocked_and_bad(self):
-        with patch.object(lane_dispatch, "dispatch",
-                          return_value=({"repo": "remote-server",
-                                         "issue": 1}, None)):
-            body = dispatch_mod.start(dispatch_mod.StartRequest(
-                repo="remote-server", issue=1,
-                intent="dispatch-start", confirmed=True))
+        with patch.object(
+            lane_dispatch,
+            "dispatch",
+            return_value=({"repo": "remote-server", "issue": 1}, None),
+        ):
+            body = dispatch_mod.start(
+                dispatch_mod.StartRequest(
+                    repo="remote-server",
+                    issue=1,
+                    intent="dispatch-start",
+                    confirmed=True,
+                )
+            )
         self.assertEqual(body["status"], "running")
-        with patch.object(lane_dispatch, "dispatch",
-                          return_value=(None, "worker busy")):
+        with patch.object(
+            lane_dispatch, "dispatch", return_value=(None, "worker busy")
+        ):
             with self.assertRaises(Exception) as ctx:
-                dispatch_mod.start(dispatch_mod.StartRequest(
-                    repo="remote-server", issue=1,
-                    intent="dispatch-start", confirmed=True))
+                dispatch_mod.start(
+                    dispatch_mod.StartRequest(
+                        repo="remote-server",
+                        issue=1,
+                        intent="dispatch-start",
+                        confirmed=True,
+                    )
+                )
         self.assertEqual(ctx.exception.status_code, 409)
         with self.assertRaises(Exception) as ctx:
-            dispatch_mod.start(dispatch_mod.StartRequest(
-                repo="remote-server", issue="abc",
-                intent="dispatch-start", confirmed=True))
+            dispatch_mod.start(
+                dispatch_mod.StartRequest(
+                    repo="remote-server",
+                    issue="abc",
+                    intent="dispatch-start",
+                    confirmed=True,
+                )
+            )
         self.assertEqual(ctx.exception.status_code, 400)
 
     def test_cancel_ok_running_and_unknown(self):
-        with patch.object(lane_dispatch, "cancel",
-                          return_value=(True, None)):
-            body = dispatch_mod.cancel(dispatch_mod.CancelRequest(
-                repo="remote-server", issue=1))
+        with patch.object(lane_dispatch, "cancel", return_value=(True, None)):
+            body = dispatch_mod.cancel(
+                dispatch_mod.CancelRequest(repo="remote-server", issue=1)
+            )
         self.assertTrue(body["removed"])
-        with patch.object(lane_dispatch, "cancel",
-                          return_value=(False, "item is running")):
+        with patch.object(
+            lane_dispatch, "cancel", return_value=(False, "item is running")
+        ):
             with self.assertRaises(Exception) as ctx:
-                dispatch_mod.cancel(dispatch_mod.CancelRequest(
-                    repo="remote-server", issue=1))
+                dispatch_mod.cancel(
+                    dispatch_mod.CancelRequest(repo="remote-server", issue=1)
+                )
         self.assertEqual(ctx.exception.status_code, 409)
-        with patch.object(lane_dispatch, "cancel",
-                          return_value=(False, "unknown item")):
+        with patch.object(
+            lane_dispatch, "cancel", return_value=(False, "unknown item")
+        ):
             with self.assertRaises(Exception) as ctx:
-                dispatch_mod.cancel(dispatch_mod.CancelRequest(
-                    repo="remote-server", issue=1))
+                dispatch_mod.cancel(
+                    dispatch_mod.CancelRequest(repo="remote-server", issue=1)
+                )
         self.assertEqual(ctx.exception.status_code, 404)
 
     def test_cancel_running_requires_confirm_and_cancels(self):
@@ -832,9 +911,7 @@ class DispatchRouterTest(_QueueStoreTmpDir, unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
         # With confirm
-        with patch(
-            "backend.api.routers.issues.abort_in_flight_repair"
-        ) as abort_mock:
+        with patch("backend.api.routers.issues.abort_in_flight_repair") as abort_mock:
             abort_mock.return_value = {"ok": True, "killed": True}
             res = dispatch_mod.cancel(
                 dispatch_mod.CancelRequest(

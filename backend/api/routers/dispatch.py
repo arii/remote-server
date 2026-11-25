@@ -115,8 +115,7 @@ def gates(repo: str = "remote-server", issue: str = "") -> dict:
 
 @router.post("/enqueue", response_model=DispatchItem)
 def enqueue(body: EnqueueRequest) -> dict:
-    item, err = lane_dispatch.enqueue(body.repo, body.issue,
-                                      title=body.title or "")
+    item, err = lane_dispatch.enqueue(body.repo, body.issue, title=body.title or "")
     if err is not None or item is None:
         raise HTTPException(status_code=400, detail=err or "bad item")
     return item
@@ -140,8 +139,12 @@ def start(body: StartRequest) -> dict:
     item, err = lane_dispatch.dispatch(name, number)
     if err is not None or item is None:
         raise HTTPException(status_code=409, detail=err or "blocked")
-    return {"ok": True, "repo": item["repo"], "issue": item["issue"],
-            "status": "running"}
+    return {
+        "ok": True,
+        "repo": item["repo"],
+        "issue": item["issue"],
+        "status": "running",
+    }
 
 
 @router.post("/cancel", response_model=CancelResult)
