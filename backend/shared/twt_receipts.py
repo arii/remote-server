@@ -20,9 +20,20 @@ from backend.shared import twt_transport
 
 current = contextvars.ContextVar("twt_run", default=None)
 latest = contextvars.ContextVar("twt_request", default=None)
+# Per-call spend ceiling: a callable returning the X-Max-Cost-Usd value for the
+# next hosted request. Set by the queue's budget guard around each model call.
+ceiling = contextvars.ContextVar("twt_cost_ceiling", default=None)
+# True under the queue's hard cap: a hosted request without a ceiling is refused.
+ceiling_required = False
 
 
 def capture(request):
+    if request.url.path.endswith("/chat/completions"):
+        limit = ceiling.get()
+        if limit is None and ceiling_required:
+            raise RuntimeError("hosted TwT request without a spend ceiling refused")
+        if limit is not None:
+            request.headers["X-Max-Cost-Usd"] = limit()
     scope = current.get()
     if scope is None or not request.url.path.endswith(
         ("/chat/completions", "/api/chat")
@@ -108,6 +119,9 @@ def receipt_cost(receipt):
         return None
     if receipt.get("cost_complete") is True:
         return receipt["cost_usd"] if _known_cost(receipt) else None
+    if receipt.get("billing_status") == "none" and receipt.get("cost_basis") is None:
+        # TwT called no provider (every attempt skipped, e.g. by a cost ceiling).
+        return 0.0
     bound = receipt.get("cost_upper_bound_usd")
     if (
         receipt.get("cost_basis") == "upper_bound"
