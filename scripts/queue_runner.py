@@ -9,6 +9,7 @@ No provider credentials belong in configuration or issue manifests.
 import argparse
 import collections
 import datetime
+from decimal import Decimal, ROUND_FLOOR
 import fcntl
 import functools
 import importlib
@@ -20,6 +21,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import zoneinfo
@@ -209,7 +211,29 @@ def check_budget(scope, cap):
     return paid
 
 
+def ceiling_text(cap, paid):
+    """Headroom under the cap, rounded down to a nanodollar, as header text."""
+    headroom = (Decimal(repr(float(cap))) - Decimal(repr(float(paid)))).quantize(
+        Decimal("0.000000001"), rounding=ROUND_FLOOR
+    )
+    return str(headroom) if headroom > 0 else None
+
+
+CEILING_FEATURE = "request_cost_ceiling"
+
+
 def install_budget_guard(cap, directory, fatal, stops=None):
+    """Per-issue cap: recorded spend plus each call's estimated worst case stays <= cap.
+
+    The worst case is TwT's heuristic upper bound (catalog prices, one token per
+    request byte, full output limit), not certified provider billing.
+
+    Before each model call the guard settles recorded spend (every earlier TwT
+    trace must have an actual or upper-bound receipt), then sends the remaining
+    headroom as X-Max-Cost-Usd. TwT never dispatches a paid attempt whose worst
+    case, added to the request's earlier attempts, exceeds it. One call at a
+    time, so headroom is never handed out twice.
+    """
     from backend.shared import model_router
     from backend.shared import twt_receipts
 
@@ -221,7 +245,7 @@ def install_budget_guard(cap, directory, fatal, stops=None):
         if fatal:
             raise SafetyStop(fatal[0])
         try:
-            check_budget(twt_receipts.current.get(), cap)
+            return check_budget(twt_receipts.current.get(), cap)
         except BudgetStop:
             if stops is not None:
                 stops.append("cap")
@@ -229,6 +253,62 @@ def install_budget_guard(cap, directory, fatal, stops=None):
         except Exception as error:
             fatal.append(str(error))
             raise SafetyStop(str(error)) from error
+
+    def headroom():
+        limit = ceiling_text(cap, guard())
+        if limit is None:
+            if stops is not None:
+                stops.append("cap")
+            raise BudgetStop(f"no headroom left under the ${cap:.2f} cap")
+        return limit
+
+    gate = threading.Lock()
+    active = []
+    supported = set()
+
+    def admit(model):
+        with gate:
+            if active:
+                error = "concurrent model calls are refused under the hard spend cap"
+                fatal.append(error)
+                raise SafetyStop(error)
+            first = [headroom()]
+            base = getattr(model, "openai_api_base", None)
+            if base is not None and base not in supported:
+                try:
+                    from backend.shared import twt_provenance
+                    from backend.shared import twt_transport
+
+                    twt_provenance.require_gateway_feature(
+                        CEILING_FEATURE, base, twt_transport.uds_path()
+                    )
+                except Exception as error:
+                    fatal.append(str(error))
+                    raise SafetyStop(str(error)) from error
+                supported.add(base)
+            active.append(model)
+
+        def limit():
+            # The first request uses the admitted headroom; any further request in
+            # the same call (a retry) re-settles spend first.
+            return first.pop() if first else headroom()
+
+        return limit
+
+    def release():
+        with gate:
+            active.clear()
+
+    def refused(error):
+        if "request cost ceiling" not in str(error):
+            return None
+        if stops is not None:
+            stops.append("cap")
+        stop = BudgetStop(f"TwT refused every attempt under the ${cap:.2f} cap")
+        # Keep the trace link so the ledger row reconciles against its $0 receipt.
+        stop.twt_trace_id = getattr(error, "twt_trace_id", None)
+        stop.response = getattr(error, "response", None)
+        return stop
 
     def guarded(original):
         @functools.wraps(original)
@@ -238,10 +318,45 @@ def install_budget_guard(cap, directory, fatal, stops=None):
 
         return call
 
+    def gated(original):
+        @functools.wraps(original)
+        def call(self, *args, **kwargs):
+            token = twt_receipts.ceiling.set(admit(self))
+            try:
+                return original(self, *args, **kwargs)
+            except Exception as error:
+                stop = refused(error)
+                if stop is None:
+                    raise
+                raise stop from error
+            finally:
+                twt_receipts.ceiling.reset(token)
+                release()
+
+        return call
+
+    def agated(original):
+        @functools.wraps(original)
+        async def call(self, *args, **kwargs):
+            token = twt_receipts.ceiling.set(admit(self))
+            try:
+                return await original(self, *args, **kwargs)
+            except Exception as error:
+                stop = refused(error)
+                if stop is None:
+                    raise
+                raise stop from error
+            finally:
+                twt_receipts.ceiling.reset(token)
+                release()
+
+        return call
+
+    twt_receipts.ceiling_required = True
     model_router._remote_spec = guarded(model_router._remote_spec)
-    model_router._BoundedHistory._bounded_kwargs = guarded(
-        model_router._BoundedHistory._bounded_kwargs
-    )
+    history = model_router._BoundedHistory
+    history._generate = gated(history._generate)
+    history._agenerate = agated(history._agenerate)
 
 
 def ordered_issues(issues):
@@ -338,6 +453,25 @@ def skip_reason(issue):
     if issue.get("requires_human") is True:
         return "requires a human decision"
     return issue.get("skip_reason")
+
+
+def only_issue_keys(value):
+    """`only_issues` config: a list of exactly one "owner/repo#N". The pass dispatches
+    only that issue (still subject to ready, ledger and budget checks), then ends."""
+    if (
+        not isinstance(value, list)
+        or len(value) != 1
+        or not all(
+            isinstance(key, str)
+            and re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*#[1-9][0-9]*",
+                key,
+            )
+            for key in value
+        )
+    ):
+        raise ValueError('only_issues must be a list of exactly one "owner/repo#N"')
+    return set(value)
 
 
 def checked_cap(value):
@@ -681,6 +815,15 @@ def worker(job_dir):
     )
     for key in ("CODER_MODEL", "S5_AUDIT_MODEL", "S5_START_MODEL_TIER"):
         os.environ.pop(key, None)
+    routing = job.get("routing") or {}
+    picks = routing.get("picks") or {}
+    for pick_tier, env_key in (
+        ("fast", "CODER_MODEL"),
+        ("strong", "CODER_STRONG_MODEL"),
+    ):
+        pin = (picks.get(pick_tier) or {}).get("model")
+        if pin:
+            os.environ[env_key] = pin
     tier = job.get("model_tier", "default")
     if tier == "strong":
         os.environ["S5_START_MODEL_TIER"] = "strong"
@@ -709,6 +852,18 @@ def worker(job_dir):
             file=sys.stderr,
             flush=True,
         )
+        if routing.get("picks"):
+            try:
+                from backend.shared import task_router
+
+                task_router.log_decision(
+                    routing,
+                    issue_key=f"{job['issue']['repo']}#{job['issue']['number']}",
+                    requested_tier=job.get("requested_tier", tier),
+                    served_tier=tier,
+                )
+            except Exception as error:
+                print(f"routing audit skipped: {error}", file=sys.stderr, flush=True)
         try:
             from backend.shared import model_router
 
@@ -1110,7 +1265,52 @@ def retry_issue(config_path, key):
     return 0
 
 
+def prune_landed_worktrees(config):
+    """Remove landed agent worktrees (incl. .queue-retry) in every configured checkout.
+
+    The script keeps unmerged, dirty and non-agent trees and the operator
+    `queue-main` tree. A failure is logged and never stops the queue.
+    """
+    script = Path(config["pipeline_checkout"]) / "scripts" / "prune-worktrees.sh"
+    for repo, checkout in config["repo_paths"].items():
+        try:
+            result = subprocess.run(
+                ["bash", str(script), "--prune"],
+                cwd=checkout,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            print(f"PRUNE {repo} failed: {error}", flush=True)
+            continue
+        if result.returncode != 0:
+            print(f"PRUNE {repo} failed: {result.stderr.strip()}", flush=True)
+        # Forward removals and the script's indented "(... failed/kept)" notes.
+        for line in result.stdout.splitlines():
+            if line.startswith(("PRUNE ", "      (")):
+                print(f"PRUNE {repo} {line.strip()}", flush=True)
+
+
 def supervise(config_path, *, clear_halt=False):
+    """One queue pass. `only_issues` (exactly one "owner/repo#N") is validated here,
+    before the lock or any GitHub call, and makes the stop terminal (see _supervise)."""
+    config = read_json(config_path)
+    only = only_issue_keys(config["only_issues"]) if "only_issues" in config else None
+    held = []
+    try:
+        return _supervise(config_path, clear_halt=clear_halt, only=only, held=held)
+    finally:
+        # Terminal stop once the lock was held, however the pass ended (done, halt or
+        # error). A second start that lost the lock race writes nothing.
+        if only is not None and held:
+            root = Path(config["state_dir"]).resolve()
+            (root / "STOP").touch(mode=0o600)
+            print("STOP only_issues pass ended; remove STOP to run again", flush=True)
+
+
+def _supervise(config_path, *, clear_halt=False, only=None, held=None):
+    held = [] if held is None else held
     config = read_json(config_path)
     cap = checked_cap(config.get("cap_usd", ISSUE_CAP_USD))
     failure_limit = config.get("max_common_failures", 3)
@@ -1134,7 +1334,18 @@ def supervise(config_path, *, clear_halt=False):
     status_path = root / "status.json"
     with (root / "queue.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held.append(True)  # the lock is ours: an only_issues pass now ends with STOP
+        # queue_status reads this to tell a live supervisor from a --retry
+        # holding the same lock while the service is stopped.
+        (root / "supervisor.pid").write_text(str(os.getpid()))
         status = read_json(status_path) if status_path.exists() else {"completed": []}
+        if only is not None and status.get("current") and status["current"] not in only:
+            status.update(
+                halted=True,
+                reason=f"only_issues set but {status['current']} is claimed; inspect it first",
+            )
+            write_json(status_path, status)
+            return 2
         finish_retry(root, status_path, status, config)
         ledger = QueueLedger(config, status, status_path)
         ledger.boundary(merges=True)
@@ -1189,6 +1400,9 @@ def supervise(config_path, *, clear_halt=False):
             status.update(halted=False, reason=None, halt_acknowledged_at=time.time())
             (root / "STOP").unlink(missing_ok=True)
             write_json(status_path, status)
+        # Startup pass runs only after the claimed issue is reconciled, so
+        # a crashed run's worktree is never swept before its recovery.
+        prune_landed_worktrees(config)
         stopping = []
 
         def stop(_number, _frame):
@@ -1204,6 +1418,15 @@ def supervise(config_path, *, clear_halt=False):
                 f"{issue['repo']}#{issue['number']}" != status.get("retry")
             )
         )
+        if only is not None:
+            issues = [i for i in issues if f"{i['repo']}#{i['number']}" in only]
+            print("ONLY " + ", ".join(sorted(only)), flush=True)
+            found = {f"{i['repo']}#{i['number']}" for i in issues}
+            for key in sorted(only - found):
+                print(
+                    f"ONLY {key} not in the manifest or ready discovery: nothing to run",
+                    flush=True,
+                )
         for issue in issues:
             if stopping or (root / "STOP").exists():
                 status.update(stopped=True, current=None)
@@ -1225,7 +1448,10 @@ def supervise(config_path, *, clear_halt=False):
                 fresh = json.loads(
                     subprocess.check_output(
                         config.get("gh_command", ["gh"])
-                        + ["api", f"repos/{issue['repo']}/issues/{issue['number']}"],
+                        + [
+                            "api",
+                            f"repos/{issue['repo']}/issues/{issue['number']}",
+                        ],
                         text=True,
                     )
                 )
@@ -1234,7 +1460,12 @@ def supervise(config_path, *, clear_halt=False):
                     label.get("name") if isinstance(label, dict) else label
                     for label in fresh.get("labels") or []
                 }
-            except (subprocess.CalledProcessError, OSError, ValueError, KeyError) as e:
+            except (
+                subprocess.CalledProcessError,
+                OSError,
+                ValueError,
+                KeyError,
+            ) as e:
                 print(f"SKIP {key} refresh failed: {e}", flush=True)
                 continue
             if state != "open":
@@ -1282,6 +1513,28 @@ def supervise(config_path, *, clear_halt=False):
             tier, tier_reason = start_tier(
                 fresh, status.get("tier_failures", {}).get(key, 0), strong_after
             )
+            # Deterministic task routing: pick concrete provider/model
+            # pins per tier from the live TwT catalog, and raise the
+            # start tier when the task itself looks hard — never lowered
+            # below the escalation/label tier. Router failure keeps the
+            # configured environment untouched.
+            requested_tier = tier
+            routing = None
+            try:
+                from backend.shared import task_router
+
+                routing = task_router.route_issue(fresh, remaining_cap)
+                if routing["tier"] == "strong" and tier != "strong":
+                    tier = "strong"
+                    tier_reason = f"{tier_reason}+{routing['tier_rule']}"
+                    print(
+                        f"WARNING {key} requested tier={requested_tier} "
+                        f"but serving tier={tier} ({routing['tier_rule']})",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            except Exception as error:
+                routing = {"error": str(error)}
             job = {
                 "issue": {
                     "repo": issue["repo"],
@@ -1294,7 +1547,9 @@ def supervise(config_path, *, clear_halt=False):
                 "pipeline_checkout": config["pipeline_checkout"],
                 "environment": config.get("environment", {}),
                 "model_tier": tier,
+                "requested_tier": requested_tier,
                 "tier_reason": tier_reason,
+                "routing": routing,
             }
             write_json(directory / "job.json", job)
             status.update(current=key, started_at=time.time())
@@ -1343,6 +1598,9 @@ def supervise(config_path, *, clear_halt=False):
                 return 2
             status["completed"].append(key)
             status.update(last=summary, current=None)
+            if summary["exit_code"] == 0:
+                # Failed runs keep their tree as evidence for --retry.
+                prune_landed_worktrees(config)
             failures = status.setdefault("tier_failures", {})
             if counts_toward_escalation(summary):
                 failures[key] = failures.get(key, 0) + 1
@@ -1380,7 +1638,8 @@ def supervise(config_path, *, clear_halt=False):
                 )
                 write_json(status_path, status)
                 return 2
-            time.sleep(config.get("inter_issue_delay_seconds", 60))
+            if only is None:
+                time.sleep(config.get("inter_issue_delay_seconds", 60))
         status.update(done=True, current=None)
         write_json(status_path, status)
     return 0
@@ -1440,37 +1699,68 @@ def budget_report(root):
 STALL_SECONDS = 1800
 
 
+def supervisor_alive(root):
+    """True when supervisor.pid names a live supervisor process."""
+    try:
+        os.kill(int((root / "supervisor.pid").read_text().strip()), 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+LEDGER_STAMP_STALE_SECONDS = 20 * 60
+
+
+def ledger_stamp_warning(config, now=None):
+    """Return a " | LEDGER-STAMP ..." suffix when the stamp daemon's heartbeat is missing or old
+    (config key `ledger_stamp_heartbeat`), else "". Without fresh stamps the gate
+    skips every ready issue as "not ready" (#1705)."""
+    path = config.get("ledger_stamp_heartbeat")
+    if not path:
+        return ""
+    try:
+        age = (now or time.time()) - Path(path).stat().st_mtime
+    except OSError:
+        return " | LEDGER-STAMP DOWN no heartbeat. Next action: check twt-ledger-stamp.service"
+    limit = config.get("ledger_stamp_stale_seconds", LEDGER_STAMP_STALE_SECONDS)
+    if age > limit:
+        return f" | LEDGER-STAMP STALE last good pass {int(age)}s ago. Next action: check twt-ledger-stamp.service"
+    return ""
+
+
 def queue_status(config, now=None):
-    """Name the runner state and the operator's next action."""
+    """Name the runner state and the operator's next action, plus a stamp-daemon warning."""
+    return _queue_state(config, now) + ledger_stamp_warning(config, now)
+
+
+def _queue_state(config, now=None):
     root = Path(config["state_dir"])
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     status_path = root / "status.json"
     status = read_json(status_path) if status_path.exists() else {}
-    if status.get("halted"):
-        return (
-            f"HALTED {status.get('reason') or 'operator clearance required'}. "
-            "Next action: Inspect and reconcile before explicit recovery"
-        )
-    if (root / "STOP").exists():
-        return (
-            "STOPPED STOP marker present. "
-            "Next action: Inspect before explicit recovery; restart alone stays stopped"
-        )
     # The supervisor holds queue.lock for its whole run, so a free lock means
-    # the heartbeat is missing.
+    # the heartbeat is missing. --retry takes the same lock while the service
+    # is stopped, so a held lock only means busy unless supervisor.pid names
+    # a live supervisor.
     with (root / "queue.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            pass
+            if not supervisor_alive(root):
+                return "BUSY queue.lock held by a non-supervisor process (e.g. --retry). Next action: wait for it to finish"
         else:
+            if status.get("halted"):
+                return f"DOWN halted: {status.get('reason')}. Next action: inspect the halt, then restart with --clear-halt"
             return "DOWN runner heartbeat missing. Next action: Restart Service"
     current = status.get("current")
     if not current:
         return "IDLE nothing claimed. Next action: Ready"
     repo, number = current.rsplit("#", 1)
     log = root / (repo.replace("/", "_") + "-" + number) / "run.log"
-    quiet = (now or time.time()) - (log.stat().st_mtime if log.exists() else 0)
+    # A fresh claim has no run.log yet (the claim is recorded before the
+    # worker starts); fall back to the recorded claim time, not the epoch.
+    activity = log.stat().st_mtime if log.exists() else status.get("started_at", 0)
+    quiet = (now or time.time()) - activity
     if quiet > config.get("stall_seconds", STALL_SECONDS):
         return f"STALLED {current} no activity for {int(quiet)}s. Next action: Investigate/Restart"
     return f"RUNNING {current} active"
