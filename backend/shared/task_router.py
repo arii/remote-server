@@ -110,7 +110,18 @@ def coding_floor_rejection(model):
 
 
 def catalog_path():
-    return os.path.expanduser(os.environ.get("TWT_CATALOG_DB") or DEFAULT_CATALOG_DB)
+    env = os.environ.get("TWT_CATALOG_DB")
+    if env:
+        return os.path.expanduser(env)
+    for candidate in (
+        os.path.expanduser(DEFAULT_CATALOG_DB),
+        os.path.expanduser("~/.local/share/twt/catalog.sqlite3"),
+        "/root/.local/share/twt/catalog.sqlite3",
+        "/var/lib/buttons/twt/catalog.sqlite3",
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.expanduser(DEFAULT_CATALOG_DB)
 
 
 def disabled_providers(raw=None):

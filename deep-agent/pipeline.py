@@ -1003,7 +1003,7 @@ class Pipeline:
                 **self.answers,
                 **context,
                 "first_edit_plan": not repair_notes,
-                "model_tier": self.model_tier,
+                "model_tier": getattr(self, "current_model_tier", "fast"),
             }
             if repair_notes:
                 context["repair_notes"] = repair_notes
