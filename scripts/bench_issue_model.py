@@ -9,7 +9,7 @@ Routes (``--route``):
 
 ``--strict-local`` (native route only) disables the
 strong-tier and default-route fallbacks, and installs the queue budget guard
-with a near-zero cap so TwT refuses every paid attempt before dispatch.
+with a zero cap so TwT refuses every positive-cost attempt before dispatch.
 
 ``valid`` is true only when the reply ends ``DONE #<n>``, files changed and
 every verification command exits 0. ``run_returned`` only says run_coder did
@@ -27,6 +27,7 @@ Results land in /srv/repos/.twt-queue/bench-<issue>-<route>-<slug>/
 
 import argparse
 import json
+import math
 import os
 import pathlib
 import re
@@ -36,7 +37,7 @@ import sys
 import time
 
 LOCAL_PREFIX = "ollama-local/"
-STRICT_LOCAL_CAP_USD = 1e-6
+STRICT_LOCAL_CAP_USD = 0.0
 VERIFY_TIMEOUT_S = 300
 
 
@@ -80,21 +81,31 @@ def judge(outcome):
         and outcome.get("changed_files")
         and checks
         and all(check["exit"] == 0 for check in checks)
+        and outcome.get("gateway", {}).get("proof") is True
         and not outcome.get("strict_violations")
     )
 
 
-def gateway_proof(trace_ids, local_ids, receipts):
-    served = sorted(
-        {f"{row.get('provider')}/{row.get('model')}" for row in receipts if row}
+def gateway_proof(trace_ids, local_ids, receipts, expected_model=None):
+    rows = [row for row in receipts if isinstance(row, dict)]
+    ids = [row.get("trace_id") for row in rows]
+    identities = bool(trace_ids) and len(ids) == len(set(ids)) and set(ids) == set(trace_ids)
+    known = all(
+        row.get("cost_complete") is True
+        and type(row.get("cost_usd")) in (int, float)
+        and math.isfinite(row["cost_usd"])
+        and row["cost_usd"] >= 0
+        for row in rows
     )
+    served = sorted({f"{row.get('provider')}/{row.get('model')}" for row in rows})
+    pinned = bool(served) and (expected_model is None or served == [expected_model])
     return {
         "trace_ids": len(trace_ids),
         "local_route_trace_ids": len(local_ids),
-        "receipts": len(receipts),
+        "receipts": len(rows),
         "served": served,
-        "cost_usd": sum((row.get("cost_usd") or 0) for row in receipts),
-        "proof": bool(trace_ids) and len(receipts) == len(trace_ids),
+        "cost_usd": sum(row["cost_usd"] for row in rows) if known else None,
+        "proof": identities and known and pinned,
     }
 
 
@@ -108,7 +119,9 @@ def strict_violations(route, gateway):
     for name in gateway["served"]:
         if not name.startswith(LOCAL_PREFIX):
             violations.append("non-local model served: " + name)
-    if gateway["cost_usd"]:
+    if gateway["cost_usd"] is None:
+        violations.append("unknown receipt cost")
+    elif gateway["cost_usd"]:
         violations.append(f"nonzero cost: {gateway['cost_usd']}")
     return violations
 
@@ -245,7 +258,7 @@ def main(argv=None):
         if trace_ids
         else []
     )
-    outcome["gateway"] = gateway_proof(trace_ids, local_ids, receipts)
+    outcome["gateway"] = gateway_proof(trace_ids, local_ids, receipts, args.model)
     outcome["guard"] = {"stops": stops, "fatal": fatal}
 
     if not args.probe:
