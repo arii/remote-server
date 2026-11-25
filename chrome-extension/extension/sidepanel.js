@@ -656,7 +656,7 @@ document.getElementById("btn-bootstrap-model").addEventListener("click", async (
     if (failedModelDetails[api.key]) renderModelProgress(api.key, modelProgressState(after[api.key]), "Failed");
   }
   if (errors.length) {
-    box.textContent = `Model initialization errors:\n${errors.join("\n")}\n\nMake sure chrome://flags/#optimization-guide-on-device-model and chrome://flags/#prompt-api-for-gemini-nano are enabled.\n\n${box.textContent}`;
+    box.textContent = `Model initialization errors:\n${errors.join("\n")}\n\nCheck model status and logs at chrome://on-device-internals. Stable extension Prompt API needs no experimental flags; model availability, hardware and download requirements still apply. Writer availability is separate.\n\n${box.textContent}`;
   }
 });
 
