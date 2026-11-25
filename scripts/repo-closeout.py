@@ -1,13 +1,13 @@
-#!/usr/bin/env python3
 """Safe post-work closeout. Default is report-only; --apply only syncs/prunes.
 
 Never stages, commits, pushes, stashes, resets, switches a branch, or restarts a
 service. Dirty work is reported for the owning task to review and commit.
 """
+
 import argparse
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 
 def git(repo, *args):
@@ -22,33 +22,54 @@ def closeout(repo, apply=False):
     try:
         git(repo, "fetch", "origin", "main")
         branch = git(repo, "branch", "--show-current")
-        changes = git(repo, "status", "--porcelain", "--untracked-files=all", "--ignored")
+        changes = git(
+            repo, "status", "--porcelain", "--untracked-files=all", "--ignored"
+        )
         result.update(branch=branch, changes=changes.splitlines())
         if changes:
-            result["needs_owner"].append("Review uncommitted work; never auto-commit unknown files")
+            result["needs_owner"].append(
+                "Review uncommitted work; never auto-commit unknown files"
+            )
         elif branch == "main":
             ahead = int(git(repo, "rev-list", "--count", "origin/main..HEAD"))
             if ahead:
                 result["needs_owner"].append("Main has local commits; no reset or push")
             elif apply:
-                git(repo, "-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "origin/main")
-                result["actions"].append("clean main fast-forwarded with deployment hooks disabled")
+                git(
+                    repo,
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "merge",
+                    "--ff-only",
+                    "origin/main",
+                )
+                result["actions"].append(
+                    "clean main fast-forwarded with deployment hooks disabled"
+                )
             else:
                 result["actions"].append("clean main eligible for fast-forward")
         else:
-            result["needs_owner"].append("Active/detached checkout kept on its current branch")
+            result["needs_owner"].append(
+                "Active/detached checkout kept on its current branch"
+            )
         script = Path(__file__).with_name("prune-worktrees.sh")
         command = ["bash", str(script)] + (["--prune"] if apply else [])
-        sweep = subprocess.run(command, cwd=repo, text=True, capture_output=True)
+        sweep = subprocess.run(
+            command, cwd=repo, text=True, capture_output=True, check=False
+        )
         result["worktrees"] = sweep.stdout.splitlines()
         if sweep.stderr:
             result["worktree_errors"] = sweep.stderr.splitlines()
         if sweep.returncode:
             result["needs_owner"].append("Worktree sweep failed; inspect output")
         result["head"] = git(repo, "rev-parse", "HEAD")
-        result["remaining_changes"] = git(repo, "status", "--porcelain", "--untracked-files=all", "--ignored").splitlines()
+        result["remaining_changes"] = git(
+            repo, "status", "--porcelain", "--untracked-files=all", "--ignored"
+        ).splitlines()
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
-        result["needs_owner"].append(f"Closeout stopped without destructive recovery: {error}")
+        result["needs_owner"].append(
+            f"Closeout stopped without destructive recovery: {error}"
+        )
     return result
 
 
