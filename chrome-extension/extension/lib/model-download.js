@@ -66,7 +66,7 @@ export function describeModelError(err, { availability } = {}) {
     hint = "Chrome reports the model unavailable: the device or options are unsupported, possibly insufficient disk space or hardware. Chrome does not say which.";
     steps.push(DISK_NOTE);
   }
-  steps.push("Check chrome://flags/#optimization-guide-on-device-model and chrome://flags/#prompt-api-for-gemini-nano.");
+  steps.push("Check model status and logs at chrome://on-device-internals. Stable extension Prompt API needs no experimental flags; check hardware, requested options and model download status. Other APIs, including Writer, have separate availability.");
   return { name, message, cause, hint, steps };
 }
 
