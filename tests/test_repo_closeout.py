@@ -1,9 +1,9 @@
 import importlib.util
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "repo-closeout.py"
@@ -31,7 +31,9 @@ class CloseoutTests(unittest.TestCase):
 
     @staticmethod
     def run_git(cwd, *args):
-        return subprocess.check_output(["git", "-C", str(cwd), *args], stderr=subprocess.DEVNULL, text=True).strip()
+        return subprocess.check_output(
+            ["git", "-C", str(cwd), *args], stderr=subprocess.DEVNULL, text=True
+        ).strip()
 
     def g(self, *args):
         return self.run_git(self.repo, *args)
@@ -101,7 +103,9 @@ class CloseoutTests(unittest.TestCase):
         gh = bindir / "gh"
         gh.write_text("#!/bin/sh\necho stale-head\n")
         gh.chmod(0o755)
-        with patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ["PATH"]}):
+        with patch.dict(
+            os.environ, {"PATH": str(bindir) + os.pathsep + os.environ["PATH"]}
+        ):
             module.closeout(self.repo, True)
             self.assertTrue(path.exists())
             gh.write_text("#!/bin/sh\necho " + tip + "\n")
