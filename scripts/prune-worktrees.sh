@@ -50,7 +50,14 @@ delete_branch() {
     return 1
 }
 
-status_file="$(mktemp)"
+agent_owned() {
+    case "$1" in
+        agent/issue-*|queue-retry/*|kiro/issue-*) return 0 ;;
+    esac
+    return 1
+}
+
+status_file="$(mktemp)" || exit 1
 trap 'rm -f "$status_file"' EXIT
 path=""
 head=""
@@ -72,6 +79,8 @@ flush_tree() {
         echo "KEEP  $path [$branch] -- status failed"
     elif [ -s "$status_file" ]; then
         echo "KEEP  $path [$branch] -- dirty or unknown files (including ignored)"
+    elif ! agent_owned "$branch" && [ "$(git rev-list --count "$head" --not origin/main 2>/dev/null || echo 1)" -eq 0 ]; then
+        echo "KEEP  $path [$branch] -- empty non-agent branch, owner decides"
     elif landed "$branch" "$head"; then
         echo "PRUNE $path [$branch]"
         if [ "$PRUNE" -eq 1 ]; then
