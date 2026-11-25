@@ -40,9 +40,12 @@ class BenchHelpersTests(unittest.TestCase):
             "terminal": "DONE",
             "changed_files": ["backend/shared/runs.py"],
             "verification": [{"command": "x", "exit": 0}],
+            "gateway": {"proof": True},
         }
         self.assertTrue(bench.judge(good))
         for change in (
+            {"gateway": {"proof": False}},
+            {"gateway": {}},
             {"run_returned": False},
             {"terminal": "BLOCKED"},
             {"terminal": None},
@@ -62,8 +65,8 @@ class BenchHelpersTests(unittest.TestCase):
             "no TwT trace IDs: run did not go through the gateway",
             bench.strict_violations("native", none),
         )
-        local = {"provider": "ollama-local", "model": "qwen3:8b", "cost_usd": 0.0}
-        proof = bench.gateway_proof({"a", "b"}, {"a", "b"}, [local, local])
+        local = {"trace_id": "a", "provider": "ollama-local", "model": "qwen3:8b", "cost_usd": 0.0, "cost_complete": True}
+        proof = bench.gateway_proof({"a", "b"}, {"a", "b"}, [local, {**local, "trace_id": "b"}])
         self.assertTrue(proof["proof"])
         self.assertEqual(proof["served"], ["ollama-local/qwen3:8b"])
         self.assertEqual(bench.strict_violations("native", proof), [])
@@ -75,12 +78,20 @@ class BenchHelpersTests(unittest.TestCase):
 
     def test_strict_local_flags_hosted_service_and_cost(self):
         hosted = bench.gateway_proof(
-            {"a"}, set(), [{"provider": "nebius", "model": "m", "cost_usd": 0.01}]
+            {"a"}, set(), [{"trace_id": "a", "provider": "nebius", "model": "m", "cost_usd": 0.01, "cost_complete": True}]
         )
         self.assertEqual(
             bench.strict_violations("native", hosted),
             ["non-local model served: nebius/m", "nonzero cost: 0.01"],
         )
+
+    def test_receipts_fail_closed_on_identity_cost_or_pin(self):
+        row = {"trace_id": "a", "provider": "nebius", "model": "m", "cost_complete": True, "cost_usd": 0.1}
+        self.assertTrue(bench.gateway_proof({"a"}, set(), [row], "nebius/m")["proof"])
+        for rows, pin in (([row, row], "nebius/m"), ([{**row, "trace_id": "wrong"}], "nebius/m"), ([row], "nebius/other"), ([{**row, "cost_usd": None}], "nebius/m"), ([{**row, "cost_complete": False}], "nebius/m"), ([{**row, "cost_usd": float("nan")}], "nebius/m"), ([{**row, "cost_usd": -1}], "nebius/m")):
+            with self.subTest(rows=rows, pin=pin):
+                self.assertFalse(bench.gateway_proof({"a"}, set(), rows, pin)["proof"])
+        self.assertEqual(bench.STRICT_LOCAL_CAP_USD, 0)
 
     def test_routes_and_strict_local_reject_hosted_pins(self):
         with self.assertRaises(SystemExit):
