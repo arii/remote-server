@@ -96,6 +96,7 @@ INSPECTION_TOOLS = frozenset({"read_file", "grep", "ls", "glob"})
 EXPLORE_NUDGE = 12
 EXPLORE_LIMIT = 20
 INITIAL_STALL_CALL_LIMIT = 5
+INITIAL_STALL_CALL_CAP = INITIAL_STALL_CALL_LIMIT
 DEFAULT_FALLBACK_MODEL = "nebius/zai-org/GLM-5.3-Flash"
 # Middleware adds graph steps beyond the model and tool calls themselves.
 RECURSION_LIMIT = int(
@@ -2587,6 +2588,60 @@ def mark_unverified(summary):
     return "[unverified]"
 
 
+def select_strong_route(brief="", catalog=None):
+    """Select the strong route through Tokens with Taste routing.
+
+    Consults CODER_STRONG_MODEL first. If unset, selects a qualifying strong
+    candidate from the live TwT catalog (or falls back to the TwT strong
+    route). No pinned model, provider, or capability lists are hardcoded.
+    """
+    strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip()
+    if strong:
+        return strong
+    try:
+        from backend.shared import task_router
+
+        cat = catalog
+        if cat is None:
+            try:
+                cat = task_router.load_catalog()
+            except Exception:
+                cat = None
+        if not cat:
+            try:
+                from backend.shared import twt_provenance
+
+                raw = twt_provenance.query_gateway_models()
+                cat = [
+                    {
+                        "provider": m.get("owned_by")
+                        or (
+                            m.get("id", "").split("/")[0]
+                            if "/" in m.get("id", "")
+                            else "twt"
+                        ),
+                        "id": m.get("id"),
+                        **m,
+                    }
+                    for m in raw
+                ]
+            except Exception:
+                cat = None
+        if cat:
+            features = task_router.task_features(brief)
+            decision = task_router.choose("strong", features, cat)
+            if decision.get("model"):
+                return decision["model"]
+    except Exception:
+        pass
+    try:
+        from backend.shared import model_router
+
+        return getattr(model_router, "TWT_STRONG_ROUTE", "route:strong")
+    except Exception:
+        return "route:strong"
+
+
 def tier_model(model_tier):
     """Model override for a pipeline model_tier ('fast', 'strong', None).
 
@@ -2616,6 +2671,8 @@ def run_coder(
     repair_files=(),
     repair=False,
     model_tier=None,
+    model_override=None,
+    catalog=None,
     repo=None,
     continuations=0,
     call_budget=None,
@@ -2662,6 +2719,7 @@ def run_coder(
         repair_files=repair_files,
         repair=repair,
         model_tier=model_tier,
+        model_override=model_override,
         repo=repo,
         meter=meter,
         first_edit=first_edit,
@@ -2678,6 +2736,7 @@ def run_coder(
     deadline = time.monotonic() + timeout
     turn_brief, floor, prior_files = brief, 0, ()
     twt_errors = []
+    stall_escalated = False
 
     def attempt(*args, **kwargs):
         """One TwT attempt; record non-cap failures for the CLI hook."""
@@ -2714,6 +2773,25 @@ def run_coder(
                 turn_brief, floor = CONTINUE_PROMPT, error.thread_count
                 prior_files = error.coder_written_files
                 kwargs["prior_tracker"] = getattr(error, "coder_write_tracker", None)
+            except CoderBudgetExceeded as error:
+                if (
+                    error.recoverable_stall
+                    and "stalled after" in str(error)
+                    and not stall_escalated
+                    and kwargs.get("model_tier") != "strong"
+                    and (call_budget is None or left() > 0)
+                    and time.monotonic() < deadline
+                ):
+                    stall_escalated = True
+                    meter["stall_escalations"] = meter.get("stall_escalations", 0) + 1
+                    meter["strong_escalations"] = meter.get("strong_escalations", 0) + 1
+                    kwargs["model_tier"] = "strong"
+                    strong_model = select_strong_route(brief=brief, catalog=catalog)
+                    if strong_model:
+                        kwargs["model_override"] = strong_model
+                    thread = f"{thread}-stall-escalate"
+                    continue
+                raise
         error = capped
         spec = getattr(error, "coder_model_spec", {})
         fallback = os.environ.get(
@@ -2788,6 +2866,8 @@ def run_coder(
             **kwargs,
         )
     except ModelCallLimitExceededError:
+        raise
+    except CoderBudgetExceeded:
         raise
     except Exception:
         result = _try_cli_fallback(
@@ -2881,6 +2961,7 @@ def _run_coder_attempt(
     repair_files=(),
     repair=False,
     model_tier=None,
+    model_override=None,
     repo=None,
     fallback_model=None,
     prior_files=(),
@@ -2911,7 +2992,7 @@ def _run_coder_attempt(
 
     started = time.time()
     deadline = time.monotonic() + timeout if deadline is None else deadline
-    override = tier_model(model_tier)
+    override = model_override or tier_model(model_tier)
     model, spec = (
         build_fallback_model(fallback_model)
         if fallback_model
