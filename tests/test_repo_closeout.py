@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "repo-closeout.py"
 spec = importlib.util.spec_from_file_location("closeout", SCRIPT)
@@ -89,6 +90,23 @@ class CloseoutTests(unittest.TestCase):
         path = self.tree("feat/in-progress")
         module.closeout(self.repo, True)
         self.assertTrue(path.exists())
+
+    def test_merged_pr_must_match_actual_head(self):
+        path = self.tree()
+        (path / "file").write_text("squashed work")
+        self.run_git(path, "commit", "-am", "work")
+        tip = self.run_git(path, "rev-parse", "HEAD")
+        bindir = self.root / "bin"
+        bindir.mkdir()
+        gh = bindir / "gh"
+        gh.write_text("#!/bin/sh\necho stale-head\n")
+        gh.chmod(0o755)
+        with patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ["PATH"]}):
+            module.closeout(self.repo, True)
+            self.assertTrue(path.exists())
+            gh.write_text("#!/bin/sh\necho " + tip + "\n")
+            module.closeout(self.repo, True)
+            self.assertFalse(path.exists())
 
     def test_failed_fetch_never_prunes(self):
         path = self.tree()
