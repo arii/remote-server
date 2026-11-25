@@ -9,6 +9,7 @@ No provider credentials belong in configuration or issue manifests.
 import argparse
 import collections
 import datetime
+from decimal import Decimal, ROUND_FLOOR
 import fcntl
 import functools
 import importlib
@@ -20,6 +21,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import zoneinfo
@@ -209,7 +211,29 @@ def check_budget(scope, cap):
     return paid
 
 
+def ceiling_text(cap, paid):
+    """Headroom under the cap, rounded down to a nanodollar, as header text."""
+    headroom = (Decimal(repr(float(cap))) - Decimal(repr(float(paid)))).quantize(
+        Decimal("0.000000001"), rounding=ROUND_FLOOR
+    )
+    return str(headroom) if headroom > 0 else None
+
+
+CEILING_FEATURE = "request_cost_ceiling"
+
+
 def install_budget_guard(cap, directory, fatal, stops=None):
+    """Per-issue cap: recorded spend plus each call's estimated worst case stays <= cap.
+
+    The worst case is TwT's heuristic upper bound (catalog prices, one token per
+    request byte, full output limit), not certified provider billing.
+
+    Before each model call the guard settles recorded spend (every earlier TwT
+    trace must have an actual or upper-bound receipt), then sends the remaining
+    headroom as X-Max-Cost-Usd. TwT never dispatches a paid attempt whose worst
+    case, added to the request's earlier attempts, exceeds it. One call at a
+    time, so headroom is never handed out twice.
+    """
     from backend.shared import model_router
     from backend.shared import twt_receipts
 
@@ -221,7 +245,7 @@ def install_budget_guard(cap, directory, fatal, stops=None):
         if fatal:
             raise SafetyStop(fatal[0])
         try:
-            check_budget(twt_receipts.current.get(), cap)
+            return check_budget(twt_receipts.current.get(), cap)
         except BudgetStop:
             if stops is not None:
                 stops.append("cap")
@@ -229,6 +253,62 @@ def install_budget_guard(cap, directory, fatal, stops=None):
         except Exception as error:
             fatal.append(str(error))
             raise SafetyStop(str(error)) from error
+
+    def headroom():
+        limit = ceiling_text(cap, guard())
+        if limit is None:
+            if stops is not None:
+                stops.append("cap")
+            raise BudgetStop(f"no headroom left under the ${cap:.2f} cap")
+        return limit
+
+    gate = threading.Lock()
+    active = []
+    supported = set()
+
+    def admit(model):
+        with gate:
+            if active:
+                error = "concurrent model calls are refused under the hard spend cap"
+                fatal.append(error)
+                raise SafetyStop(error)
+            first = [headroom()]
+            base = getattr(model, "openai_api_base", None)
+            if base is not None and base not in supported:
+                try:
+                    from backend.shared import twt_provenance
+                    from backend.shared import twt_transport
+
+                    twt_provenance.require_gateway_feature(
+                        CEILING_FEATURE, base, twt_transport.uds_path()
+                    )
+                except Exception as error:
+                    fatal.append(str(error))
+                    raise SafetyStop(str(error)) from error
+                supported.add(base)
+            active.append(model)
+
+        def limit():
+            # The first request uses the admitted headroom; any further request in
+            # the same call (a retry) re-settles spend first.
+            return first.pop() if first else headroom()
+
+        return limit
+
+    def release():
+        with gate:
+            active.clear()
+
+    def refused(error):
+        if "request cost ceiling" not in str(error):
+            return None
+        if stops is not None:
+            stops.append("cap")
+        stop = BudgetStop(f"TwT refused every attempt under the ${cap:.2f} cap")
+        # Keep the trace link so the ledger row reconciles against its $0 receipt.
+        stop.twt_trace_id = getattr(error, "twt_trace_id", None)
+        stop.response = getattr(error, "response", None)
+        return stop
 
     def guarded(original):
         @functools.wraps(original)
@@ -238,10 +318,45 @@ def install_budget_guard(cap, directory, fatal, stops=None):
 
         return call
 
+    def gated(original):
+        @functools.wraps(original)
+        def call(self, *args, **kwargs):
+            token = twt_receipts.ceiling.set(admit(self))
+            try:
+                return original(self, *args, **kwargs)
+            except Exception as error:
+                stop = refused(error)
+                if stop is None:
+                    raise
+                raise stop from error
+            finally:
+                twt_receipts.ceiling.reset(token)
+                release()
+
+        return call
+
+    def agated(original):
+        @functools.wraps(original)
+        async def call(self, *args, **kwargs):
+            token = twt_receipts.ceiling.set(admit(self))
+            try:
+                return await original(self, *args, **kwargs)
+            except Exception as error:
+                stop = refused(error)
+                if stop is None:
+                    raise
+                raise stop from error
+            finally:
+                twt_receipts.ceiling.reset(token)
+                release()
+
+        return call
+
+    twt_receipts.ceiling_required = True
     model_router._remote_spec = guarded(model_router._remote_spec)
-    model_router._BoundedHistory._bounded_kwargs = guarded(
-        model_router._BoundedHistory._bounded_kwargs
-    )
+    history = model_router._BoundedHistory
+    history._generate = gated(history._generate)
+    history._agenerate = agated(history._agenerate)
 
 
 def ordered_issues(issues):

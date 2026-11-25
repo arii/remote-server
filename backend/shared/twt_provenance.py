@@ -139,6 +139,26 @@ def query_gateway_models(
     client: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Query /v1/models from running TwT gateway via UDS or HTTP."""
+    return _models_payload(base_url, uds, timeout, client)["data"]
+
+
+def require_gateway_feature(
+    feature: str,
+    base_url: str = "http://127.0.0.1:8000/v1",
+    uds: Optional[str] = None,
+    timeout: float = 10.0,
+    client: Optional[Any] = None,
+) -> None:
+    """Raise TwTPreflightError unless /v1/models lists ``feature`` in ``features``."""
+    features = _models_payload(base_url, uds, timeout, client).get("features")
+    if not isinstance(features, list) or feature not in features:
+        raise TwTPreflightError(
+            f"TwT gateway at {uds or base_url} does not support '{feature}'; "
+            "deploy a TwT build that advertises it before paid inference"
+        )
+
+
+def _models_payload(base_url, uds, timeout, client) -> Dict[str, Any]:
     import httpx
 
     url = base_url.rstrip("/") + "/models"
@@ -157,7 +177,7 @@ def query_gateway_models(
             raise TwTPreflightError(
                 f"TwT gateway /v1/models returned invalid schema: {resp.text[:200]}"
             )
-        return payload["data"]
+        return payload
 
     try:
         if client is not None:

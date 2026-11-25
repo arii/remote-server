@@ -1661,6 +1661,8 @@ class RunnerTests(unittest.TestCase):
             (modules / "__init__.py").write_text("")
             (modules / "model_router.py").write_text(
                 "class _BoundedHistory:\n    def _bounded_kwargs(self, kwargs):\n        return kwargs\n"
+                "    def _generate(self, *args, **kwargs): pass\n"
+                "    async def _agenerate(self, *args, **kwargs): pass\n"
                 "def _remote_spec(*args): return {}\n"
             )
             (modules / "ledger.py").write_text(
@@ -2336,6 +2338,17 @@ class AccountingTests(unittest.TestCase):
                     "_bounded_kwargs",
                     model_router._BoundedHistory._bounded_kwargs,
                 ),
+                mock.patch.object(
+                    model_router._BoundedHistory,
+                    "_generate",
+                    model_router._BoundedHistory._generate,
+                ),
+                mock.patch.object(
+                    model_router._BoundedHistory,
+                    "_agenerate",
+                    model_router._BoundedHistory._agenerate,
+                ),
+                mock.patch.object(twt_receipts, "ceiling_required", False),
                 mock.patch.object(
                     twt_receipts, "fetch", return_value=[self.bound(trace, amount)]
                 ),
