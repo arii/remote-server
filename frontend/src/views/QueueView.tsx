@@ -30,51 +30,63 @@ export function QueueHeader({
   count,
   live,
   dispatchable,
+  lastUpdated,
+  reachError,
   onRefresh,
   onDispatchAll,
 }: {
   count: number;
   live: boolean;
   dispatchable: DispatchItem[];
+  lastUpdated?: number | null;
+  reachError?: string | null;
   onRefresh: () => void;
   onDispatchAll: () => void;
 }) {
   return (
-    <header className="page-head">
-      <div>
-        <h3>Lane queue</h3>
-        <p className="row-meta">
-          {count} item{count === 1 ? '' : 's'}
-          {count > 0 ? ` · ${dispatchable.length} ready to dispatch` : ''}
-          {live ? ' · Live' : ''}
-        </p>
-      </div>
-      <button
-        type="button"
-        data-testid="queue-dispatch-all"
-        disabled={dispatchable.length === 0}
-        title={
-          dispatchable.length === 0
-            ? count > 0
-              ? 'Nothing ready to dispatch'
-              : 'Nothing queued'
-            : 'Dispatch every queued item; blocked ones report per item'
-        }
-        onClick={onDispatchAll}
-      >
-        Dispatch all ({dispatchable.length})
-      </button>{' '}
-      {dispatchable.length === 0 && (
-        <span className="row-meta">
-          {count > 0
-            ? `${count} item${count === 1 ? ' is' : 's are'} not ready to dispatch (running, blocked or done).`
-            : 'Nothing queued to dispatch.'}
-        </span>
+    <>
+      <header className="page-head">
+        <div>
+          <h3>Lane queue</h3>
+          <p className="row-meta">
+            {count} item{count === 1 ? '' : 's'}
+            {count > 0 ? ` · ${dispatchable.length} ready to dispatch` : ''}
+            {live ? ' · Live' : ''}
+            {lastUpdated ? ` · Updated ${new Date(lastUpdated).toLocaleTimeString()}` : ''}
+          </p>
+        </div>
+        <button
+          type="button"
+          data-testid="queue-dispatch-all"
+          disabled={dispatchable.length === 0}
+          title={
+            dispatchable.length === 0
+              ? count > 0
+                ? 'Nothing ready to dispatch'
+                : 'Nothing queued'
+              : 'Dispatch every queued item; blocked ones report per item'
+          }
+          onClick={onDispatchAll}
+        >
+          Dispatch all ({dispatchable.length})
+        </button>{' '}
+        {dispatchable.length === 0 && (
+          <span className="row-meta">
+            {count > 0
+              ? `${count} item${count === 1 ? ' is' : 's are'} not ready to dispatch (running, blocked or done).`
+              : 'Nothing queued to dispatch.'}
+          </span>
+        )}
+        <button type="button" data-testid="queue-refresh" onClick={onRefresh}>
+          Refresh
+        </button>
+      </header>
+      {reachError && (
+        <div className="alert-banner alert-warning" data-testid="queue-reach-error" role="alert">
+          Cannot reach server — view may be out of date ({reachError})
+        </div>
       )}
-      <button type="button" data-testid="queue-refresh" onClick={onRefresh}>
-        Refresh
-      </button>
-    </header>
+    </>
   );
 }
 
@@ -408,23 +420,30 @@ export default function QueueView({ repo }: { repo: string }) {
   const [readyByKey, setReadyByKey] = useState<Record<string, boolean>>({});
   const [openIssues, setOpenIssues] = useState<IssueRow[] | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [reachError, setReachError] = useState<string | null>(null);
 
   async function guarded(fn: () => Promise<void>) {
     setError(null);
     try {
       await fn();
+      setReachError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      setReachError(msg);
     }
   }
 
   const load = useCallback(async () => {
     if (useMock()) {
       setItems(loadDispatchQueue().items);
+      setLastUpdated(Date.now());
       return;
     }
     const live = await fetchDispatchQueue();
     setItems(live.items);
+    setLastUpdated(Date.now());
   }, []);
 
   const loadDiscovery = useCallback(async () => {
@@ -448,18 +467,22 @@ export default function QueueView({ repo }: { repo: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, loadDiscovery]);
 
-  // Fallback list poll while any item is live, paused in a hidden
-  // tab; a returning tab refreshes immediately (Jobs pattern).
+  // Immediate resume: invokes load each time the tab turns visible again,
+  // regardless of whether any queue item is active (issue #1569).
+  useEffect(() => {
+    if (useMock()) return;
+    return onTabVisible(() => void guarded(load));
+  }, [load]);
+
+  // Fallback list poll while any item is live, paused in a hidden tab.
   useEffect(() => {
     if (useMock()) return;
     if (!items || !queueListActive(items)) return;
     const stopPoll = startAuthedInterval(() => {
       if (isTabVisible()) void guarded(load);
     }, 5000);
-    const stopResume = onTabVisible(() => void guarded(load));
     return () => {
       stopPoll();
-      stopResume();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, load]);
@@ -601,11 +624,13 @@ export default function QueueView({ repo }: { repo: string }) {
   const queuedKeys = new Set(list.map((i) => queueItemKey(i.repo, i.issue)));
 
   return (
-    <section data-testid="queue-view">
+    <section data-testid="queue-view" className={reachError ? 'view-stale' : undefined}>
       <QueueHeader
         count={list.length}
         live={queueListActive(list)}
         dispatchable={dispatchable}
+        lastUpdated={lastUpdated}
+        reachError={reachError}
         onRefresh={() =>
           void guarded(async () => {
             await load();
