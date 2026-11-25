@@ -1268,15 +1268,14 @@ def retry_issue(config_path, key):
 def prune_landed_worktrees(config):
     """Remove landed agent worktrees (incl. .queue-retry) in every configured checkout.
 
-    The script keeps unmerged, tracked-dirty and non-agent trees and the
-    operator `queue-main` tree; --agent-mode drops untracked runner artifacts
-    in landed agent trees. A failure is logged and never stops the queue.
+    The script keeps unmerged, dirty and non-agent trees and the operator
+    `queue-main` tree. A failure is logged and never stops the queue.
     """
     script = Path(config["pipeline_checkout"]) / "scripts" / "prune-worktrees.sh"
     for repo, checkout in config["repo_paths"].items():
         try:
             result = subprocess.run(
-                ["bash", str(script), "--prune", "--agent-mode"],
+                ["bash", str(script), "--prune"],
                 cwd=checkout,
                 capture_output=True,
                 text=True,
