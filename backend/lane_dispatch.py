@@ -279,6 +279,33 @@ def cancel(repo: str, issue: int) -> tuple[bool, str | None]:
         return True, None
 
 
+def cancel_running(repo: str, issue: int,
+                   disposition: str = "ready") -> tuple[dict | None, str | None]:
+    """Abort-aware cancel for a running lane item. Marks the item
+    terminal (failed) with detail recording cancelled-by-operator
+    and the chosen disposition ('ready' or 'parked') in one locked
+    mutation. Returns (item, error)."""
+    if disposition not in ("ready", "parked"):
+        return None, "invalid disposition"
+    disposition_phrase = (
+        "returns to ready" if disposition == "ready" else "parked"
+    )
+    detail = f"cancelled-by-operator; issue {disposition_phrase}"
+    with _lock:
+        _ensure_loaded_locked()
+        key = _key(repo, issue)
+        item = _items.get(key)
+        if item is None:
+            return None, "unknown item"
+        if item.get("state") != RUNNING:
+            return None, "item is not running"
+        item["state"] = FAILED
+        item["finished_at"] = _now()
+        item["detail"] = detail
+        _persist_locked()
+        return _copy(item), None
+
+
 def read_repo_gates(repo: str, gh_runner=None) -> dict:
     """Live per-repo merge gates: default branch + required status
     checks from branch protection. Never assumed, never cached:

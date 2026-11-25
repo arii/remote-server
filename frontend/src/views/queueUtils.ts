@@ -66,10 +66,11 @@ export function queueRowMeta(item: DispatchItem): string {
 }
 
 // Dispatch tap enablement per row: queued rows dispatch, running
-// rows wait, terminal rows re-dispatch (retry) or clear.
+// rows wait (can cancel with confirm), terminal rows re-dispatch
+// (retry) or clear.
 export function queueRowActions(state: string): { dispatch: boolean; cancel: boolean } {
   if (state === 'queued') return { dispatch: true, cancel: true };
-  if (state === 'running') return { dispatch: false, cancel: false };
+  if (state === 'running') return { dispatch: false, cancel: true };
   return { dispatch: true, cancel: true };
 }
 

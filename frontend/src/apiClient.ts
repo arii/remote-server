@@ -1462,10 +1462,12 @@ export function startDispatch(
 export function cancelDispatch(
   repo: string,
   issue: number,
+  options?: { intent?: string; confirmed?: boolean; disposition?: string },
 ): Promise<{ ok: boolean; removed: boolean }> {
   return postJson<{ ok: boolean; removed: boolean }>('api/dispatch/cancel', {
     repo,
     issue,
+    ...options,
   }).then((r) => {
     invalidateViewCaches();
     return r;

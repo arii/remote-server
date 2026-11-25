@@ -89,9 +89,11 @@ export function QueueRow({
   gates: string[] | null;
   ready: boolean | null;
   onDispatch: (item: DispatchItem) => void;
-  onCancel: (item: DispatchItem) => void;
+  onCancel: (item: DispatchItem, disposition?: 'ready' | 'parked') => void;
   onGates: (item: DispatchItem) => void;
 }) {
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [disposition, setDisposition] = useState<'ready' | 'parked'>('ready');
   const actions = queueRowActions(item.state);
   const terminal = item.state === 'done' || item.state === 'failed';
   const label = (
@@ -152,10 +154,66 @@ export function QueueRow({
             Check gates
           </button>
         )}{' '}
-        {actions.cancel && (
-          <button type="button" data-testid="queue-cancel" onClick={() => onCancel(item)}>
-            Remove
+        {actions.cancel && !confirmingCancel && (
+          <button
+            type="button"
+            data-testid="queue-cancel"
+            onClick={() => {
+              if (item.state === 'running') {
+                setConfirmingCancel(true);
+              } else {
+                onCancel(item);
+              }
+            }}
+          >
+            {item.state === 'running' ? 'Cancel' : 'Remove'}
           </button>
+        )}
+        {confirmingCancel && (
+          <div
+            className="confirm-inline"
+            data-testid={`queue-cancel-confirm-${item.repo}-${item.issue}`}
+          >
+            <label className="row-meta">
+              <input
+                type="radio"
+                name={`cancel-disposition-${item.repo}-${item.issue}`}
+                value="ready"
+                checked={disposition === 'ready'}
+                onChange={() => setDisposition('ready')}
+                data-testid="queue-cancel-disposition-ready"
+              />{' '}
+              Return to ready
+            </label>{' '}
+            <label className="row-meta">
+              <input
+                type="radio"
+                name={`cancel-disposition-${item.repo}-${item.issue}`}
+                value="parked"
+                checked={disposition === 'parked'}
+                onChange={() => setDisposition('parked')}
+                data-testid="queue-cancel-disposition-parked"
+              />{' '}
+              Park
+            </label>{' '}
+            <button
+              type="button"
+              data-testid="queue-cancel-confirm"
+              onClick={() => {
+                onCancel(item, disposition);
+                setConfirmingCancel(false);
+              }}
+            >
+              Confirm cancel
+            </button>{' '}
+            <button
+              type="button"
+              data-testid="queue-cancel-abort"
+              onClick={() => setConfirmingCancel(false)}
+            >
+              Dismiss
+            </button>
+          </div>
         )}
       </div>
     </li>
@@ -176,7 +234,7 @@ export function QueueRepoGroup({
   readyByKey: Record<string, boolean>;
   onDispatch: (item: DispatchItem) => void;
   onDispatchNext: (group: DispatchRepoGroup) => void;
-  onCancel: (item: DispatchItem) => void;
+  onCancel: (item: DispatchItem, disposition?: 'ready' | 'parked') => void;
   onGates: (item: DispatchItem) => void;
 }) {
   const next = nextDispatchable(group);
@@ -432,9 +490,22 @@ export default function QueueView({ repo }: { repo: string }) {
     if (next) void guarded(() => onDispatch(next));
   }
 
-  async function onCancel(item: DispatchItem) {
-    await cancelDispatch(item.repo, item.issue);
-    setNotice(`Removed ${item.repo}#${item.issue}.`);
+  async function onCancel(item: DispatchItem, disposition: 'ready' | 'parked' = 'ready') {
+    if (item.state === 'running') {
+      await cancelDispatch(item.repo, item.issue, {
+        intent: 'dispatch-cancel',
+        confirmed: true,
+        disposition,
+      });
+      setNotice(
+        `Cancelled ${item.repo}#${item.issue} (${
+          disposition === 'ready' ? 'returns to ready' : 'parked'
+        }).`,
+      );
+    } else {
+      await cancelDispatch(item.repo, item.issue);
+      setNotice(`Removed ${item.repo}#${item.issue}.`);
+    }
     await load();
   }
 

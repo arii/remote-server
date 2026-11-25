@@ -943,18 +943,19 @@ def repair_status() -> dict:
         return out
 
 
-@router.post("/repair/abort", response_model=RepairAbortResult)
-def repair_abort() -> dict:
+def abort_in_flight_repair() -> dict:
     """Abort the in-flight repair worker, if any. Mirrors the agent
     turn abort: flag first (the worker records "aborted", not an
     error), then terminate with a kill fallback."""
-    global _repair_abort
+    global _repair_abort, _repair_proc
     with repair_state_lock:
         if repair_state["status"] != "running":
             return {"ok": True, "killed": False}
         _repair_abort = True
         proc = _repair_proc
     if proc is None:
+        with repair_state_lock:
+            repair_state["status"] = "aborted"
         return {"ok": True, "killed": False}
     try:
         if proc.poll() is not None:
@@ -971,6 +972,20 @@ def repair_abort() -> dict:
     except Exception:
         try:
             proc.kill()
+            proc.wait(1)
         except Exception:
             pass
+    with repair_state_lock:
+        if repair_state.get("status") == "running":
+            repair_state["status"] = "aborted"
+            _repair_proc = None
+            if "Aborted by user" not in repair_state.get("log_buffer", ""):
+                repair_state["log_buffer"] = (
+                    repair_state.get("log_buffer", "") + "\nAborted by user.\n"
+                )
     return {"ok": True, "killed": True}
+
+
+@router.post("/repair/abort", response_model=RepairAbortResult)
+def repair_abort() -> dict:
+    return abort_in_flight_repair()

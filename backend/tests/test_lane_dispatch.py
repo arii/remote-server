@@ -163,6 +163,96 @@ class LaneQueueTest(_QueueStoreTmpDir, unittest.TestCase):
         self.assertFalse(removed)
         self.assertEqual(err, "item is running")
 
+    def test_cancel_running_sets_failed_and_disposition(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        with lane_dispatch._lock:
+            lane_dispatch._items[("remote-server", "1")]["state"] = (
+                lane_dispatch.RUNNING
+            )
+        item, err = lane_dispatch.cancel_running(
+            "remote-server", 1, disposition="ready"
+        )
+        self.assertIsNone(err)
+        self.assertEqual(item["state"], "failed")
+        self.assertIsNotNone(item["finished_at"])
+        self.assertEqual(
+            item["detail"], "cancelled-by-operator; issue returns to ready"
+        )
+
+        lane_dispatch.enqueue("remote-server", 2)
+        with lane_dispatch._lock:
+            lane_dispatch._items[("remote-server", "2")]["state"] = (
+                lane_dispatch.RUNNING
+            )
+        item, err = lane_dispatch.cancel_running(
+            "remote-server", 2, disposition="parked"
+        )
+        self.assertIsNone(err)
+        self.assertEqual(item["detail"], "cancelled-by-operator; issue parked")
+
+    def test_cancel_running_validates_state_and_disposition(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        item, err = lane_dispatch.cancel_running(
+            "remote-server", 1, disposition="ready"
+        )
+        self.assertIsNone(item)
+        self.assertEqual(err, "item is not running")
+
+        item, err = lane_dispatch.cancel_running(
+            "remote-server", 99, disposition="ready"
+        )
+        self.assertIsNone(item)
+        self.assertEqual(err, "unknown item")
+
+        with lane_dispatch._lock:
+            lane_dispatch._items[("remote-server", "1")]["state"] = (
+                lane_dispatch.RUNNING
+            )
+        item, err = lane_dispatch.cancel_running(
+            "remote-server", 1, disposition="invalid"
+        )
+        self.assertIsNone(item)
+        self.assertEqual(err, "invalid disposition")
+
+    def test_cancel_running_releases_repo_idle_gate(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        lane_dispatch.enqueue("remote-server", 2)
+        with lane_dispatch._lock:
+            lane_dispatch._items[("remote-server", "1")]["state"] = (
+                lane_dispatch.RUNNING
+            )
+        ready = lane_dispatch.readiness(
+            "remote-server",
+            2,
+            repo_status=lambda r: {"repo": r, "branch": "main", "clean": True},
+            verify_preview=lambda i, r: {
+                "ok": True,
+                "command": "make test",
+                "allowlisted": True,
+            },
+            worker_busy=lambda: False,
+            gh_runner=_gh_ok(),
+        )
+        self.assertFalse(ready["ready"])
+        self.assertIn(
+            "repo already has a lane item running (#1)", ready["reasons"]
+        )
+
+        lane_dispatch.cancel_running("remote-server", 1, disposition="ready")
+        ready_after = lane_dispatch.readiness(
+            "remote-server",
+            2,
+            repo_status=lambda r: {"repo": r, "branch": "main", "clean": True},
+            verify_preview=lambda i, r: {
+                "ok": True,
+                "command": "make test",
+                "allowlisted": True,
+            },
+            worker_busy=lambda: False,
+            gh_runner=_gh_ok(),
+        )
+        self.assertTrue(ready_after["ready"])
+
 
 class DispatchQueueStoreTest(_QueueStoreTmpDir, unittest.TestCase):
     """Durable queue store (issue #883): persist on mutation,
@@ -553,6 +643,24 @@ class MonitorTest(_QueueStoreTmpDir, unittest.TestCase):
         self.assertEqual(stored["state"], "failed")
         self.assertIn("aborted", stored["detail"])
 
+    def test_monitor_does_not_overwrite_cancelled_by_operator(self):
+        self._running_item()
+        item, err = lane_dispatch.cancel_running(
+            "remote-server", 1, disposition="ready"
+        )
+        self.assertIsNone(err)
+        self.assertEqual(item["state"], "failed")
+        self.assertEqual(
+            item["detail"], "cancelled-by-operator; issue returns to ready"
+        )
+        self._worker("done")
+        lane_dispatch._monitor_item("remote-server", 1)
+        stored = lane_dispatch.get_item("remote-server", 1)
+        self.assertEqual(stored["state"], "failed")
+        self.assertEqual(
+            stored["detail"], "cancelled-by-operator; issue returns to ready"
+        )
+
     def test_failed_worker_carries_exit_code(self):
         self._running_item()
         self._worker("failed", exit_code=3)
@@ -690,6 +798,65 @@ class DispatchRouterTest(_QueueStoreTmpDir, unittest.TestCase):
                 dispatch_mod.cancel(dispatch_mod.CancelRequest(
                     repo="remote-server", issue=1))
         self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_cancel_running_requires_confirm_and_cancels(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        with lane_dispatch._lock:
+            lane_dispatch._items[("remote-server", "1")]["state"] = (
+                lane_dispatch.RUNNING
+            )
+
+        # Without confirm -> 400
+        with self.assertRaises(Exception) as ctx:
+            dispatch_mod.cancel(
+                dispatch_mod.CancelRequest(
+                    repo="remote-server",
+                    issue=1,
+                    intent="dispatch-cancel",
+                    confirmed=False,
+                )
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        # Invalid disposition -> 400
+        with self.assertRaises(Exception) as ctx:
+            dispatch_mod.cancel(
+                dispatch_mod.CancelRequest(
+                    repo="remote-server",
+                    issue=1,
+                    intent="dispatch-cancel",
+                    confirmed=True,
+                    disposition="invalid",
+                )
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+
+        # With confirm
+        with patch(
+            "backend.api.routers.issues.abort_in_flight_repair"
+        ) as abort_mock:
+            abort_mock.return_value = {"ok": True, "killed": True}
+            res = dispatch_mod.cancel(
+                dispatch_mod.CancelRequest(
+                    repo="remote-server",
+                    issue=1,
+                    intent="dispatch-cancel",
+                    confirmed=True,
+                    disposition="ready",
+                )
+            )
+            abort_mock.assert_called_once()
+        self.assertTrue(res["ok"])
+        self.assertFalse(res["removed"])
+
+        # Check queue reflects cancelled-by-operator
+        q = dispatch_mod.queue()
+        matching = [i for i in q["items"] if i["issue"] == 1]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["state"], "failed")
+        self.assertEqual(
+            matching[0]["detail"], "cancelled-by-operator; issue returns to ready"
+        )
 
     def test_router_registered_in_server(self):
         from pathlib import Path
