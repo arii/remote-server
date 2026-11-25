@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "repo-closeout.py"
+from backend.shared.cli import repo_root
+
+SCRIPT = Path(repo_root()) / "scripts" / "repo-closeout.py"
 spec = importlib.util.spec_from_file_location("closeout", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
