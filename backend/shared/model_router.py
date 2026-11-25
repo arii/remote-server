@@ -66,8 +66,9 @@ DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 DEFAULT_TWT_BASE_URL = "http://127.0.0.1:8000/v1"
-# The TwT gateway accepts provider_models only on this route.
+# The TwT gateway accepts provider_models only on the default route.
 TWT_DEFAULT_MODEL = "default"
+TWT_DEFAULT_ROUTES = frozenset({TWT_DEFAULT_MODEL, "route:default"})
 TWT_STRONG_ROUTE = "route:strong"
 PIPELINE_MAX_TOKENS = 8192
 PIPELINE_HISTORY_CHARS = 64000
@@ -635,12 +636,12 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
 
     base_url = spec.get("base_url") or _env("TWT_BASE_URL", DEFAULT_TWT_BASE_URL)
     uds = spec.get("uds") or (_env("TWT_UDS") or None)
-    provider_models = dict(spec.get("provider_models") or {})
-    if (
-        stage is not None
-        and not provider_models
-        and spec.get("model") == TWT_DEFAULT_MODEL
-    ):
+    model = spec.get("model")
+    is_default_route = model in TWT_DEFAULT_ROUTES
+    provider_models = (
+        dict(spec.get("provider_models") or {}) if is_default_route else {}
+    )
+    if stage is not None and not provider_models and is_default_route:
         provider_models = {
             "nvidia": _env(
                 f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
@@ -650,12 +651,11 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
             ),
         }
     extra = {}
-    model = spec.get("model")
     if model == TWT_STRONG_ROUTE:
         # route:strong is resolved gateway-side and is absent from /v1/models;
         # validate the gateway's own strong map when we can see it.
         provider_models = _gateway_strong_models()
-    elif model and model != TWT_DEFAULT_MODEL:
+    elif model and not is_default_route:
         extra["model_ids"] = [model]
     sha = expected_sha or _env("TWT_EXPECTED_SHA")
     twt_provenance.verify_gateway_capabilities(
@@ -681,11 +681,10 @@ def build_chat_model(
     spec = dict(spec) if spec else resolve_llm()
     if stage is not None and stage not in STAGE_NEBIUS_MODELS:
         raise ValueError(f"unknown pipeline model stage: {stage}")
-    if (
-        spec.get("provider") == "twt"
-        and stage is not None
-        and spec.get("model") == TWT_DEFAULT_MODEL
-    ):
+    is_twt_default = (
+        spec.get("provider") == "twt" and spec.get("model") in TWT_DEFAULT_ROUTES
+    )
+    if is_twt_default and stage is not None:
         provider_models = {
             "nvidia": _env(
                 f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
@@ -707,11 +706,14 @@ def build_chat_model(
                 provider_models[provider_name] = override
         spec["provider_models"] = provider_models
         spec["provider_reasoning_effort"] = dict.fromkeys(("nvidia", "nebius"), "low")
+    elif spec.get("provider") == "twt":
+        spec.pop("provider_models", None)
+        spec.pop("provider_reasoning_effort", None)
     kwargs = chat_kwargs(spec)
     if max_tokens is not None:
         budget_key = "num_predict" if spec.get("provider") == "ollama" else "max_tokens"
         kwargs[budget_key] = min(max_tokens, PIPELINE_MAX_TOKENS)
-    if spec.get("provider") == "twt" and spec.get("provider_models"):
+    if is_twt_default and spec.get("provider_models"):
         kwargs["extra_body"] = {"provider_models": spec["provider_models"]}
         if spec.get("provider_reasoning_effort"):
             kwargs["extra_body"]["provider_reasoning_effort"] = spec[
