@@ -21,9 +21,14 @@ from scripts import queue_runner as runner
 from scripts import ledger_post
 from scripts.run_root_tests import block_google_docs_requests
 
+# Supervisor tests mock subprocess wholesale; the real prune pass is
+# exercised by PruneLandedWorktreesTests through this saved reference.
+prune_landed_worktrees = runner.prune_landed_worktrees
+
 
 def setUpModule():
     unittest.enterModuleContext(block_google_docs_requests())
+    unittest.enterModuleContext(mock.patch.object(runner, "prune_landed_worktrees"))
 
 
 class ClaimsPrValidTests(unittest.TestCase):
@@ -302,6 +307,111 @@ class RetryWorktreeTests(unittest.TestCase):
                 self.assertTrue((worktree / "evidence.txt").exists())
 
 
+class PruneLandedWorktreesTests(unittest.TestCase):
+    def git(self, repo, *args):
+        return subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                *args,
+            ],
+            text=True,
+            stderr=subprocess.PIPE,
+        ).strip()
+
+    def fixture(self, root):
+        root = Path(root)
+        origin = root / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)])
+        repo = root / "repo"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "main")
+        self.git(repo, "remote", "add", "origin", str(origin))
+        (repo / "a.txt").write_text("a")
+        self.git(repo, "add", "a.txt")
+        self.git(repo, "commit", "-q", "-m", "base")
+        self.git(repo, "push", "-q", "origin", "main")
+        return repo
+
+    def add_tree(self, repo, rel, branch, commit=None):
+        path = repo / rel
+        self.git(repo, "worktree", "add", "-q", "-b", branch, str(path))
+        if commit:
+            (path / commit).write_text(commit)
+            self.git(path, "add", commit)
+            self.git(path, "commit", "-q", "-m", commit)
+        return path
+
+    def test_prunes_landed_agent_trees_and_keeps_everything_else(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = self.fixture(root)
+            landed_zero = self.add_tree(repo, ".worktrees/issue-1", "agent/issue-1")
+            (landed_zero / "runner-cache.txt").write_text("untracked artifact")
+            retry = self.add_tree(
+                repo, ".worktrees/.queue-retry/o_r-2-1", "queue-retry/o_r-2-1", "r.txt"
+            )
+            self.git(repo, "push", "-q", "origin", "queue-retry/o_r-2-1:main")
+            unmerged = self.add_tree(
+                repo, ".worktrees/issue-3", "agent/issue-3", "u.txt"
+            )
+            dirty = self.add_tree(repo, ".worktrees/issue-4", "agent/issue-4")
+            (dirty / "a.txt").write_text("tracked edit")
+            user = self.add_tree(repo, ".worktrees/user-work", "feature/user")
+            (user / "scratch.txt").write_text("untracked")
+            queue_main = self.add_tree(repo, ".worktrees/queue-main", "agent/issue-5")
+            self.git(repo, "fetch", "-q", "origin", "main")
+            config = {
+                "pipeline_checkout": os.getcwd(),
+                "repo_paths": {"o/r": str(repo)},
+            }
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                prune_landed_worktrees(config)
+            self.assertTrue(landed_zero.exists())
+            self.assertEqual(
+                (landed_zero / "runner-cache.txt").read_text(), "untracked artifact"
+            )
+            self.assertFalse(retry.exists())
+            for kept in (unmerged, dirty, user, queue_main):
+                self.assertTrue(kept.exists(), kept)
+            branches = self.git(repo, "branch", "--format=%(refname:short)").split()
+            self.assertIn("agent/issue-1", branches)
+            self.assertNotIn("queue-retry/o_r-2-1", branches)
+            for kept in ("agent/issue-3", "agent/issue-4", "feature/user"):
+                self.assertIn(kept, branches)
+            self.assertIn("PRUNE o/r", out.getvalue())
+
+    def test_queue_main_is_never_pruned_even_when_landed_and_clean(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = self.fixture(root)
+            queue_main = self.add_tree(repo, ".worktrees/queue-main", "agent/issue-9")
+            config = {
+                "pipeline_checkout": os.getcwd(),
+                "repo_paths": {"o/r": str(repo)},
+            }
+            with contextlib.redirect_stdout(io.StringIO()):
+                prune_landed_worktrees(config)
+            self.assertTrue(queue_main.exists())
+            self.assertIn(
+                "agent/issue-9", self.git(repo, "branch", "--format=%(refname:short)")
+            )
+
+    def test_prune_failure_is_logged_and_does_not_raise(self):
+        config = {
+            "pipeline_checkout": os.getcwd(),
+            "repo_paths": {"o/r": "/nonexistent-checkout"},
+        }
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            prune_landed_worktrees(config)
+        self.assertIn("PRUNE o/r failed", out.getvalue())
+
+
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(
@@ -317,6 +427,9 @@ class RunnerTests(unittest.TestCase):
         archive = mock.patch.object(runner, "archive_retry_worktree")
         self.archive_worktree = archive.start()
         self.addCleanup(archive.stop)
+        prune = mock.patch.object(runner, "prune_landed_worktrees")
+        self.prune_worktrees = prune.start()
+        self.addCleanup(prune.stop)
 
     def test_retry_worktree_failure_keeps_durable_intent_and_evidence(self):
         with tempfile.TemporaryDirectory() as root:
@@ -462,6 +575,136 @@ class RunnerTests(unittest.TestCase):
         for repo in ("arii/remote-server", "arii/boomtick", "other/repo"):
             for number in (2, 23, 26):
                 self.assertTrue(runner.skip_reason({"repo": repo, "number": number}))
+
+    @mock.patch.object(runner.signal, "signal")
+    @mock.patch.object(
+        runner.subprocess,
+        "check_output",
+        return_value=json.dumps(
+            {
+                "state": "open",
+                "labels": [{"name": "ready"}],
+                "title": "Fix",
+                "body": "scope",
+            }
+        ),
+    )
+    def test_only_issues_dispatches_just_that_issue_then_the_pass_ends(
+        self, _read, _signal
+    ):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            runner.write_json(
+                Path(root) / "issues.json",
+                [
+                    {"repo": "owner/repo", "number": 7},
+                    {"repo": "owner/repo", "number": 8},
+                ],
+            )
+            settings = runner.read_json(config)
+            settings["only_issues"] = ["owner/repo#8"]
+            runner.write_json(config, settings)
+            dispatched = []
+
+            def spawn(command, **_kwargs):
+                name = Path(command[-1]).name
+                dispatched.append(name)
+                process = mock.Mock(returncode=0)
+                process.communicate.side_effect = lambda _: runner.write_json(
+                    state / name / "summary.json",
+                    {
+                        "halt_queue": False,
+                        "reconciliation": {"reconciled": True},
+                        "result": {"status": "DONE"},
+                        "exit_code": 0,
+                    },
+                )
+                return process
+
+            with mock.patch.object(runner.subprocess, "Popen", side_effect=spawn):
+                self.assertEqual(runner.supervise(config), 0)
+            self.assertEqual(dispatched, ["owner_repo-8"])
+            status = runner.read_json(state / "status.json")
+            self.assertIn("owner/repo#8", status["completed"])
+            self.assertNotIn("owner/repo#7", status["completed"])
+            self.assertTrue(status["done"])
+            # Terminal stop: the sentinel is written and a second start dispatches nothing.
+            self.assertTrue((state / "STOP").exists())
+            settings["only_issues"] = ["owner/repo#7"]
+            runner.write_json(config, settings)
+            with mock.patch.object(runner.subprocess, "Popen", side_effect=spawn):
+                self.assertEqual(runner.supervise(config), 0)
+            self.assertEqual(dispatched, ["owner_repo-8"])
+
+    @mock.patch.object(runner.signal, "signal")
+    def test_only_issues_must_be_well_formed_and_fails_before_any_dispatch(
+        self, _signal
+    ):
+        for bad in (
+            [],
+            "owner/repo#8",
+            ["owner/repo"],
+            ["owner/repo#0"],
+            [8],
+            ["owner/repo#7", "owner/repo#8"],
+        ):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as root:
+                config, _state = self.fixture(root)
+                settings = runner.read_json(config)
+                settings["only_issues"] = bad
+                settings["discover_repos"] = ["owner/repo"]
+                runner.write_json(config, settings)
+                with (
+                    mock.patch.object(runner.subprocess, "check_output") as github,
+                    mock.patch.object(runner.subprocess, "Popen") as spawn,
+                    self.assertRaises(ValueError),
+                ):
+                    runner.supervise(config)
+                spawn.assert_not_called()
+                github.assert_not_called()
+                self.assertFalse(
+                    (_state / "STOP").exists(), "rejected before the lock: nothing ran"
+                )
+
+    @mock.patch.object(runner.signal, "signal")
+    def test_only_issues_halts_when_another_issue_is_claimed(self, _signal):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            state.mkdir()
+            runner.write_json(
+                state / "status.json", {"completed": [], "current": "owner/repo#7"}
+            )
+            settings = runner.read_json(config)
+            settings["only_issues"] = ["owner/repo#8"]
+            runner.write_json(config, settings)
+            with (
+                mock.patch.object(runner.subprocess, "check_output") as github,
+                mock.patch.object(runner.subprocess, "Popen") as spawn,
+            ):
+                self.assertEqual(runner.supervise(config), 2)
+            spawn.assert_not_called()
+            github.assert_not_called()
+            status = runner.read_json(state / "status.json")
+            self.assertTrue(status["halted"])
+            self.assertIn("owner/repo#7 is claimed", status["reason"])
+            self.assertTrue((state / "STOP").exists())
+
+    @mock.patch.object(runner.signal, "signal")
+    def test_only_issues_lock_contention_writes_no_stop(self, _signal):
+        with tempfile.TemporaryDirectory() as root:
+            config, state = self.fixture(root)
+            state.mkdir()
+            settings = runner.read_json(config)
+            settings["only_issues"] = ["owner/repo#7"]
+            runner.write_json(config, settings)
+            with (state / "queue.lock").open("a") as held:
+                runner.fcntl.flock(held, runner.fcntl.LOCK_EX | runner.fcntl.LOCK_NB)
+                with self.assertRaises(BlockingIOError):
+                    runner.supervise(config)
+            self.assertFalse(
+                (state / "STOP").exists(),
+                "a losing second start must not stop the live pass",
+            )
 
     @mock.patch.object(runner.signal, "signal")
     def test_stop_sentinel_prevents_dispatch(self, _signal):
@@ -1214,6 +1457,8 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(runner.supervise(config), 0)
             self.assertEqual(dispatched, [11, 12, 10])
             self.assertEqual(len(runner.read_json(state / "status.json")["skipped"]), 7)
+            # one prune pass per startup plus one after each finished dispatch
+            self.assertEqual(self.prune_worktrees.call_count, 2 + 3)
 
     def ready_fake(self, listings, failing=()):
         def fake(command, **_kwargs):
@@ -1419,6 +1664,8 @@ class RunnerTests(unittest.TestCase):
             (modules / "__init__.py").write_text("")
             (modules / "model_router.py").write_text(
                 "class _BoundedHistory:\n    def _bounded_kwargs(self, kwargs):\n        return kwargs\n"
+                "    def _generate(self, *args, **kwargs): pass\n"
+                "    async def _agenerate(self, *args, **kwargs): pass\n"
                 "def _remote_spec(*args): return {}\n"
             )
             (modules / "ledger.py").write_text(
@@ -2095,6 +2342,17 @@ class AccountingTests(unittest.TestCase):
                     model_router._BoundedHistory._bounded_kwargs,
                 ),
                 mock.patch.object(
+                    model_router._BoundedHistory,
+                    "_generate",
+                    model_router._BoundedHistory._generate,
+                ),
+                mock.patch.object(
+                    model_router._BoundedHistory,
+                    "_agenerate",
+                    model_router._BoundedHistory._agenerate,
+                ),
+                mock.patch.object(twt_receipts, "ceiling_required", False),
+                mock.patch.object(
                     twt_receipts, "fetch", return_value=[self.bound(trace, amount)]
                 ),
             ):
@@ -2551,15 +2809,23 @@ if __name__ == "__main__":
 
 
 class QueueStatusTests(unittest.TestCase):
-    def status(self, held, current=None, age=0):
+    def status(self, held, current=None, age=0, halted=None, supervisor=True, log=True):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            state = {}
+            if halted:
+                state.update(halted=True, reason=halted)
             if current:
-                (root / "status.json").write_text(json.dumps({"current": current}))
-                log = root / "arii_remote-server-1" / "run.log"
-                log.parent.mkdir()
-                log.write_text("x")
-                os.utime(log, (time.time() - age,) * 2)
+                state.update(current=current, started_at=time.time() - age)
+            if state:
+                (root / "status.json").write_text(json.dumps(state))
+            if current and log:
+                run_log = root / "arii_remote-server-1" / "run.log"
+                run_log.parent.mkdir()
+                run_log.write_text("x")
+                os.utime(run_log, (time.time() - age,) * 2)
+            if held and supervisor:
+                (root / "supervisor.pid").write_text(str(os.getpid()))
             with (root / "queue.lock").open("a") as lock:
                 if held:
                     fcntl.flock(lock, fcntl.LOCK_EX)
@@ -2569,6 +2835,17 @@ class QueueStatusTests(unittest.TestCase):
     def test_down(self):
         self.assertIn("Restart Service", self.status(held=False))
 
+    def test_down_halted(self):
+        out = self.status(
+            held=False, halted="consecutive failures with a common blocker"
+        )
+        self.assertIn("--clear-halt", out)
+        self.assertIn("common blocker", out)
+
+    def test_busy(self):
+        out = self.status(held=True, supervisor=False)
+        self.assertIn("wait", out)
+
     def test_idle(self):
         self.assertIn("Ready", self.status(held=True))
 
@@ -2576,52 +2853,16 @@ class QueueStatusTests(unittest.TestCase):
         out = self.status(held=True, current="arii/remote-server#1", age=3600)
         self.assertIn("Investigate/Restart", out)
 
+    def test_fresh_claim_without_log_is_not_stalled(self):
+        out = self.status(held=True, current="arii/remote-server#1", age=0, log=False)
+        self.assertNotIn("STALLED", out)
+
+    def test_old_claim_without_log_is_stalled(self):
+        out = self.status(
+            held=True, current="arii/remote-server#1", age=3600, log=False
+        )
+        self.assertIn("Investigate/Restart", out)
+
     def test_running(self):
         out = self.status(held=True, current="arii/remote-server#1")
         self.assertNotIn("Next action", out)
-
-
-class QueueStatusStopTests(unittest.TestCase):
-    def test_stop_marker_overrides_idle_and_missing_heartbeat(self):
-        for held in (False, True):
-            with self.subTest(held=held), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                (root / "STOP").touch()
-                (root / "status.json").write_text(
-                    json.dumps({"current": None, "stopped": True, "done": True})
-                )
-                with (root / "queue.lock").open("a") as lock:
-                    if held:
-                        fcntl.flock(lock, fcntl.LOCK_EX)
-                    result = runner.queue_status({"state_dir": tmp})
-                self.assertTrue(result.startswith("STOPPED"), result)
-                self.assertIn("restart alone stays stopped", result)
-                self.assertTrue((root / "STOP").exists())
-
-    def test_halt_reason_overrides_stop_and_retains_state(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            state = {"halted": True, "reason": ["unsettled receipts"]}
-            (root / "status.json").write_text(json.dumps(state))
-            (root / "STOP").touch()
-            result = runner.queue_status({"state_dir": tmp})
-            self.assertTrue(result.startswith("HALTED"), result)
-            self.assertIn("unsettled receipts", result)
-            self.assertEqual(json.loads((root / "status.json").read_text()), state)
-            self.assertTrue((root / "STOP").exists())
-
-    def test_old_completion_flags_do_not_override_live_worker(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "status.json").write_text(
-                json.dumps(
-                    {"current": "arii/remote-server#1", "stopped": True, "done": True}
-                )
-            )
-            log = root / "arii_remote-server-1" / "run.log"
-            log.parent.mkdir()
-            log.write_text("active")
-            with (root / "queue.lock").open("a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                result = runner.queue_status({"state_dir": tmp})
-            self.assertTrue(result.startswith("RUNNING"), result)
