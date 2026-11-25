@@ -75,6 +75,7 @@ _repair_runner = None
 # In-flight worker proc + abort flag, guarded by repair_state_lock.
 _repair_proc = None
 _repair_abort = False
+_repair_thread = None
 
 # Per-issue repair schedules: {issue_number: {"cadence": "daily"|"weekly",
 # "next_run": epoch_seconds, "last_run": epoch_seconds|None}}.
@@ -463,9 +464,11 @@ def _repair_verify_preview(issue_number: int, repo: str = "remote-server") -> di
 
 
 def trigger_repair(issue_number: int, repo: str = "remote-server", focus: str = ""):
+    global _repair_thread
     t = threading.Thread(
         target=_repair_worker_thread, args=(issue_number, repo, focus), daemon=True
     )
+    _repair_thread = t
     t.start()
     return t
 
@@ -943,8 +946,7 @@ def repair_status() -> dict:
         return out
 
 
-@router.post("/repair/abort", response_model=RepairAbortResult)
-def repair_abort() -> dict:
+def abort_in_flight_repair() -> dict:
     """Abort the in-flight repair worker, if any. Mirrors the agent
     turn abort: flag first (the worker records "aborted", not an
     error), then terminate with a kill fallback."""
@@ -974,3 +976,8 @@ def repair_abort() -> dict:
         except Exception:
             pass
     return {"ok": True, "killed": True}
+
+
+@router.post("/repair/abort", response_model=RepairAbortResult)
+def repair_abort() -> dict:
+    return abort_in_flight_repair()

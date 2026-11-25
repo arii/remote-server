@@ -1325,6 +1325,9 @@ class TimeoutProc(FakeProc):
 
 
 def reset_repair_state():
+    t = getattr(issues_mod, "_repair_thread", None)
+    if t is not None and t.is_alive() and t is not threading.current_thread():
+        t.join(timeout=2)
     with repair_state_lock:
         repair_state.update(
             {
