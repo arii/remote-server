@@ -1738,6 +1738,16 @@ def _queue_state(config, now=None):
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     status_path = root / "status.json"
     status = read_json(status_path) if status_path.exists() else {}
+    if status.get("halted"):
+        return (
+            f"HALTED {status.get('reason') or 'operator clearance required'}. "
+            "Next action: Inspect and reconcile before explicit recovery"
+        )
+    if (root / "STOP").exists():
+        return (
+            "STOPPED STOP marker present. "
+            "Next action: Inspect before explicit recovery; restart alone stays stopped"
+        )
     # The supervisor holds queue.lock for its whole run, so a free lock means
     # the heartbeat is missing. --retry takes the same lock while the service
     # is stopped, so a held lock only means busy unless supervisor.pid names
@@ -1749,8 +1759,6 @@ def _queue_state(config, now=None):
             if not supervisor_alive(root):
                 return "BUSY queue.lock held by a non-supervisor process (e.g. --retry). Next action: wait for it to finish"
         else:
-            if status.get("halted"):
-                return f"DOWN halted: {status.get('reason')}. Next action: inspect the halt, then restart with --clear-halt"
             return "DOWN runner heartbeat missing. Next action: Restart Service"
     current = status.get("current")
     if not current:
