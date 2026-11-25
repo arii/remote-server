@@ -28,11 +28,14 @@ describe('queue row (issue #853)', () => {
         onGates={noop}
       />,
     );
-    expect(failed).toContain('>Re-dispatch<');
+    expect(failed).toContain('data-testid="queue-retry"');
+    expect(failed).toContain('>Retry<');
+    expect(failed).not.toContain('>Re-dispatch<');
+    expect(failed).not.toContain('data-testid="queue-dispatch"');
     expect(failed).toContain('failed · exit 3');
   });
 
-  it('offers no taps on running rows', () => {
+  it('offers cancel with confirm on running rows, but no dispatch', () => {
     const running = renderToStaticMarkup(
       <QueueRow
         item={mkItem({ state: 'running' })}
@@ -44,7 +47,8 @@ describe('queue row (issue #853)', () => {
       />,
     );
     expect(running).not.toContain('data-testid="queue-dispatch"');
-    expect(running).not.toContain('data-testid="queue-cancel"');
+    expect(running).toContain('data-testid="queue-cancel"');
+    expect(running).toContain('>Cancel<');
     expect(running).not.toContain('data-testid="queue-gates-check"');
   });
 

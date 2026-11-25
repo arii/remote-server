@@ -132,6 +132,7 @@ class AgentState(TypedDict):
     tests_passed: bool
     worktree_dir: str
     branch_name: str
+    mode: str
 
 
 def _env(name: str, default: str = "") -> str:
@@ -347,20 +348,48 @@ def parse_issue_node(state: AgentState) -> Dict[str, Any]:
 def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
     """Set up an isolated git worktree and read target file contents."""
     issue_number = state.get("issue_number", 0)
-    branch_name = (
-        state.get("branch_name") or f"repair/issue-{issue_number}-{int(time.time())}"
-    )
+    mode = state.get("mode") or "fresh"
+    existing_branch = state.get("branch_name")
     worktree_dir = state.get("worktree_dir") or tempfile.mkdtemp(
         prefix=f"repair-issue-{issue_number}-"
     )
 
-    # Create worktree
-    cmd = ["git", "worktree", "add", "-b", branch_name, worktree_dir, "HEAD"]
-    proc = subprocess.run(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"Failed to create git worktree: {proc.stderr.strip()}")
+    branch_name = ""
+    if mode == "resume" and existing_branch:
+        check = subprocess.run(
+            ["git", "rev-parse", "--verify", existing_branch],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if check.returncode == 0:
+            cmd = ["git", "worktree", "add", worktree_dir, existing_branch]
+            proc = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            if proc.returncode == 0:
+                branch_name = existing_branch
+            else:
+                logging.warning(
+                    f"Failed to resume worktree for branch {existing_branch}: {proc.stderr.strip()}; falling back to fresh branch"
+                )
+        else:
+            logging.warning(
+                f"Resume branch {existing_branch} not found; falling back to fresh branch"
+            )
+
+    if not branch_name:
+        branch_name = (
+            existing_branch
+            if mode != "resume" and existing_branch
+            else f"repair/issue-{issue_number}-{int(time.time())}"
+        )
+        cmd = ["git", "worktree", "add", "-b", branch_name, worktree_dir, "HEAD"]
+        proc = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to create git worktree: {proc.stderr.strip()}")
 
     # Read target files from worktree
     file_contents: Dict[str, str] = {}
@@ -665,7 +694,11 @@ def build_repair_graph():
 
 
 def run_repair(
-    issue_number: int, issue_body: Optional[str] = None, repo: Optional[str] = None
+    issue_number: int,
+    issue_body: Optional[str] = None,
+    repo: Optional[str] = None,
+    branch: str = "",
+    mode: str = "fresh",
 ) -> bool:
     """Run the autonomous repair pipeline for a given issue.
 
@@ -698,7 +731,8 @@ def run_repair(
         "ast_valid": False,
         "tests_passed": False,
         "worktree_dir": "",
-        "branch_name": "",
+        "branch_name": branch,
+        "mode": mode,
     }
 
     try:
@@ -733,6 +767,19 @@ def main(argv=None):
         help="Repo basename (boomtick) or full path (arii/boomtick); "
         "scopes the gh issue/PR calls",
     )
+    parser.add_argument(
+        "--branch",
+        type=str,
+        default="",
+        help="Optional existing branch name to resume",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="fresh",
+        choices=["fresh", "resume"],
+        help="Retry mode: fresh or resume",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -740,7 +787,11 @@ def main(argv=None):
     except ValueError as exc:
         parser.error(str(exc))
     success = run_repair(
-        issue_number=args.issue, issue_body=args.body or None, repo=repo
+        issue_number=args.issue,
+        issue_body=args.body or None,
+        repo=repo,
+        branch=args.branch,
+        mode=args.mode,
     )
     sys.exit(0 if success else 1)
 

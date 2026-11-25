@@ -5,6 +5,7 @@ import {
   fetchAllIssues,
   fetchDispatchGates,
   fetchDispatchQueue,
+  retryDispatch,
   startAuthedInterval,
   startDispatch,
 } from '../apiClient';
@@ -84,14 +85,20 @@ export function QueueRow({
   onDispatch,
   onCancel,
   onGates,
+  onRetry,
 }: {
   item: DispatchItem;
   gates: string[] | null;
   ready: boolean | null;
   onDispatch: (item: DispatchItem) => void;
-  onCancel: (item: DispatchItem) => void;
+  onCancel: (item: DispatchItem, disposition?: 'ready' | 'parked') => void;
   onGates: (item: DispatchItem) => void;
+  onRetry?: (item: DispatchItem, mode: 'fresh' | 'resume') => void;
 }) {
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [disposition, setDisposition] = useState<'ready' | 'parked'>('ready');
+  const [confirmingRetry, setConfirmingRetry] = useState(false);
+  const [retryMode, setRetryMode] = useState<'fresh' | 'resume'>('fresh');
   const actions = queueRowActions(item.state);
   const terminal = item.state === 'done' || item.state === 'failed';
   const label = (
@@ -147,15 +154,126 @@ export function QueueRow({
             {item.state === 'queued' ? 'Dispatch' : 'Re-dispatch'}
           </button>
         )}{' '}
+        {actions.retry && !confirmingRetry && (
+          <button
+            type="button"
+            data-testid="queue-retry"
+            onClick={() => setConfirmingRetry(true)}
+          >
+            Retry
+          </button>
+        )}{' '}
+        {confirmingRetry && (
+          <div
+            className="confirm-inline"
+            data-testid={`queue-retry-confirm-${item.repo}-${item.issue}`}
+          >
+            <label className="row-meta">
+              <input
+                type="radio"
+                name={`retry-mode-${item.repo}-${item.issue}`}
+                value="fresh"
+                checked={retryMode === 'fresh'}
+                onChange={() => setRetryMode('fresh')}
+                data-testid="queue-retry-mode-fresh"
+              />{' '}
+              Fresh branch
+            </label>{' '}
+            <label className="row-meta">
+              <input
+                type="radio"
+                name={`retry-mode-${item.repo}-${item.issue}`}
+                value="resume"
+                checked={retryMode === 'resume'}
+                onChange={() => setRetryMode('resume')}
+                data-testid="queue-retry-mode-resume"
+              />{' '}
+              Resume existing branch
+            </label>{' '}
+            <button
+              type="button"
+              data-testid="queue-retry-confirm"
+              onClick={() => {
+                onRetry?.(item, retryMode);
+                setConfirmingRetry(false);
+              }}
+            >
+              Confirm retry
+            </button>{' '}
+            <button
+              type="button"
+              data-testid="queue-retry-abort"
+              onClick={() => setConfirmingRetry(false)}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}{' '}
         {item.state === 'queued' && (
           <button type="button" data-testid="queue-gates-check" onClick={() => onGates(item)}>
             Check gates
           </button>
         )}{' '}
-        {actions.cancel && (
-          <button type="button" data-testid="queue-cancel" onClick={() => onCancel(item)}>
-            Remove
+        {actions.cancel && !confirmingCancel && (
+          <button
+            type="button"
+            data-testid="queue-cancel"
+            onClick={() => {
+              if (item.state === 'running') {
+                setConfirmingCancel(true);
+              } else {
+                onCancel(item);
+              }
+            }}
+          >
+            {item.state === 'running' ? 'Cancel' : 'Remove'}
           </button>
+        )}
+        {confirmingCancel && (
+          <div
+            className="confirm-inline"
+            data-testid={`queue-cancel-confirm-${item.repo}-${item.issue}`}
+          >
+            <label className="row-meta">
+              <input
+                type="radio"
+                name={`cancel-disposition-${item.repo}-${item.issue}`}
+                value="ready"
+                checked={disposition === 'ready'}
+                onChange={() => setDisposition('ready')}
+                data-testid="queue-cancel-disposition-ready"
+              />{' '}
+              Return to ready
+            </label>{' '}
+            <label className="row-meta">
+              <input
+                type="radio"
+                name={`cancel-disposition-${item.repo}-${item.issue}`}
+                value="parked"
+                checked={disposition === 'parked'}
+                onChange={() => setDisposition('parked')}
+                data-testid="queue-cancel-disposition-parked"
+              />{' '}
+              Park
+            </label>{' '}
+            <button
+              type="button"
+              data-testid="queue-cancel-confirm"
+              onClick={() => {
+                onCancel(item, disposition);
+                setConfirmingCancel(false);
+              }}
+            >
+              Confirm cancel
+            </button>{' '}
+            <button
+              type="button"
+              data-testid="queue-cancel-abort"
+              onClick={() => setConfirmingCancel(false)}
+            >
+              Dismiss
+            </button>
+          </div>
         )}
       </div>
     </li>
@@ -170,14 +288,16 @@ export function QueueRepoGroup({
   onDispatchNext,
   onCancel,
   onGates,
+  onRetry,
 }: {
   group: DispatchRepoGroup;
   gatesByKey: Record<string, string[] | null>;
   readyByKey: Record<string, boolean>;
   onDispatch: (item: DispatchItem) => void;
   onDispatchNext: (group: DispatchRepoGroup) => void;
-  onCancel: (item: DispatchItem) => void;
+  onCancel: (item: DispatchItem, disposition?: 'ready' | 'parked') => void;
   onGates: (item: DispatchItem) => void;
+  onRetry?: (item: DispatchItem, mode: 'fresh' | 'resume') => void;
 }) {
   const next = nextDispatchable(group);
   return (
@@ -205,6 +325,7 @@ export function QueueRepoGroup({
             onDispatch={onDispatch}
             onCancel={onCancel}
             onGates={onGates}
+            onRetry={onRetry}
           />
         ))}
       </ul>
@@ -432,9 +553,28 @@ export default function QueueView({ repo }: { repo: string }) {
     if (next) void guarded(() => onDispatch(next));
   }
 
-  async function onCancel(item: DispatchItem) {
-    await cancelDispatch(item.repo, item.issue);
-    setNotice(`Removed ${item.repo}#${item.issue}.`);
+  async function onCancel(item: DispatchItem, disposition: 'ready' | 'parked' = 'ready') {
+    if (item.state === 'running') {
+      await cancelDispatch(item.repo, item.issue, {
+        intent: 'dispatch-cancel',
+        confirmed: true,
+        disposition,
+      });
+      setNotice(
+        `Cancelled ${item.repo}#${item.issue} (${
+          disposition === 'ready' ? 'returns to ready' : 'parked'
+        }).`,
+      );
+    } else {
+      await cancelDispatch(item.repo, item.issue);
+      setNotice(`Removed ${item.repo}#${item.issue}.`);
+    }
+    await load();
+  }
+
+  async function onRetry(item: DispatchItem, mode: 'fresh' | 'resume' = 'fresh') {
+    await retryDispatch(item.repo, item.issue, mode);
+    setNotice(`Retried ${item.repo}#${item.issue} (${mode} branch).`);
     await load();
   }
 
@@ -539,6 +679,7 @@ export default function QueueView({ repo }: { repo: string }) {
             onDispatchNext={onDispatchNext}
             onCancel={(item) => void guarded(() => onCancel(item))}
             onGates={(item) => void guarded(() => onGates(item))}
+            onRetry={(item, mode) => void guarded(() => onRetry(item, mode))}
           />
         ))
       )}

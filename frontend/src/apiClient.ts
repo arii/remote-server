@@ -1462,11 +1462,27 @@ export function startDispatch(
 export function cancelDispatch(
   repo: string,
   issue: number,
+  options?: { intent?: string; confirmed?: boolean; disposition?: string },
 ): Promise<{ ok: boolean; removed: boolean }> {
   return postJson<{ ok: boolean; removed: boolean }>('api/dispatch/cancel', {
     repo,
     issue,
+    ...options,
   }).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
+export function retryDispatch(
+  repo: string,
+  issue: number,
+  mode: 'fresh' | 'resume' = 'fresh',
+): Promise<{ ok: boolean; repo: string; issue: number; status: string }> {
+  return postJson<{ ok: boolean; repo: string; issue: number; status: string }>(
+    'api/dispatch/retry',
+    { repo, issue, mode, intent: 'dispatch-retry', confirmed: true },
+  ).then((r) => {
     invalidateViewCaches();
     return r;
   });

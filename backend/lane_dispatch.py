@@ -59,15 +59,16 @@ DISPATCH_QUEUE_MAX_ITEMS = 200
 # process died: the repair worker died with it, so the outcome is
 # honestly unknown. Terminal failed, never silently re-queued: the
 # operator retries explicitly after checking the issue.
-RESTART_DETAIL = ("console restarted while this item was running; "
-                  "outcome unknown — check the issue before retrying")
+RESTART_DETAIL = (
+    "console restarted while this item was running; "
+    "outcome unknown — check the issue before retrying"
+)
 
 
 def queue_store_path() -> str:
     """Current queue-store file path (env override read dynamically
     so tests can point it at tmp)."""
-    return os.environ.get("BUTTONS_DISPATCH_QUEUE_PATH",
-                          DEFAULT_DISPATCH_QUEUE_PATH)
+    return os.environ.get("BUTTONS_DISPATCH_QUEUE_PATH", DEFAULT_DISPATCH_QUEUE_PATH)
 
 
 def issue_url(repo: str, issue: int) -> str:
@@ -104,12 +105,11 @@ def _persist_locked() -> None:
     failure must not fail the mutation it records. Caller must hold
     _lock."""
     try:
-        ordered = sorted(_items.values(),
-                         key=lambda i: (i.get("added_at", 0),
-                                        i.get("repo", ""),
-                                        i.get("issue", 0)))
-        snap = [dict(i)
-                for i in ordered[-DISPATCH_QUEUE_MAX_ITEMS:]]
+        ordered = sorted(
+            _items.values(),
+            key=lambda i: (i.get("added_at", 0), i.get("repo", ""), i.get("issue", 0)),
+        )
+        snap = [dict(i) for i in ordered[-DISPATCH_QUEUE_MAX_ITEMS:]]
         path = queue_store_path()
         d = os.path.dirname(path)
         if d:
@@ -143,9 +143,13 @@ def _load_locked() -> None:
             continue
         repo = rec.get("repo")
         issue = rec.get("issue")
-        if not repo or not isinstance(repo, str) \
-                or not isinstance(issue, int) \
-                or isinstance(issue, bool) or issue <= 0:
+        if (
+            not repo
+            or not isinstance(repo, str)
+            or not isinstance(issue, int)
+            or isinstance(issue, bool)
+            or issue <= 0
+        ):
             continue
         added = rec.get("added_at")
         state_name = rec.get("state")
@@ -156,16 +160,21 @@ def _load_locked() -> None:
             "issue": issue,
             "state": state_name,
             "added_at": added
-            if isinstance(added, (int, float))
-            and not isinstance(added, bool) else now,
+            if isinstance(added, (int, float)) and not isinstance(added, bool)
+            else now,
             "started_at": rec.get("started_at"),
             "finished_at": rec.get("finished_at"),
-            "detail": rec.get("detail")
-            if isinstance(rec.get("detail"), str) else "",
-            "title": rec.get("title")
-            if isinstance(rec.get("title"), str) else "",
+            "detail": rec.get("detail") if isinstance(rec.get("detail"), str) else "",
+            "title": rec.get("title") if isinstance(rec.get("title"), str) else "",
             "artifact_url": rec.get("artifact_url")
-            if isinstance(rec.get("artifact_url"), str) else "",
+            if isinstance(rec.get("artifact_url"), str)
+            else "",
+            "retry_mode": rec.get("retry_mode")
+            if isinstance(rec.get("retry_mode"), str)
+            else None,
+            "branch_name": rec.get("branch_name")
+            if isinstance(rec.get("branch_name"), str)
+            else None,
         }
         if item["state"] == RUNNING:
             item["state"] = FAILED
@@ -195,9 +204,9 @@ def reset_queue() -> None:
         _items.clear()
 
 
-def enqueue(repo: str, issue, parse_number=None,
-            validate_repo=None,
-            title: str = "") -> tuple[dict | None, str | None]:
+def enqueue(
+    repo: str, issue, parse_number=None, validate_repo=None, title: str = ""
+) -> tuple[dict | None, str | None]:
     """Queue (repo, issue) for lane dispatch. Idempotent: an already
     queued/running item is returned unchanged; a terminal item
     re-queues (retry). Returns (item, None) or (None, error).
@@ -211,8 +220,7 @@ def enqueue(repo: str, issue, parse_number=None,
     if validate_repo is None:
         from backend.core.validation import validate_repo_name as validate_repo
     if parse_number is None:
-        from backend.api.routers.issues import \
-            parse_issue_number as parse_number
+        from backend.api.routers.issues import parse_issue_number as parse_number
     try:
         name = validate_repo(repo)
     except (ValueError, AttributeError, TypeError):
@@ -224,8 +232,7 @@ def enqueue(repo: str, issue, parse_number=None,
         _ensure_loaded_locked()
         key = _key(name, number)
         existing = _items.get(key)
-        if existing is not None and \
-                existing.get("state") not in TERMINAL_STATES:
+        if existing is not None and existing.get("state") not in TERMINAL_STATES:
             return _copy(existing), None
         item = {
             "repo": name,
@@ -255,10 +262,10 @@ def queue_list() -> list[dict]:
     """Every queued item, oldest first. The console groups by repo."""
     with _lock:
         _ensure_loaded_locked()
-        ordered = sorted(_items.values(),
-                         key=lambda i: (i.get("added_at", 0),
-                                        i.get("repo", ""),
-                                        i.get("issue", 0)))
+        ordered = sorted(
+            _items.values(),
+            key=lambda i: (i.get("added_at", 0), i.get("repo", ""), i.get("issue", 0)),
+        )
         return [_copy(i) for i in ordered]
 
 
@@ -279,6 +286,56 @@ def cancel(repo: str, issue: int) -> tuple[bool, str | None]:
         return True, None
 
 
+def cancel_running(
+    repo: str, issue: int, disposition: str = "ready"
+) -> tuple[dict | None, str | None]:
+    """Abort-aware cancel for a running lane item. Marks the item
+    terminal (failed) with detail recording cancelled-by-operator
+    and the chosen disposition ('ready' or 'parked') in one locked
+    mutation. Returns (item, error)."""
+    if disposition not in ("ready", "parked"):
+        return None, "invalid disposition"
+    disposition_phrase = "returns to ready" if disposition == "ready" else "parked"
+    detail = f"cancelled-by-operator; issue {disposition_phrase}"
+    with _lock:
+        _ensure_loaded_locked()
+        key = _key(repo, issue)
+        item = _items.get(key)
+        if item is None:
+            return None, "unknown item"
+        if item.get("state") != RUNNING:
+            return None, "item is not running"
+        item["state"] = FAILED
+        item["finished_at"] = _now()
+        item["detail"] = detail
+        _persist_locked()
+        return _copy(item), None
+
+
+def retry(repo: str, issue: int, mode: str = "fresh") -> tuple[dict | None, str | None]:
+    """Atomic retry for a failed queue item. Requires mode in ('fresh', 'resume').
+    Validates item exists and is 'failed'; flips it to 'queued' in one locked mutation.
+    If the item is not 'failed' (e.g. concurrent tap or already re-queued/running),
+    returns the existing item unchanged (idempotent double-tap guard).
+    """
+    if mode not in ("fresh", "resume"):
+        return None, "invalid retry mode"
+    with _lock:
+        _ensure_loaded_locked()
+        key = _key(repo, issue)
+        item = _items.get(key)
+        if item is None:
+            return None, "unknown item"
+        if item.get("state") != FAILED:
+            return _copy(item), None
+        item["state"] = QUEUED
+        item["finished_at"] = None
+        item["retry_mode"] = mode
+        item["detail"] = f"retry queued ({mode})"
+        _persist_locked()
+        return _copy(item), None
+
+
 def read_repo_gates(repo: str, gh_runner=None) -> dict:
     """Live per-repo merge gates: default branch + required status
     checks from branch protection. Never assumed, never cached:
@@ -294,25 +351,31 @@ def read_repo_gates(repo: str, gh_runner=None) -> dict:
         name = validate_repo_name(repo)
         gh = repo_gh(name)
     except ValueError as exc:
-        return {"ok": False, "base": "", "required_checks": [],
-                "error": str(exc)}
+        return {"ok": False, "base": "", "required_checks": [], "error": str(exc)}
     try:
         # gh api (not repo view): neither subcommand accepts --repo
         # (#865), and the repos/... URL satisfies the #544 guard.
         # Full repo JSON (not --jq: that emits raw text, which the
         # JSON loader cannot parse).
-        info = run_gh_json(
-            gh, ["api", f"repos/{gh}"], timeout=30, runner=gh_runner)
+        info = run_gh_json(gh, ["api", f"repos/{gh}"], timeout=30, runner=gh_runner)
         base = (info or {}).get("default_branch") or "main"
     except Exception as exc:
-        return {"ok": False, "base": "", "required_checks": [],
-                "error": f"could not read default branch: {exc}"[:300]}
+        return {
+            "ok": False,
+            "base": "",
+            "required_checks": [],
+            "error": f"could not read default branch: {exc}"[:300],
+        }
     try:
         prot = run_gh_json(
-            gh, ["api", f"repos/{gh}/branches/{base}/protection"],
-            timeout=30, runner=gh_runner)
+            gh,
+            ["api", f"repos/{gh}/branches/{base}/protection"],
+            timeout=30,
+            runner=gh_runner,
+        )
         checks = ((prot or {}).get("required_status_checks") or {}).get(
-            "contexts") or []
+            "contexts"
+        ) or []
         if not isinstance(checks, list):
             checks = []
     except Exception:
@@ -320,13 +383,22 @@ def read_repo_gates(repo: str, gh_runner=None) -> dict:
         # no required checks, still dispatchable — the gate is the
         # repo's own bar, and an empty bar is a bar.
         checks = []
-    return {"ok": True, "base": base,
-            "required_checks": [str(c) for c in checks], "error": ""}
+    return {
+        "ok": True,
+        "base": base,
+        "required_checks": [str(c) for c in checks],
+        "error": "",
+    }
 
 
-def readiness(repo: str, issue: int, repo_status=None,
-              verify_preview=None, worker_busy=None,
-              gh_runner=None) -> dict:
+def readiness(
+    repo: str,
+    issue: int,
+    repo_status=None,
+    verify_preview=None,
+    worker_busy=None,
+    gh_runner=None,
+) -> dict:
     """Per-repo dispatch gates for one item. Returns {"ready",
     "reasons", "gates"}: ready True only when every gate passes;
     reasons names each failing gate for the console. All live reads
@@ -337,9 +409,9 @@ def readiness(repo: str, issue: int, repo_status=None,
     if repo_status is None:
         from backend.core.git_helpers import get_repo_status as repo_status
     if verify_preview is None:
-        from backend.api.routers.issues import \
-            _repair_verify_preview as verify_preview
+        from backend.api.routers.issues import _repair_verify_preview as verify_preview
     if worker_busy is None:
+
         def worker_busy() -> bool:
             from backend.api.routers import issues as issues_mod
 
@@ -348,8 +420,10 @@ def readiness(repo: str, issue: int, repo_status=None,
 
     try:
         status = repo_status(repo)
-        gates["checkout"] = {"branch": status.get("branch", ""),
-                             "clean": bool(status.get("clean"))}
+        gates["checkout"] = {
+            "branch": status.get("branch", ""),
+            "clean": bool(status.get("clean")),
+        }
         if not status.get("clean"):
             reasons.append("checkout has uncommitted changes")
     except FileNotFoundError:
@@ -361,14 +435,18 @@ def readiness(repo: str, issue: int, repo_status=None,
 
     with _lock:
         _ensure_loaded_locked()
-        repo_running = [i for i in _items.values()
-                        if i.get("repo") == repo
-                        and i.get("state") == RUNNING
-                        and i.get("issue") != issue]
+        repo_running = [
+            i
+            for i in _items.values()
+            if i.get("repo") == repo
+            and i.get("state") == RUNNING
+            and i.get("issue") != issue
+        ]
     gates["repo_idle"] = len(repo_running) == 0
     if repo_running:
-        reasons.append(f"repo already has a lane item running "
-                       f"(#{repo_running[0]['issue']})")
+        reasons.append(
+            f"repo already has a lane item running (#{repo_running[0]['issue']})"
+        )
 
     busy = worker_busy()
     gates["worker_idle"] = not busy
@@ -377,9 +455,10 @@ def readiness(repo: str, issue: int, repo_status=None,
 
     try:
         preview = verify_preview(issue, repo)
-        gates["verify"] = {"command": preview.get("command", ""),
-                           "allowlisted": bool(
-                               preview.get("allowlisted"))}
+        gates["verify"] = {
+            "command": preview.get("command", ""),
+            "allowlisted": bool(preview.get("allowlisted")),
+        }
         # Gates must predict worker success (#908): the worker
         # cannot start without a parsed, allowlisted verify
         # command, so ANY non-allowlisted preview blocks — an
@@ -388,14 +467,16 @@ def readiness(repo: str, issue: int, repo_status=None,
         # ready:true.
         if not preview.get("allowlisted"):
             if preview.get("command"):
-                reasons.append(f"verify command not allowlisted: "
-                               f"{preview.get('error', '')}"[:200])
+                reasons.append(
+                    f"verify command not allowlisted: {preview.get('error', '')}"[:200]
+                )
             else:
                 reasons.append(
                     f"issue is not scaffolded for repair: "
                     f"{preview.get('error') or 'no verify command'}; "
                     f"add 'Target Files' + 'Verification Command' "
-                    f"sections (Deterministic Task template)"[:300])
+                    f"sections (Deterministic Task template)"[:300]
+                )
     except Exception as exc:
         gates["verify"] = {"command": "", "allowlisted": False}
         reasons.append(f"could not read verify command: {exc}"[:200])
@@ -405,13 +486,15 @@ def readiness(repo: str, issue: int, repo_status=None,
     if not protection.get("ok"):
         reasons.append(protection.get("error", "could not read gates"))
 
-    return {"ready": len(reasons) == 0, "reasons": reasons,
-            "gates": gates}
+    return {"ready": len(reasons) == 0, "reasons": reasons, "gates": gates}
 
 
-def _monitor_item(repo: str, issue: int,
-                  timeout: float = DISPATCH_MONITOR_TIMEOUT,
-                  poll: float = MONITOR_POLL_SECONDS) -> None:
+def _monitor_item(
+    repo: str,
+    issue: int,
+    timeout: float = DISPATCH_MONITOR_TIMEOUT,
+    poll: float = MONITOR_POLL_SECONDS,
+) -> None:
     """Watch the repair worker until this item's run settles, then
     record done/failed. Never raises out of the thread."""
     from backend.api.routers import issues as issues_mod
@@ -423,8 +506,10 @@ def _monitor_item(repo: str, issue: int,
         while time.monotonic() < deadline:
             with issues_mod.repair_state_lock:
                 status = issues_mod.repair_state.get("status")
-                same = (issues_mod.repair_state.get("issue") == issue
-                        and issues_mod.repair_state.get("repo") == repo)
+                same = (
+                    issues_mod.repair_state.get("issue") == issue
+                    and issues_mod.repair_state.get("repo") == repo
+                )
             if status != "running" or not same:
                 if status == "done" and same:
                     outcome = DONE
@@ -436,18 +521,17 @@ def _monitor_item(repo: str, issue: int,
                 else:
                     with issues_mod.repair_state_lock:
                         code = issues_mod.repair_state.get("exit_code")
-                        titled = issues_mod.repair_state.get(
-                            "failure_reason")
+                        titled = issues_mod.repair_state.get("failure_reason")
                     # Titled failure (#908) beats the bare exit
                     # code: the queue row names the missing
                     # scaffold instead of "exit 2".
                     if isinstance(titled, str) and titled.strip():
-                        detail = (f"repair worker failed: "
-                                  f"{titled.strip()}"[:300])
+                        detail = f"repair worker failed: {titled.strip()}"[:300]
                     else:
                         detail = (
                             f"repair worker failed"
-                            f"{f' (exit {code})' if code is not None else ''}")
+                            f"{f' (exit {code})' if code is not None else ''}"
+                        )
                 break
             time.sleep(poll)
     except Exception as exc:  # pragma: no cover - defensive
@@ -462,8 +546,9 @@ def _monitor_item(repo: str, issue: int,
             _persist_locked()
 
 
-def dispatch(repo: str, issue: int, launcher=None,
-             monitor=None, **gate_seams) -> tuple[dict | None, str | None]:
+def dispatch(
+    repo: str, issue: int, launcher=None, monitor=None, **gate_seams
+) -> tuple[dict | None, str | None]:
     """Dispatch one queued item through the repair worker. The item
     auto-enqueues when absent; terminal items re-dispatch (retry).
     Gates are checked live — a blocked dispatch returns (None,
@@ -498,10 +583,17 @@ def dispatch(repo: str, issue: int, launcher=None,
         current["started_at"] = _now()
         current["finished_at"] = None
         current["detail"] = ""
+        mode = current.get("retry_mode") or "fresh"
+        if mode == "fresh" or not current.get("branch_name"):
+            current["branch_name"] = f"repair/issue-{number}-{int(time.time())}"
+        branch = current["branch_name"]
         snapshot = _copy(current)
         _persist_locked()
     try:
-        launcher(number, name)
+        try:
+            launcher(number, name, branch=branch, mode=mode)
+        except TypeError:
+            launcher(number, name)
     except Exception as exc:
         with _lock:
             current = _items.get(_key(name, number))
@@ -511,8 +603,9 @@ def dispatch(repo: str, issue: int, launcher=None,
                 _persist_locked()
         return None, f"launch failed: {exc}"[:200]
     if monitor is None:
-        thread = threading.Thread(target=_monitor_item,
-                                  args=(name, number), daemon=True)
+        thread = threading.Thread(
+            target=_monitor_item, args=(name, number), daemon=True
+        )
         thread.start()
     else:
         monitor(name, number)

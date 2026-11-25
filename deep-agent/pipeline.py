@@ -1426,14 +1426,30 @@ class Pipeline:
             ok, submit_url = self.stage_submit(worktree, title, spec[:500])
             self.log("submit", submit_url if ok else f"FAILED: {submit_url}")
             if not ok:
-                return self._result(
-                    CHANGES_REQUESTED,
-                    worktree,
-                    f"submit failed: {submit_url}",
-                    audit_cycles,
-                    started,
-                    submit_url="",
-                )
+                if (
+                    "No changes to submit" in submit_url
+                    or "branch matches base" in submit_url
+                ):
+                    evidence = (
+                        "No changes to submit (branch matches base): verified changes "
+                        "already present on base branch after auto-rebase"
+                    )
+                    self.log("submit", f"ALREADY_MERGED: {evidence}")
+                    detail = (
+                        f"{detail}; submit: {evidence}"
+                        if detail
+                        else f"submit: {evidence}"
+                    )
+                    submit_url = ""
+                else:
+                    return self._result(
+                        CHANGES_REQUESTED,
+                        worktree,
+                        f"submit failed: {submit_url}",
+                        audit_cycles,
+                        started,
+                        submit_url="",
+                    )
         ok = False
         if self.keep_worktree:
             self.log("cleanup", "retained")

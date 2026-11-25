@@ -23,6 +23,8 @@ from backend import lane_dispatch
 router = APIRouter(prefix="/api/dispatch", tags=["dispatch"])
 
 START_INTENT = "dispatch-start"
+CANCEL_INTENT = "dispatch-cancel"
+RETRY_INTENT = "dispatch-retry"
 
 
 class DispatchHealth(BaseModel):
@@ -76,11 +78,29 @@ class StartResult(BaseModel):
 class CancelRequest(BaseModel):
     repo: str = "remote-server"
     issue: object = None
+    intent: str = ""
+    confirmed: bool = False
+    disposition: str = "ready"
 
 
 class CancelResult(BaseModel):
     ok: bool = True
     removed: bool = False
+
+
+class RetryRequest(BaseModel):
+    repo: str
+    issue: int | str
+    mode: str = "fresh"
+    intent: str = ""
+    confirmed: bool = False
+
+
+class RetryResult(BaseModel):
+    ok: bool = True
+    repo: str
+    issue: int
+    status: str
 
 
 @router.get("/health", response_model=DispatchHealth)
@@ -111,8 +131,7 @@ def gates(repo: str = "remote-server", issue: str = "") -> dict:
 
 @router.post("/enqueue", response_model=DispatchItem)
 def enqueue(body: EnqueueRequest) -> dict:
-    item, err = lane_dispatch.enqueue(body.repo, body.issue,
-                                      title=body.title or "")
+    item, err = lane_dispatch.enqueue(body.repo, body.issue, title=body.title or "")
     if err is not None or item is None:
         raise HTTPException(status_code=400, detail=err or "bad item")
     return item
@@ -136,14 +155,59 @@ def start(body: StartRequest) -> dict:
     item, err = lane_dispatch.dispatch(name, number)
     if err is not None or item is None:
         raise HTTPException(status_code=409, detail=err or "blocked")
-    return {"ok": True, "repo": item["repo"], "issue": item["issue"],
-            "status": "running"}
+    return {
+        "ok": True,
+        "repo": item["repo"],
+        "issue": item["issue"],
+        "status": "running",
+    }
 
 
 @router.post("/cancel", response_model=CancelResult)
 def cancel(body: CancelRequest) -> dict:
-    """Drop a queued/terminal item. No confirm: cancel stops work,
-    same rule as the jobs run cancel."""
+    """Drop a queued/terminal item, or cancel a running item with confirm.
+    Queued/terminal items drop without confirm. Running items require
+    intent='dispatch-cancel' and confirmed=True; they abort the worker
+    and record cancelled-by-operator with the chosen disposition."""
+    from backend.api.routers.issues import parse_issue_number
+    from backend.core.validation import require_confirm, validate_repo_name
+
+    try:
+        name = validate_repo_name(body.repo)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid repo")
+    number = parse_issue_number(body.issue)
+    if number is None:
+        raise HTTPException(status_code=400, detail="invalid issue")
+
+    item = lane_dispatch.get_item(name, number)
+    if item is not None and item.get("state") == lane_dispatch.RUNNING:
+        require_confirm(body, CANCEL_INTENT)
+        if body.disposition not in ("ready", "parked"):
+            raise HTTPException(status_code=400, detail="invalid disposition")
+        from backend.api.routers.issues import abort_in_flight_repair
+
+        abort_in_flight_repair()
+        res_item, err = lane_dispatch.cancel_running(
+            name, number, disposition=body.disposition
+        )
+        if err is not None or res_item is None:
+            raise HTTPException(status_code=400, detail=err or "bad item")
+        return {"ok": True, "removed": False}
+
+    removed, err = lane_dispatch.cancel(name, number)
+    if err == "item is running":
+        raise HTTPException(status_code=409, detail=err)
+    if err is not None:
+        raise HTTPException(status_code=404, detail=err)
+    return {"ok": True, "removed": removed}
+
+
+@router.post("/retry", response_model=RetryResult)
+def retry(body: RetryRequest) -> dict:
+    from backend.core.validation import require_confirm
+
+    require_confirm(body, RETRY_INTENT)
     from backend.api.routers.issues import parse_issue_number
     from backend.core.validation import validate_repo_name
 
@@ -154,9 +218,18 @@ def cancel(body: CancelRequest) -> dict:
     number = parse_issue_number(body.issue)
     if number is None:
         raise HTTPException(status_code=400, detail="invalid issue")
-    removed, err = lane_dispatch.cancel(name, number)
-    if err == "item is running":
-        raise HTTPException(status_code=409, detail=err)
+    if body.mode not in ("fresh", "resume"):
+        raise HTTPException(status_code=400, detail="invalid mode")
+    item, err = lane_dispatch.retry(name, number, mode=body.mode)
     if err is not None:
-        raise HTTPException(status_code=404, detail=err)
-    return {"ok": True, "removed": removed}
+        if err == "unknown item":
+            raise HTTPException(status_code=404, detail=err)
+        raise HTTPException(status_code=400, detail=err)
+    if item is None:
+        raise HTTPException(status_code=404, detail="unknown item")
+    return {
+        "ok": True,
+        "repo": item["repo"],
+        "issue": item["issue"],
+        "status": item["state"],
+    }
