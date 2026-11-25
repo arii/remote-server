@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { emitLegacyMatcher } from './legacy-matcher.mjs';
+import { emitFirebaseBundle } from './firebase-bundle.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +32,16 @@ if (!fs.existsSync(EXT_SRC)) {
 // verification so a clean checkout passes with no prior build.
 emitLegacyMatcher();
 console.log('✅ Emitted classic-script matcher twin: lib/matcher.legacy.js (from lib/matcher.js)');
+
+// 2b. Bundle the Firebase AI Logic SDK (hybrid on-device + cloud inference,
+// #BuildHybridAI) into extension/vendor/. Gitignored; rebuilt every build.
+try {
+  const { kb } = emitFirebaseBundle();
+  console.log(`✅ Emitted Firebase AI Logic bundle: vendor/firebase-ai.bundle.js (${kb} KB)`);
+} catch (err) {
+  console.error(`❌ Firebase bundle step failed: ${err.message}`);
+  process.exit(1);
+}
 
 // 3. Validate manifest.json
 const manifestPath = path.join(EXT_SRC, 'manifest.json');
