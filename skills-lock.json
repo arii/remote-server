@@ -15,55 +15,6 @@
       "computedHash": "c67d9e4ba9da93ed0da8b0147235e5890aa24e659548f65b7765c5af0a470c3f",
       "ref": "2b4aa13a72dd47cd135b06ce5abfccd92e19b24f"
     },
-    "deep-agents-core": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/deep-agents-core/SKILL.md",
-      "computedHash": "1bfd3542b3c4b1d861d50cf24bc27267f8e1e1c72570d07583b8e9b39bdeacb1",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "deep-agents-memory": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/deep-agents-memory/SKILL.md",
-      "computedHash": "3549b750ca9625dc73e0c4bee87133f57fab374ba0202daa74a2d28c91cb3bf4",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "deep-agents-orchestration": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/deep-agents-orchestration/SKILL.md",
-      "computedHash": "76f4c5c9ed0773a0008e753422b3e2f5849b7748c18a9ab84e8e2d4dbbd66ebf",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "deepagents-python-quickstart": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/deepagents-python-quickstart/SKILL.md",
-      "computedHash": "a7a7c80cc3320c9a3efcef817f44949e17f8fcc2e428f695dffa5912cf64c80d",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "deepagents-typescript-quickstart": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/deepagents-typescript-quickstart/SKILL.md",
-      "computedHash": "fbdde0b9416e06c0c8e135015d777652471dac2f972655db3c25748cc157a062",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "ecosystem-primer": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/ecosystem-primer/SKILL.md",
-      "computedHash": "cc786e2a06096142f93bda47bd9e9419338b21fead8d5c3d7b997cef43ed32cb",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "eval-engineering": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/eval-engineering/SKILL.md",
-      "computedHash": "47c93e705a3a21ab28ab0b2289488cb5e02da0e52729ca857a0c1d008a401c0b",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
     "hostile-anti-slop-audit": {
       "source": "arii/skills",
       "sourceType": "github",
@@ -92,117 +43,12 @@
       "computedHash": "143c8a2a27561595f36fee6e7993f7a8d5ff32f445c725d2b8a0571e1fd85eb2",
       "ref": "910218f0891749c9364e814596e452f7258e23bb"
     },
-    "kill-ai-slop": {
-      "source": "yetone/kill-ai-slop",
-      "sourceType": "github",
-      "skillPath": "skill/SKILL.md",
-      "computedHash": "7a9d104edaa24d5b6fb5d049e67597c10bf770f564299ca33fb8eff9b829e37f",
-      "ref": "f6e2ae32b30443ec7bd0da4da971ee18d8f8ffcb"
-    },
     "lane-orchestrator": {
       "source": "arii/skills",
       "sourceType": "github",
       "skillPath": "skills/lane-orchestrator/SKILL.md",
       "computedHash": "2c5d3609178108859aa2536200434d1a01b08b09bff18dd8067d1147fb2b936f",
       "ref": "a064172495895d5cfe8f85e91c5f7f9c5404c287"
-    },
-    "langchain-dependencies": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langchain-dependencies/SKILL.md",
-      "computedHash": "e099bf710d55bac77bdb3aa3e0b76e3da249f0ba910f37ba6a87c524d14dd8bf",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langchain-fundamentals": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langchain-fundamentals/SKILL.md",
-      "computedHash": "00dc50a19d6eec308e3c4a5b8ca237fdddeb00195e7e29d009049f5d0566f5c2",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langchain-middleware": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langchain-middleware/SKILL.md",
-      "computedHash": "2c5e499a818d1b17bdcbe8b827c69679aab175f772e89c6180fe01fedf435968",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langchain-python-quickstart": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langchain-python-quickstart/SKILL.md",
-      "computedHash": "061761566c9495a1e01c912d7813468e44988cfdb584857589e951fa1be3d783",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langchain-rag": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langchain-rag/SKILL.md",
-      "computedHash": "4ebd791aeaaf8a4c3b9fc164404bf51de66e94e8d98cae6f34e73e533df4afb2",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langchain-typescript-quickstart": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langchain-typescript-quickstart/SKILL.md",
-      "computedHash": "4de20dcd32087c6ed7e740e83ba3794329d1d066d097ba009175d2b5c0d86790",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langgraph-cli": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langgraph-cli/SKILL.md",
-      "computedHash": "59bfeb9204cf63a22b117f01b0c581b5f99d63d0720df35c2fb0fafcbd92f344",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langgraph-decision-models": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langgraph-decision-models/SKILL.md",
-      "computedHash": "aed6f94f1b4e9ac841b4929e7f497229d59095c6e61ea28c4f1257af3bbea9cd",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langgraph-fundamentals": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langgraph-fundamentals/SKILL.md",
-      "computedHash": "193bea142c9df04abc44917fb96c0be53ec9b5c77f56670004d3c03c117fb990",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langgraph-human-in-the-loop": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langgraph-human-in-the-loop/SKILL.md",
-      "computedHash": "ce56e8ce58548dd1d7cb0d3e524cf546cef0c712e3c35d63fdd4ae354b40d3c1",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langgraph-persistence": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langgraph-persistence/SKILL.md",
-      "computedHash": "0a9a4f36e6d7895a273ce0882655e57023d2d992d4fde8e033e2936ac1df789e",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langgraph-python-quickstart": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langgraph-python-quickstart/SKILL.md",
-      "computedHash": "0f111b6d23be0fe1279217ddee83117cd533467428e0302b339538aa031d35ab",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "langgraph-typescript-quickstart": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/langgraph-typescript-quickstart/SKILL.md",
-      "computedHash": "fb6382b2927a7fde0de2071c98c1c800a66cd9378bdc19c72eaaa27743e687d0",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
-    },
-    "managed-deep-agents": {
-      "source": "langchain-ai/langchain-skills",
-      "sourceType": "github",
-      "skillPath": "config/skills/managed-deep-agents/SKILL.md",
-      "computedHash": "2d36944c6bf05e4be3e522fc2ed983c95bfee06db740fbeec584f75c1f3b8b23",
-      "ref": "32d6228affabb653720d6c20187a8a7afc292478"
     },
     "remote-server-computer-browser": {
       "source": "arii/skills",

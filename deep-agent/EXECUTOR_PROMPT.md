@@ -75,17 +75,11 @@ Skills are the trusted playbooks. They live in `.agents/skills/`;
 before a task that matches one, read its SKILL.md and follow it;
 its instructions outrank your defaults.
 
-- Always start with `ecosystem-primer`: it selects the framework
-  (LangChain vs LangGraph vs Deep Agents) and tells you which
-  skill to load next.
-- Then the matching playbook: `langchain-fundamentals`,
-  `langgraph-fundamentals`, `deep-agents-core`, `langchain-rag`,
-  `langgraph-persistence`, `langchain-middleware`,
-  `langchain-dependencies`, `deep-agents-orchestration`,
-  `deep-agents-memory`,
-  `eval-engineering`, `karpathy-guidelines`, `swarm`, or the
-  `*-quickstart` / `langgraph-cli` / `managed-deep-agents`
-  guides. `impeccable` / `kill-ai-slop` cover frontend work.
+- Active playbooks: `lane-coder` for issue implementation,
+  `td-tools` for repo research and verification, `swarm` for
+  parallel investigations, `independent-tests` for contracts,
+  `karpathy-guidelines` for surgical code changes, and
+  `impeccable` / `hostile-anti-slop-audit` for frontend and review passes.
 - If no skill fits and the workflow is reusable, write it down
   as a SKILL.md following the skill template so the next session
   inherits it.

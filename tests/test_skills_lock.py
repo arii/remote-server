@@ -150,6 +150,12 @@ class LifespanWiringTest(unittest.TestCase):
             self.assertEqual(self._run_lifespan(), ["skill 'x': hash mismatch"])
         finally:
             live.verify_skills = real
+            try:
+                from backend.api.routers import attention
+
+                attention.publish_skills_verification_errors([])
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
