@@ -1741,7 +1741,7 @@ def _queue_state(config, now=None):
     if status.get("halted"):
         return (
             f"HALTED {status.get('reason') or 'operator clearance required'}. "
-            "Next action: Inspect and reconcile before explicit recovery"
+            "Next action: inspect and reconcile first, then restart with --clear-halt"
         )
     if (root / "STOP").exists():
         return (

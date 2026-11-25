@@ -2859,7 +2859,8 @@ class QueueStatusTests(unittest.TestCase):
         out = self.status(
             held=False, halted="consecutive failures with a common blocker"
         )
-        self.assertIn("Inspect and reconcile", out)
+        self.assertIn("inspect and reconcile", out)
+        self.assertIn("--clear-halt", out)
         self.assertIn("common blocker", out)
 
     def test_busy(self):
