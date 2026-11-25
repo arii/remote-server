@@ -172,9 +172,16 @@ prints one state and its next action: `IDLE` (supervisor running, nothing
 claimed) -> Ready; `STALLED` (claimed, `run.log` quiet past `stall_seconds`,
 default 1800; a fresh claim without a log yet counts from its recorded
 start) -> Investigate/Restart; `DOWN` (supervisor not holding `queue.lock`)
--> Restart Service, or `DOWN halted: <reason>` -> inspect the halt, then
-restart with `--clear-halt`; `BUSY` (`queue.lock` held by a non-supervisor
+-> Restart Service; `BUSY` (`queue.lock` held by a non-supervisor
 process such as `--retry`) -> wait for it to finish.
+A `STOP` marker reports `STOPPED`, and a saved halt reports `HALTED` with its
+reason -> inspect and reconcile first, then restart with `--clear-halt`, before
+heartbeat and lock checks. Neither status recommends a plain restart: inspect
+and reconcile the saved run before the explicit recovery procedure above. Status
+checks leave both safety gates in place. Saved `stopped` and `done` flags
+describe earlier supervisor exits; they do not override the marker, halt, lock,
+or current activity checks.
+
 Set `ledger_stamp_heartbeat` in the queue config to the stamp daemon's heartbeat
 file (the daemon writes `~/twt/queue/ledger-stamp.heartbeat` by default). The status
 check is off until the key is set. Once it is, the line also ends

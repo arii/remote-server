@@ -2859,6 +2859,7 @@ class QueueStatusTests(unittest.TestCase):
         out = self.status(
             held=False, halted="consecutive failures with a common blocker"
         )
+        self.assertIn("inspect and reconcile", out)
         self.assertIn("--clear-halt", out)
         self.assertIn("common blocker", out)
 
@@ -2886,3 +2887,50 @@ class QueueStatusTests(unittest.TestCase):
     def test_running(self):
         out = self.status(held=True, current="arii/remote-server#1")
         self.assertNotIn("Next action", out)
+
+
+class QueueStatusStopTests(unittest.TestCase):
+    def test_stop_marker_overrides_idle_and_missing_heartbeat(self):
+        for held in (False, True):
+            with self.subTest(held=held), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "STOP").touch()
+                (root / "status.json").write_text(
+                    json.dumps({"current": None, "stopped": True, "done": True})
+                )
+                with (root / "queue.lock").open("a") as lock:
+                    if held:
+                        fcntl.flock(lock, fcntl.LOCK_EX)
+                    result = runner.queue_status({"state_dir": tmp})
+                self.assertTrue(result.startswith("STOPPED"), result)
+                self.assertIn("restart alone stays stopped", result)
+                self.assertTrue((root / "STOP").exists())
+
+    def test_halt_reason_overrides_stop_and_retains_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = {"halted": True, "reason": ["unsettled receipts"]}
+            (root / "status.json").write_text(json.dumps(state))
+            (root / "STOP").touch()
+            result = runner.queue_status({"state_dir": tmp})
+            self.assertTrue(result.startswith("HALTED"), result)
+            self.assertIn("unsettled receipts", result)
+            self.assertEqual(json.loads((root / "status.json").read_text()), state)
+            self.assertTrue((root / "STOP").exists())
+
+    def test_old_completion_flags_do_not_override_live_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "status.json").write_text(
+                json.dumps(
+                    {"current": "arii/remote-server#1", "stopped": True, "done": True}
+                )
+            )
+            log = root / "arii_remote-server-1" / "run.log"
+            log.parent.mkdir()
+            log.write_text("active")
+            (root / "supervisor.pid").write_text(str(os.getpid()))
+            with (root / "queue.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                result = runner.queue_status({"state_dir": tmp})
+            self.assertTrue(result.startswith("RUNNING"), result)
