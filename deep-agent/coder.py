@@ -95,6 +95,7 @@ INITIAL_TOOL_LIMIT = 32
 INSPECTION_TOOLS = frozenset({"read_file", "grep", "ls", "glob"})
 EXPLORE_NUDGE = 12
 EXPLORE_LIMIT = 20
+INITIAL_STALL_CALL_LIMIT = 5
 DEFAULT_FALLBACK_MODEL = "nebius/zai-org/GLM-5.3-Flash"
 # Middleware adds graph steps beyond the model and tool calls themselves.
 RECURSION_LIMIT = int(
@@ -1890,7 +1891,13 @@ def issuing_message(request):
 
 
 def coder_tool_middleware(
-    *, repair=False, planning=False, first_edit_writes=None, correction=False
+    *,
+    repair=False,
+    planning=False,
+    first_edit_writes=None,
+    correction=False,
+    stall_call_limit=INITIAL_STALL_CALL_LIMIT,
+    written_files=None,
 ):
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import ToolMessage
@@ -1902,19 +1909,72 @@ def coder_tool_middleware(
     calls = 0
     explored = 0
     nudged = None
+    seen_model_messages = set()
+    has_plan_or_edit = bool(written_files)
     bound_exploring = not (repair or planning or correction)
     lock = threading.Lock()
     limit = REPAIR_TOOL_LIMIT if repair else INITIAL_TOOL_LIMIT
     label = "Repair" if repair else "Initial implementation"
     error = RepairBudgetExceeded if repair else CoderBudgetExceeded
 
+    plan_tools = frozenset({"propose_plan", "write_todos"})
+    mutating_names = frozenset({"edit_file", "write_file", "replace_lines", "delete"})
+
     @wrap_tool_call
     def bound_calls(request, handler):
-        nonlocal calls, edit_generation, explored, nudged
+        nonlocal calls, edit_generation, explored, nudged, has_plan_or_edit
         call = request.tool_call
         key = (call["name"], json.dumps(call["args"], sort_keys=True))
         inspection = call["name"] in INSPECTION_TOOLS
+        message = issuing_message(request)
         with lock:
+            if message is not None:
+                msg_id = getattr(message, "id", None) or id(message)
+                if msg_id not in seen_model_messages:
+                    seen_model_messages.add(msg_id)
+                    if not has_plan_or_edit:
+                        state = getattr(request, "state", None) or {}
+                        for past_msg in state.get("messages", []) or []:
+                            p_calls = getattr(past_msg, "tool_calls", None) or ()
+                            if any(c.get("name") in plan_tools for c in p_calls):
+                                has_plan_or_edit = True
+                                break
+                            p_content = getattr(past_msg, "content", "")
+                            if isinstance(p_content, str) and marked_plan_files(
+                                p_content
+                            ):
+                                has_plan_or_edit = True
+                                break
+                            if (
+                                getattr(past_msg, "type", None) == "tool"
+                                and getattr(past_msg, "name", None) in mutating_names
+                                and getattr(past_msg, "status", None) != "error"
+                            ):
+                                has_plan_or_edit = True
+                                break
+                    if bound_exploring and (
+                        first_edit_writes is None or first_edit_writes
+                    ):
+                        if (
+                            not has_plan_or_edit
+                            and len(seen_model_messages) >= stall_call_limit
+                        ):
+                            m_calls = getattr(message, "tool_calls", None) or ()
+                            m_content = getattr(message, "content", "")
+                            attempting = any(
+                                c.get("name") in (plan_tools | mutating_names)
+                                for c in m_calls
+                            ) or (
+                                isinstance(m_content, str)
+                                and marked_plan_files(m_content)
+                            )
+                            if not attempting:
+                                raise error(
+                                    f"BLOCKED: {label} stalled after {len(seen_model_messages)} "
+                                    "model calls with neither a plan nor an edit",
+                                    recoverable_stall=True,
+                                )
+
             calls += 1
             if calls > limit:
                 raise error(
@@ -1942,7 +2002,6 @@ def coder_tool_middleware(
             ):
                 # Calls batched with the nudged one get the nudge too, so the
                 # model sees it before the hard stop.
-                message = issuing_message(request)
                 if nudged is None or message is not nudged:
                     explored += 1
                     if explored >= EXPLORE_LIMIT:
@@ -2005,9 +2064,21 @@ def coder_tool_middleware(
                 earlier.clear()
                 explored = 0
                 nudged = None
+                has_plan_or_edit = True
+                seen_model_messages.clear()
+            elif call.get("name") in plan_tools:
+                has_plan_or_edit = True
         return result
 
     return bound_calls
+
+
+def initial_progress_audit_middleware(
+    written_files=None, limit=INITIAL_STALL_CALL_LIMIT
+):
+    return coder_tool_middleware(
+        first_edit_writes=written_files, stall_call_limit=limit
+    )
 
 
 def build_agent(
@@ -2082,6 +2153,7 @@ def build_agent(
             repair=repair,
             planning=planning,
             first_edit_writes=written_files if first_edit is not None else None,
+            written_files=written_files,
             correction=correction,
         ),
     )
