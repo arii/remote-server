@@ -81,12 +81,25 @@ class TestCoderModelTier(unittest.TestCase):
     def test_strong_without_config_raises_and_builds_nothing(self):
         for value in ("", "   "):
             with self.subTest(value=value):
-                with self.assertRaisesRegex(ValueError, "CODER_STRONG_MODEL"):
+                with (
+                    mock.patch.object(coder, "resolve_strong_model", return_value=""),
+                    self.assertRaisesRegex(ValueError, "CODER_STRONG_MODEL"),
+                ):
                     self.run_tier(
                         "strong",
                         {"CODER_MODEL": "fast-m", "CODER_STRONG_MODEL": value},
                     )
                 self.built.assert_not_called()
+
+    def test_strong_tier_resolves_from_catalog_when_env_unset(self):
+        with mock.patch.object(
+            coder, "resolve_strong_model", return_value="dynamic-strong-model"
+        ):
+            overrides, starts, _ = self.run_tier(
+                "strong", {"CODER_MODEL": "fast-m", "CODER_STRONG_MODEL": ""}
+            )
+            self.assertEqual(overrides, ["dynamic-strong-model"])
+            self.assertEqual(starts, ["twt:dynamic-strong-model (tier=strong)"])
 
     def test_invalid_tier_raises(self):
         with self.assertRaisesRegex(ValueError, "model_tier"):
@@ -103,6 +116,15 @@ class TestTierModel(unittest.TestCase):
             self.assertEqual(coder.tier_model(None), "f")
             with self.assertRaises(ValueError):
                 coder.tier_model("x")
+
+    def test_tier_model_resolves_from_catalog_when_env_unset(self):
+        with mock.patch.dict("os.environ", {"CODER_STRONG_MODEL": ""}, clear=False):
+            with mock.patch.object(
+                coder, "resolve_strong_model", return_value="dynamic-strong"
+            ) as resolve:
+                model = coder.tier_model("strong", brief="test", catalog=[{"id": "m"}])
+                self.assertEqual(model, "dynamic-strong")
+                resolve.assert_called_once_with(brief="test", catalog=[{"id": "m"}])
 
     def test_default_plan_fn_respects_strong_tier(self):
         built = []
@@ -216,9 +238,10 @@ class TestStrongTierGatewayRequest(unittest.TestCase):
                 with self.assertRaises(twt_provenance.TwTPreflightError):
                     self.build("strong", dict(env, TWT_STRONG_MODELS=bad))
 
-    def test_unset_strong_model_still_raises_value_error(self):
-        with self.assertRaises(ValueError):
-            self.build("strong", dict(self.base, TWT_PREFLIGHT_REQUIRED="1"))
+    def test_unset_strong_model_raises_when_no_candidate_available(self):
+        with mock.patch.object(coder, "resolve_strong_model", return_value=""):
+            with self.assertRaises(ValueError):
+                self.build("strong", dict(self.base, TWT_PREFLIGHT_REQUIRED="1"))
 
 
 if __name__ == "__main__":

@@ -274,6 +274,7 @@ def _run_prefer(args, env, spec):
         with (
             mock.patch.object(sys, "argv", argv),
             mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(rc, "load_dotenv"),
             mock.patch.dict(sys.modules, _runtime_stubs()),
             mock.patch.object(rc, "create_deep_agent", return_value=agent),
             mock.patch.object(rc, "MODEL_ID", PIN),
