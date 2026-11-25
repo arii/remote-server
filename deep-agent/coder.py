@@ -439,7 +439,11 @@ def _default_plan_fn(brief, worktree_root, context):
         or os.environ.get("S5_START_MODEL_TIER")
         or os.environ.get("CODER_MODEL_TIER")
     )
-    model_override = tier_model("strong") if tier == "strong" else None
+    model_override = (
+        tier_model("strong", brief=brief, catalog=context.get("catalog"))
+        if tier == "strong"
+        else None
+    )
     model, spec = build_model(model_override=model_override)
     skills = (context.get("skills") or "").strip()
     skills_block = "\n\n---\n\nSkills:\n" + skills if skills else ""
@@ -2594,16 +2598,11 @@ def mark_unverified(summary):
     return "[unverified]"
 
 
-def select_strong_route(brief="", catalog=None):
-    """Select the strong route through Tokens with Taste routing.
+def resolve_strong_model(brief="", catalog=None):
+    """Dynamically resolve a qualifying strong candidate from the TwT catalog.
 
-    Consults CODER_STRONG_MODEL first. If unset, selects a qualifying strong
-    candidate from the live TwT catalog (or falls back to the TwT strong
-    route). No pinned model, provider, or capability lists are hardcoded.
+    Returns the candidate model ID, or empty string if no candidate meets criteria.
     """
-    strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip()
-    if strong:
-        return strong
     try:
         from backend.shared import task_router
 
@@ -2640,6 +2639,22 @@ def select_strong_route(brief="", catalog=None):
                 return decision["model"]
     except Exception:
         pass
+    return ""
+
+
+def select_strong_route(brief="", catalog=None):
+    """Select the strong route through Tokens with Taste routing.
+
+    Consults CODER_STRONG_MODEL first. If unset, selects a qualifying strong
+    candidate from the live TwT catalog (or falls back to the TwT strong
+    route). No pinned model, provider, or capability lists are hardcoded.
+    """
+    strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip()
+    if strong:
+        return strong
+    resolved = resolve_strong_model(brief=brief, catalog=catalog)
+    if resolved:
+        return resolved
     try:
         from backend.shared import model_router
 
@@ -2648,10 +2663,11 @@ def select_strong_route(brief="", catalog=None):
         return "route:strong"
 
 
-def tier_model(model_tier):
+def tier_model(model_tier, brief="", catalog=None):
     """Model override for a pipeline model_tier ('fast', 'strong', None).
 
-    'strong' requires CODER_STRONG_MODEL and fails loudly without it;
+    'strong' uses CODER_STRONG_MODEL when set, or dynamically resolves a
+    qualifying strong candidate from the live TwT catalog via resolve_strong_model.
     'fast' and None use CODER_MODEL (None means the router default).
     """
     if model_tier not in (None, "fast", "strong"):
@@ -2659,7 +2675,11 @@ def tier_model(model_tier):
     if model_tier == "strong":
         strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip()
         if not strong:
-            raise ValueError("model_tier 'strong' requires CODER_STRONG_MODEL")
+            strong = resolve_strong_model(brief=brief, catalog=catalog)
+        if not strong:
+            raise ValueError(
+                "model_tier 'strong' requires CODER_STRONG_MODEL or available strong candidate in TwT catalog"
+            )
         return strong
     return os.environ.get("CODER_MODEL") or None
 
@@ -2726,6 +2746,7 @@ def run_coder(
         repair=repair,
         model_tier=model_tier,
         model_override=model_override,
+        catalog=catalog,
         repo=repo,
         meter=meter,
         first_edit=first_edit,
@@ -2968,6 +2989,7 @@ def _run_coder_attempt(
     repair=False,
     model_tier=None,
     model_override=None,
+    catalog=None,
     repo=None,
     fallback_model=None,
     prior_files=(),
@@ -2998,7 +3020,7 @@ def _run_coder_attempt(
 
     started = time.time()
     deadline = time.monotonic() + timeout if deadline is None else deadline
-    override = model_override or tier_model(model_tier)
+    override = model_override or tier_model(model_tier, brief=brief, catalog=catalog)
     model, spec = (
         build_fallback_model(fallback_model)
         if fallback_model

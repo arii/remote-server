@@ -111,8 +111,7 @@ sentinel; touch `STOP` by hand after an unclean exit. To run again, remove the k
 ## Dispatch gate
 
 The queue dispatches an issue only if, when it is refreshed just before dispatch,
-it is open and carries the `ready` label. Only Ariel adds `ready`; the queue never
-adds or removes `ready` or `ledger-intake`. A listed issue without `ready` logs
+it is open and carries the `ready` label. A listed issue without `ready` logs
 `SKIP owner/repo#N not ready`. It is not marked completed, skipped or failed, and no
 failure counter changes, so the next queue run checks it again and runs it once
 `ready` is added. If the refresh call fails or returns unusable data, the queue fails
