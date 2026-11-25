@@ -34,46 +34,138 @@ export const SYNC_STORAGE_KEYS = [
 const MESSAGES = {
   "not-signed-in": "Sign in to Google to sync, then press Sync with Google Drive again.",
   "scope-denied": "Sync needs permission to use the app data folder in your Drive. Allow it when Google asks, then try again.",
+  "api-disabled": "The Google Drive API is not turned on for this extension's Google Cloud project.",
+  quota: "Your Google Drive storage is full.",
+  "rate-limited": "Google Drive is limiting requests right now.",
+  "drive-unavailable": "Google Drive had a server problem.",
+  forbidden: "Google Drive refused the request.",
   network: "Could not reach Google Drive. Check your connection and try again.",
   "schema-mismatch": "The synced file in Drive was written by a different version of LocalForm AI. Update the extension, then try again. Nothing was changed.",
   failed: "Google Drive sync failed."
 };
 
+// One plain next step per failure class, shown under the summary.
+const NEXT = {
+  "not-signed-in": "Press Sync with Google Drive again and finish the Google sign-in.",
+  "scope-denied": "Press Sync again and allow access to the app data folder when Google asks.",
+  "api-disabled": "In Google Cloud console, enable the Google Drive API for the project that owns the OAuth client ID, wait a minute, then sync again.",
+  quota: "Free up space in your Google Drive (or Google One storage), then sync again.",
+  "rate-limited": "Wait a minute, then press Sync again.",
+  "drive-unavailable": "Wait a few minutes, then press Sync again.",
+  forbidden: "Check the Google message above and the OAuth consent screen setup (test users, scopes), then sync again.",
+  network: "Check your connection or any VPN or firewall, then press Sync again.",
+  "schema-mismatch": "Update the extension on this browser, then sync again. Nothing was changed.",
+  failed: "Press Sync again. If it keeps failing, open the Observer tab and copy the ERROR trace."
+};
+
+const cap = (v, n) => (typeof v === "string" ? v.slice(0, n) : "");
+
 export class DriveSyncError extends Error {
-  constructor(code, detail) {
+  // info: {status, reason, googleMessage, cause, step}. Only strings and the
+  // HTTP status are kept, never tokens, headers or file contents.
+  constructor(code, detail, info = {}) {
     super(detail ? `${MESSAGES[code]} (${detail})` : MESSAGES[code]);
     this.name = "DriveSyncError";
     this.code = code;
+    this.detail = detail || "";
+    this.status = Number.isInteger(info.status) ? info.status : 0;
+    this.reason = cap(info.reason, 80);
+    this.googleMessage = cap(info.googleMessage, 300);
+    this.cause = cap(info.cause, 80);
+    this.step = info.step || "";
+    this.next = NEXT[code];
   }
 }
 
-function classify(err) {
-  if (err instanceof DriveSyncError) return err;
-  if (err?.status === 401) return new DriveSyncError("not-signed-in");
-  if (err?.status === 403) return new DriveSyncError("scope-denied");
-  if (err?.status) return new DriveSyncError("failed", `status ${err.status}`);
-  return new DriveSyncError("failed", err?.message);
+const REASONS = {
+  scope: /^(insufficientPermissions|ACCESS_TOKEN_SCOPE_INSUFFICIENT)$/,
+  api: /^(accessNotConfigured|SERVICE_DISABLED|API_KEY_SERVICE_BLOCKED)$/,
+  quota: /^(storageQuotaExceeded|quotaExceeded)$/,
+  rate: /^(rateLimitExceeded|userRateLimitExceeded|dailyLimitExceeded|RATE_LIMIT_EXCEEDED)$/
+};
+
+function httpCode(status, reason, googleMessage) {
+  if (status === 401) return "not-signed-in";
+  if (status === 429) return "rate-limited";
+  if (status >= 500) return "drive-unavailable";
+  if (status === 403) {
+    if (REASONS.scope.test(reason)) return "scope-denied";
+    if (REASONS.api.test(reason) || /has not been used in project|SERVICE_DISABLED/i.test(googleMessage)) return "api-disabled";
+    if (REASONS.quota.test(reason)) return "quota";
+    if (REASONS.rate.test(reason)) return "rate-limited";
+    return "forbidden";
+  }
+  return "failed";
+}
+
+function classify(err, step = "") {
+  if (err instanceof DriveSyncError) {
+    if (!err.step) err.step = step;
+    return err;
+  }
+  const status = Number.isInteger(err?.status) ? err.status : 0;
+  const info = { status, reason: err?.reason, googleMessage: err?.googleMessage, cause: err?.name || "Error", step };
+  if (status) {
+    const code = httpCode(status, info.reason || "", info.googleMessage || "");
+    return new DriveSyncError(code, `HTTP ${status}${info.reason ? `, ${info.reason}` : ""}`, info);
+  }
+  return new DriveSyncError("failed", `${info.cause}: ${cap(err?.message, 200) || "no message"}`, info);
 }
 
 // Wraps injected deps so every failure maps to one explicit DriveSyncError.
-function guardDeps({ getToken, removeToken, fetchFn }) {
+// ctx.step is kept current by syncWithDrive so HTTP and network failures say
+// which stage they happened in.
+function guardDeps({ getToken, removeToken, fetchFn }, ctx) {
   return {
     removeToken,
     getToken: async () => {
       try {
         return await getToken();
       } catch (err) {
-        throw new DriveSyncError(/scope|not granted|revoked|denied/i.test(err?.message || "") ? "scope-denied" : "not-signed-in");
+        const message = cap(err?.message, 200);
+        const code = /scope|not granted|revoked|denied|did not approve/i.test(message) ? "scope-denied" : "not-signed-in";
+        throw new DriveSyncError(code, message ? `${err?.name || "Error"}: ${message}` : "", {
+          cause: err?.name || "Error",
+          step: "sign-in"
+        });
       }
     },
     fetchFn: async (url, init) => {
       try {
         return await fetchFn(url, init);
-      } catch {
-        throw new DriveSyncError("network");
+      } catch (err) {
+        const name = err?.name || "Error";
+        throw new DriveSyncError("network", `${name}: ${cap(err?.message, 200) || "no message"}`, { cause: name, step: ctx.step });
       }
     }
   };
+}
+
+// Plain, JSON-safe description of any sync failure for the panel and traces.
+export function errorInfo(err) {
+  const e = classify(err);
+  return {
+    code: e.code,
+    name: e.cause || e.name,
+    status: e.status,
+    reason: e.reason,
+    googleMessage: e.googleMessage,
+    detail: e.detail,
+    step: e.step,
+    summary: MESSAGES[e.code],
+    next: e.next
+  };
+}
+
+export function formatSyncFailure(info) {
+  const google = [info.reason, info.googleMessage].filter(Boolean).join(": ");
+  const parts = [
+    `${info.name || "Error"} (${info.code})`,
+    info.step ? `during ${info.step}` : "",
+    info.status ? `HTTP ${info.status}` : "",
+    google || info.detail
+  ].filter(Boolean);
+  return [`Sync failed: ${info.summary}`, `Details: ${parts.join(", ")}`, `Next: ${info.next}`].join("\n");
 }
 
 // --- Merge -------------------------------------------------------------------
@@ -332,13 +424,16 @@ export async function pushRemote(deps, fileId, payload) {
 // and returns the payload to upload), then push. Every failure is a
 // DriveSyncError with a plain message; nothing is swallowed.
 export async function syncWithDrive(rawDeps, { applyRemote, now = Date.now }) {
-  const deps = guardDeps(rawDeps);
+  const ctx = { step: "pull" };
+  const deps = guardDeps(rawDeps, ctx);
   try {
     const { fileId, payload } = await pullRemote(deps);
+    ctx.step = "merge";
     const merged = await applyRemote(payload);
+    ctx.step = "push";
     await pushRemote(deps, fileId, merged);
     return { syncedAt: now() };
   } catch (err) {
-    throw classify(err);
+    throw classify(err, ctx.step);
   }
 }

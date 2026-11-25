@@ -15,6 +15,8 @@ import {
   selectVaultFacts
 } from "./lib/ask-context.js";
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
+import { improvementSummary } from "./lib/improvement-summary.js";
+import { errorInfo as syncErrorInfo, formatSyncFailure } from "./lib/drive-sync.js";
 import { INTERNALS_URL, MODEL_APIS, describeModelError, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
 import { modelPanelView, observeView } from "./lib/panel-state.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
@@ -31,7 +33,7 @@ import {
 import { MAX_EVAL_CASES, casesKey, normalizeCases, removeCase, scoreOutput, suggestFromFailures, summarizeRun } from "./lib/prompt-eval.js";
 import { summarizeHydrationResult } from "./lib/hydration.js";
 import { MAX_PENDING_DELTAS } from "./lib/storage-mutations.js";
-import { buildVaultPrompt, parseVaultImport } from "./lib/vault-onboarding.js";
+import { buildVaultPrompt, existingKeysForPrompt, parseVaultImport } from "./lib/vault-onboarding.js";
 import {
   REFINEMENT_SCHEMA,
   buildRefinementPrompt,
@@ -65,6 +67,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     setPromptGuidance(changes.promptGuidance.newValue);
     renderGuidanceCard();
   }
+  if (area === "local" && IMPROVE_KEYS.some((k) => changes[k])) renderImprovement();
 });
 
 async function getClonedSession() {
@@ -387,9 +390,66 @@ document.querySelectorAll(".nav button").forEach((btn) => {
     }
     if (targetId === "tab-observer") {
       renderObserverDomainToggle();
+      renderImprovement();
     }
   });
 });
+
+// ----------------------------------------------------------------------------
+// HOW LOCALFORM IMPROVES: read-only summary at the top of the Observer tab.
+// ----------------------------------------------------------------------------
+const IMPROVE_KEYS = ["userContextVault", "pendingDeltas", "learnedMappings", "learnedAliases", "fillOutcomes", "promptGuidance", "promptEvalCases", "promptEvalRuns"];
+
+function goToImprovementLink(link) {
+  document.querySelector(`.nav button[data-tab="${link.tab}"]`)?.click();
+  if (link.open) document.getElementById("prompt-tuning").open = true;
+  document.getElementById(link.el)?.scrollIntoView({ block: "center" });
+}
+
+function improvementLinkButton(link) {
+  const btn = document.createElement("button");
+  btn.className = "btn btn-subtle btn-sm";
+  btn.textContent = "Go";
+  btn.addEventListener("click", () => goToImprovementLink(link));
+  return btn;
+}
+
+async function renderImprovement() {
+  const s = await chrome.storage.local.get(IMPROVE_KEYS);
+  const view = improvementSummary({
+    vault: s.userContextVault,
+    pendingDeltas: s.pendingDeltas,
+    learnedMappings: s.learnedMappings,
+    learnedAliases: s.learnedAliases,
+    fillOutcomes: s.fillOutcomes,
+    promptGuidance: s.promptGuidance,
+    promptEvalCases: s.promptEvalCases,
+    promptEvalRuns: s.promptEvalRuns
+  });
+  const loop = document.getElementById("improve-loop");
+  loop.textContent = "";
+  for (const l of view.loop) {
+    const p = document.createElement("div");
+    p.style.marginBottom = "4px";
+    p.textContent = `${l.kind === "auto" ? "Automatic: " : "Needs you: "}${l.text}`;
+    loop.appendChild(p);
+  }
+  const items = document.getElementById("improve-items");
+  items.textContent = "";
+  for (const it of view.items) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:11px; margin:4px 0;";
+    const text = document.createElement("span");
+    text.textContent = it.text;
+    row.append(text, improvementLinkButton(it.link));
+    items.appendChild(row);
+  }
+  const next = document.getElementById("improve-next");
+  next.textContent = "";
+  const label = document.createElement("strong");
+  label.textContent = "Next: ";
+  next.append(label, document.createTextNode(`${view.next.text} `), improvementLinkButton(view.next.link));
+}
 
 // ----------------------------------------------------------------------------
 // PHASE 1: BUILT-IN AI DETECTION & BOOTSTRAP
@@ -1425,7 +1485,7 @@ async function renderVault() {
   });
 
   document.getElementById("vault-count-badge").textContent = `${cleanedVault.length} facts`;
-  document.getElementById("vault-onboarding-card").style.display = cleanedVault.length === 0 ? "" : "none";
+  renderVaultOnboarding(cleanedVault);
 
   // First-run flow: the vault ships empty (no seed PII). Point the user at the
   // import path — the file format is exactly what "Export Vault JSON" produces.
@@ -1532,14 +1592,18 @@ chrome.storage.local.get(["driveSyncedAt"]).then((r) => showSyncedAt(r.driveSync
 syncButton.addEventListener("click", async () => {
   syncButton.disabled = true;
   syncStatus.textContent = "Syncing...";
+  const started = Date.now();
   try {
     const res = await chrome.runtime.sendMessage({ type: "drive:sync" });
-    if (!res || res.error) throw new Error(res?.error || "Google Drive sync failed.");
+    if (!res) throw new Error("The extension background worker did not answer. Reload the extension and try again.");
+    if (res.error) throw Object.assign(new Error(res.error), { info: res.errorInfo });
     if (res.promptGuidance) await chrome.storage.local.set({ promptGuidance: res.promptGuidance });
     showSyncedAt(res.syncedAt);
     renderVault();
   } catch (err) {
-    syncStatus.textContent = `Sync failed: ${err.message}`;
+    const info = err.info || syncErrorInfo(err);
+    syncStatus.textContent = formatSyncFailure(info);
+    Telemetry.logTrace({ type: "ERROR", title: `Drive sync failed: ${info.code}`, durationMs: Date.now() - started, details: info });
   } finally {
     syncButton.disabled = false;
   }
@@ -2080,12 +2144,32 @@ async function queueVerifiedDeltas(rawFacts, sourceTitle = "", sourceUrl = "") {
 
 // Vault onboarding: prompt for the user's own chatbot, then validated import
 // into the Review & Merge Queue (queueVerifiedDeltas sends delta:queue).
-document.getElementById("vault-onboarding-prompt").value = buildVaultPrompt();
+// The prompt lists existing field names (never values) when the vault has any
+// and the checkbox is on, so the chatbot only returns what is new.
+let onboardingVault = [];
+function currentVaultPrompt() {
+  const include = document.getElementById("vault-onboarding-include-existing").checked;
+  return buildVaultPrompt({ existing: include ? existingKeysForPrompt(onboardingVault) : [] });
+}
+
+function renderVaultOnboarding(vault) {
+  const card = document.getElementById("vault-onboarding-card");
+  onboardingVault = vault;
+  // Open only when the vault is empty; never force it closed on later renders.
+  if (vault.length === 0) card.open = true;
+  document.getElementById("vault-onboarding-title").textContent = vault.length === 0 ? "New here? Start from your AI chatbot" : "Add more from my chatbot";
+  document.getElementById("vault-onboarding-include-row").style.display = vault.length === 0 ? "none" : "flex";
+  document.getElementById("vault-onboarding-prompt").value = currentVaultPrompt();
+}
+
+document.getElementById("vault-onboarding-include-existing").addEventListener("change", () => {
+  document.getElementById("vault-onboarding-prompt").value = currentVaultPrompt();
+});
 
 document.getElementById("btn-copy-vault-prompt").addEventListener("click", async () => {
   const btn = document.getElementById("btn-copy-vault-prompt");
   try {
-    await navigator.clipboard.writeText(buildVaultPrompt());
+    await navigator.clipboard.writeText(currentVaultPrompt());
     btn.textContent = "Copied!";
   } catch {
     btn.textContent = "Copy failed. Select the text and copy it.";

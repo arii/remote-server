@@ -308,7 +308,7 @@
       <div class="btn-row">
         <button id="btn-drive-sync" class="btn btn-subtle btn-sm">Sync with Google Drive</button>
       </div>
-      <div id="drive-sync-status" class="card-desc" role="status">Last synced: never</div>
+      <div id="drive-sync-status" class="card-desc" role="status" style="white-space:pre-wrap">Last synced: never</div>
     </div>
 
     <!-- ADD NEW FACT CARD -->
@@ -330,12 +330,16 @@
       <button id="btn-add-fact" class="btn btn-secondary">Save Fact to Vault</button>
     </div>
 
-    <!-- NEW-USER ONBOARDING: shown only while the vault is empty. Facts go to the Review & Merge Queue, never straight to the vault. -->
-    <div class="card" id="vault-onboarding-card" style="display: none;">
-      <div class="card-title">New here? Start from your AI chatbot</div>
+    <!-- CHATBOT IMPORT: always available, open by default only while the vault is empty. Facts go to the Review & Merge Queue, never straight to the vault. -->
+    <details class="card" id="vault-onboarding-card">
+      <summary class="card-title" id="vault-onboarding-title" style="cursor:pointer;">Add more from my chatbot</summary>
       <div style="font-size:11px; color:#94a3b8; margin-bottom:6px;">
         Copy this prompt into the chatbot you already use (ChatGPT, Claude, Gemini). It lists what it knows about you as JSON, so you do not have to type everything. Review its reply and delete anything private or wrong before pasting it below.
       </div>
+      <label id="vault-onboarding-include-row" style="display:none; font-size:11px; margin:6px 0; align-items:center; gap:6px;">
+        <input type="checkbox" id="vault-onboarding-include-existing" checked />
+        Include my existing field names so the chatbot skips them
+      </label>
       <textarea id="vault-onboarding-prompt" rows="6" readonly style="width:100%;"></textarea>
       <button class="btn btn-subtle btn-sm" id="btn-copy-vault-prompt" style="margin-top:6px;">Copy prompt</button>
       <div style="font-size:11px; color:#fbbf24; margin:8px 0 6px;">
@@ -345,11 +349,18 @@
       <input type="file" id="vault-onboarding-file" accept=".json,.txt" style="margin-top:6px; font-size:11px;" />
       <button class="btn btn-secondary" id="btn-vault-onboarding-import" style="margin-top:8px;">Check and send to review</button>
       <div id="vault-onboarding-status" style="font-size:11px; margin-top:6px; white-space:pre-wrap;"></div>
-    </div>
+    </details>
   </main>
 
   <!-- TAB 5: OBSERVER (PHASE 7) -->
   <main id="tab-observer" class="tab-pane" style="display: none;">
+    <div class="card" id="improve-card">
+      <div class="card-title">How LocalForm improves</div>
+      <div id="improve-loop" class="card-desc"></div>
+      <div id="improve-items"></div>
+      <div id="improve-next" class="card-desc"></div>
+    </div>
+
     <div class="card">
       <div class="card-title">Observe</div>
       <div class="card-desc">Record your edits when you submit forms on a site, then review them below before anything reaches your vault.</div>

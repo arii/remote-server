@@ -56,6 +56,28 @@ export function buildFileUrl(file) {
 
 export const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
 
+// Pulls Google's own explanation out of an error response: error.status,
+// error.errors[0].reason (or error.details[].reason) and error.message. The
+// body is capped and only these three strings are kept, so no token, header or
+// file content is carried into the thrown error.
+export async function readDriveError(res) {
+  let body;
+  try {
+    const text = (await res.text()).slice(0, 2000);
+    body = JSON.parse(text);
+  } catch {
+    return {};
+  }
+  const e = body?.error;
+  if (!e || typeof e !== "object") return {};
+  const reason = e.errors?.find((x) => typeof x?.reason === "string")?.reason || e.details?.find((x) => typeof x?.reason === "string")?.reason;
+  const out = {};
+  if (typeof e.status === "string") out.googleStatus = e.status.slice(0, 80);
+  if (typeof reason === "string") out.reason = reason.slice(0, 80);
+  if (typeof e.message === "string") out.googleMessage = e.message.slice(0, 300);
+  return out;
+}
+
 // One authorised request (GET unless init says otherwise). A 401 means the
 // cached token is stale: drop it and retry once with a fresh one. Thrown errors
 // carry the HTTP status as `status` so callers can classify them.
@@ -63,7 +85,8 @@ export async function driveGet(url, { getToken, removeToken, fetchFn }, init = {
   if (!url.startsWith(`${DRIVE_API}/`) && !url.startsWith(`${DRIVE_UPLOAD_API}/`)) {
     throw new Error("Only Google Drive API URLs are allowed");
   }
-  const fail = (message, status) => Object.assign(new Error(message), { status });
+  const fail = async (message, status, res) =>
+    Object.assign(new Error(message), { status }, await readDriveError(res));
   for (let attempt = 0; attempt < 2; attempt++) {
     const token = await getToken();
     const res = await fetchFn(url, {
@@ -76,9 +99,9 @@ export async function driveGet(url, { getToken, removeToken, fetchFn }, init = {
       await removeToken?.(token);
       continue;
     }
-    if (res.status === 401) throw fail("Google sign-in expired; try again", 401);
-    if (res.status === 403) throw fail("Drive access denied (check the Drive API and consent screen setup)", 403);
-    if (!res.ok) throw fail(`Drive request failed with status ${res.status}`, res.status);
+    if (res.status === 401) throw await fail("Google sign-in expired; try again", 401, res);
+    if (res.status === 403) throw await fail("Drive access denied (check the Drive API and consent screen setup)", 403, res);
+    if (!res.ok) throw await fail(`Drive request failed with status ${res.status}`, res.status, res);
     return res;
   }
   throw new Error("Drive request failed");

@@ -7,7 +7,7 @@ import { normalizeForDedup, valueAlreadyHeld } from "./lib/delta-guards.js";
 import { deduplicateVault } from "./lib/vault.js";
 import { extractLinks, extractTitle, htmlToText, isPrivateHost } from "./lib/profile-ingest.js";
 import { fetchDriveFileText, isClientIdConfigured, listDriveFiles } from "./lib/drive-import.js";
-import { SYNC_STORAGE_KEYS, addTombstones, aliasId, buildPayload, mergeStates, syncWithDrive } from "./lib/drive-sync.js";
+import { SYNC_STORAGE_KEYS, addTombstones, aliasId, buildPayload, errorInfo, mergeStates, syncWithDrive } from "./lib/drive-sync.js";
 import { isSensitiveLabel } from "./lib/sensitive.js";
 import {
   MAX_LEARNED_LOG,
@@ -125,7 +125,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "drive:sync") {
     driveSync()
       .then((res) => sendResponse(res))
-      .catch((err) => sendResponse({ error: err.message }));
+      .catch((err) => sendResponse({ error: err.message, errorInfo: errorInfo(err) }));
     return true;
   }
 
