@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+import asyncio
 
 from scripts import bench_issue_model as bench
 
@@ -92,6 +94,25 @@ class BenchHelpersTests(unittest.TestCase):
             with self.subTest(rows=rows, pin=pin):
                 self.assertFalse(bench.gateway_proof({"a"}, set(), rows, pin)["proof"])
         self.assertEqual(bench.STRICT_LOCAL_CAP_USD, 0)
+
+    def test_strict_local_refuses_hosted_before_capture(self):
+        seen = []
+        router = SimpleNamespace(_remote_spec=lambda *a: "hosted")
+        receipts = SimpleNamespace(capture=lambda req: seen.append(req.url.path))
+        bench.install_strict_local_guard(router, receipts)
+        with self.assertRaises(RuntimeError):
+            router._remote_spec("nebius", "x", "https://example.invalid")
+        for path in ("/v1/chat/completions", "/api/chat"):
+            request = SimpleNamespace(url=SimpleNamespace(path=path))
+            with self.assertRaises(RuntimeError):
+                receipts.capture(request)
+            with self.assertRaises(RuntimeError):
+                asyncio.run(receipts.acapture(request))
+        self.assertEqual(seen, [])
+        local = SimpleNamespace(url=SimpleNamespace(path="/local/api/chat"))
+        receipts.capture(local)
+        asyncio.run(receipts.acapture(local))
+        self.assertEqual(seen, ["/local/api/chat", "/local/api/chat"])
 
     def test_routes_and_strict_local_reject_hosted_pins(self):
         with self.assertRaises(SystemExit):
