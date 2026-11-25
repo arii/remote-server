@@ -30,6 +30,10 @@ DEFAULT_CATALOG_DB = "~/twt/catalog.sqlite3"
 PROMPT_OVERHEAD_TOKENS = 6000
 EST_OUTPUT_TOKENS = 8192
 CONTEXT_FLOOR = 32768
+# Minimum explicit parameter size (in billions) for a model to qualify
+# for coding tasks. Tiny models (e.g. lfm-3-1.7b) burn inspection calls
+# without making edits.
+MIN_CODING_PARAMS_B = 14.0
 # A paid call must cost less than this fraction of the remaining issue
 # cap or the model is not spendable for the task.
 PAID_BUDGET_SHARE = 0.5
@@ -62,6 +66,43 @@ PROVIDER_ORDER = [
 ]
 
 _FILE_RE = re.compile(r"[\w./-]+\.(?:py|ts|tsx|js|jsx|md|json|yaml|yml|toml|sh)")
+_PARAM_SIZE_RE = re.compile(
+    r"(?<![a-z0-9])(?:(\d+(?:\.\d+)?)b|(\d{2,3})m)(?![a-z0-9])", re.IGNORECASE
+)
+_WEAK_MODEL_RE = re.compile(
+    r"(?<![a-z0-9])(?:nano|micro|tiny|mini|small|lite)(?![a-z0-9])", re.IGNORECASE
+)
+_META_ROUTER_IDS = frozenset({"openrouter/free", "openrouter/auto", "auto", "free"})
+
+
+def _param_size_billions(model_id):
+    """Extract the largest explicit parameter count (in billions) from a model id."""
+    sizes = []
+    for match in _PARAM_SIZE_RE.finditer(model_id or ""):
+        b_val, m_val = match.groups()
+        if b_val is not None:
+            sizes.append(float(b_val))
+        elif m_val is not None:
+            sizes.append(float(m_val) / 1000.0)
+    return max(sizes) if sizes else None
+
+
+def coding_floor_rejection(model):
+    """Return a short rejection reason if ``model`` fails the coding
+    capability floor, or None when it qualifies."""
+    model_id = str(model.get("id") or "").strip()
+    lowered = model_id.lower()
+    if lowered in _META_ROUTER_IDS or lowered.endswith(("/auto", "/free")):
+        return "meta_router"
+    params_b = _param_size_billions(model_id)
+    if params_b is not None and params_b < MIN_CODING_PARAMS_B:
+        return "below_min_params"
+    if _WEAK_MODEL_RE.search(model_id):
+        return "small_tier_name"
+    max_out = model.get("max_output_tokens")
+    if max_out is not None and max_out < EST_OUTPUT_TOKENS:
+        return "low_max_output"
+    return None
 
 
 def catalog_path():
@@ -173,7 +214,7 @@ def _est_call_cost(model, est_input_tokens):
     return ip * est_input_tokens + op * EST_OUTPUT_TOKENS
 
 
-def _eligible(model, features, disabled, free_only, cap_usd, paid):
+def _passes_base_checks(model, features, disabled, free_only, cap_usd, paid):
     if model.get("provider") in disabled:
         return False
     if not model.get("chat"):
@@ -196,23 +237,46 @@ def _eligible(model, features, disabled, free_only, cap_usd, paid):
     return cost <= cap_usd * PAID_BUDGET_SHARE
 
 
+def _eligible(model, features, disabled, free_only, cap_usd, paid):
+    if not _passes_base_checks(model, features, disabled, free_only, cap_usd, paid):
+        return False
+    return coding_floor_rejection(model) is None
+
+
+def _format_exclusions(counts):
+    return ", ".join(f"{reason}={count}" for reason, count in sorted(counts.items()))
+
+
 def choose(tier, features, catalog, disabled=None, cap_usd=1.0, blocked=None):
     """Pick one model for one tier. Returns a decision record.
 
-    'fast' ranks free tool-capable models by context window (the trim
-    budget is the binding constraint on long sessions). 'strong' keeps
-    every model meeting the capability floor (chat, tools, context
-    window) and the spend rules, then picks the cheapest by estimated
-    call cost. With no such model the pick is None and the record says
-    so in ``no_pick_reason``.
+    Both tiers enforce the coding capability floor (chat, tools, context
+    window, minimum parameter size, non-lite/micro/nano/meta-router, and
+    output budget). 'fast' ranks qualifying free models by context window;
+    'strong' tries qualifying free models first, then picks the cheapest
+    qualifying paid model within spend rules, logging why a paid fallback
+    was needed in ``pick_reason``. With no qualifying model the pick is
+    None and ``no_pick_reason`` explains why.
     """
     disabled = disabled_providers() if disabled is None else disabled
     blocked = paid_blockers() if blocked is None else blocked
     paid = paid_providers() - blocked
     free_only = tier != "strong"
-    cands = [
-        m for m in catalog if _eligible(m, features, disabled, free_only, cap_usd, paid)
-    ]
+    cands = []
+    floor_excluded = {}
+    free_floor_excluded = {}
+    for model in catalog:
+        if not _passes_base_checks(model, features, disabled, free_only, cap_usd, paid):
+            continue
+        rejection = coding_floor_rejection(model)
+        if rejection is not None:
+            floor_excluded[rejection] = floor_excluded.get(rejection, 0) + 1
+            if model.get("free"):
+                free_floor_excluded[rejection] = (
+                    free_floor_excluded.get(rejection, 0) + 1
+                )
+            continue
+        cands.append(model)
     order = {p: i for i, p in enumerate(PROVIDER_ORDER)}
     if free_only:
 
@@ -227,6 +291,7 @@ def choose(tier, features, catalog, disabled=None, cap_usd=1.0, blocked=None):
 
         def key(m):
             return (
+                0 if m.get("free") else 1,
                 _est_call_cost(m, features["est_input_tokens"]),
                 -(m.get("context_length") or 0),
                 order.get(m.get("provider"), len(order)),
@@ -235,6 +300,28 @@ def choose(tier, features, catalog, disabled=None, cap_usd=1.0, blocked=None):
 
     cands.sort(key=key)
     pick = cands[0] if cands else None
+    free_candidates = sum(1 for m in cands if m.get("free"))
+    if pick is None:
+        pick_reason = None
+    elif pick.get("free"):
+        pick_reason = "free candidate meeting coding capability floor"
+    elif free_floor_excluded:
+        pick_reason = (
+            "paid fallback: no free candidate met coding capability floor "
+            f"({_format_exclusions(free_floor_excluded)})"
+        )
+    else:
+        pick_reason = "paid fallback: no eligible free candidate in catalog"
+    min_ctx = max(CONTEXT_FLOOR, features["est_input_tokens"] * 2)
+    no_pick_reason = None
+    if pick is None:
+        no_pick_reason = (
+            f"no {tier} candidate meets the coding capability floor "
+            f"(context>={min_ctx}, tools={features['needs_tools']}, "
+            f"min_params_b={MIN_CODING_PARAMS_B:g}) within spend rules"
+        )
+        if floor_excluded:
+            no_pick_reason += f" (floor excluded: {_format_exclusions(floor_excluded)})"
     return {
         "tier": tier,
         "model": f"{pick['provider']}/{pick['id']}" if pick else None,
@@ -242,14 +329,11 @@ def choose(tier, features, catalog, disabled=None, cap_usd=1.0, blocked=None):
         "rule": (
             "rank:free_context_desc" if free_only else "rank:cheapest_meeting_floor"
         ),
-        "no_pick_reason": (
-            None
-            if pick
-            else f"no {tier} candidate meets the capability floor "
-            f"(context>={max(CONTEXT_FLOOR, features['est_input_tokens'] * 2)}, "
-            f"tools={features['needs_tools']}) within spend rules"
-        ),
+        "pick_reason": pick_reason,
+        "no_pick_reason": no_pick_reason,
         "candidates": len(cands),
+        "free_candidates": free_candidates,
+        "floor_excluded": dict(sorted(floor_excluded.items())),
         "paid_providers": sorted(paid),
         "paid_blocked": sorted(blocked),
         "top3": [f"{m['provider']}/{m['id']}" for m in cands[:3]],

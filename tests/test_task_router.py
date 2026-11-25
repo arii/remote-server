@@ -79,9 +79,12 @@ class Choose(unittest.TestCase):
         pick = task_router.choose(
             "fast", self.features, CATALOG, disabled=self.disabled
         )
-        self.assertEqual(pick["model"], "google/gemini-flash-lite")
+        # gemini-flash-lite and granite-micro fail the coding capability floor
+        self.assertEqual(pick["model"], "openrouter/vendor/free-code")
         self.assertTrue(pick["free_only"])
         self.assertEqual(pick["rule"], "rank:free_context_desc")
+        self.assertEqual(pick["floor_excluded"], {"small_tier_name": 2})
+        self.assertIn("free candidate", pick["pick_reason"])
         self.assertNotIn(
             "groq/free-nontools",
             pick["top3"],  # tools filter
@@ -105,16 +108,155 @@ class Choose(unittest.TestCase):
         self.assertNotIn("@cf/granite-micro", pick["top3"][0] if pick["top3"] else "")
 
     def test_strong_picks_cheapest_meeting_floor(self):
-        # Free tool-capable models meet the floor at zero cost, so they
-        # beat every paid model; the 32k-window model fails the 2x-input floor.
+        # Free tool-capable models meeting the coding floor beat every paid model;
+        # gemini-flash-lite and granite-micro are excluded by the coding floor.
         pick = task_router.choose(
             "strong", self.features, CATALOG, disabled=self.disabled, cap_usd=1.0
         )
-        self.assertEqual(pick["model"], "google/gemini-flash-lite")
+        self.assertEqual(pick["model"], "openrouter/vendor/free-code")
         self.assertEqual(pick["rule"], "rank:cheapest_meeting_floor")
         self.assertEqual(pick["est_call_cost_usd"], 0.0)
         self.assertFalse(pick["free_only"])
+        self.assertEqual(pick["free_candidates"], 1)
+        self.assertIn("free candidate", pick["pick_reason"])
         self.assertIsNone(pick["no_pick_reason"])
+
+    def test_coding_floor_rejections_and_allows(self):
+        rejected = [
+            (
+                model("openrouter", "liquid/lfm-3-1.7b:free", free=True),
+                "below_min_params",
+            ),
+            (model("nvidia", "google/gemma-3-12b-it", free=True), "below_min_params"),
+            (
+                model("openrouter", "vendor/smollm-360m:free", free=True),
+                "below_min_params",
+            ),
+            (model("google", "gemini-3.1-flash-lite", free=True), "small_tier_name"),
+            (
+                model("cloudflare", "@cf/ibm-granite/granite-4.0-h-micro", free=True),
+                "small_tier_name",
+            ),
+            (
+                model(
+                    "openrouter",
+                    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+                    free=True,
+                ),
+                "small_tier_name",
+            ),
+            (model("openrouter", "openrouter/free", free=True), "meta_router"),
+            (model("openrouter", "openrouter/auto", free=True), "meta_router"),
+            (
+                model(
+                    "openrouter",
+                    "vendor/short-out:free",
+                    free=True,
+                    max_output_tokens=4096,
+                ),
+                "low_max_output",
+            ),
+        ]
+        for row, expected in rejected:
+            with self.subTest(model=row["id"]):
+                self.assertEqual(task_router.coding_floor_rejection(row), expected)
+
+        allowed = [
+            model("openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free", free=True),
+            model("groq", "openai/gpt-oss-120b", free=True),
+            model("nvidia", "z-ai/glm-5.3-flash", free=True),
+            model(
+                "nebius", "MiniMaxAI/MiniMax-M3", input_price=3e-7, output_price=1.2e-6
+            ),
+            model(
+                "nebius",
+                "Qwen/Qwen3-235B-A22B-Instruct-2507",
+                input_price=2e-7,
+                output_price=6e-7,
+            ),
+            model("openrouter", "google/gemma-4-26b-a4b-it:free", free=True),
+        ]
+        for row in allowed:
+            with self.subTest(model=row["id"]):
+                self.assertIsNone(task_router.coding_floor_rejection(row))
+
+    def test_strong_paid_fallback_logs_why_free_models_failed_floor(self):
+        catalog = [
+            model(
+                "openrouter", "liquid/lfm-3-1.7b:free", free=True, context_length=262144
+            ),
+            model("google", "gemini-3.1-flash-lite", free=True, context_length=1048576),
+            model("openrouter", "openrouter/free", free=True, context_length=200000),
+            model(
+                "nebius", "zai-org/GLM-5.3-Flash", input_price=1.5e-7, output_price=5e-7
+            ),
+        ]
+        pick = task_router.choose(
+            "strong", self.features, catalog, disabled=set(), cap_usd=1.0, blocked=set()
+        )
+        self.assertEqual(pick["model"], "nebius/zai-org/GLM-5.3-Flash")
+        self.assertEqual(pick["free_candidates"], 0)
+        self.assertEqual(
+            pick["floor_excluded"],
+            {"below_min_params": 1, "meta_router": 1, "small_tier_name": 1},
+        )
+        self.assertIn(
+            "paid fallback: no free candidate met coding capability floor",
+            pick["pick_reason"],
+        )
+        self.assertIn("below_min_params=1", pick["pick_reason"])
+
+    def test_issue_1569_never_picks_lfm_or_paid_nebius_when_free_capable_exists(self):
+        s5_slice = [
+            model("google", "gemini-3.1-flash-lite", free=True, context_length=1048576),
+            model(
+                "openrouter",
+                "liquid/lfm-3-1.7b:free",
+                free=True,
+                context_length=262144,
+                max_output_tokens=8192,
+            ),
+            model("openrouter", "openrouter/free", free=True, context_length=200000),
+            model(
+                "cloudflare",
+                "@cf/ibm-granite/granite-4.0-h-micro",
+                free=True,
+                context_length=131000,
+            ),
+            model(
+                "openrouter",
+                "nvidia/nemotron-3-ultra-550b-a55b:free",
+                free=True,
+                context_length=1000000,
+            ),
+            model("groq", "openai/gpt-oss-120b", free=True, context_length=131072),
+            model(
+                "nebius",
+                "zai-org/GLM-5.3-Flash",
+                input_price=1.5e-7,
+                output_price=5e-7,
+                context_length=1048576,
+            ),
+        ]
+        issue_1569 = {
+            "title": "Backgrounded phone shows stale queue state as if live",
+            "body": (
+                "Every status view shows updated-Xs-ago and refetches on page resume. "
+                "Failed refetch or expired auth greys the view with a cannot-reach-server "
+                "banner instead of silently showing old data."
+            ),
+        }
+        decision = task_router.route_issue(
+            issue_1569, 1.0, catalog=s5_slice, disabled=set()
+        )
+        for tier_name in ("fast", "strong"):
+            pick = decision["picks"][tier_name]
+            self.assertEqual(
+                pick["model"], "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+            )
+            self.assertNotIn("lfm-3-1.7b", pick["model"])
+            self.assertFalse(pick["model"].startswith("nebius/"))
+            self.assertEqual(pick["est_call_cost_usd"], 0.0)
 
     def test_strong_prefers_cheaper_paid_at_same_capability(self):
         paid_only = [m for m in CATALOG if not m["free"]]
@@ -195,7 +337,9 @@ class RouteIssue(unittest.TestCase):
         )
         self.assertEqual(decision["tier"], "strong")
         self.assertEqual(decision["tier_rule"], "task:many_files")
-        self.assertEqual(decision["picks"]["fast"]["model"], "google/gemini-flash-lite")
+        self.assertEqual(
+            decision["picks"]["fast"]["model"], "openrouter/vendor/free-code"
+        )
         self.assertIsNotNone(decision["picks"]["strong"]["model"])
 
     def test_simple_issue_stays_default(self):
