@@ -35,6 +35,9 @@ class AgentControlState(BaseModel):
     current_step: str = ""
     requires_dom_refresh: bool = False
     updated_at: float = 0.0
+    phase: str = ""
+    phase_start_time: float = 0.0
+    last_activity_time: float = 0.0
     # Agent-initiated handoff (#1097): the agent is parked waiting for
     # the human (login wall, MFA, CAPTCHA, ambiguous UI). Orthogonal to
     # `state` so pause/resume semantics stay untouched; the drawer gives
