@@ -89,7 +89,9 @@ def judge(outcome):
 def gateway_proof(trace_ids, local_ids, receipts, expected_model=None):
     rows = [row for row in receipts if isinstance(row, dict)]
     ids = [row.get("trace_id") for row in rows]
-    identities = bool(trace_ids) and len(ids) == len(set(ids)) and set(ids) == set(trace_ids)
+    identities = (
+        bool(trace_ids) and len(ids) == len(set(ids)) and set(ids) == set(trace_ids)
+    )
     known = all(
         row.get("cost_complete") is True
         and type(row.get("cost_usd")) in (int, float)
@@ -136,7 +138,9 @@ def install_strict_local_guard(router, receipts):
     def capture(request):
         if request.url.path.endswith(("/chat/completions", "/api/chat")):
             if request.url.path != "/local/api/chat":
-                raise RuntimeError("strict local benchmark refuses non-local chat dispatch")
+                raise RuntimeError(
+                    "strict local benchmark refuses non-local chat dispatch"
+                )
         return original(request)
 
     async def acapture(request):
