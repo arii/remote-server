@@ -8,8 +8,8 @@ Routes (``--route``):
           ``/local/api/chat`` route (pin ``ollama-local/<model>``).
 
 ``--strict-local`` (native route only) disables the
-strong-tier and default-route fallbacks, and installs the queue budget guard
-with a zero cap so TwT refuses every positive-cost attempt before dispatch.
+strong-tier and default-route fallbacks, refuses hosted model construction,
+and rejects non-local chat requests in the transport hook before network I/O.
 
 ``valid`` is true only when the reply ends ``DONE #<n>``, files changed and
 every verification command exits 0. ``run_returned`` only says run_coder did
@@ -126,6 +126,27 @@ def strict_violations(route, gateway):
     return violations
 
 
+def install_strict_local_guard(router, receipts):
+    """Deny hosted model construction and non-local chat dispatch before I/O."""
+    original = receipts.capture
+
+    def reject_remote(*args, **kwargs):
+        raise RuntimeError("strict local benchmark refuses hosted model construction")
+
+    def capture(request):
+        if request.url.path.endswith(("/chat/completions", "/api/chat")):
+            if request.url.path != "/local/api/chat":
+                raise RuntimeError("strict local benchmark refuses non-local chat dispatch")
+        return original(request)
+
+    async def acapture(request):
+        return capture(request)
+
+    router._remote_spec = reject_remote
+    receipts.capture = capture
+    receipts.acapture = acapture
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("model", help="provider/id pin, e.g. ollama-local/qwen3:8b")
@@ -196,13 +217,11 @@ def main(argv=None):
     repo = cli.repo_root()
     import coder  # env vars must be set before the langchain import chain runs
     from backend.shared import twt_receipts
-    from scripts import queue_runner
+    from backend.shared import model_router
 
     fatal, stops = [], []
     if args.strict_local:
-        queue_runner.install_budget_guard(
-            STRICT_LOCAL_CAP_USD, run_dir / "guard", fatal, stops
-        )
+        install_strict_local_guard(model_router, twt_receipts)
 
     worktree = os.path.join(repo, ".worktrees", f"bench-{args.route}-{slug}")
     started = time.time()
