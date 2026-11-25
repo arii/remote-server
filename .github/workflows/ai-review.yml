@@ -39,8 +39,11 @@ jobs:
       - name: install boomtick td CLI
         run: pip install "git+https://github.com/arii/boomtick.git@a0c62ee55460de42037ed37fb5d2289b692e3043#subdirectory=cli"
 
+      - name: Verify review dependency
+        run: command -v td
+
       - name: Automated AI Code Review
-        uses: arii/boomtick@8a413b25a47cf251f6472c46becfeeba7fbb3e67 # boomtick feat/review-verdict-gate, re-pin to the boomtick main merge commit after the boomtick PR merges
+        uses: arii/boomtick@df2f59bd34192424c315aa99f8a45cf14989db75 # reviewed main, 2026-11-25 (#1605)
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:

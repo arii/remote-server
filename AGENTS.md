@@ -20,6 +20,14 @@ When using BoomTick MCP tools:
 - **Fix root causes**: Diagnose the actual failure, fix the root cause, and keep ONE canonical command or code path.
 - **Allowed exception**: A fallback is permitted ONLY for genuine platform variance (e.g., Linux vs macOS) and MUST include an explanatory comment documenting why the platform variance exists.
 
+## Current-version and failure contract (issue #1605)
+
+- No legacy or backward-compatibility branches, deprecated aliases, or silent downgrade paths. Update callers to the current supported contract instead of preserving an old interface.
+- Pin dependencies and owned Actions to the latest verified upstream main/release revision appropriate to that component. Record an immutable revision, not a floating `latest` reference. Review the change and run the affected checks before merging; do not keep a feature-branch pin after its main replacement exists.
+- Failures must fail loudly: return a nonzero exit or an explicit failed result with the failing operation and cause. Never turn missing tools, failed execution or unavailable evidence into success, a warning-only pass, or invented output.
+- We own the actions in our repositories. An obsolete pin or broken owned action is a correctness/maintenance defect, not automatically a security restriction. Diagnose and fix it. A security claim needs concrete evidence of an actual security boundary or threat; ownership does not waive secrets protection, access controls, user approval or spending limits.
+- The platform-variance exception above does not permit support for retired versions or fallback chains that hide errors. If the current contract cannot run, report the failure rather than retrying older APIs.
+
 ## Working rules
 
 Why: cruft from earlier agent sessions (generated assets, unused pins, duplicate helpers, docs for code that never existed) cost more to remove than to write. These rules keep it from coming back.
