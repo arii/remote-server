@@ -64,10 +64,11 @@
     <div class="card">
       <div class="card-title">Chrome Built-in AI (Gemini Nano)</div>
       <div class="card-desc">
-        Runs 100% on-device via Chrome's native Prompt and Summarizer APIs. No external API keys or cloud calls required.
+        On-device via Chrome's native Prompt and Summarizer APIs by default. With the optional Firebase AI Logic config, prompts run hybrid: on-device first, cloud fallback to Gemini via Firebase.
       </div>
 
       <div id="model-ready-line" class="card-desc" style="display:none;"></div>
+      <div id="hybrid-mode-line" class="card-desc" style="display:none;"></div>
 
       <div id="download-section">
       <div class="status-grid">
