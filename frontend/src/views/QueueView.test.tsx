@@ -354,3 +354,36 @@ describe('queue empty-state copy deduplication (issue #1436)', () => {
     expect(header).not.toContain('Nothing queued');
   });
 });
+
+describe('queue resume and freshness handling (issue #1569)', () => {
+  it('renders updated timestamp freshness indicator in header', () => {
+    const fixedTime = 1700000000000;
+    const header = renderToStaticMarkup(
+      <QueueHeader
+        count={2}
+        live={false}
+        dispatchable={[]}
+        lastUpdated={fixedTime}
+        onRefresh={noop}
+        onDispatchAll={noop}
+      />,
+    );
+    expect(header).toContain('Updated');
+    expect(header).toContain(new Date(fixedTime).toLocaleTimeString());
+  });
+
+  it('renders reachability error banner when server cannot be reached', () => {
+    const header = renderToStaticMarkup(
+      <QueueHeader
+        count={2}
+        live={false}
+        dispatchable={[]}
+        reachError="Network timeout"
+        onRefresh={noop}
+        onDispatchAll={noop}
+      />,
+    );
+    expect(header).toContain('data-testid="queue-reach-error"');
+    expect(header).toContain('Cannot reach server — view may be out of date (Network timeout)');
+  });
+});
