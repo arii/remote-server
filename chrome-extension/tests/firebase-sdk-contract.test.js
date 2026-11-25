@@ -2,13 +2,20 @@
 // (firebase@12.19.0 -> @firebase/ai), not a mock of its shape. These pin the
 // hybrid getGenerativeModel() contract this integration depends on, so an SDK
 // upgrade that changes HybridParams semantics fails loudly here.
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, afterAll, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { initializeApp, deleteApp } from "firebase/app";
 import { getAI, getGenerativeModel, GoogleAIBackend, InferenceMode } from "firebase/ai";
 import { buildHybridParams } from "../extension/lib/hybrid-session.js";
+
+// SDK parameter contracts do not load the generated extension vendor bundle.
+// Keep this suite runnable from a clean checkout before the build step.
+vi.mock("../extension/lib/firebase-loader.js", () => ({
+  loadFirebaseBundle: vi.fn(),
+  loadFirebaseConfig: vi.fn()
+}));
 
 const require = createRequire(import.meta.url);
 const firebaseVersion = require("firebase/package.json").version;
