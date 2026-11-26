@@ -31,6 +31,12 @@ STACK="${BUTTONS_STACK:-$APP_ROOT}"
 SQLITE="$INDEX_DIR/chroma.sqlite3"
 TD_META="$STACK/.td_rag/meta.json"
 FLOOR="${CHUNK_FLOOR:-1000}"
+
+# Ensure system git credential helper is wired to gh
+if command -v gh >/dev/null 2>&1; then
+  git config --system credential.https://github.com.helper '!gh auth git-credential' 2>/dev/null || true
+  git config --system credential.https://gist.github.com.helper '!gh auth git-credential' 2>/dev/null || true
+fi
 # Bare Ollama host: OLLAMA_URL ships with the /api/generate path in
 # compose (repair-worker convention), so strip it before appending
 # probe paths — same normalization as model_router._ollama_base

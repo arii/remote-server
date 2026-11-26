@@ -711,7 +711,19 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
     )
 
     # Git push
-    subprocess.run(["git", "push", "origin", branch_name], cwd=worktree_dir, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "credential.https://github.com.helper=!gh auth git-credential",
+            "push",
+            "origin",
+            branch_name,
+        ],
+        cwd=worktree_dir,
+        env=commit_env,
+        check=True,
+    )
 
     # Create PR via gh CLI
     pr_title = f"fix(repair): autonomous repair for issue #{issue_number}"

@@ -240,6 +240,10 @@ class SetupWorktreeNodeTest(unittest.TestCase):
         self.assertIsNotNone(commit_env)
         self.assertEqual(commit_env.get("GIT_AUTHOR_NAME"), "S5 Autonomous Repair")
         self.assertEqual(commit_env.get("GIT_AUTHOR_EMAIL"), "repair@s5.internal")
+        self.assertEqual(commands[2][:2], ["git", "-c"])
+        self.assertIn("credential.https://github.com.helper", commands[2][2])
+        self.assertEqual(commands[2][3:], ["push", "origin", "repair/issue-449-test"])
+        self.assertEqual(envs[2], commit_env)
 
     def test_run_repair_records_last_run_tokens_on_exception(self):
         recorded = []
