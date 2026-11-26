@@ -538,7 +538,7 @@ def readiness(
 
                     scaffold_res, err = (
                         scaffold_fn(body, resolved_root)
-                        if resolved_root
+                        if (resolved_root or scaffolder is not None)
                         else (None, "no checkout for repo")
                     )
 

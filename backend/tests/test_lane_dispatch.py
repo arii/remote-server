@@ -7,6 +7,7 @@ are faked; nothing touches the network or docker.
 """
 
 import json
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -625,6 +626,7 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
             verify_preview=preview_fn,
             scaffolder=mock_scaffolder,
             gh_runner=gh,
+            repo_root=Path("."),
         )
         self.assertTrue(ready["ready"])
         self.assertEqual(ready["reasons"], [])
@@ -654,6 +656,7 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
         ready = self._ready(
             verify_preview=preview_fn,
             scaffolder=mock_scaffolder,
+            repo_root=Path("."),
         )
         self.assertFalse(ready["ready"])
         self.assertTrue(any("auto-scaffold failed" in r for r in ready["reasons"]))
