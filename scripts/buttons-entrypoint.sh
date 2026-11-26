@@ -37,6 +37,12 @@ if command -v gh >/dev/null 2>&1; then
   git config --system credential.https://github.com.helper '!gh auth git-credential' 2>/dev/null || true
   git config --system credential.https://gist.github.com.helper '!gh auth git-credential' 2>/dev/null || true
 fi
+
+# Ensure python and repo host compatibility symlinks exist
+ln -sfn /usr/local/bin/python3.11 /usr/bin/python3.11 2>/dev/null || true
+ln -sfn /usr/local/bin/python3 /usr/bin/python3 2>/dev/null || true
+ln -sfn /usr/local/bin/python /usr/bin/python 2>/dev/null || true
+ln -sfn /home/ari/repos /srv/repos 2>/dev/null || true
 # Bare Ollama host: OLLAMA_URL ships with the /api/generate path in
 # compose (repair-worker convention), so strip it before appending
 # probe paths — same normalization as model_router._ollama_base
