@@ -2,5 +2,5 @@
 # runtime code (tests/test_unused_deps.py enforces that). Install next to
 # requirements.txt wherever the unit suites run:
 #   pip install -r backend/requirements.txt -r backend/requirements-test.txt
-PyYAML==6.0.3
+PyYAML==6.0.4
 jsonschema==4.26.0
