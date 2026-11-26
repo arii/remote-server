@@ -44,6 +44,8 @@ RUN mkdir -p /usr/share/keyrings \
  && mkdir -p /home/ari \
  && ln -sfn /root/.ssh /home/ari/.ssh \
  && git config --system --add safe.directory '*' \
+ && git config --system credential.https://github.com.helper '!gh auth git-credential' \
+ && git config --system credential.https://gist.github.com.helper '!gh auth git-credential' \
  && echo "mounted checkouts trusted (single-user box)" \
  && mkdir -p /var/lib/buttons/deep-agent \
  && echo "deep-agent state dir ready (persisted volume)" \
