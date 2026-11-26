@@ -203,6 +203,75 @@ class SetupWorktreeNodeTest(unittest.TestCase):
             self.assertEqual(repair_worker_mod.ollama_timeout(), 1200)
         self.assertEqual(repair_worker_mod.ollama_timeout(300), 300)
 
+    def test_create_pr_node_stages_target_files_and_sets_git_identity(self):
+        state = {
+            "worktree_dir": "/tmp/test-wt-pr",
+            "branch_name": "repair/issue-449-test",
+            "issue_number": 449,
+            "repo": "portfolio",
+            "target_files": ["src/components/FlagshipCard.tsx"],
+            "verification_cmd": "npm test",
+        }
+        commands = []
+        envs = []
+
+        def fake_run(cmd, *args, **kwargs):
+            commands.append(cmd)
+            envs.append(kwargs.get("env"))
+            if cmd[:2] == ["gh", "pr"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="https://github.com/arii/portfolio/pull/2\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("backend.repair_worker.subprocess.run", side_effect=fake_run):
+            with patch("os.path.islink", return_value=False):
+                res = repair_worker_mod.create_pr_node(state)
+
+        self.assertEqual(res["pr_url"], "https://github.com/arii/portfolio/pull/2")
+        self.assertEqual(
+            commands[0],
+            ["git", "add", "--", "src/components/FlagshipCard.tsx"],
+        )
+        self.assertEqual(commands[1][:3], ["git", "commit", "-m"])
+        commit_env = envs[1]
+        self.assertIsNotNone(commit_env)
+        self.assertEqual(commit_env.get("GIT_AUTHOR_NAME"), "S5 Autonomous Repair")
+        self.assertEqual(commit_env.get("GIT_AUTHOR_EMAIL"), "repair@s5.internal")
+
+    def test_run_repair_records_last_run_tokens_on_exception(self):
+        recorded = []
+
+        def blow_up(initial_state):
+            repair_worker_mod._last_run_tokens["input_tokens"] = 300
+            repair_worker_mod._last_run_tokens["output_tokens"] = 150
+            raise RuntimeError("verification timed out")
+
+        with (
+            patch("backend.repair_worker.build_repair_graph") as mock_graph,
+            patch("backend.repair_worker.preflight_ollama", return_value=None),
+            patch(
+                "backend.repair_worker.ledger.record",
+                side_effect=lambda **kw: recorded.append(kw),
+            ),
+        ):
+            mock_inst = mock_graph.return_value
+            mock_inst.invoke.side_effect = blow_up
+            success = repair_worker_mod.run_repair(
+                issue_number=449,
+                issue_body="Task body",
+                repo="portfolio",
+            )
+        self.assertFalse(success)
+        self.assertEqual(len(recorded), 1)
+        entry = recorded[0]
+        self.assertEqual(entry["extra"]["status"], "FAILED")
+        self.assertEqual(entry["usage"]["input_tokens"], 300)
+        self.assertEqual(entry["usage"]["output_tokens"], 150)
+        self.assertEqual(entry["usage"]["total_tokens"], 450)
+
 
 if __name__ == "__main__":
     unittest.main()
