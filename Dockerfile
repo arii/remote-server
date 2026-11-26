@@ -43,6 +43,10 @@ RUN mkdir -p /usr/share/keyrings \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /home/ari \
  && ln -sfn /root/.ssh /home/ari/.ssh \
+ && ln -sfn /usr/local/bin/python3.11 /usr/bin/python3.11 \
+ && ln -sfn /usr/local/bin/python3 /usr/bin/python3 \
+ && ln -sfn /usr/local/bin/python /usr/bin/python \
+ && ln -sfn /home/ari/repos /srv/repos \
  && git config --system --add safe.directory '*' \
  && git config --system credential.https://github.com.helper '!gh auth git-credential' \
  && git config --system credential.https://gist.github.com.helper '!gh auth git-credential' \

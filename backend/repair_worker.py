@@ -639,16 +639,43 @@ def verify_code_node(state: AgentState) -> Dict[str, Any]:
         f"[repair] Executing verification command: {verification_cmd}",
         flush=True,
     )
+    run_env = os.environ.copy()
+    venv_bin = os.path.join(worktree_dir, ".venv", "bin")
+    node_bin = os.path.join(worktree_dir, "node_modules", ".bin")
+    current_path = run_env.get("PATH", "")
+    run_env["PATH"] = f"{venv_bin}:{node_bin}:{current_path}"
+
+    python_paths = [worktree_dir]
+    for sub in ("cli", "backend", "src", "deep-agent"):
+        candidate = os.path.join(worktree_dir, sub)
+        if os.path.isdir(candidate):
+            python_paths.append(candidate)
+    existing_ppath = run_env.get("PYTHONPATH", "")
+    if existing_ppath:
+        python_paths.append(existing_ppath)
+    run_env["PYTHONPATH"] = ":".join(python_paths)
+
     try:
         proc = subprocess.run(
             cmd_args,
             cwd=worktree_dir,
+            env=run_env,
             shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             timeout=VERIFY_TIMEOUT,
         )
+    except FileNotFoundError as exc:
+        print(
+            f"[repair] Verification command executable not found: {exc}",
+            flush=True,
+        )
+        return {
+            "tests_passed": False,
+            "current_errors": f"verification command executable not found: {exc}",
+            "retry_count": retry_count + 1,
+        }
     except subprocess.TimeoutExpired:
         print(
             f"[repair] Verification command timed out after {VERIFY_TIMEOUT}s",

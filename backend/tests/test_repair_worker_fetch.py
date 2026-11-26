@@ -321,6 +321,45 @@ class SetupWorktreeNodeTest(unittest.TestCase):
         self.assertIn("Error on line 1", prompts[0])
         self.assertEqual(out["file_contents"]["src/a.ts"], "fixed code")
 
+    def test_verify_code_node_configures_env_paths(self):
+        state = {
+            "worktree_dir": "/tmp/test-wt-boomtick",
+            "verification_cmd": "pytest cli/tests/test_mcp_installer.py",
+            "retry_count": 0,
+        }
+        passed_env = {}
+
+        def fake_run(cmd, *args, **kwargs):
+            passed_env.update(kwargs.get("env", {}))
+            return SimpleNamespace(returncode=0, stdout="6 passed", stderr="")
+
+        with patch("backend.repair_worker.subprocess.run", side_effect=fake_run):
+            with patch("os.path.isdir", side_effect=lambda p: p.endswith("cli")):
+                res = repair_worker_mod.verify_code_node(state)
+
+        self.assertTrue(res["tests_passed"])
+        self.assertIn("/tmp/test-wt-boomtick/.venv/bin", passed_env.get("PATH", ""))
+        self.assertIn("/tmp/test-wt-boomtick/cli", passed_env.get("PYTHONPATH", ""))
+
+    def test_verify_code_node_handles_file_not_found(self):
+        state = {
+            "worktree_dir": "/tmp/test-wt-missing",
+            "verification_cmd": "pytest cli/tests/test_mcp_installer.py",
+            "retry_count": 0,
+        }
+
+        with patch(
+            "backend.repair_worker.subprocess.run",
+            side_effect=FileNotFoundError("pytest not found"),
+        ):
+            res = repair_worker_mod.verify_code_node(state)
+
+        self.assertFalse(res["tests_passed"])
+        self.assertIn(
+            "verification command executable not found", res["current_errors"]
+        )
+        self.assertEqual(res["retry_count"], 1)
+
     def test_run_repair_records_last_run_tokens_on_exception(self):
         recorded = []
 
