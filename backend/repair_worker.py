@@ -92,6 +92,7 @@ MAX_RETRIES = 3
 DEFAULT_REPO = "remote-server"
 
 REPO_BASENAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_last_run_tokens = {"input_tokens": 0, "output_tokens": 0}
 
 
 class UnscaffoldedIssueError(RuntimeError):
@@ -452,6 +453,17 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
         else:
             file_contents[rel_path] = ""
 
+    # Preserve dependency directories across git worktrees (e.g. node_modules, .venv)
+    if checkout_dir:
+        for dep_dir in ("node_modules", ".venv"):
+            src_dep = os.path.join(checkout_dir, dep_dir)
+            dst_dep = os.path.join(worktree_dir, dep_dir)
+            if os.path.exists(src_dep) and not os.path.exists(dst_dep):
+                try:
+                    os.symlink(src_dep, dst_dep)
+                except OSError:
+                    pass
+
     print(
         f"[repair] Worktree ready at {worktree_dir} on branch {branch_name}",
         flush=True,
@@ -513,6 +525,8 @@ def edit_file_node(state: AgentState) -> Dict[str, Any]:
             out_tok = int(res_data.get("eval_count") or 0)
             input_tokens += in_tok
             output_tokens += out_tok
+            _last_run_tokens["input_tokens"] = input_tokens
+            _last_run_tokens["output_tokens"] = output_tokens
             print(
                 f"[repair] Ollama generated {out_tok} tokens ({in_tok} prompt tokens) for {file_path}",
                 flush=True,
@@ -665,10 +679,36 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
     issue_number = state.get("issue_number", 0)
     repo = normalize_repo(state.get("repo"))
 
-    # Git add and commit
-    subprocess.run(["git", "add", "-A"], cwd=worktree_dir, check=True)
+    # Clean up dependency symlinks before staging so they are never committed
+    for dep_dir in ("node_modules", ".venv"):
+        dst_dep = os.path.join(worktree_dir, dep_dir)
+        if os.path.islink(dst_dep):
+            try:
+                os.unlink(dst_dep)
+            except OSError:
+                pass
+
+    # Git add target files specifically to avoid staging untracked files
+    target_files = state.get("target_files", [])
+    if target_files:
+        subprocess.run(
+            ["git", "add", "--"] + target_files, cwd=worktree_dir, check=True
+        )
+    else:
+        subprocess.run(["git", "add", "-A"], cwd=worktree_dir, check=True)
+
     commit_msg = f"fix(repair): autonomous repair for issue #{issue_number}"
-    subprocess.run(["git", "commit", "-m", commit_msg], cwd=worktree_dir, check=True)
+    commit_env = os.environ.copy()
+    commit_env.setdefault("GIT_AUTHOR_NAME", "S5 Autonomous Repair")
+    commit_env.setdefault("GIT_AUTHOR_EMAIL", "repair@s5.internal")
+    commit_env.setdefault("GIT_COMMITTER_NAME", "S5 Autonomous Repair")
+    commit_env.setdefault("GIT_COMMITTER_EMAIL", "repair@s5.internal")
+    subprocess.run(
+        ["git", "commit", "-m", commit_msg],
+        cwd=worktree_dir,
+        env=commit_env,
+        check=True,
+    )
 
     # Git push
     subprocess.run(["git", "push", "origin", branch_name], cwd=worktree_dir, check=True)
@@ -721,6 +761,13 @@ def cleanup_node(state: AgentState) -> Dict[str, Any]:
             checkout_dir = None
 
     if worktree_dir and os.path.exists(worktree_dir):
+        for dep_dir in ("node_modules", ".venv"):
+            dst_dep = os.path.join(worktree_dir, dep_dir)
+            if os.path.islink(dst_dep):
+                try:
+                    os.unlink(dst_dep)
+                except OSError:
+                    pass
         subprocess.run(
             ["git", "worktree", "remove", "--force", worktree_dir],
             cwd=checkout_dir,
@@ -848,6 +895,9 @@ def run_repair(
         "pr_url": "",
     }
 
+    global _last_run_tokens
+    _last_run_tokens = {"input_tokens": 0, "output_tokens": 0}
+
     started = time.time()
     final_state: Dict[str, Any] = {}
     pr_url = ""
@@ -872,13 +922,14 @@ def run_repair(
             try:
                 in_tok = (
                     int(final_state.get("input_tokens", 0))
-                    if isinstance(final_state, dict)
-                    else 0
+                    if isinstance(final_state, dict) and final_state.get("input_tokens")
+                    else _last_run_tokens.get("input_tokens", 0)
                 )
                 out_tok = (
                     int(final_state.get("output_tokens", 0))
                     if isinstance(final_state, dict)
-                    else 0
+                    and final_state.get("output_tokens")
+                    else _last_run_tokens.get("output_tokens", 0)
                 )
                 tot_tok = in_tok + out_tok
                 pr_val = (
