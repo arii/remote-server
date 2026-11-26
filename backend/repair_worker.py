@@ -30,6 +30,7 @@ except ImportError:
 
 try:
     from backend.ast_validator import validate_source_syntax
+    from backend.core.repos import get_checkout_path
     from backend.parse_task_spec import (
         SCAFFOLD_HINT,
         TaskSpecError,
@@ -43,6 +44,7 @@ try:
 except ImportError:
     try:
         from ast_validator import validate_source_syntax
+        from core.repos import get_checkout_path
         from parse_task_spec import (
             SCAFFOLD_HINT,
             TaskSpecError,
@@ -66,6 +68,10 @@ except ImportError:
             VERIFY_VERB_HELP,
             validate_verify_command,
         )
+
+        def get_checkout_path(repo: str):  # type: ignore
+            return None
+
 
 # Parity with backend/shared/model_router.py DEFAULT_OLLAMA_URL: the stack's
 # Ollama host. Replicated instead of imported so repair_worker stays
@@ -354,10 +360,20 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
         prefix=f"repair-issue-{issue_number}-"
     )
 
+    repo_name = state.get("repo")
+    checkout_dir = None
+    if repo_name:
+        try:
+            resolved = get_checkout_path(repo_name)
+            checkout_dir = str(resolved) if resolved is not None else None
+        except Exception:
+            checkout_dir = None
+
     branch_name = ""
     if mode == "resume" and existing_branch:
         check = subprocess.run(
             ["git", "rev-parse", "--verify", existing_branch],
+            cwd=checkout_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -365,7 +381,11 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
         if check.returncode == 0:
             cmd = ["git", "worktree", "add", worktree_dir, existing_branch]
             proc = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                cmd,
+                cwd=checkout_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
             if proc.returncode == 0:
                 branch_name = existing_branch
@@ -386,7 +406,11 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
         )
         cmd = ["git", "worktree", "add", "-b", branch_name, worktree_dir, "HEAD"]
         proc = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            cmd,
+            cwd=checkout_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
         if proc.returncode != 0:
             raise RuntimeError(f"Failed to create git worktree: {proc.stderr.strip()}")
@@ -611,10 +635,20 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
 def cleanup_node(state: AgentState) -> Dict[str, Any]:
     """Clean up worktree and temporary directories."""
     worktree_dir = state.get("worktree_dir")
+    repo_name = state.get("repo")
+    checkout_dir = None
+    if repo_name:
+        try:
+            resolved = get_checkout_path(repo_name)
+            checkout_dir = str(resolved) if resolved is not None else None
+        except Exception:
+            checkout_dir = None
 
     if worktree_dir and os.path.exists(worktree_dir):
         subprocess.run(
-            ["git", "worktree", "remove", "--force", worktree_dir], check=False
+            ["git", "worktree", "remove", "--force", worktree_dir],
+            cwd=checkout_dir,
+            check=False,
         )
         if os.path.exists(worktree_dir):
             shutil.rmtree(worktree_dir, ignore_errors=True)
