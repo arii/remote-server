@@ -331,11 +331,15 @@ class TestWorkerSlopIntegration(unittest.TestCase):
             ),
             mock.patch.object(pipeline, "Pipeline", MockRealPipeline),
         ):
-            code = queue_runner.worker(directory)
-            summary = queue_runner.read_json(directory / "summary.json")
-            result = queue_runner.read_json(directory / "pipeline-result.json")
-            stages = queue_runner.read_json(directory / "stages.json")
-            return code, summary, result, stages
+            orig_cwd = os.getcwd()
+            try:
+                code = queue_runner.worker(directory)
+                summary = queue_runner.read_json(directory / "summary.json")
+                result = queue_runner.read_json(directory / "pipeline-result.json")
+                stages = queue_runner.read_json(directory / "stages.json")
+                return code, summary, result, stages
+            finally:
+                os.chdir(orig_cwd)
 
     def test_worker_pass_posts_comment_before_handoff(self):
         code, summary, result, stages = self.run_worker_with_mocks(
