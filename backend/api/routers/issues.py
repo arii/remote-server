@@ -28,6 +28,7 @@ no notify.py changes in this port).
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import threading
@@ -51,7 +52,9 @@ logger = logging.getLogger(__name__)
 ISSUE_LIST_FIELDS = "number,title,state,assignees,labels,updatedAt,url,body"
 MAX_OUTPUT = 200_000
 
-REPAIR_WORKER_TIMEOUT = 1800  # seconds of wall clock for one repair
+REPAIR_WORKER_TIMEOUT = int(
+    os.environ.get("REPAIR_WORKER_TIMEOUT", "7200")
+)  # seconds of wall clock for one repair
 # run (stdout drain + wait). The worker's own steps already bound
 # themselves (Ollama 300s/query, verify 300s); a run holding the
 # single-flight slot past this is stuck: it is terminated, then

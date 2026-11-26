@@ -697,7 +697,6 @@ def build_chat_model(
             "google",
             "groq",
             "openrouter",
-            "mistral",
             "sambanova",
             "cloudflare",
         ):
