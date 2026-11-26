@@ -86,6 +86,7 @@ DEFAULT_OLLAMA_HOST = "http://ollama:11434"
 OLLAMA_GENERATE_PATH = "/api/generate"
 OLLAMA_TAGS_PATH = "/api/tags"
 DEFAULT_MODEL = "qwen2.5-coder:7b"
+DEFAULT_OLLAMA_TIMEOUT = 1200
 MAX_RETRIES = 3
 
 DEFAULT_REPO = "remote-server"
@@ -189,6 +190,16 @@ def ollama_model(raw: Optional[str] = None) -> str:
     return _env("OLLAMA_MODEL", DEFAULT_MODEL)
 
 
+def ollama_timeout(raw: Optional[int] = None) -> int:
+    """Timeout in seconds for Ollama generate requests (default 1200)."""
+    if isinstance(raw, int) and raw > 0:
+        return raw
+    try:
+        return int(_env("OLLAMA_TIMEOUT", str(DEFAULT_OLLAMA_TIMEOUT)))
+    except ValueError:
+        return DEFAULT_OLLAMA_TIMEOUT
+
+
 def _query_ollama_raw(
     prompt: str, model: Optional[str] = None, url: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -211,7 +222,7 @@ def _query_ollama_raw(
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    with urllib.request.urlopen(req, timeout=ollama_timeout()) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -441,6 +452,11 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
         else:
             file_contents[rel_path] = ""
 
+    print(
+        f"[repair] Worktree ready at {worktree_dir} on branch {branch_name}",
+        flush=True,
+    )
+
     return {
         "worktree_dir": worktree_dir,
         "branch_name": branch_name,
@@ -486,12 +502,23 @@ def edit_file_node(state: AgentState) -> Dict[str, Any]:
             "3. Enclose your full-file code rewrite in markdown code fences (```).\n"
         )
 
+        print(
+            f"[repair] Querying Ollama ({ollama_model()}) for {file_path} (timeout {ollama_timeout()}s)...",
+            flush=True,
+        )
         try:
             res_data = _query_ollama_raw(prompt)
             raw_response = res_data.get("response", "")
-            input_tokens += int(res_data.get("prompt_eval_count") or 0)
-            output_tokens += int(res_data.get("eval_count") or 0)
+            in_tok = int(res_data.get("prompt_eval_count") or 0)
+            out_tok = int(res_data.get("eval_count") or 0)
+            input_tokens += in_tok
+            output_tokens += out_tok
+            print(
+                f"[repair] Ollama generated {out_tok} tokens ({in_tok} prompt tokens) for {file_path}",
+                flush=True,
+            )
         except (urllib.error.URLError, OSError) as exc:
+            print(f"[repair] Ollama query failed for {file_path}: {exc}", flush=True)
             endpoint = ollama_generate_url()
             return {
                 "file_contents": file_contents,
@@ -533,11 +560,18 @@ def ast_check_node(state: AgentState) -> Dict[str, Any]:
             ast_errors.append(f"{file_path} (line {err_line}): {err_msg}")
 
     if ast_errors:
+        print(
+            f"[repair] AST pre-validation failed ({len(ast_errors)} error(s)):\n"
+            + "\n".join(ast_errors),
+            flush=True,
+        )
         return {
             "ast_valid": False,
             "current_errors": "AST Pre-validation Failed:\n" + "\n".join(ast_errors),
             "retry_count": retry_count + 1,
         }
+
+    print("[repair] AST pre-validation passed for all target files", flush=True)
 
     # AST is valid: write the validated code to the worktree files
     for file_path, code in file_contents.items():
@@ -577,6 +611,10 @@ def verify_code_node(state: AgentState) -> Dict[str, Any]:
             ),
             "retry_count": MAX_RETRIES,
         }
+    print(
+        f"[repair] Executing verification command: {verification_cmd}",
+        flush=True,
+    )
     try:
         proc = subprocess.run(
             cmd_args,
@@ -588,6 +626,10 @@ def verify_code_node(state: AgentState) -> Dict[str, Any]:
             timeout=VERIFY_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
+        print(
+            f"[repair] Verification command timed out after {VERIFY_TIMEOUT}s",
+            flush=True,
+        )
         return {
             "tests_passed": False,
             "current_errors": (
@@ -598,12 +640,17 @@ def verify_code_node(state: AgentState) -> Dict[str, Any]:
         }
 
     if proc.returncode == 0:
+        print("[repair] Verification command passed", flush=True)
         return {
             "tests_passed": True,
             "current_errors": "",
         }
     else:
         output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        print(
+            f"[repair] Verification command failed (exit code {proc.returncode}):\n{output.strip()}",
+            flush=True,
+        )
         return {
             "tests_passed": False,
             "current_errors": f"Verification command failed (exit code {proc.returncode}):\n{output.strip()}",
@@ -633,6 +680,10 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
         f"Target Files: {', '.join(state.get('target_files', []))}\n"
         f"Verification Command: `{state.get('verification_cmd', '')}`\n"
     )
+    print(
+        f"[repair] Pushed branch {branch_name} and creating PR for issue #{issue_number}...",
+        flush=True,
+    )
     cmd = [
         "gh",
         "pr",
@@ -653,6 +704,7 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
         raise RuntimeError(f"Failed to create PR: {proc.stderr.strip()}")
 
     pr_url = (proc.stdout or "").strip()
+    print(f"[repair] Successfully created PR: {pr_url}", flush=True)
     return {"pr_url": pr_url}
 
 
