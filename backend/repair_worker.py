@@ -36,6 +36,7 @@ try:
         TaskSpecError,
         parse_task_spec,
     )
+    from backend.shared import ledger
     from backend.verify_allowlist import (
         VERIFY_TIMEOUT,
         VERIFY_VERB_HELP,
@@ -50,6 +51,7 @@ except ImportError:
             TaskSpecError,
             parse_task_spec,
         )
+        from shared import ledger  # type: ignore
         from verify_allowlist import (
             VERIFY_TIMEOUT,
             VERIFY_VERB_HELP,
@@ -71,6 +73,8 @@ except ImportError:
 
         def get_checkout_path(repo: str):  # type: ignore
             return None
+
+        ledger = None  # type: ignore
 
 
 # Parity with backend/shared/model_router.py DEFAULT_OLLAMA_URL: the stack's
@@ -139,6 +143,9 @@ class AgentState(TypedDict):
     worktree_dir: str
     branch_name: str
     mode: str
+    input_tokens: int
+    output_tokens: int
+    pr_url: str
 
 
 def _env(name: str, default: str = "") -> str:
@@ -182,10 +189,10 @@ def ollama_model(raw: Optional[str] = None) -> str:
     return _env("OLLAMA_MODEL", DEFAULT_MODEL)
 
 
-def _query_ollama(
+def _query_ollama_raw(
     prompt: str, model: Optional[str] = None, url: Optional[str] = None
-) -> str:
-    """Send prompt to Ollama generate endpoint and return response text.
+) -> Dict[str, Any]:
+    """Send prompt to Ollama generate endpoint and return raw response dict.
 
     Model and endpoint resolve at call time from OLLAMA_MODEL / OLLAMA_URL
     (blank-tolerant), so container env always wins over import order.
@@ -205,8 +212,15 @@ def _query_ollama(
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=300) as resp:
-        res_data = json.loads(resp.read().decode("utf-8"))
-        return res_data.get("response", "")
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _query_ollama(
+    prompt: str, model: Optional[str] = None, url: Optional[str] = None
+) -> str:
+    """Send prompt to Ollama generate endpoint and return response text."""
+    res_data = _query_ollama_raw(prompt, model=model, url=url)
+    return res_data.get("response", "")
 
 
 def _model_present(names: List[str], model: str) -> bool:
@@ -439,6 +453,8 @@ def edit_file_node(state: AgentState) -> Dict[str, Any]:
     file_contents = dict(state.get("file_contents", {}))
     issue_body = state.get("issue_body", "")
     current_errors = state.get("current_errors", "")
+    input_tokens = state.get("input_tokens", 0)
+    output_tokens = state.get("output_tokens", 0)
 
     for file_path, original_code in list(file_contents.items()):
         prompt = (
@@ -471,7 +487,10 @@ def edit_file_node(state: AgentState) -> Dict[str, Any]:
         )
 
         try:
-            raw_response = _query_ollama(prompt)
+            res_data = _query_ollama_raw(prompt)
+            raw_response = res_data.get("response", "")
+            input_tokens += int(res_data.get("prompt_eval_count") or 0)
+            output_tokens += int(res_data.get("eval_count") or 0)
         except (urllib.error.URLError, OSError) as exc:
             endpoint = ollama_generate_url()
             return {
@@ -482,12 +501,16 @@ def edit_file_node(state: AgentState) -> Dict[str, Any]:
                     f"{ollama_model()!r} pulled?)"
                 ),
                 "retry_count": state.get("retry_count", 0) + 1,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
             }
         rewritten_code = _extract_code_from_llm_response(raw_response)
         file_contents[file_path] = rewritten_code
 
     return {
         "file_contents": file_contents,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
     }
 
 
@@ -629,7 +652,8 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
     if proc.returncode != 0:
         raise RuntimeError(f"Failed to create PR: {proc.stderr.strip()}")
 
-    return {}
+    pr_url = (proc.stdout or "").strip()
+    return {"pr_url": pr_url}
 
 
 def cleanup_node(state: AgentState) -> Dict[str, Any]:
@@ -767,11 +791,20 @@ def run_repair(
         "worktree_dir": "",
         "branch_name": branch,
         "mode": mode,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "pr_url": "",
     }
 
+    started = time.time()
+    final_state: Dict[str, Any] = {}
+    pr_url = ""
+    success = False
     try:
         final_state = graph.invoke(initial_state)
-        return final_state.get("tests_passed", False)
+        success = bool(final_state.get("tests_passed", False))
+        pr_url = str(final_state.get("pr_url", ""))
+        return success
     except UnscaffoldedIssueError as exc:
         # Actionable + greppable: the log line keeps the human
         # message, the marker line lets the backend lift the
@@ -782,6 +815,54 @@ def run_repair(
     except Exception as exc:
         logging.error(f"Repair pipeline encountered error: {exc}")
         return False
+    finally:
+        if ledger is not None:
+            try:
+                in_tok = (
+                    int(final_state.get("input_tokens", 0))
+                    if isinstance(final_state, dict)
+                    else 0
+                )
+                out_tok = (
+                    int(final_state.get("output_tokens", 0))
+                    if isinstance(final_state, dict)
+                    else 0
+                )
+                tot_tok = in_tok + out_tok
+                pr_val = (
+                    str(final_state.get("pr_url", ""))
+                    if isinstance(final_state, dict)
+                    else pr_url
+                )
+                clean_repo_slug = full_repo.replace("/", "-")
+                thread_id = f"repair-{clean_repo_slug}-{issue_number}-{int(started)}"
+                status_label = "APPROVED" if success else "FAILED"
+                ledger.record(
+                    script="repair_worker.py",
+                    model=f"ollama:{ollama_model()}",
+                    thread_id=thread_id,
+                    messages=[
+                        {
+                            "role": "assistant",
+                            "content": pr_val or status_label,
+                        }
+                    ],
+                    started=started,
+                    usage={
+                        "input_tokens": in_tok,
+                        "output_tokens": out_tok,
+                        "total_tokens": tot_tok,
+                    },
+                    extra={
+                        "repo": full_repo,
+                        "issue": issue_number,
+                        "status": status_label,
+                        "pr_url": pr_val,
+                    },
+                    provider="ollama",
+                )
+            except Exception as exc:
+                logging.error(f"Failed to record repair run in ledger: {exc}")
 
 
 def main(argv=None):
