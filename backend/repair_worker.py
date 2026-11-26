@@ -431,6 +431,7 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
             if mode != "resume" and existing_branch
             else f"repair/issue-{issue_number}-{int(time.time())}"
         )
+        mode = "fresh"
         cmd = ["git", "worktree", "add", "-b", branch_name, worktree_dir, "HEAD"]
         proc = subprocess.run(
             cmd,
@@ -473,6 +474,7 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
     return {
         "worktree_dir": worktree_dir,
         "branch_name": branch_name,
+        "mode": mode,
         "file_contents": file_contents,
         "original_file_contents": dict(file_contents),
     }
@@ -870,9 +872,15 @@ def cleanup_node(state: AgentState) -> Dict[str, Any]:
 
 
 def route_after_setup(state: AgentState) -> str:
-    """Route after setup: verify existing branch if resuming, else edit."""
+    """Route after setup: verify existing branch if resuming and changes exist, else edit."""
     if state.get("mode") == "resume":
-        return "ast_check_node"
+        file_contents = state.get("file_contents", {})
+        orig_contents = state.get("original_file_contents", {})
+        has_changes = any(
+            file_contents.get(f) != orig_contents.get(f) for f in file_contents
+        )
+        if has_changes:
+            return "ast_check_node"
     return "edit_file_node"
 
 

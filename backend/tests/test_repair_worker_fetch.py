@@ -289,7 +289,24 @@ class SetupWorktreeNodeTest(unittest.TestCase):
             repair_worker_mod.route_after_setup({"mode": "fresh"}), "edit_file_node"
         )
         self.assertEqual(
-            repair_worker_mod.route_after_setup({"mode": "resume"}), "ast_check_node"
+            repair_worker_mod.route_after_setup(
+                {
+                    "mode": "resume",
+                    "file_contents": {"src/a.ts": "broken code"},
+                    "original_file_contents": {"src/a.ts": "broken code"},
+                }
+            ),
+            "edit_file_node",
+        )
+        self.assertEqual(
+            repair_worker_mod.route_after_setup(
+                {
+                    "mode": "resume",
+                    "file_contents": {"src/a.ts": "modified code"},
+                    "original_file_contents": {"src/a.ts": "original code"},
+                }
+            ),
+            "ast_check_node",
         )
 
     def test_edit_file_node_preserves_baseline_on_retry(self):
