@@ -93,6 +93,51 @@ class SetupWorktreeNodeTest(unittest.TestCase):
         self.assertTrue(out["branch_name"].startswith("repair/issue-42-"))
         self.assertEqual(commands[0][:4], ["git", "worktree", "add", "-b"])
 
+    def test_setup_worktree_passes_foreign_repo_cwd(self):
+        state = {
+            "issue_number": 449,
+            "repo": "portfolio",
+            "mode": "fresh",
+            "target_files": [],
+        }
+        cwds = []
+
+        def fake_run(cmd, *args, **kwargs):
+            cwds.append(kwargs.get("cwd"))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "backend.repair_worker.get_checkout_path",
+            return_value="/srv/repos/portfolio",
+        ):
+            with patch("backend.repair_worker.subprocess.run", side_effect=fake_run):
+                out = repair_worker_mod.setup_worktree_node(state)
+        self.assertEqual(cwds[0], "/srv/repos/portfolio")
+        self.assertTrue(out["branch_name"].startswith("repair/issue-449-"))
+
+    def test_cleanup_node_passes_foreign_repo_cwd(self):
+        state = {
+            "worktree_dir": "/tmp/test-wt-449",
+            "repo": "portfolio",
+        }
+        cwds = []
+
+        def fake_run(cmd, *args, **kwargs):
+            cwds.append(kwargs.get("cwd"))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "backend.repair_worker.get_checkout_path",
+            return_value="/srv/repos/portfolio",
+        ):
+            with patch("os.path.exists", return_value=True):
+                with patch("shutil.rmtree"):
+                    with patch(
+                        "backend.repair_worker.subprocess.run", side_effect=fake_run
+                    ):
+                        repair_worker_mod.cleanup_node(state)
+        self.assertEqual(cwds[0], "/srv/repos/portfolio")
+
 
 if __name__ == "__main__":
     unittest.main()
