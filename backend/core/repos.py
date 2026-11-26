@@ -39,6 +39,8 @@ def _checkout_path(name: str) -> Path:
         stack = Path(os.environ.get("BACKEND_STACK_DIR", "/home/ari/remote-server"))
         if stack.is_dir():
             path = stack
+        elif (Path.cwd() / ".git").exists():
+            path = Path.cwd()
     git_dir = path / ".git"
     if not (git_dir.is_dir() or git_dir.is_file()):
         raise FileNotFoundError(f"unknown repo checkout: {name!r}")
@@ -59,12 +61,12 @@ def get_checkout_path(repo: str) -> Path:
 # @-mention file listing (#653): cap keeps the composer dropdown
 # light; skip-dirs keep caches and machine state out of it.
 REPO_FILES_CAP = 200
-REPO_FILES_SKIP_DIRS = frozenset(
-    {"node_modules", "__pycache__", "ledger", "traces"})
+REPO_FILES_SKIP_DIRS = frozenset({"node_modules", "__pycache__", "ledger", "traces"})
 
 
-def list_repo_files(repo: str, prefix: str = "",
-                    limit: int = REPO_FILES_CAP) -> dict[str, Any]:
+def list_repo_files(
+    repo: str, prefix: str = "", limit: int = REPO_FILES_CAP
+) -> dict[str, Any]:
     """Repo-relative file paths for @-mention completion (#653).
 
     Sorted os.walk over the validated checkout, skipping dotfiles/
@@ -79,14 +81,15 @@ def list_repo_files(repo: str, prefix: str = "",
     root = _checkout_path(name)
     want = (prefix or "").lstrip("/").strip()
     if ".." in want.split("/"):
-        return {"repo": name, "prefix": want, "files": [],
-                "truncated": False}
+        return {"repo": name, "prefix": want, "files": [], "truncated": False}
     files: list[str] = []
     truncated = False
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(
-            d for d in dirnames
-            if not d.startswith(".") and d not in REPO_FILES_SKIP_DIRS)
+            d
+            for d in dirnames
+            if not d.startswith(".") and d not in REPO_FILES_SKIP_DIRS
+        )
         for filename in sorted(filenames):
             if filename.startswith("."):
                 continue
@@ -105,5 +108,4 @@ def list_repo_files(repo: str, prefix: str = "",
         truncated = True
         files = files[:limit]
     files.sort()
-    return {"repo": name, "prefix": want, "files": files,
-            "truncated": truncated}
+    return {"repo": name, "prefix": want, "files": files, "truncated": truncated}
