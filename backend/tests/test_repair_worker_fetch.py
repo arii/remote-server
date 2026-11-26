@@ -321,6 +321,66 @@ class SetupWorktreeNodeTest(unittest.TestCase):
         self.assertIn("Error on line 1", prompts[0])
         self.assertEqual(out["file_contents"]["src/a.ts"], "fixed code")
 
+    def test_should_edit_on_retry_filters_docs_and_samples(self):
+        self.assertFalse(
+            repair_worker_mod._should_edit_on_retry("README.md", "some error")
+        )
+        self.assertFalse(
+            repair_worker_mod._should_edit_on_retry("docs/guide.txt", "some error")
+        )
+        self.assertFalse(
+            repair_worker_mod._should_edit_on_retry(".env.example", "some error")
+        )
+        self.assertTrue(
+            repair_worker_mod._should_edit_on_retry("src/index.ts", "some error")
+        )
+        self.assertTrue(
+            repair_worker_mod._should_edit_on_retry("tests/test_a.py", "some error")
+        )
+
+    def test_edit_file_node_targets_only_mentioned_code_files_on_retry(self):
+        state = {
+            "file_contents": {
+                "README.md": "# Docs",
+                "src/a.py": "def a(): pass",
+                "src/b.py": "def b(): pass",
+            },
+            "original_file_contents": {
+                "README.md": "# Docs",
+                "src/a.py": "def a(): pass",
+                "src/b.py": "def b(): pass",
+            },
+            "issue_body": "Fix bug",
+            "current_errors": "AssertionError in src/b.py: line 42",
+            "retry_count": 1,
+            "input_tokens": 10,
+            "output_tokens": 20,
+        }
+        queried = []
+
+        def fake_raw(prompt, *args, **kwargs):
+            if "Target File: src/b.py" in prompt:
+                queried.append("src/b.py")
+                return {
+                    "response": "```python\ndef b(): return 1\n```",
+                    "prompt_eval_count": 10,
+                    "eval_count": 5,
+                }
+            queried.append("other")
+            return {
+                "response": "```python\npass\n```",
+                "prompt_eval_count": 10,
+                "eval_count": 5,
+            }
+
+        with patch("backend.repair_worker._query_ollama_raw", side_effect=fake_raw):
+            out = repair_worker_mod.edit_file_node(state)
+
+        self.assertEqual(queried, ["src/b.py"])
+        self.assertEqual(out["file_contents"]["src/b.py"], "def b(): return 1")
+        self.assertEqual(out["file_contents"]["src/a.py"], "def a(): pass")
+        self.assertEqual(out["file_contents"]["README.md"], "# Docs")
+
     def test_verify_code_node_configures_env_paths(self):
         state = {
             "worktree_dir": "/tmp/test-wt-boomtick",

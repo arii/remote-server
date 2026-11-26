@@ -478,6 +478,19 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
     }
 
 
+def _should_edit_on_retry(file_path: str, current_errors: str) -> bool:
+    """Return whether file_path is eligible for modification during error retries."""
+    ext = os.path.splitext(file_path)[1].lower()
+    base = os.path.basename(file_path).lower()
+    if (
+        ext in (".md", ".markdown", ".txt", ".rst")
+        or base.endswith(".example")
+        or base.endswith(".sample")
+    ):
+        return False
+    return True
+
+
 def edit_file_node(state: AgentState) -> Dict[str, Any]:
     """Query Ollama to generate full-file rewrites for target files."""
     file_contents = dict(state.get("file_contents", {}))
@@ -488,7 +501,23 @@ def edit_file_node(state: AgentState) -> Dict[str, Any]:
     input_tokens = state.get("input_tokens", 0)
     output_tokens = state.get("output_tokens", 0)
 
-    for file_path, current_code in list(file_contents.items()):
+    files_to_edit = list(file_contents.keys())
+    if current_errors and retry_count > 0:
+        candidates = [
+            f for f in files_to_edit if _should_edit_on_retry(f, current_errors)
+        ]
+        mentioned = [
+            f
+            for f in candidates
+            if f in current_errors or os.path.basename(f) in current_errors
+        ]
+        if mentioned:
+            files_to_edit = mentioned
+        elif candidates:
+            files_to_edit = candidates
+
+    for file_path in files_to_edit:
+        current_code = file_contents[file_path]
         baseline_code = original_file_contents.get(file_path, current_code)
         prompt = (
             "You are an expert autonomous code repair engineer. Your task is to modify the following file "
