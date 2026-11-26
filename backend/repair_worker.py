@@ -138,6 +138,7 @@ class AgentState(TypedDict):
     target_files: List[str]
     verification_cmd: str
     file_contents: Dict[str, str]
+    original_file_contents: Dict[str, str]
     current_errors: str
     retry_count: int
     ast_valid: bool
@@ -473,24 +474,28 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
         "worktree_dir": worktree_dir,
         "branch_name": branch_name,
         "file_contents": file_contents,
+        "original_file_contents": dict(file_contents),
     }
 
 
 def edit_file_node(state: AgentState) -> Dict[str, Any]:
     """Query Ollama to generate full-file rewrites for target files."""
     file_contents = dict(state.get("file_contents", {}))
+    original_file_contents = dict(state.get("original_file_contents", {}))
     issue_body = state.get("issue_body", "")
     current_errors = state.get("current_errors", "")
+    retry_count = state.get("retry_count", 0)
     input_tokens = state.get("input_tokens", 0)
     output_tokens = state.get("output_tokens", 0)
 
-    for file_path, original_code in list(file_contents.items()):
+    for file_path, current_code in list(file_contents.items()):
+        baseline_code = original_file_contents.get(file_path, current_code)
         prompt = (
             "You are an expert autonomous code repair engineer. Your task is to modify the following file "
             "to fulfill the specification and fix any compiler/test errors.\n\n"
             f"Specification:\n{issue_body}\n\n"
         )
-        if current_errors:
+        if current_errors and retry_count > 0:
             # Bound context to most recent diagnostic output (max 50 lines / 3000 chars) to prevent context bloat
             err_lines = current_errors.strip().splitlines()
             truncated_errors = (
@@ -503,11 +508,16 @@ def edit_file_node(state: AgentState) -> Dict[str, Any]:
             prompt += (
                 "Previous attempt failed with the following error/compiler output:\n"
                 f"{truncated_errors}\n\n"
-                "Please fix these errors in your revised implementation.\n\n"
+                f"Target File: {file_path}\n"
+                f"Original Baseline Content:\n{baseline_code}\n\n"
+                f"Previous Attempt Content:\n{current_code}\n\n"
+                "Please fix these errors in your revised implementation based on the original baseline.\n\n"
+            )
+        else:
+            prompt += (
+                f"Target File: {file_path}\nOriginal Content:\n{baseline_code}\n\n"
             )
         prompt += (
-            f"Target File: {file_path}\n"
-            f"Original Content:\n{original_code}\n\n"
             "Instructions:\n"
             "1. Output the COMPLETE file rewrite. Do not output partial diffs, snippets, or placeholders.\n"
             "2. Output valid syntax only.\n"
@@ -688,27 +698,36 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
             except OSError:
                 pass
 
-    # Git add target files specifically to avoid staging untracked files
-    target_files = state.get("target_files", [])
-    if target_files:
-        subprocess.run(
-            ["git", "add", "--"] + target_files, cwd=worktree_dir, check=True
-        )
-    else:
-        subprocess.run(["git", "add", "-A"], cwd=worktree_dir, check=True)
-
-    commit_msg = f"fix(repair): autonomous repair for issue #{issue_number}"
     commit_env = os.environ.copy()
     commit_env.setdefault("GIT_AUTHOR_NAME", "S5 Autonomous Repair")
     commit_env.setdefault("GIT_AUTHOR_EMAIL", "repair@s5.internal")
     commit_env.setdefault("GIT_COMMITTER_NAME", "S5 Autonomous Repair")
     commit_env.setdefault("GIT_COMMITTER_EMAIL", "repair@s5.internal")
-    subprocess.run(
-        ["git", "commit", "-m", commit_msg],
+
+    status_proc = subprocess.run(
+        ["git", "status", "--porcelain"],
         cwd=worktree_dir,
-        env=commit_env,
-        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
+    if status_proc.stdout.strip():
+        # Git add target files specifically to avoid staging untracked files
+        target_files = state.get("target_files", [])
+        if target_files:
+            subprocess.run(
+                ["git", "add", "--"] + target_files, cwd=worktree_dir, check=True
+            )
+        else:
+            subprocess.run(["git", "add", "-A"], cwd=worktree_dir, check=True)
+
+        commit_msg = f"fix(repair): autonomous repair for issue #{issue_number}"
+        subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            cwd=worktree_dir,
+            env=commit_env,
+            check=True,
+        )
 
     # Git push
     subprocess.run(
@@ -794,6 +813,13 @@ def cleanup_node(state: AgentState) -> Dict[str, Any]:
 # Conditional routing functions
 
 
+def route_after_setup(state: AgentState) -> str:
+    """Route after setup: verify existing branch if resuming, else edit."""
+    if state.get("mode") == "resume":
+        return "ast_check_node"
+    return "edit_file_node"
+
+
 def route_after_ast_check(state: AgentState) -> str:
     """Route after AST check: retry edit_file if invalid, else verify_code."""
     if not state.get("ast_valid", False):
@@ -833,7 +859,14 @@ def build_repair_graph():
     workflow.set_entry_point("parse_issue_node")
 
     workflow.add_edge("parse_issue_node", "setup_worktree_node")
-    workflow.add_edge("setup_worktree_node", "edit_file_node")
+    workflow.add_conditional_edges(
+        "setup_worktree_node",
+        route_after_setup,
+        {
+            "edit_file_node": "edit_file_node",
+            "ast_check_node": "ast_check_node",
+        },
+    )
     workflow.add_edge("edit_file_node", "ast_check_node")
 
     workflow.add_conditional_edges(
@@ -895,6 +928,7 @@ def run_repair(
         "target_files": [],
         "verification_cmd": "",
         "file_contents": {},
+        "original_file_contents": {},
         "current_errors": "",
         "retry_count": 0,
         "ast_valid": False,
