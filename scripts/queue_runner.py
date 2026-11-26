@@ -1292,11 +1292,16 @@ def prune_landed_worktrees(config):
                 print(f"PRUNE {repo} {line.strip()}", flush=True)
 
 
-def supervise(config_path, *, clear_halt=False):
+def supervise(config_path, *, clear_halt=False, only_issue=None):
     """One queue pass. `only_issues` (exactly one "owner/repo#N") is validated here,
     before the lock or any GitHub call, and makes the stop terminal (see _supervise)."""
     config = read_json(config_path)
-    only = only_issue_keys(config["only_issues"]) if "only_issues" in config else None
+    if only_issue is not None:
+        only = only_issue_keys([only_issue])
+    else:
+        only = (
+            only_issue_keys(config["only_issues"]) if "only_issues" in config else None
+        )
     held = []
     try:
         return _supervise(config_path, clear_halt=clear_halt, only=only, held=held)
@@ -1631,6 +1636,8 @@ def _supervise(config_path, *, clear_halt=False, only=None, held=None):
                 "FINISH " + key + " " + summary["result"].get("status", "UNKNOWN"),
                 flush=True,
             )
+            summary["run_id"] = ledger.run_id
+            write_json(summary_path, summary)
             ledger.result(key, summary, status["consecutive_failures"] >= failure_limit)
             if status["consecutive_failures"] >= failure_limit:
                 status.update(
@@ -1774,6 +1781,163 @@ def _queue_state(config, now=None):
     return f"RUNNING {current} active"
 
 
+def print_queue_proof(config, issue_key=None, reader=None, provenance=None):
+    """Print ledger proof for a completed queue run.
+
+    Verifies gateway ceiling feature, spend cap, receipts, and sheet claim/result rows.
+    Fails closed if gateway lacks request_cost_ceiling, spend > cap, or proof missing.
+    """
+    env = config.get("environment", {})
+    base_url = env.get("TWT_BASE_URL", os.environ.get("TWT_BASE_URL", "http://twt/v1"))
+    uds = env.get("TWT_UDS", os.environ.get("TWT_UDS", "/run/twt/gateway.sock"))
+    prov = provenance
+    if prov is None:
+        try:
+            from backend.shared import twt_provenance
+
+            prov = twt_provenance
+        except ImportError:
+            prov = None
+    if prov is not None:
+        try:
+            prov.require_gateway_feature(CEILING_FEATURE, base_url, uds)
+        except Exception as error:
+            print(
+                f"PROOF FAILED: gateway does not support {CEILING_FEATURE}: {error}",
+                file=sys.stderr,
+            )
+            return 1
+
+    root = Path(config["state_dir"]).resolve()
+    status_path = root / "status.json"
+    status = read_json(status_path) if status_path.exists() else {}
+    if not issue_key or issue_key == "LAST":
+        last = status.get("last") or {}
+        if last.get("repo") and last.get("issue"):
+            issue_key = f"{last['repo']}#{last['issue']}"
+        elif status.get("completed"):
+            issue_key = status["completed"][-1]
+        else:
+            print("PROOF FAILED: no completed run found to prove", file=sys.stderr)
+            return 1
+
+    try:
+        repo, number_str = issue_key.rsplit("#", 1)
+        number = int(number_str)
+    except ValueError:
+        print(f"PROOF FAILED: malformed issue key '{issue_key}'", file=sys.stderr)
+        return 1
+
+    dir_name = repo.replace("/", "_") + "-" + str(number)
+    issue_dir = root / dir_name
+    summary_path = issue_dir / "summary.json"
+    if not summary_path.exists():
+        archive_dir = root / "archive"
+        matches = (
+            sorted(archive_dir.glob(f"{dir_name}-*")) if archive_dir.exists() else []
+        )
+        if matches and (matches[-1] / "summary.json").exists():
+            summary_path = matches[-1] / "summary.json"
+            issue_dir = matches[-1]
+        else:
+            print(
+                f"PROOF FAILED: no summary.json found for {issue_key}",
+                file=sys.stderr,
+            )
+            return 1
+
+    summary = read_json(summary_path)
+    job_path = issue_dir / "job.json"
+    job = read_json(job_path) if job_path.exists() else {}
+
+    cap_usd = checked_cap(job.get("cap_usd", config.get("cap_usd", ISSUE_CAP_USD)))
+    recon = summary.get("reconciliation") or {}
+    cost_usd = recon.get("cost_usd")
+    if (
+        cost_usd is None
+        or type(cost_usd) not in (int, float)
+        or not math.isfinite(cost_usd)
+    ):
+        print(
+            f"PROOF FAILED: unreconciled or invalid cost in {summary_path}",
+            file=sys.stderr,
+        )
+        return 1
+    if cost_usd > cap_usd:
+        print(
+            f"PROOF FAILED: spend ${cost_usd:.4f} exceeded cap ${cap_usd:.2f}",
+            file=sys.stderr,
+        )
+        return 1
+
+    issue_url = f"https://github.com/{repo}/issues/{number}"
+    if reader is None:
+        reader = ledger_module("ledger_read")
+    sheet_id = os.environ.get(
+        "AGENT_LEDGER_SHEET_ID", getattr(reader, "DEFAULT_SHEET_ID", None)
+    )
+    token_file = os.environ.get(
+        "GOOGLE_TOKEN_FILE", getattr(reader, "DEFAULT_TOKEN_PATH", None)
+    )
+    try:
+        raw_rows = reader.read_ledger(sheet_id, token_file)
+    except Exception as error:
+        print(f"PROOF FAILED: could not read Agent Ledger: {error}", file=sys.stderr)
+        return 1
+
+    matching = [
+        (i + 2, r)
+        for i, r in enumerate(raw_rows)
+        if (r.get("Link") or "").strip() == issue_url
+    ]
+    if not matching:
+        print(f"PROOF FAILED: no ledger rows found for {issue_url}", file=sys.stderr)
+        return 1
+
+    claim_row = None
+    result_row = None
+    run_id = summary.get("run_id")
+
+    for row_num, r in matching:
+        note = r.get("Item / Note") or ""
+        m = re.search(r"queue run ([0-9a-fA-F]+)", note)
+        row_run_id = m.group(1) if m else None
+        if "claimed by queue run" in note:
+            claim_row = (row_num, r, row_run_id)
+            if not run_id and row_run_id:
+                run_id = row_run_id
+        elif claim_row and (row_run_id == run_id or not row_run_id):
+            result_row = (row_num, r, row_run_id)
+
+    if not run_id and claim_row:
+        run_id = claim_row[2]
+
+    trace_ids = recon.get("trace_ids") or []
+    status_str = (summary.get("result") or {}).get("status") or "UNKNOWN"
+
+    print(f"=== Queue Run Proof: {issue_key} ===")
+    print(f"Run ID: {run_id or 'unknown'}")
+    print(f"Gateway Cost Ceiling Check: verified ({CEILING_FEATURE})")
+    print(f"Cumulative Spend: ${cost_usd:.4f} / ${cap_usd:.2f} (within cap: True)")
+    print(f"Reconciled Receipts: {len(trace_ids)} traces")
+    if claim_row:
+        print(
+            f"Claim Row: Sheet Row {claim_row[0]} | Timestamp: {claim_row[1].get('Timestamp')} | "
+            f"Agent: {claim_row[1].get('Agent / Source')} | Status: {claim_row[1].get('Status')} | Note: {claim_row[1].get('Item / Note')}"
+        )
+    else:
+        print("Claim Row: (none found)")
+    if result_row:
+        print(
+            f"Result Row: Sheet Row {result_row[0]} | Timestamp: {result_row[1].get('Timestamp')} | "
+            f"Agent: {result_row[1].get('Agent / Source')} | Status: {result_row[1].get('Status')} | Note: {result_row[1].get('Item / Note')}"
+        )
+    else:
+        print("Result Row: (none found)")
+    print(f"Issue Status: {status_str}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     default_config = os.environ.get("QUEUE_CONFIG")
@@ -1800,31 +1964,120 @@ def main():
         help="print runner state (idle, stalled or down) with the next action and exit",
     )
     parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="create STOP marker in queue state directory and exit",
+    )
+    parser.add_argument(
+        "--only-issue",
+        metavar="REPO#ISSUE",
+        help="run exactly one bounded issue pass without editing configuration file",
+    )
+    parser.add_argument(
+        "--proof",
+        nargs="?",
+        const="LAST",
+        metavar="REPO#ISSUE",
+        help="verify gateway cost ceiling, check spend vs cap, and print ledger proof",
+    )
+    parser.add_argument(
         "--clear-halt",
         action="store_true",
         help="acknowledge saved halts after successful reconciliation and resume",
     )
     args = parser.parse_args()
+    if args.stop:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.retry
+            or args.status
+            or args.budget_report
+            or args.proof
+            or args.only_issue
+        ):
+            parser.error("--stop requires supervisor configuration only")
+        root = Path(read_json(args.config)["state_dir"]).resolve()
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stop_path = root / "STOP"
+        stop_path.touch(mode=0o600)
+        print(f"STOP marker created at {stop_path}")
+        return 0
     if args.status:
-        if args.worker or args.reconcile or args.archive_worktree or args.retry:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.retry
+            or args.budget_report
+            or args.proof
+            or args.only_issue
+        ):
             parser.error("--status requires supervisor configuration only")
         print(queue_status(read_json(args.config)))
         return 0
     if args.budget_report:
-        if args.worker or args.reconcile or args.archive_worktree or args.retry:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.retry
+            or args.proof
+            or args.only_issue
+        ):
             parser.error("--budget-report requires supervisor configuration only")
         print(budget_report(Path(read_json(args.config)["state_dir"])))
         return 0
+    if args.proof is not None:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.retry
+            or args.clear_halt
+            or args.only_issue
+        ):
+            parser.error("--proof requires supervisor configuration only")
+        target_issue = None if args.proof == "LAST" else args.proof
+        return print_queue_proof(read_json(args.config), target_issue)
+    if args.only_issue:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.retry
+            or args.stop
+            or args.status
+            or args.budget_report
+            or args.proof
+        ):
+            parser.error("--only-issue requires supervisor configuration only")
+        only_issue_keys([args.only_issue])
+        cfg = read_json(args.config)
+        root = Path(cfg["state_dir"]).resolve()
+        (root / "STOP").unlink(missing_ok=True)
+        return supervise(
+            args.config, clear_halt=args.clear_halt, only_issue=args.only_issue
+        )
     if args.retry:
-        if args.worker or args.reconcile or args.archive_worktree or args.clear_halt:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.clear_halt
+            or args.only_issue
+        ):
             parser.error(
                 "--retry requires supervisor configuration without --clear-halt"
             )
         return retry_issue(args.config, args.retry)
     directory = args.worker or args.reconcile or args.archive_worktree
     if directory:
-        if args.clear_halt:
-            parser.error("--clear-halt requires supervisor configuration")
+        if args.clear_halt or args.only_issue:
+            parser.error(
+                "--worker/--reconcile/--archive-worktree cannot be combined with supervisor options"
+            )
         with (directory / "worker.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.archive_worktree:

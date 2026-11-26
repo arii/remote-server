@@ -2934,3 +2934,152 @@ class QueueStatusStopTests(unittest.TestCase):
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 result = runner.queue_status({"state_dir": tmp})
             self.assertTrue(result.startswith("RUNNING"), result)
+
+
+class QueueRunnerCLIFlagsTests(unittest.TestCase):
+    def test_stop_flag_creates_stop_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            state.mkdir()
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text(json.dumps({"state_dir": str(state)}))
+            with mock.patch(
+                "sys.argv", ["queue_runner.py", "--config", str(cfg_path), "--stop"]
+            ):
+                ret = runner.main()
+                self.assertEqual(ret, 0)
+                self.assertTrue((state / "STOP").exists())
+
+    def test_only_issue_unlinks_stop_and_passes_to_supervise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            state.mkdir()
+            (state / "STOP").touch()
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text(json.dumps({"state_dir": str(state)}))
+            with (
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "queue_runner.py",
+                        "--config",
+                        str(cfg_path),
+                        "--only-issue",
+                        "owner/repo#7",
+                    ],
+                ),
+                mock.patch.object(
+                    runner, "supervise", return_value=0
+                ) as mock_supervise,
+            ):
+                ret = runner.main()
+                self.assertEqual(ret, 0)
+                self.assertFalse((state / "STOP").exists())
+                mock_supervise.assert_called_once_with(
+                    cfg_path, clear_halt=False, only_issue="owner/repo#7"
+                )
+
+    def test_proof_verifies_ceiling_and_prints_ledger_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            issue_dir = root / "owner_repo-7"
+            issue_dir.mkdir()
+            summary = {
+                "issue": 7,
+                "repo": "owner/repo",
+                "run_id": "testrun123",
+                "exit_code": 0,
+                "result": {"status": "APPROVED"},
+                "reconciliation": {
+                    "reconciled": True,
+                    "cost_usd": 0.05,
+                    "trace_ids": ["t1", "t2"],
+                },
+            }
+            (issue_dir / "summary.json").write_text(json.dumps(summary))
+            (issue_dir / "job.json").write_text(json.dumps({"cap_usd": 1.0}))
+            (root / "status.json").write_text(
+                json.dumps({"completed": ["owner/repo#7"]})
+            )
+
+            prov = mock.Mock()
+            reader = mock.Mock()
+            reader.read_ledger.return_value = [
+                {
+                    "Timestamp": "11/26/2026 10:00:00",
+                    "Agent / Source": "S5-Queue",
+                    "Status": "Act",
+                    "Link": "https://github.com/owner/repo/issues/7",
+                    "Item / Note": "claimed by queue run testrun123",
+                },
+                {
+                    "Timestamp": "11/26/2026 10:05:00",
+                    "Agent / Source": "S5-Queue",
+                    "Status": "Later",
+                    "Link": "https://github.com/owner/repo/issues/7",
+                    "Item / Note": "Later: APPROVED, queue run testrun123",
+                },
+            ]
+
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                res = runner.print_queue_proof(
+                    {"state_dir": str(root)},
+                    "owner/repo#7",
+                    reader=reader,
+                    provenance=prov,
+                )
+            self.assertEqual(res, 0)
+            prov.require_gateway_feature.assert_called_once()
+            output = out.getvalue()
+            self.assertIn("Run ID: testrun123", output)
+            self.assertIn("verified (request_cost_ceiling)", output)
+            self.assertIn("Cumulative Spend: $0.0500 / $1.00", output)
+            self.assertIn("Reconciled Receipts: 2 traces", output)
+            self.assertIn("Claim Row: Sheet Row 2", output)
+            self.assertIn("Result Row: Sheet Row 3", output)
+
+    def test_proof_fails_closed_when_gateway_ceiling_missing(self):
+        prov = mock.Mock()
+        prov.require_gateway_feature.side_effect = RuntimeError(
+            "ceiling feature not supported"
+        )
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            res = runner.print_queue_proof(
+                {"state_dir": "/tmp"},
+                "owner/repo#7",
+                provenance=prov,
+            )
+        self.assertEqual(res, 1)
+        self.assertIn(
+            "PROOF FAILED: gateway does not support request_cost_ceiling",
+            err.getvalue(),
+        )
+
+    def test_proof_fails_closed_when_spend_exceeds_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            issue_dir = root / "owner_repo-7"
+            issue_dir.mkdir()
+            summary = {
+                "issue": 7,
+                "repo": "owner/repo",
+                "reconciliation": {
+                    "reconciled": True,
+                    "cost_usd": 1.50,
+                    "trace_ids": [],
+                },
+            }
+            (issue_dir / "summary.json").write_text(json.dumps(summary))
+            (issue_dir / "job.json").write_text(json.dumps({"cap_usd": 1.0}))
+            prov = mock.Mock()
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                res = runner.print_queue_proof(
+                    {"state_dir": str(root)},
+                    "owner/repo#7",
+                    provenance=prov,
+                )
+            self.assertEqual(res, 1)
+            self.assertIn("spend $1.5000 exceeded cap $1.00", err.getvalue())
