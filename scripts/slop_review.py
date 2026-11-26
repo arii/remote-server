@@ -173,17 +173,19 @@ def default_model(thread_id):
     return model_fn, ledger_fn
 
 
-def gated_submit(original, state, *, root, gh, model_factory, diff_fn=branch_diff):
+def gated_submit(original, state, *, root, gh, model_factory, diff_fn=None):
     """Wrap Pipeline.stage_submit: open the PR, review it, always comment.
 
     A failing review returns (False, 'SLOP_REVIEW_FAILED: ...') so the
     pipeline never reports APPROVED. state['status'] records the outcome.
     """
+    diff_getter = diff_fn or branch_diff
 
     def call(instance, worktree_root, *args, **kwargs):
         ok, url = original(instance, worktree_root, *args, **kwargs)
         if not ok:
             return ok, url
+        state["pr_url"] = url
         status = "SLOP_REVIEW_FAILED"
         try:
             skill = load_skill(root)
@@ -193,7 +195,9 @@ def gated_submit(original, state, *, root, gh, model_factory, diff_fn=branch_dif
         else:
             try:
                 model_fn, ledger_fn = model_factory()
-                result = review_diff(diff_fn(worktree_root), skill, model_fn, ledger_fn)
+                result = review_diff(
+                    diff_getter(worktree_root), skill, model_fn, ledger_fn
+                )
             except Exception as error:  # noqa: BLE001
                 result = {
                     "status": "FAIL",
@@ -207,7 +211,7 @@ def gated_submit(original, state, *, root, gh, model_factory, diff_fn=branch_dif
         detail = result["detail"]
         if not posted:
             detail = f"{detail}; comment not posted: {error}".strip("; ")
-        state.update(status=status, detail=detail)
+        state.update(status=status, detail=detail, pr_url=url)
         return False, f"{status}: {detail}"
 
     return call
@@ -215,7 +219,10 @@ def gated_submit(original, state, *, root, gh, model_factory, diff_fn=branch_dif
 
 def override_result(value, state):
     if state.get("status") in ("SLOP_REVIEW_FAILED", "SLOP_REVIEW_CONFIG"):
-        return dict(value, status=state["status"], detail=state.get("detail", ""))
+        result = dict(value, status=state["status"], detail=state.get("detail", ""))
+        if state.get("pr_url"):
+            result["submit_url"] = state["pr_url"]
+        return result
     return value
 
 
