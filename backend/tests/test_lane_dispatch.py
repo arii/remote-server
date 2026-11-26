@@ -589,6 +589,100 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
         stored = lane_dispatch.get_item("remote-server", 1)
         self.assertEqual(stored["state"], "queued")
 
+    def test_auto_scaffold_queued_issue_success(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        call_count = 0
+
+        def preview_fn(issue, repo="remote-server"):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "ok": True,
+                    "issue": issue,
+                    "command": "",
+                    "allowlisted": False,
+                    "error": "Missing required section: 'Target Files'",
+                    "body": "Fix bug in `src/feature.py`",
+                }
+            return {
+                "ok": True,
+                "issue": issue,
+                "command": "pytest tests/test_feature.py",
+                "allowlisted": True,
+                "error": "",
+                "body": "Fix bug in `src/feature.py`\n\n## Target Files...",
+            }
+
+        def mock_scaffolder(body, repo_root):
+            return {
+                "target_files": ["src/feature.py"],
+                "verification_command": "pytest tests/test_feature.py",
+            }, None
+
+        gh = _gh_ok().on("issue edit", "")
+        ready = self._ready(
+            verify_preview=preview_fn,
+            scaffolder=mock_scaffolder,
+            gh_runner=gh,
+        )
+        self.assertTrue(ready["ready"])
+        self.assertEqual(ready["reasons"], [])
+        self.assertEqual(
+            ready["gates"]["verify"]["command"], "pytest tests/test_feature.py"
+        )
+        stored = lane_dispatch.get_item("remote-server", 1)
+        self.assertTrue(stored.get("scaffolded"))
+        self.assertTrue(any("issue edit 1" in " ".join(c) for c in gh.calls))
+
+    def test_auto_scaffold_failure_records_detail(self):
+        lane_dispatch.enqueue("remote-server", 1)
+
+        def preview_fn(issue, repo="remote-server"):
+            return {
+                "ok": True,
+                "issue": issue,
+                "command": "",
+                "allowlisted": False,
+                "error": "Missing required section: 'Target Files'",
+                "body": "Vague issue without files",
+            }
+
+        def mock_scaffolder(body, repo_root):
+            return None, "no target files found in issue body"
+
+        ready = self._ready(
+            verify_preview=preview_fn,
+            scaffolder=mock_scaffolder,
+        )
+        self.assertFalse(ready["ready"])
+        self.assertTrue(any("auto-scaffold failed" in r for r in ready["reasons"]))
+        stored = lane_dispatch.get_item("remote-server", 1)
+        self.assertIn(
+            "auto-scaffold failed: no target files found in issue body",
+            stored.get("detail", ""),
+        )
+
+    def test_auto_scaffold_disabled_blocks(self):
+        lane_dispatch.enqueue("remote-server", 1)
+
+        def preview_fn(issue, repo="remote-server"):
+            return {
+                "ok": True,
+                "issue": issue,
+                "command": "",
+                "allowlisted": False,
+                "error": "Missing required section: 'Target Files'",
+                "body": "Fix bug in `src/feature.py`",
+            }
+
+        ready = self._ready(
+            verify_preview=preview_fn,
+            auto_scaffold=False,
+        )
+        self.assertFalse(ready["ready"])
+        self.assertTrue(any("not scaffolded" in r for r in ready["reasons"]))
+
     def test_unreadable_gates_block(self):
         gh = FakeGh().on("api repos/", RuntimeError("boom"))
         ready = self._ready(gh_runner=gh)

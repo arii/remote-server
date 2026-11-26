@@ -427,7 +427,9 @@ class RepairVerifyPreview(BaseModel):
     error: str = ""
 
 
-def _repair_verify_preview(issue_number: int, repo: str = "remote-server") -> dict:
+def _repair_verify_preview(
+    issue_number: int, repo: str = "remote-server", runner=None
+) -> dict:
     """Parsed verification command + allowlist verdict for an issue.
 
     Shared by the preview endpoint (the confirmer sees the command)
@@ -443,6 +445,7 @@ def _repair_verify_preview(issue_number: int, repo: str = "remote-server") -> di
             gh,
             ["issue", "view", str(issue_number), "--repo", gh, "--json", "body"],
             timeout=60,
+            runner=runner,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
@@ -456,6 +459,7 @@ def _repair_verify_preview(issue_number: int, repo: str = "remote-server") -> di
             "command": "",
             "allowlisted": False,
             "error": str(exc)[:300],
+            "body": body,
         }
     if not validate_verify_command(cmd):
         return {
@@ -464,6 +468,7 @@ def _repair_verify_preview(issue_number: int, repo: str = "remote-server") -> di
             "command": cmd[:500],
             "allowlisted": False,
             "error": f"not allowlisted (allowed: {VERIFY_VERB_HELP})",
+            "body": body,
         }
     return {
         "ok": True,
@@ -471,6 +476,7 @@ def _repair_verify_preview(issue_number: int, repo: str = "remote-server") -> di
         "command": cmd[:500],
         "allowlisted": True,
         "error": "",
+        "body": body,
     }
 
 
