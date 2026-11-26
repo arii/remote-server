@@ -218,6 +218,12 @@ class SetupWorktreeNodeTest(unittest.TestCase):
         def fake_run(cmd, *args, **kwargs):
             commands.append(cmd)
             envs.append(kwargs.get("env"))
+            if cmd[:2] == ["git", "status"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=" M src/components/FlagshipCard.tsx\n",
+                    stderr="",
+                )
             if cmd[:2] == ["gh", "pr"]:
                 return SimpleNamespace(
                     returncode=0,
@@ -231,19 +237,89 @@ class SetupWorktreeNodeTest(unittest.TestCase):
                 res = repair_worker_mod.create_pr_node(state)
 
         self.assertEqual(res["pr_url"], "https://github.com/arii/portfolio/pull/2")
+        self.assertEqual(commands[0][:2], ["git", "status"])
         self.assertEqual(
-            commands[0],
+            commands[1],
             ["git", "add", "--", "src/components/FlagshipCard.tsx"],
         )
-        self.assertEqual(commands[1][:3], ["git", "commit", "-m"])
-        commit_env = envs[1]
+        self.assertEqual(commands[2][:3], ["git", "commit", "-m"])
+        commit_env = envs[2]
         self.assertIsNotNone(commit_env)
         self.assertEqual(commit_env.get("GIT_AUTHOR_NAME"), "S5 Autonomous Repair")
         self.assertEqual(commit_env.get("GIT_AUTHOR_EMAIL"), "repair@s5.internal")
-        self.assertEqual(commands[2][:2], ["git", "-c"])
-        self.assertIn("credential.https://github.com.helper", commands[2][2])
-        self.assertEqual(commands[2][3:], ["push", "origin", "repair/issue-449-test"])
-        self.assertEqual(envs[2], commit_env)
+        self.assertEqual(commands[3][:2], ["git", "-c"])
+        self.assertIn("credential.https://github.com.helper", commands[3][2])
+        self.assertEqual(commands[3][3:], ["push", "origin", "repair/issue-449-test"])
+        self.assertEqual(envs[3], commit_env)
+
+    def test_create_pr_node_skips_commit_when_working_tree_clean(self):
+        state = {
+            "worktree_dir": "/tmp/test-wt-clean",
+            "branch_name": "repair/issue-449-clean",
+            "issue_number": 449,
+            "repo": "portfolio",
+            "target_files": ["src/components/FlagshipCard.tsx"],
+        }
+        commands = []
+
+        def fake_run(cmd, *args, **kwargs):
+            commands.append(cmd)
+            if cmd[:2] == ["git", "status"]:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if cmd[:2] == ["gh", "pr"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="https://github.com/arii/portfolio/pull/3\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("backend.repair_worker.subprocess.run", side_effect=fake_run):
+            with patch("os.path.islink", return_value=False):
+                res = repair_worker_mod.create_pr_node(state)
+
+        self.assertEqual(res["pr_url"], "https://github.com/arii/portfolio/pull/3")
+        # Ensure git commit was skipped and it jumped straight to push
+        self.assertEqual(commands[0][:2], ["git", "status"])
+        self.assertEqual(commands[1][:2], ["git", "-c"])
+        self.assertEqual(commands[1][3:], ["push", "origin", "repair/issue-449-clean"])
+
+    def test_route_after_setup_respects_mode(self):
+        self.assertEqual(
+            repair_worker_mod.route_after_setup({"mode": "fresh"}), "edit_file_node"
+        )
+        self.assertEqual(
+            repair_worker_mod.route_after_setup({"mode": "resume"}), "ast_check_node"
+        )
+
+    def test_edit_file_node_preserves_baseline_on_retry(self):
+        state = {
+            "file_contents": {"src/a.ts": "broken code"},
+            "original_file_contents": {"src/a.ts": "original baseline code"},
+            "issue_body": "Fix x",
+            "current_errors": "Error on line 1",
+            "retry_count": 1,
+            "input_tokens": 10,
+            "output_tokens": 20,
+        }
+        prompts = []
+
+        def fake_raw(prompt, *args, **kwargs):
+            prompts.append(prompt)
+            return {
+                "response": "```typescript\nfixed code\n```",
+                "prompt_eval_count": 50,
+                "eval_count": 25,
+            }
+
+        with patch("backend.repair_worker._query_ollama_raw", side_effect=fake_raw):
+            out = repair_worker_mod.edit_file_node(state)
+
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("Original Baseline Content:\noriginal baseline code", prompts[0])
+        self.assertIn("Previous Attempt Content:\nbroken code", prompts[0])
+        self.assertIn("Error on line 1", prompts[0])
+        self.assertEqual(out["file_contents"]["src/a.ts"], "fixed code")
 
     def test_run_repair_records_last_run_tokens_on_exception(self):
         recorded = []
