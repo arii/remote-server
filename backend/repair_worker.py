@@ -870,9 +870,9 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
 
     commit_env = os.environ.copy()
     commit_env.setdefault("GIT_AUTHOR_NAME", "S5 Autonomous Repair")
-    commit_env.setdefault("GIT_AUTHOR_EMAIL", "repair@s5.internal")
+    commit_env.setdefault("GIT_AUTHOR_EMAIL", "ariandersrobotics@gmail.com")
     commit_env.setdefault("GIT_COMMITTER_NAME", "S5 Autonomous Repair")
-    commit_env.setdefault("GIT_COMMITTER_EMAIL", "repair@s5.internal")
+    commit_env.setdefault("GIT_COMMITTER_EMAIL", "ariandersrobotics@gmail.com")
 
     status_proc = subprocess.run(
         ["git", "status", "--porcelain"],

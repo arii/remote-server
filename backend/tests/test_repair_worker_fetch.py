@@ -249,7 +249,9 @@ class SetupWorktreeNodeTest(unittest.TestCase):
         commit_env = envs[2]
         self.assertIsNotNone(commit_env)
         self.assertEqual(commit_env.get("GIT_AUTHOR_NAME"), "S5 Autonomous Repair")
-        self.assertEqual(commit_env.get("GIT_AUTHOR_EMAIL"), "repair@s5.internal")
+        self.assertEqual(
+            commit_env.get("GIT_AUTHOR_EMAIL"), "ariandersrobotics@gmail.com"
+        )
         self.assertEqual(commands[3][:2], ["git", "-c"])
         self.assertIn("credential.https://github.com.helper", commands[3][2])
         self.assertEqual(commands[3][3:], ["push", "origin", "repair/issue-449-test"])
