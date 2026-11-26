@@ -195,6 +195,14 @@ class SetupWorktreeNodeTest(unittest.TestCase):
         self.assertEqual(entry["usage"]["output_tokens"], 75)
         self.assertEqual(entry["usage"]["total_tokens"], 225)
 
+    def test_ollama_timeout_respects_env_and_defaults(self):
+        self.assertEqual(repair_worker_mod.ollama_timeout(), 1200)
+        with patch.dict("os.environ", {"OLLAMA_TIMEOUT": "600"}):
+            self.assertEqual(repair_worker_mod.ollama_timeout(), 600)
+        with patch.dict("os.environ", {"OLLAMA_TIMEOUT": "invalid"}):
+            self.assertEqual(repair_worker_mod.ollama_timeout(), 1200)
+        self.assertEqual(repair_worker_mod.ollama_timeout(300), 300)
+
 
 if __name__ == "__main__":
     unittest.main()
