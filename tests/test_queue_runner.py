@@ -3083,3 +3083,120 @@ class QueueRunnerCLIFlagsTests(unittest.TestCase):
                 )
             self.assertEqual(res, 1)
             self.assertIn("spend $1.5000 exceeded cap $1.00", err.getvalue())
+
+
+class StandingIdlePollTests(unittest.TestCase):
+    def test_standing_idle_poll_terminates_on_stop(self):
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            issues_path = root_path / "issues.json"
+            runner.write_json(issues_path, [])
+            state_dir = root_path / "state"
+            config = {
+                "issues_file": str(issues_path),
+                "state_dir": str(state_dir),
+                "runtime_state_dir": str(root_path / "runtime"),
+                "repo_paths": {"owner/repo": str(root_path / "repo")},
+                "pipeline_checkout": str(root_path / "pipeline"),
+                "runtime_command": [],
+                "worker_python": sys.executable,
+                "standing": True,
+                "idle_poll_seconds": 60,
+                "discover_repos": ["owner/repo"],
+            }
+            config_path = root_path / "config.json"
+            runner.write_json(config_path, config)
+            (root_path / "repo").mkdir(parents=True)
+            (root_path / "pipeline").mkdir(parents=True)
+
+            def fake_sleep(duration):
+                (state_dir / "STOP").touch(mode=0o600)
+
+            with (
+                mock.patch.object(runner, "discover_ready", return_value=[]),
+                mock.patch.object(runner.time, "sleep", side_effect=fake_sleep),
+                mock.patch.object(runner.signal, "signal"),
+            ):
+                code = runner.supervise(config_path)
+
+            self.assertEqual(code, 0)
+            status = runner.read_json(state_dir / "status.json")
+            self.assertTrue(status.get("stopped"))
+
+    def test_standing_idle_poll_dispatches_when_issue_discovered(self):
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            issues_path = root_path / "issues.json"
+            runner.write_json(issues_path, [])
+            state_dir = root_path / "state"
+            config = {
+                "issues_file": str(issues_path),
+                "state_dir": str(state_dir),
+                "runtime_state_dir": str(root_path / "runtime"),
+                "repo_paths": {"owner/repo": str(root_path / "repo")},
+                "pipeline_checkout": str(root_path / "pipeline"),
+                "runtime_command": [],
+                "worker_python": sys.executable,
+                "standing": True,
+                "idle_poll_seconds": 60,
+                "discover_repos": ["owner/repo"],
+            }
+            config_path = root_path / "config.json"
+            runner.write_json(config_path, config)
+            (root_path / "repo").mkdir(parents=True)
+            (root_path / "pipeline").mkdir(parents=True)
+
+            discovered_calls = 0
+
+            def fake_discover(cfg, iss, completed):
+                nonlocal discovered_calls
+                discovered_calls += 1
+                if discovered_calls == 1:
+                    return []
+                return [{"repo": "owner/repo", "number": 10}]
+
+            def fake_sleep(duration):
+                pass
+
+            def spawn(command, **_kwargs):
+                name = Path(command[-1]).name
+                (state_dir / "STOP").touch(mode=0o600)
+                process = mock.Mock(returncode=0)
+                process.communicate.side_effect = lambda _: runner.write_json(
+                    state_dir / name / "summary.json",
+                    {
+                        "halt_queue": False,
+                        "reconciliation": {"reconciled": True},
+                        "result": {
+                            "status": "APPROVED",
+                            "submit_url": "https://github.com/owner/repo/pull/1",
+                        },
+                        "exit_code": 0,
+                    },
+                )
+                return process
+
+            with (
+                mock.patch.object(runner, "discover_ready", side_effect=fake_discover),
+                mock.patch.object(runner.time, "sleep", side_effect=fake_sleep),
+                mock.patch.object(runner.signal, "signal"),
+                mock.patch.object(runner.subprocess, "Popen", side_effect=spawn),
+                mock.patch.object(
+                    runner.subprocess,
+                    "check_output",
+                    return_value=json.dumps(
+                        {"state": "open", "title": "t", "labels": ["ready"]}
+                    ),
+                ),
+                mock.patch.object(runner.QueueLedger, "boundary"),
+                mock.patch.object(
+                    runner.QueueLedger, "claimed_elsewhere", return_value=None
+                ),
+                mock.patch.object(runner.QueueLedger, "claim"),
+                mock.patch.object(runner.QueueLedger, "result"),
+            ):
+                code = runner.supervise(config_path)
+
+            self.assertEqual(code, 0)
+            status = runner.read_json(state_dir / "status.json")
+            self.assertIn("owner/repo#10", status.get("completed", []))
