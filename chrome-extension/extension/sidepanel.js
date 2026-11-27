@@ -17,7 +17,7 @@ import {
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
 import { improvementSummary } from "./lib/improvement-summary.js";
 import { errorInfo as syncErrorInfo, formatSyncFailure } from "./lib/drive-sync.js";
-import { INTERNALS_URL, MODEL_APIS, describeModelError, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
+import { INTERNALS_URL, MODEL_APIS, collapseRepeatedErrors, describeModelError, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
 import { modelPanelView, observeView } from "./lib/panel-state.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
@@ -511,12 +511,22 @@ async function checkBuiltInAIStatus() {
     badgeText.textContent = "AI Unavailable";
   }
 
+  const items = [];
   for (const api of MODEL_APIS) {
     renderModelProgress(api.key, modelProgressState(report[api.key]));
-    if (report[api.key] === "unavailable") {
-      renderModelError(api.key, describeModelError(null, { availability: "unavailable" }));
-    } else if (!failedModelDetails[api.key]) {
-      renderModelError(api.key, null);
+    const text = report[api.key] === "unavailable"
+      ? formatModelError(describeModelError(null, { availability: "unavailable" }))
+      : "";
+    items.push({ key: api.key, label: MODEL_API_LABEL[api.key] || api.key, text });
+  }
+  const collapsed = collapseRepeatedErrors(items);
+  for (const item of collapsed) {
+    const el = document.getElementById(`model-error-${item.key}`);
+    if (item.text && el) {
+      el.hidden = false;
+      el.textContent = item.text;
+    } else if (!failedModelDetails[item.key]) {
+      renderModelError(item.key, null);
     }
   }
 
@@ -541,6 +551,12 @@ function applyModelView(report) {
   document.getElementById("model-ready-line").textContent = view.summary;
   document.getElementById("prompt-cta-text").textContent = view.ctaText;
 }
+
+const MODEL_API_LABEL = {
+  languageModel: "Prompt API",
+  summarizer: "Summarizer",
+  writer: "Writer",
+};
 
 function renderModelError(key, detail) {
   const el = document.getElementById(`model-error-${key}`);
