@@ -1,22 +1,22 @@
 {
   "total": {
-    "correct": 42,
+    "correct": 43,
     "expected": 53,
-    "accuracy": 0.7925,
-    "correctFill": 31,
+    "accuracy": 0.8113,
+    "correctFill": 32,
     "wrongFill": 0,
     "correctAbstain": 11,
-    "wrongAbstain": 11
+    "wrongAbstain": 10
   },
   "byType": {
     "plain": {
-      "correct": 23,
+      "correct": 24,
       "expected": 27,
-      "accuracy": 0.8519,
-      "correctFill": 18,
+      "accuracy": 0.8889,
+      "correctFill": 19,
       "wrongFill": 0,
       "correctAbstain": 5,
-      "wrongAbstain": 4
+      "wrongAbstain": 3
     },
     "ambiguous": {
       "correct": 2,
@@ -75,13 +75,13 @@
       "wrongAbstain": 1
     },
     "lever-form.html": {
-      "correct": 7,
+      "correct": 8,
       "expected": 9,
-      "accuracy": 0.7778,
-      "correctFill": 4,
+      "accuracy": 0.8889,
+      "correctFill": 5,
       "wrongFill": 0,
       "correctAbstain": 3,
-      "wrongAbstain": 2
+      "wrongAbstain": 1
     },
     "ambiguous-fieldsets.html": {
       "correct": 2,
@@ -376,10 +376,10 @@
       "sig": "phone (optional)|phone||tel",
       "type": "plain",
       "expected": "Phone Number",
-      "actual": null,
-      "pass": null,
-      "outcome": "wrongAbstain",
-      "ok": false
+      "actual": "Phone Number",
+      "pass": "alias",
+      "outcome": "correctFill",
+      "ok": true
     },
     {
       "fixture": "lever-form.html",
@@ -818,28 +818,28 @@
     }
   ],
   "replay": {
-    "corrections": 11,
-    "confirmed": 11,
-    "modeledLlmFills": 11,
+    "corrections": 10,
+    "confirmed": 10,
+    "modeledLlmFills": 10,
     "before": {
       "total": {
-        "correct": 42,
+        "correct": 43,
         "expected": 53,
-        "accuracy": 0.7925,
-        "correctFill": 31,
+        "accuracy": 0.8113,
+        "correctFill": 32,
         "wrongFill": 0,
         "correctAbstain": 11,
-        "wrongAbstain": 11
+        "wrongAbstain": 10
       },
       "byType": {
         "plain": {
-          "correct": 23,
+          "correct": 24,
           "expected": 27,
-          "accuracy": 0.8519,
-          "correctFill": 18,
+          "accuracy": 0.8889,
+          "correctFill": 19,
           "wrongFill": 0,
           "correctAbstain": 5,
-          "wrongAbstain": 4
+          "wrongAbstain": 3
         },
         "ambiguous": {
           "correct": 2,
@@ -898,13 +898,13 @@
           "wrongAbstain": 1
         },
         "lever-form.html": {
-          "correct": 7,
+          "correct": 8,
           "expected": 9,
-          "accuracy": 0.7778,
-          "correctFill": 4,
+          "accuracy": 0.8889,
+          "correctFill": 5,
           "wrongFill": 0,
           "correctAbstain": 3,
-          "wrongAbstain": 2
+          "wrongAbstain": 1
         },
         "ambiguous-fieldsets.html": {
           "correct": 2,
@@ -946,23 +946,23 @@
     },
     "quarantined": {
       "total": {
-        "correct": 42,
+        "correct": 43,
         "expected": 53,
-        "accuracy": 0.7925,
-        "correctFill": 31,
+        "accuracy": 0.8113,
+        "correctFill": 32,
         "wrongFill": 0,
         "correctAbstain": 11,
-        "wrongAbstain": 11
+        "wrongAbstain": 10
       },
       "byType": {
         "plain": {
-          "correct": 23,
+          "correct": 24,
           "expected": 27,
-          "accuracy": 0.8519,
-          "correctFill": 18,
+          "accuracy": 0.8889,
+          "correctFill": 19,
           "wrongFill": 0,
           "correctAbstain": 5,
-          "wrongAbstain": 4
+          "wrongAbstain": 3
         },
         "ambiguous": {
           "correct": 2,
@@ -1021,13 +1021,13 @@
           "wrongAbstain": 1
         },
         "lever-form.html": {
-          "correct": 7,
+          "correct": 8,
           "expected": 9,
-          "accuracy": 0.7778,
-          "correctFill": 4,
+          "accuracy": 0.8889,
+          "correctFill": 5,
           "wrongFill": 0,
           "correctAbstain": 3,
-          "wrongAbstain": 2
+          "wrongAbstain": 1
         },
         "ambiguous-fieldsets.html": {
           "correct": 2,
@@ -1190,6 +1190,6 @@
         }
       }
     },
-    "accuracyRise": 0.2075
+    "accuracyRise": 0.1887
   }
 }

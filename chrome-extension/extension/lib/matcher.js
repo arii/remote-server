@@ -25,6 +25,11 @@ export function normalizeLabel(s) {
 
 const aliasRegexCache = new Map(); // compiled word-boundary matchers per normalized alias
 
+function stripRequirementMarker(s) {
+  const stripped = s.replace(/\s*(?:\(\s*(?:required|optional)\s*\)|\[\s*(?:required|optional)\s*\]|\*+)\s*$/, "").trim();
+  return stripped === "" ? s : stripped;
+}
+
 export function aliasMatches(query, alias) {
   const q = normalizeLabel(query);
   const a = normalizeLabel(alias);
@@ -153,7 +158,8 @@ export function lookupMapping(mappings, sig, host, { status = "confirmed" } = {}
 // Returns {entry, pass, confidence} or null. A mapping whose vault entry no
 // longer exists is ignored.
 export function matchField(field, vault, { learned = null, host = "" } = {}) {
-  const query = field?.label || "";
+  const rawQuery = field?.label || "";
+  const fieldType = String(field?.type || "").toLowerCase();
   const autoAttr = field?.autocomplete;
   if (learned && learned.length) {
     const m = lookupMapping(learned, fieldSignature(field), host);
@@ -165,7 +171,12 @@ export function matchField(field, vault, { learned = null, host = "" } = {}) {
       return { entry, pass: "autocomplete", confidence: 0.99 };
     }
     const aliases = [entry.key, ...(entry.aliases || [])];
-    if (aliases.some((a) => aliasMatches(query, a))) {
+    const matchesAlias = (a) => {
+      if (aliasMatches(rawQuery, a)) return true;
+      if (fieldType !== "checkbox" && fieldType !== "radio" && aliasMatches(stripRequirementMarker(normalizeLabel(rawQuery)), a)) return true;
+      return false;
+    };
+    if (aliases.some(matchesAlias)) {
       return { entry, pass: "alias", confidence: 0.98 };
     }
   }
