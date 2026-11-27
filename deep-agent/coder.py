@@ -367,7 +367,7 @@ def plan_path_hints(worktree, brief):
 
 
 def parse_args(argv):
-    """Spawner-shaped argv: -p --system-prompt CTX [--model M] BRIEF.
+    """Spawner-shaped argv: -p --system-prompt CTX BRIEF.
 
     --resume approve|reject continues a paused plan thread (brief
     then becomes an optional override for the ledgered brief).
@@ -375,7 +375,6 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(prog="coder")
     parser.add_argument("-p", action="store_true")
     parser.add_argument("--system-prompt", default="")
-    parser.add_argument("--model", default=None)
     parser.add_argument("--worktree", default=None)
     parser.add_argument("--thread", default=None)
     parser.add_argument("--resume", default=None, choices=["approve", "reject"])
@@ -2731,89 +2730,17 @@ def mark_unverified(summary):
     return "[unverified]"
 
 
-def resolve_strong_model(brief="", catalog=None):
-    """Dynamically resolve a qualifying strong candidate from the TwT catalog.
-
-    Returns the candidate model ID, or empty string if no candidate meets criteria.
-    """
-    try:
-        from backend.shared import task_router
-
-        cat = catalog
-        if cat is None:
-            try:
-                cat = task_router.load_catalog()
-            except Exception:
-                cat = None
-        if not cat:
-            try:
-                from backend.shared import twt_provenance
-
-                raw = twt_provenance.query_gateway_models()
-                cat = [
-                    {
-                        "provider": m.get("owned_by")
-                        or (
-                            m.get("id", "").split("/")[0]
-                            if "/" in m.get("id", "")
-                            else "twt"
-                        ),
-                        "id": m.get("id"),
-                        **m,
-                    }
-                    for m in raw
-                ]
-            except Exception:
-                cat = None
-        if cat:
-            features = task_router.task_features(brief)
-            decision = task_router.choose("strong", features, cat)
-            if decision.get("model"):
-                return decision["model"]
-    except Exception:
-        pass
-    return ""
-
-
-def select_strong_route(brief="", catalog=None):
-    """Select the strong route through Tokens with Taste routing.
-
-    Consults CODER_STRONG_MODEL first. If unset, selects a qualifying strong
-    candidate from the live TwT catalog (or falls back to the TwT strong
-    route). No pinned model, provider, or capability lists are hardcoded.
-    """
-    strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip()
-    if strong:
-        return strong
-    resolved = resolve_strong_model(brief=brief, catalog=catalog)
-    if resolved:
-        return resolved
-    try:
-        from backend.shared import model_router
-
-        return getattr(model_router, "TWT_STRONG_ROUTE", "route:strong")
-    except Exception:
-        return "route:strong"
-
-
 def tier_model(model_tier, brief="", catalog=None):
     """Model override for a pipeline model_tier ('fast', 'strong', None).
 
-    'strong' uses CODER_STRONG_MODEL when set, or dynamically resolves a
-    qualifying strong candidate from the live TwT catalog via resolve_strong_model.
+    'strong' returns CODER_STRONG_MODEL if set, or 'route:strong' to request
+    strong tier routing through TwT gateway.
     'fast' and None use CODER_MODEL (None means the router default).
     """
     if model_tier not in (None, "fast", "strong"):
         raise ValueError(f"unknown model_tier {model_tier!r}")
     if model_tier == "strong":
-        strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip()
-        if not strong:
-            strong = resolve_strong_model(brief=brief, catalog=catalog)
-        if not strong:
-            raise ValueError(
-                "model_tier 'strong' requires CODER_STRONG_MODEL or available strong candidate in TwT catalog"
-            )
-        return strong
+        return (os.environ.get("CODER_STRONG_MODEL") or "").strip() or "route:strong"
     return os.environ.get("CODER_MODEL") or None
 
 
@@ -2946,9 +2873,7 @@ def run_coder(
                     meter["stall_escalations"] = meter.get("stall_escalations", 0) + 1
                     meter["strong_escalations"] = meter.get("strong_escalations", 0) + 1
                     kwargs["model_tier"] = "strong"
-                    strong_model = select_strong_route(brief=brief, catalog=catalog)
-                    if strong_model:
-                        kwargs["model_override"] = strong_model
+                    kwargs["model_override"] = "route:strong"
                     thread = f"{thread}-stall-escalate"
                     continue
                 raise
@@ -3937,8 +3862,6 @@ def _cmd_resume(
 
 def main(argv=None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
-    if args.model:
-        os.environ["CODER_MODEL"] = args.model
     if args.resume:
         if not args.thread:
             return cli.usage_error("--thread is required with --resume")

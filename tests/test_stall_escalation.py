@@ -4,8 +4,6 @@ from unittest import mock
 
 import coder
 
-from backend.shared import model_router, task_router
-
 
 class TestStallEscalation(unittest.TestCase):
     def test_stall_then_escalate_then_edit(self):
@@ -32,9 +30,6 @@ class TestStallEscalation(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as root,
             mock.patch.object(coder, "_run_coder_attempt", side_effect=fake_attempt),
-            mock.patch.object(
-                coder, "select_strong_route", return_value="route:strong"
-            ),
         ):
             result = coder.run_coder(
                 root,
@@ -77,9 +72,6 @@ class TestStallEscalation(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as root,
             mock.patch.object(coder, "_run_coder_attempt", side_effect=fake_attempt),
-            mock.patch.object(
-                coder, "select_strong_route", return_value="route:strong"
-            ),
             self.assertRaises(coder.CoderBudgetExceeded) as ctx,
         ):
             coder.run_coder(
@@ -135,56 +127,6 @@ class TestStallEscalation(unittest.TestCase):
         self.assertEqual(meter.get("strong_escalations", 0), 0)
         self.assertEqual(meter["calls"], 4)
         self.assertTrue(result[6])
-
-    def test_select_strong_route_from_live_catalog(self):
-        """select_strong_route selects a strong candidate from TwT catalog
-        using task_router without hardcoding model or provider lists.
-        """
-        catalog = [
-            {
-                "provider": "nebius",
-                "id": "deepseek-ai/DeepSeek-V3",
-                "chat": True,
-                "tools": True,
-                "context_length": 65536,
-                "input_price": 6.0e-7,
-                "output_price": 1.2e-6,
-                "free": False,
-                "parameters_b": 671,
-            },
-            {
-                "provider": "openrouter",
-                "id": "openrouter/free-small",
-                "chat": True,
-                "tools": True,
-                "context_length": 32768,
-                "free": True,
-                "parameters_b": 7,
-            },
-        ]
-        with mock.patch.dict("os.environ", {"CODER_STRONG_MODEL": ""}, clear=False):
-            model = coder.select_strong_route(
-                brief="implement complex algorithm across multiple files",
-                catalog=catalog,
-            )
-            self.assertEqual(model, "nebius/deepseek-ai/DeepSeek-V3")
-
-    def test_select_strong_route_uses_env_override_when_set(self):
-        with mock.patch.dict(
-            "os.environ", {"CODER_STRONG_MODEL": "custom/strong-model"}, clear=False
-        ):
-            model = coder.select_strong_route(brief="test")
-            self.assertEqual(model, "custom/strong-model")
-
-    def test_select_strong_route_gateway_fallback(self):
-        with (
-            mock.patch.dict("os.environ", {"CODER_STRONG_MODEL": ""}, clear=False),
-            mock.patch.object(
-                task_router, "load_catalog", side_effect=RuntimeError("no db")
-            ),
-        ):
-            model = coder.select_strong_route(brief="test")
-            self.assertEqual(model, model_router.TWT_STRONG_ROUTE)
 
 
 if __name__ == "__main__":

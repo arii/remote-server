@@ -24,6 +24,7 @@ from uuid import uuid4
 
 from backend import ledger as history_ledger
 from backend.shared import ledger
+from backend.shared import runs
 from backend.shared import s5tools
 from backend.shared import twt_receipts
 
@@ -95,6 +96,70 @@ def _count_run_rows(thread_id: str, trace_ids: set[str]):
     except (OSError, UnicodeError):
         return None
     return count
+
+
+def get_active_claim(
+    issue_id=None, thread_id=None, repo="", ledger_path=None
+) -> dict | None:
+    """Retrieve an active claim entry from the canonical or history ledger."""
+    canonical = ledger_path or os.environ.get(
+        "CANONICAL_LEDGER_PATH",
+        "/var/lib/buttons/deep-agent/ledger.jsonl",
+    )
+    for target in (canonical, getattr(ledger, "LEDGER", None)):
+        if not target:
+            continue
+        try:
+            with open(target, encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    tid = row.get("thread_id")
+                    iss = row.get("issue")
+                    if (
+                        thread_id
+                        and isinstance(tid, str)
+                        and (tid == thread_id or tid.startswith(f"{thread_id}-"))
+                    ):
+                        return row
+                    if issue_id and (iss == issue_id or str(iss) == str(issue_id)):
+                        return row
+                    if row.get("kind") in ("claim", "active-claim", "queue-claim"):
+                        return row
+        except (FileNotFoundError, OSError, UnicodeError):
+            pass
+
+    try:
+        for row in history_ledger.read(kind="all", limit=50):
+            if not isinstance(row, dict):
+                continue
+            if row.get("kind") in ("claim", "pipeline-run") and row.get("status") in (
+                "Act",
+                "RUNNING",
+                "ready",
+            ):
+                return row
+    except Exception:
+        pass
+
+    state_dir = os.environ.get("DEEP_AGENT_STATE_DIR")
+    if state_dir:
+        job_file = os.path.join(os.path.dirname(state_dir), "job.json")
+        try:
+            with open(job_file, encoding="utf-8") as handle:
+                job_data = json.load(handle)
+                if isinstance(job_data, dict):
+                    j_iss = (job_data.get("issue") or {}).get("number")
+                    if issue_id and (j_iss == issue_id or str(j_iss) == str(issue_id)):
+                        return job_data
+        except Exception:
+            pass
+
+    return None
 
 
 _ACCEPTANCE_HEADING = re.compile(
@@ -746,6 +811,8 @@ class Pipeline:
         max_repair_cycles=None,
         max_escalations=MAX_ESCALATIONS_DEFAULT,
         cli_fallback=None,
+        require_claim=None,
+        require_receipts=None,
     ):
         self.repo = os.path.abspath(repo)
         self.intent = intent
@@ -782,6 +849,16 @@ class Pipeline:
         self.format_evidence = None
         self.drive_limit = drive_limit
         self.preview_url = preview_url
+        self.require_claim = (
+            require_claim
+            if require_claim is not None
+            else bool(os.environ.get("PIPELINE_REQUIRE_CLAIM") == "1")
+        )
+        self.require_receipts = (
+            require_receipts
+            if require_receipts is not None
+            else bool(os.environ.get("PIPELINE_REQUIRE_RECEIPTS") == "1")
+        )
         self.events = []
         self.budget = None
         # Opt-in CLI fallback (issue #1610): off by default, enabled
@@ -1398,6 +1475,16 @@ class Pipeline:
     def run(self):
         """Execute all stages; returns a result dict (never raises)."""
         started = time.time()
+        if self.require_claim and not get_active_claim(
+            issue_id=self.issue_id, thread_id=self.thread_id, repo=self._repo_slug()
+        ):
+            return self._result(
+                BLOCKED,
+                "",
+                "refusing execution: no active ledger claim found in canonical ledger",
+                0,
+                started,
+            )
         receipts = None
         try:
             with twt_receipts.run(self.thread_id) as receipts:
@@ -1728,6 +1815,53 @@ class Pipeline:
         else:
             ok, error = self.stage_cleanup(worktree)
             self.log("cleanup", "removed" if ok else f"FAILED: {error}")
+        if self.require_receipts:
+            missing_receipts = []
+            checks = {}
+            repo = self._repo_slug()
+            for check in self.verification_evidence:
+                if check.get("stale"):
+                    continue
+                argv = s5tools.parse_check_command(check["command"], repo)
+                checks[tuple(argv)] = bool(check.get("passed"))
+            checks.update(self._test_checks)
+            if not checks or not any(checks.values()):
+                missing_receipts.append("exit-0 verification command")
+
+            url = self._opened_pr_url or submit_url
+            if not url or not (
+                PR_URL.fullmatch(url) or url.startswith("https://github.com/")
+            ):
+                missing_receipts.append("PR URL")
+
+            receipts = twt_receipts.current.get()
+            trace_ids = receipts.ids if receipts is not None else set()
+            if receipts is not None and not receipts.error:
+                spend = runs.total_metered_spend(ledger.LEDGER)
+                cost_usd = spend.get("spent", 0.0)
+                if cost_usd > 1.00:
+                    missing_receipts.append(
+                        "reconciled TwT cost receipt within $1.00 cap"
+                    )
+            else:
+                missing_receipts.append("reconciled TwT cost receipt")
+
+            ledger_rows = _count_run_rows(self.thread_id, trace_ids)
+            if ledger_rows is None or ledger_rows < 1:
+                missing_receipts.append("canonical ledger entry")
+
+            if missing_receipts:
+                reason = f"missing required receipts: {', '.join(missing_receipts)}"
+                self.log("pipeline", f"BLOCKED: {reason}")
+                return self._result(
+                    BLOCKED,
+                    worktree,
+                    reason,
+                    audit_cycles,
+                    started,
+                    submit_url=submit_url,
+                    cleaned=ok,
+                )
         return self._result(
             APPROVED,
             worktree,

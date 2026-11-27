@@ -924,7 +924,7 @@ def worker(job_dir):
             file=sys.stderr,
             flush=True,
         )
-        if routing.get("picks"):
+        if routing and not routing.get("error"):
             try:
                 from backend.shared import task_router
 
