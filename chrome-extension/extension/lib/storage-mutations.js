@@ -45,7 +45,8 @@ export function applyVaultDelete(state, id) {
 // Import flow: replace the whole vault with the deduplicated import.
 export function applyVaultReplace(state, entries) {
   if (!Array.isArray(entries)) return state;
-  return { ...state, userContextVault: deduplicateVault(entries) };
+  const vault = deduplicateVault(entries).map((entry) => ({ ...entry, updatedAt: nowIso() }));
+  return { ...state, userContextVault: vault };
 }
 
 // Approve one delta: apply it to the vault (update in place, or create by
