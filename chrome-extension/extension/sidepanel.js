@@ -18,6 +18,7 @@ import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
 import { improvementSummary } from "./lib/improvement-summary.js";
 import { errorInfo as syncErrorInfo, formatSyncFailure } from "./lib/drive-sync.js";
 import { INTERNALS_URL, MODEL_APIS, collapseRepeatedErrors, describeModelError, describeTaskFailure, formatModelError, makeDownloadMonitor, modelProgressState, redactSecrets } from "./lib/model-download.js";
+import { buildTraceEntry } from "./lib/trace.js";
 import { modelPanelView, observeView } from "./lib/panel-state.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
@@ -263,14 +264,7 @@ const Telemetry = {
   },
 
   logTrace({ type, title, durationMs, details }) {
-    const entry = {
-      id: Date.now() + Math.random(),
-      ts: new Date().toLocaleTimeString(),
-      type, // 'SCAN' | 'HYDRATE' | 'LLM_PROMPT' | 'OBSERVER' | 'ERROR'
-      title,
-      durationMs: Math.round(durationMs || 0),
-      details: typeof details === "string" ? details : JSON.stringify(details, null, 2)
-    };
+    const entry = buildTraceEntry({ type, title, durationMs, details });
     this.traces.unshift(entry);
     if (this.traces.length > 40) this.traces.pop();
     this.renderTraces();
