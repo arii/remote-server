@@ -17,7 +17,7 @@ import {
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
 import { improvementSummary } from "./lib/improvement-summary.js";
 import { errorInfo as syncErrorInfo, formatSyncFailure } from "./lib/drive-sync.js";
-import { INTERNALS_URL, MODEL_APIS, collapseRepeatedErrors, describeModelError, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
+import { INTERNALS_URL, MODEL_APIS, collapseRepeatedErrors, describeModelError, describeTaskFailure, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
 import { modelPanelView, observeView } from "./lib/panel-state.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
@@ -805,7 +805,7 @@ document.getElementById("btn-ask")?.addEventListener("click", async () => {
     box.textContent = lastAskAnswer;
     if (lastAskAnswer.trim()) saveBtn.style.display = "";
   } catch (err) {
-    box.textContent = signal.aborted ? "Stopped." : `Ask failed: ${err.message}`;
+    box.textContent = signal.aborted ? "Stopped." : describeTaskFailure(err, "Ask");
   } finally {
     session?.destroy();
     Telemetry.endTask();
@@ -1083,7 +1083,7 @@ async function suggestGuidanceImprovements() {
       list.append(row);
     }
   } catch (err) {
-    status.textContent = `Suggestion failed: ${err.message}`;
+    status.textContent = describeTaskFailure(err, "Suggestion");
   } finally {
     session?.destroy?.();
   }
