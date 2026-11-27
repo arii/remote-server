@@ -74,3 +74,20 @@ export function describeModelError(err, { availability } = {}) {
 export function formatModelError(d) {
   return `${d.name}: ${d.message}\n${d.hint}\n${d.steps.map((s) => `- ${s}`).join("\n")}`;
 }
+
+/**
+ * Collapses repeated error texts into a single full message followed by shorthand notes.
+ * @param {Array<{key: string, label: string, text: string}>} items - Display‑ordered items.
+ * @returns {Array<{key: string, text: string}>} Collapsed list; empty text entries are kept empty.
+ */
+export function collapseRepeatedErrors(items) {
+  const seen = new Map();
+  return items.map(({ key, label, text }) => {
+    if (!text) return { key, text: "" };
+    if (seen.has(text)) {
+      return { key, text: `Same as ${seen.get(text)} above.` };
+    }
+    seen.set(text, label);
+    return { key, text };
+  });
+}
