@@ -97,7 +97,6 @@ EXPLORE_NUDGE = 12
 EXPLORE_LIMIT = 20
 INITIAL_STALL_CALL_LIMIT = 5
 INITIAL_STALL_CALL_CAP = INITIAL_STALL_CALL_LIMIT
-DEFAULT_FALLBACK_MODEL = "nebius/zai-org/GLM-5.3-Flash"
 # Middleware adds graph steps beyond the model and tool calls themselves.
 RECURSION_LIMIT = int(
     os.environ.get(
@@ -2878,9 +2877,6 @@ def run_coder(
                 raise
         error = capped
         spec = getattr(error, "coder_model_spec", {})
-        fallback = os.environ.get(
-            "CODER_FALLBACK_MODEL", DEFAULT_FALLBACK_MODEL
-        ).strip()
         if (
             repair
             or (call_budget is not None and left() <= 0)
@@ -2889,13 +2885,14 @@ def run_coder(
             or spec.get("model") not in ("default", "route:default")
             or error.thread_limit - floor != INITIAL_MODEL_LIMIT
             or error.thread_count - floor < INITIAL_MODEL_LIMIT
-            or not fallback
         ):
             raise error
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError(f"coder timed out after {timeout}s before fallback")
         kwargs.pop("prior_tracker", None)
+        kwargs["model_tier"] = "strong"
+        kwargs["model_override"] = model_router.TWT_STRONG_ROUTE
         return attempt(
             worktree,
             brief + "\n\nThe default-route attempt exhausted its model budget. "
@@ -2905,7 +2902,6 @@ def run_coder(
             thread + "-fallback",
             remaining,
             deadline=deadline,
-            fallback_model=fallback,
             prior_files=error.coder_written_files,
             call_cap=left(),
             **kwargs,
