@@ -14,13 +14,15 @@
   ],
   "runtime_command": [],
   "worker_python": "/opt/venvs/td/bin/python",
-  "cap_usd": 1.0,
+  "cap_usd": 5.0,
   "max_common_failures": 3,
   "strong_after_failures": 2,
   "inter_issue_delay_seconds": 60,
+  "standing": true,
+  "idle_poll_seconds": 60,
   "environment": {
     "TWT_BASE_URL": "http://twt/v1",
     "TWT_UDS": "/run/twt/gateway.sock",
-    "CODER_STRONG_MODEL": "nebius/zai-org/GLM-5.3-Flash"
+    "CODER_STRONG_MODEL": "route:strong"
   }
 }
