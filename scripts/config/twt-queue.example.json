@@ -19,7 +19,6 @@
   "standing": true,
   "idle_poll_seconds": 60,
   "environment": {
-    "TWT_BASE_URL": "http://127.0.0.1:8000/v1",
-    "CODER_STRONG_MODEL": "route:strong"
+    "TWT_BASE_URL": "http://127.0.0.1:8000/v1"
   }
 }
