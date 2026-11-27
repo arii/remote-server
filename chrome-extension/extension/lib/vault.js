@@ -75,3 +75,14 @@ export function deduplicateVault(entries) {
   }
   return cleaned;
 }
+
+export function describeVaultImport(currentEntries, importedEntries) {
+  const currentCount = deduplicateVault(Array.isArray(currentEntries) ? currentEntries : []).length;
+  const imported = Array.isArray(importedEntries) ? importedEntries : [];
+  const importCount = deduplicateVault(imported).length;
+  const dropped = sanitizeVaultEntries(importedEntries).dropped;
+  let message = `Replace your vault with this file?\n\nCurrent vault: ${currentCount} entr${currentCount === 1 ? "y" : "ies"}\nIn the file: ${importCount} valid entr${importCount === 1 ? "y" : "ies"}`;
+  if (dropped > 0) message += ` (${dropped} invalid skipped)`;
+  message += `\n\nEntries that are not in the file are removed from this vault. If you press Sync with Google Drive, those removals are applied on your other devices too, and the imported values can overwrite newer edits made there.`;
+  return { currentCount, importCount, dropped, message };
+}
