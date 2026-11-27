@@ -17,7 +17,8 @@ import {
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
 import { improvementSummary } from "./lib/improvement-summary.js";
 import { errorInfo as syncErrorInfo, formatSyncFailure } from "./lib/drive-sync.js";
-import { INTERNALS_URL, MODEL_APIS, collapseRepeatedErrors, describeModelError, describeTaskFailure, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
+import { INTERNALS_URL, MODEL_APIS, collapseRepeatedErrors, describeModelError, describeTaskFailure, formatModelError, makeDownloadMonitor, modelProgressState, redactSecrets } from "./lib/model-download.js";
+import { buildTraceEntry } from "./lib/trace.js";
 import { modelPanelView, observeView } from "./lib/panel-state.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
@@ -263,14 +264,7 @@ const Telemetry = {
   },
 
   logTrace({ type, title, durationMs, details }) {
-    const entry = {
-      id: Date.now() + Math.random(),
-      ts: new Date().toLocaleTimeString(),
-      type, // 'SCAN' | 'HYDRATE' | 'LLM_PROMPT' | 'OBSERVER' | 'ERROR'
-      title,
-      durationMs: Math.round(durationMs || 0),
-      details: typeof details === "string" ? details : JSON.stringify(details, null, 2)
-    };
+    const entry = buildTraceEntry({ type, title, durationMs, details });
     this.traces.unshift(entry);
     if (this.traces.length > 40) this.traces.pop();
     this.renderTraces();
@@ -364,9 +358,9 @@ async function runObservablePrompt(session, prompt, options = {}) {
   } catch (err) {
     Telemetry.logTrace({
       type: "ERROR",
-      title: `${label} Failed: ${err.message}`,
+      title: `${label} Failed: ${redactSecrets(String(err.message))}`,
       durationMs: performance.now() - t0,
-      details: err.stack || err.message
+      details: redactSecrets(String(err.stack || err.message))
     });
     throw err;
   }
@@ -857,7 +851,7 @@ document.getElementById("btn-run-sandbox").addEventListener("click", async () =>
     box.textContent = `[${elapsed}ms local inference]\n\n${result}`;
     session.destroy();
   } catch (err) {
-    box.textContent = `Prompt Error: ${err.message}`;
+    box.textContent = describeTaskFailure(err, "Prompt");
   }
 });
 
@@ -1125,7 +1119,7 @@ document.getElementById("btn-scan-page").addEventListener("click", async () => {
     preview.textContent = JSON.stringify(doc, null, 2);
     actionsRow.style.display = "flex";
   } catch (err) {
-    preview.textContent = `Scan failed: ${err.message}\nMake sure you are on an http/https web page and refresh the page if the extension was just installed.`;
+    preview.textContent = `${describeTaskFailure(err, "Scan")}\nMake sure you are on an http/https web page and refresh the page if the extension was just installed.`;
   }
 });
 
@@ -1159,7 +1153,7 @@ document.getElementById("btn-run-ux-audit")?.addEventListener("click", async () 
     const report = await sendToActiveTab({ action: "RUN_UX_AUDIT" });
     preview.textContent = JSON.stringify(report, null, 2);
   } catch (err) {
-    preview.textContent = "UX Audit Error: " + err.message;
+    preview.textContent = describeTaskFailure(err, "UX Audit");
   }
 });
 
@@ -1402,12 +1396,12 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       statusBox.textContent = `Auto-Fill Completed (Instant Pre-Draft Used)!\n\n` + JSON.stringify(stage1Result, null, 2);
     }
   } catch (err) {
-    statusBox.textContent = `Auto-Fill Error: ${err.message}`;
+    statusBox.textContent = describeTaskFailure(err, "Auto-Fill");
     Telemetry.logTrace({
       type: "ERROR",
       title: "Auto-Fill Error",
       durationMs: 0,
-      details: err.message
+      details: redactSecrets(err.message)
     });
   } finally {
     Telemetry.endTask();

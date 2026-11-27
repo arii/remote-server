@@ -404,3 +404,13 @@ pre {
   padding: 8px;
   box-sizing: border-box;
 }
+
+#sandbox-response-box,
+#guidance-preview,
+#export-preview-box,
+#autofill-status-box {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
+  max-width: 100%;
+}
