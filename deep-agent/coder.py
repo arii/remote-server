@@ -2863,7 +2863,6 @@ def run_coder(
             except CoderBudgetExceeded as error:
                 if (
                     error.recoverable_stall
-                    and "stalled after" in str(error)
                     and not stall_escalated
                     and kwargs.get("model_tier") != "strong"
                     and (call_budget is None or left() > 0)
