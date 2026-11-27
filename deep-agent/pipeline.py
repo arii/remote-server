@@ -36,6 +36,7 @@ DRIVE_LIMIT_DEFAULT = 25
 APPROVED = "APPROVED"
 CHANGES_REQUESTED = "CHANGES_REQUESTED"
 BLOCKED = "BLOCKED_DETERMINISTIC"
+LIMITED = "LIMITED"
 BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
 # failure_class for coder call-cap exhaustion (#1638). A capped run ends
 # BUDGET_EXHAUSTED and MAX_CALLS_PER_PARENT stays absolute, so the escalation
@@ -1141,6 +1142,24 @@ class Pipeline:
             ],
         }
 
+    def _classify_failure(self, reason):
+        msg = str(reason).lower()
+        if any(
+            term in msg
+            for term in (
+                "429",
+                "502",
+                "no provider available",
+                "cooldown",
+                "rate limit",
+                "ratelimit",
+                "overloaded",
+                "tier exhausted",
+            )
+        ):
+            return LIMITED
+        return BLOCKED
+
     def _coder_stopped(self, sub, reason, worktree, audit_cycles, started, **extra):
         """Result for a failed or budget-stopped coder stage (no PR)."""
         if (
@@ -1158,9 +1177,9 @@ class Pipeline:
             )
         else:
             self._mark(sub, "failed", str(reason)[:200])
-            status = BLOCKED
+            status = self._classify_failure(reason)
         split = len(self.budget["sub_briefs"]) > 1
-        partial = self._partial() if split or status != BLOCKED else None
+        partial = self._partial() if split or status not in (BLOCKED, LIMITED) else None
         return self._result(
             status, worktree, reason, audit_cycles, started, partial=partial, **extra
         )
@@ -1432,7 +1451,11 @@ class Pipeline:
             return self._run(started)
         except Exception as exc:
             self.log("pipeline", f"EXC {type(exc).__name__}: {exc}")
-            return self._result(BLOCKED, "", f"pipeline error: {exc}", 0, started)
+            status = self._classify_failure(exc)
+            prefix = (
+                "gateway tier exhausted: " if status == LIMITED else "pipeline error: "
+            )
+            return self._result(status, "", f"{prefix}{exc}", 0, started)
 
     def _next_tier(self, attempt, failure_class):
         """choose_model_tier, except a strong start never drops back to fast."""
@@ -1461,8 +1484,9 @@ class Pipeline:
             reason = errors or spec or "spec failed"
             if isinstance(reason, (list, tuple)):
                 reason = "; ".join(str(error) for error in reason) or "spec failed"
-            self.log("spec", f"BLOCKED: {reason}")
-            return self._result(BLOCKED, "", reason, 0, started)
+            status = self._classify_failure(reason)
+            self.log("spec", f"{status}: {reason}")
+            return self._result(status, "", reason, 0, started)
         if not isinstance(spec, str) or not spec.strip():
             self.log("spec", "BLOCKED: spec stage returned no text")
             return self._result(BLOCKED, "", "spec stage returned no text", 0, started)
