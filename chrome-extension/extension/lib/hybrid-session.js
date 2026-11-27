@@ -147,8 +147,9 @@ export function getHybridStatus() {
 export function describeCloudFailure(err) {
   const msg = (err?.message || String(err)).toLowerCase();
   const code = (err?.code || "").toLowerCase();
-  const combined = `${msg} ${code}`;
-  if (/app-check|appcheck|permission-denied|403|forbidden/.test(combined)) {
+  const codeRejection = /app-?check|permission-denied/.test(code);
+  const msgRejection = /\bapp ?check\b|permission[_ -]?denied|\[403\]|\b403\b\s*(forbidden)?|status:?\s*403\b/i.test(msg);
+  if (codeRejection || msgRejection) {
     return "The cloud request was rejected (App Check or access). Nothing was answered by the cloud; on-device inference only works if Chrome's built-in model is available.";
   }
   const short = (err?.message || String(err)).slice(0, 140);
@@ -203,8 +204,10 @@ class HybridPromptSession {
       if (typeof total === "number") this.contextUsage = total;
       return response.text();
     } catch (err) {
-      this.lastError = describeCloudFailure(err);
-      this.onError?.(this.lastError);
+      if (err?.name !== 'AbortError') {
+        this.lastError = describeCloudFailure(err);
+        this.onError?.(this.lastError);
+      }
       throw err;
     }
   }
@@ -220,8 +223,10 @@ class HybridPromptSession {
       const total = (await result.response)?.usageMetadata?.totalTokenCount;
       if (typeof total === "number") this.contextUsage = total;
     } catch (err) {
-      this.lastError = describeCloudFailure(err);
-      this.onError?.(this.lastError);
+      if (err?.name !== 'AbortError') {
+        this.lastError = describeCloudFailure(err);
+        this.onError?.(this.lastError);
+      }
       throw err;
     }
   }

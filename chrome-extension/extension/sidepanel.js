@@ -571,7 +571,7 @@ function showHybridModeLine(hybrid) {
   el.textContent = text;
   el.style.display = "";
   hybrid.onError = (msg) => {
-    el.textContent = msg;
+    el.textContent = `${text} ${msg}`;
     el.style.display = "";
   };
 }
