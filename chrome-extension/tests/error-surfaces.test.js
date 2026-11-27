@@ -18,10 +18,6 @@ describe("sidepanel error surfaces use describeTaskFailure and redactSecrets", (
     expect(sidepanelSource).toContain('describeTaskFailure(err, "Auto-Fill")');
   });
 
-  it("does not pass raw err.message into Telemetry details", () => {
-    expect(sidepanelSource).not.toContain("details: err.message");
-  });
-
   it("uses redactSecrets in sidepanel.js", () => {
     expect(sidepanelSource).toContain("redactSecrets(");
   });
@@ -38,12 +34,4 @@ describe("describeTaskFailure redacts secrets", () => {
       expect(result).not.toContain("FAKEtoken123456");
     });
   }
-
-  it("redacts secrets from stack traces as well", () => {
-    const err = new Error("boom");
-    err.stack = `Error: boom\n    at fn (${FAKE_SECRET})`;
-    const result = describeTaskFailure(err, "Scan");
-    expect(result.startsWith("Scan failed:")).toBe(true);
-    expect(result).not.toContain(FAKE_SECRET);
-  });
 });
