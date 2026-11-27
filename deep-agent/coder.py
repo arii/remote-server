@@ -568,10 +568,71 @@ def _read_test_source(path, _version):
     return path.read_text(encoding="utf-8")
 
 
-def targeted_checks(worktree, files, repo):
-    if repo != "arii/remote-server":
+def extract_verification_commands(text):
+    """Extract verification commands from markdown text (e.g. ## Verification Command)."""
+    if not text or not isinstance(text, str):
         return []
+    match = re.search(
+        r"^##+\s+Verification\s+Commands?\b[^\n]*\n(.*?)(?=^##|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return []
+    block = match.group(1).strip()
+    code_match = re.search(r"```(?:bash|sh|shell)?\s*\n?(.*?)\n?```", block, re.DOTALL)
+    content = code_match.group(1) if code_match else block
+    commands = []
+    for line in content.splitlines():
+        line = line.strip().strip("`")
+        line = re.sub(r"^[-*+•]\s+", "", line).strip().strip("`")
+        if line and not line.startswith("#"):
+            commands.append(line)
+    return commands
+
+
+def _brief_verification_commands(worktree, brief, repo):
+    commands = []
+    if brief:
+        commands.extend(extract_verification_commands(brief))
+    if not commands and worktree:
+        root = Path(worktree)
+        spec_candidates = []
+        spec_dir = root / "docs" / "specs"
+        if spec_dir.is_dir():
+            spec_candidates.extend(sorted(spec_dir.glob("issue-*.md")))
+        spec_validated = root / "spec-validated.md"
+        if spec_validated.is_file():
+            spec_candidates.append(spec_validated)
+        for spec_path in spec_candidates:
+            try:
+                text = spec_path.read_text(encoding="utf-8")
+                commands.extend(extract_verification_commands(text))
+                if commands:
+                    break
+            except (OSError, UnicodeError):
+                continue
+    valid = []
+    for cmd in commands:
+        try:
+            argv = shlex.split(cmd)
+        except ValueError:
+            argv = cmd.split()
+        if check_allowed(argv, repo) and cmd not in valid:
+            valid.append(cmd)
+    return valid
+
+
+def targeted_checks(worktree, files, repo, brief=None):
     root = Path(worktree)
+    commands = []
+    spec_commands = _brief_verification_commands(
+        worktree, brief or getattr(files, "brief", None), repo
+    )
+    for cmd in spec_commands:
+        if cmd not in commands:
+            commands.append(cmd)
+
     tests = set()
 
     def existing(path):
@@ -597,42 +658,78 @@ def targeted_checks(worktree, files, repo):
                         for p in directory.glob(f"{path.stem}.{kind}.*")
                     )
         elif path.suffix == ".py":
-            if TEST_FILE_RE.fullmatch(path.as_posix()):
+            if path.name.startswith("test_") or TEST_FILE_RE.fullmatch(path.as_posix()):
                 tests.add(path)
-            elif parts[0] in {"backend", "deep-agent", "scripts"}:
-                test_dir = Path("backend/tests" if parts[0] == "backend" else "tests")
-                for stem in (path.stem, *reversed(parts[1:-1])):
-                    candidate = test_dir / f"test_{stem}.py"
-                    if existing(candidate):
-                        tests.add(candidate)
-                        break
-                else:
-                    if parts[0] == "backend":
-                        module = re.escape(".".join(path.with_suffix("").parts))
-                        imports = re.compile(
-                            rf"(?m)^\s*(?:from {module} import |import {module}\b)"
-                        )
-                        for candidate in sorted((root / test_dir).glob("test_*.py")):
-                            relative = candidate.relative_to(root)
-                            resolved = existing(relative)
-                            if resolved is None:
-                                continue
-                            try:
-                                info = resolved.stat()
-                                version = (
-                                    info.st_dev,
-                                    info.st_ino,
-                                    info.st_size,
-                                    info.st_mtime_ns,
-                                    info.st_ctime_ns,
-                                )
-                                source = _read_test_source(resolved, version)
-                            except (OSError, UnicodeError):
-                                continue
-                            if imports.search(source):
-                                tests.add(relative)
+            else:
+                test_dirs = []
+                for d in (
+                    root / "backend" / "tests",
+                    root / "tests",
+                    root / "cli" / "tests",
+                ):
+                    if d.is_dir() and d not in test_dirs:
+                        test_dirs.append(d)
+                if len(parts) > 1 and (root / parts[0] / "tests").is_dir():
+                    d = root / parts[0] / "tests"
+                    if d not in test_dirs:
+                        test_dirs.append(d)
+                if not test_dirs:
+                    for d in root.glob("**/tests"):
+                        if d.is_dir() and not any(p.startswith(".") for p in d.parts):
+                            test_dirs.append(d)
 
-    commands = []
+                for test_dir in test_dirs:
+                    for stem in (path.stem, *reversed(parts[1:-1])):
+                        candidate = (test_dir / f"test_{stem}.py").relative_to(root)
+                        if existing(candidate):
+                            tests.add(candidate)
+                            break
+                        matches = sorted(test_dir.glob(f"test_{stem}_*.py")) + sorted(
+                            test_dir.glob(f"test_*_{stem}.py")
+                        )
+                        found = False
+                        for m in matches:
+                            cand = m.relative_to(root)
+                            if existing(cand):
+                                tests.add(cand)
+                                found = True
+                        if found:
+                            break
+
+                patterns = [
+                    re.escape(".".join(path.with_suffix("").parts)),
+                    re.escape(".".join(path.with_suffix("").parts).replace("-", "_")),
+                ]
+                if len(parts) > 1:
+                    patterns.append(re.escape(".".join(parts[1:]).removesuffix(".py")))
+                patterns.append(re.escape(path.stem))
+                module_pattern = "|".join(dict.fromkeys(patterns))
+                imports = re.compile(
+                    rf"(?m)^\s*(?:from (?:[\w.]*\b)?(?:{module_pattern})\b|import (?:[\w.]*\b)?(?:{module_pattern})\b)"
+                )
+                for test_dir in test_dirs:
+                    for candidate in sorted(test_dir.glob("test_*.py")):
+                        relative = candidate.relative_to(root)
+                        if relative in tests:
+                            continue
+                        resolved = existing(relative)
+                        if resolved is None:
+                            continue
+                        try:
+                            info = resolved.stat()
+                            version = (
+                                info.st_dev,
+                                info.st_ino,
+                                info.st_size,
+                                info.st_mtime_ns,
+                                info.st_ctime_ns,
+                            )
+                            source = _read_test_source(resolved, version)
+                        except (OSError, UnicodeError):
+                            continue
+                        if imports.search(source):
+                            tests.add(relative)
+
     for path in sorted(tests):
         if not existing(path):
             continue
@@ -640,15 +737,31 @@ def targeted_checks(worktree, files, repo):
             command = " ".join(
                 (*FRONTEND_VITEST_PREFIX, str(path.relative_to("frontend")))
             )
+            if check_allowed(command.split(), repo) and command not in commands:
+                commands.append(command)
         else:
-            command = "python3 -m unittest " + ".".join(path.with_suffix("").parts)
-        if check_allowed(command.split(), repo):
-            commands.append(command)
+            unittest_cmd = "python3 -m unittest " + ".".join(path.with_suffix("").parts)
+            pytest_cmd = f"python3 -m pytest {path.as_posix()}"
+            bare_pytest = f"pytest {path.as_posix()}"
+            if repo == "arii/remote-server" and check_allowed(
+                unittest_cmd.split(), repo
+            ):
+                cmd = unittest_cmd
+            elif check_allowed(pytest_cmd.split(), repo):
+                cmd = pytest_cmd
+            elif check_allowed(bare_pytest.split(), repo):
+                cmd = bare_pytest
+            elif check_allowed(unittest_cmd.split(), repo):
+                cmd = unittest_cmd
+            else:
+                cmd = None
+            if cmd and cmd not in commands:
+                commands.append(cmd)
     return commands[:8]
 
 
-def check_hints(worktree, files, repo):
-    commands = targeted_checks(worktree, files, repo)
+def check_hints(worktree, files, repo, brief=None):
+    commands = targeted_checks(worktree, files, repo, brief=brief)
     return (
         "\n".join(["Targeted run_check commands for this change:", *commands])
         if commands
@@ -1263,8 +1376,9 @@ class WriteTracker(set):
     already-tracked file still count, so the run_check dither guard
     resets after every actual edit, not just new files (#1374)."""
 
-    def __init__(self):
+    def __init__(self, brief=None):
         super().__init__()
+        self.brief = brief
         self.mutations = 0
         self.check_generation = 0
         self.checks = {}
@@ -1295,7 +1409,9 @@ class WriteTracker(set):
         return all(
             any(
                 tuple(command.split()) in self.checks
-                for command in targeted_checks(worktree, [path], repo)
+                for command in targeted_checks(
+                    worktree, [path], repo, brief=getattr(self, "brief", None)
+                )
             )
             for path in sorted(self)
         )
@@ -1736,15 +1852,23 @@ class StalledVerificationFailed(RuntimeError):
         self.failures = failures
 
 
-def verify_stalled_edits(worktree, written_files, repo, recorder, deadline):
+def verify_stalled_edits(worktree, written_files, repo, recorder, deadline, brief=None):
+    if brief is None:
+        brief = getattr(written_files, "brief", None) or ""
+    elif getattr(written_files, "brief", None) is None:
+        written_files.brief = brief
     run_check = build_check_tool(worktree, written_files, repo, deadline=deadline)
     with written_files.verification_lock:
         commands, uncovered = set(), []
+        spec_commands = _brief_verification_commands(worktree, brief, repo)
         for path in sorted(written_files):
-            targets = targeted_checks(worktree, [path], repo)
+            targets = targeted_checks(worktree, [path], repo, brief=brief)
+            if not targets and spec_commands:
+                targets = list(spec_commands)
             if not targets:
                 uncovered.append(path)
             commands.update(targets)
+        commands.update(spec_commands)
         if uncovered:
             raise StalledVerificationFailed(
                 "BLOCKED: no targeted verification for edited files: "
@@ -1760,7 +1884,8 @@ def verify_stalled_edits(worktree, written_files, repo, recorder, deadline):
         for command in sorted(commands):
             started = time.monotonic()
             args = {"command": command}
-            result = run_check.invoke(args)
+            invoke = getattr(run_check, "invoke", None)
+            result = invoke(args) if callable(invoke) else run_check(command)
             recorder.tool_call(
                 "run_check", args, time.monotonic() - started, True, result=result
             )
@@ -3034,7 +3159,11 @@ def _run_coder_attempt(
     print(f"coder via {label}{marker}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label + marker)
     invocation_started = False
-    written_files = WriteTracker() if prior_tracker is None else prior_tracker
+    written_files = (
+        WriteTracker(brief=brief) if prior_tracker is None else prior_tracker
+    )
+    if getattr(written_files, "brief", None) is None:
+        written_files.brief = brief
     written_files.update(prior_files)
 
     def verified_completion(reason):
@@ -3238,7 +3367,9 @@ def _run_coder_attempt(
         if stall_reason:
             completion = "" if correction else verified_completion(stall_reason)
             if not completion and verify_stalls and written_files:
-                verify_stalled_edits(worktree, written_files, repo, recorder, deadline)
+                verify_stalled_edits(
+                    worktree, written_files, repo, recorder, deadline, brief=brief
+                )
                 completion = verified_completion(stall_reason)
                 if not completion:
                     raise StalledVerificationFailed(

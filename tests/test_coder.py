@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -855,6 +856,96 @@ class TestTargetedChecks(unittest.TestCase):
                 ),
             ):
                 self.assertNotIn(frontend, run_check(planned))
+
+    def test_targeted_checks_discovers_tests_for_deep_agent_and_multi_suffix(self):
+        with tempfile.TemporaryDirectory() as worktree:
+            root = Path(worktree)
+            test_dir = root / "tests"
+            test_dir.mkdir(parents=True)
+            e2e = test_dir / "test_pipeline_e2e.py"
+            e2e.write_text("import pipeline\n", encoding="utf-8")
+            checks = coder.targeted_checks(
+                worktree, ["deep-agent/pipeline.py"], "arii/remote-server"
+            )
+            self.assertIn("python3 -m unittest tests.test_pipeline_e2e", checks)
+
+    def test_targeted_checks_discovers_tests_for_other_repos_in_queue(self):
+        with tempfile.TemporaryDirectory() as worktree:
+            root = Path(worktree)
+            cli_test_dir = root / "cli" / "tests"
+            cli_test_dir.mkdir(parents=True)
+            spec_test = cli_test_dir / "test_spec_issue.py"
+            spec_test.write_text("def test_ok(): pass\n", encoding="utf-8")
+            checks = coder.targeted_checks(
+                worktree,
+                ["cli/dev_tools/services/spec_issue.py"],
+                "arii/boomtick",
+            )
+            self.assertIn("python3 -m pytest cli/tests/test_spec_issue.py", checks)
+
+    def test_targeted_checks_honors_brief_verification_command_first(self):
+        with tempfile.TemporaryDirectory() as worktree:
+            root = Path(worktree)
+            test_dir = root / "tests"
+            test_dir.mkdir(parents=True)
+            (test_dir / "test_pipeline_e2e.py").write_text(
+                "import pipeline\n", encoding="utf-8"
+            )
+            brief = (
+                "## Target Files\n- deep-agent/pipeline.py\n\n"
+                "## Verification Command\n"
+                "```bash\npython3 -m pytest tests/test_pipeline_e2e.py\n```"
+            )
+            checks = coder.targeted_checks(
+                worktree, ["deep-agent/pipeline.py"], "arii/remote-server", brief=brief
+            )
+            self.assertEqual(checks[0], "python3 -m pytest tests/test_pipeline_e2e.py")
+
+    def test_verify_stalled_edits_runs_issue_verification_command(self):
+        _install_fake_langchain(self)
+        with tempfile.TemporaryDirectory() as worktree:
+            written = coder.WriteTracker()
+            written.add("deep-agent/pipeline.py")
+            brief = (
+                "## Target Files\n- deep-agent/pipeline.py\n\n"
+                "## Verification Command\n"
+                "python3 -m pytest tests/test_pipeline_e2e.py\n"
+            )
+            recorder = mock.MagicMock()
+            with mock.patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    ["python3", "-m", "pytest", "tests/test_pipeline_e2e.py"],
+                    0,
+                    "passed",
+                    "",
+                ),
+            ):
+                coder.verify_stalled_edits(
+                    worktree,
+                    written,
+                    "arii/remote-server",
+                    recorder,
+                    deadline=time.monotonic() + 30,
+                    brief=brief,
+                )
+            self.assertTrue(written.verified(worktree, "arii/remote-server"))
+
+    def test_verify_stalled_edits_blocks_when_no_targeted_verification(self):
+        _install_fake_langchain(self)
+        with tempfile.TemporaryDirectory() as worktree:
+            written = coder.WriteTracker()
+            written.add("backend/some_untested_helper.py")
+            recorder = mock.MagicMock()
+            with self.assertRaises(coder.StalledVerificationFailed) as ctx:
+                coder.verify_stalled_edits(
+                    worktree,
+                    written,
+                    "arii/remote-server",
+                    recorder,
+                    deadline=time.monotonic() + 30,
+                )
+            self.assertIn("no targeted verification", str(ctx.exception))
 
 
 class TestUnchangedInspectionNotice(unittest.TestCase):
