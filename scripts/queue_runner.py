@@ -32,7 +32,13 @@ MAX_ISSUE_CAP_USD = 5.0
 
 
 class SafetyStop(RuntimeError):
+    """A ledger inconsistency that should park the issue."""
+
     llm_not_dispatched = True
+
+
+class LedgerError(SafetyStop):
+    """A ledger inconsistency that should park the issue."""
 
 
 class StrongRefused(RuntimeError):
@@ -83,10 +89,10 @@ def receipt_total(ids, local_ids, receipts):
     found = {}
     for row in receipts:
         if not isinstance(row, dict):
-            raise SafetyStop("malformed TwT receipt")
+            raise LedgerError("malformed TwT receipt")
         trace = row.get("trace_id")
         if trace not in expected or trace in found:
-            raise SafetyStop("unexpected or duplicate TwT receipt")
+            raise LedgerError("unexpected or duplicate TwT receipt")
         found[trace] = row
     total = 0.0
     for trace in expected:
@@ -94,12 +100,12 @@ def receipt_total(ids, local_ids, receipts):
         if row is None and trace in local_ids:
             continue
         if row is None:
-            raise SafetyStop("missing hosted TwT receipt: " + trace)
+            raise LedgerError("missing hosted TwT receipt: " + trace)
         cost = receipt_cost(row)
         if cost is None:
-            raise SafetyStop("unknown or incomplete TwT cost: " + trace)
+            raise LedgerError("unknown or incomplete TwT cost: " + trace)
         if trace in local_ids and cost != 0:
-            raise SafetyStop("local TwT receipt has paid cost: " + trace)
+            raise LedgerError("local TwT receipt has paid cost: " + trace)
         total += cost
     return total
 
@@ -130,7 +136,7 @@ def refresh_spend(scope):
             if not owned.intersection(ids):
                 continue
             if not owned.issubset(ids) or represented.intersection(owned):
-                raise SafetyStop("receipt ownership overlaps rows or runs")
+                raise LedgerError("receipt ownership overlaps rows or runs")
             represented.update(owned)
         if represented:
             missing = twt_receipts.merge_receipts(
@@ -148,7 +154,7 @@ def refresh_spend(scope):
         )
     total = runs.total_metered_spend()
     if total["unknown"]:
-        raise SafetyStop("unknown recorded spend before dispatch")
+        raise LedgerError("unknown recorded spend before dispatch")
     return total["spent"] + unowned_cost
 
 
