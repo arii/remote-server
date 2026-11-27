@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { describeCloudFailure } from '../extension/lib/hybrid-session.js';
+vi.mock("../extension/lib/firebase-loader.js", () => ({ loadFirebaseBundle: vi.fn(), loadFirebaseConfig: vi.fn() }));
 
 describe('describeCloudFailure', () => {
   it('classifies permission-denied code as rejection', () => {
