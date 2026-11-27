@@ -6,10 +6,32 @@
 // (non-timestamp) IDs sort first so they win the merge.
 // ============================================================================
 
+export function sanitizeVaultEntries(raw) {
+  if (!Array.isArray(raw)) return { entries: [], dropped: 0 };
+  const entries = [];
+  let dropped = 0;
+  for (const item of raw) {
+    const isPlainObject = item !== null && typeof item === "object" && !Array.isArray(item);
+    const validValue = typeof item?.value === "string" || (typeof item?.value === "number" && Number.isFinite(item.value));
+    if (!isPlainObject || !validValue) {
+      dropped++;
+      continue;
+    }
+    const clean = { ...item };
+    clean.key = typeof item.key === "string" ? item.key : (item.key == null ? "" : String(item.key));
+    clean.value = String(item.value);
+    if (item.aliases !== undefined) {
+      clean.aliases = Array.isArray(item.aliases) ? item.aliases.filter((a) => typeof a === "string") : [];
+    }
+    entries.push(clean);
+  }
+  return { entries, dropped };
+}
+
 export function deduplicateVault(entries) {
   if (!Array.isArray(entries)) return [];
   // Sort so canonical IDs (like "identity.full_name" without random timestamps) come FIRST
-  const sorted = [...entries].sort((a, b) => {
+  const sorted = sanitizeVaultEntries(entries).entries.sort((a, b) => {
     const aIsTimestamp = /\.\d{10,}$/.test(a.id || "");
     const bIsTimestamp = /\.\d{10,}$/.test(b.id || "");
     return Number(aIsTimestamp) - Number(bIsTimestamp);
