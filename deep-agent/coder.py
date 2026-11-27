@@ -2166,11 +2166,6 @@ def coder_tool_middleware(
                     )
             if not inspection and call["name"] != "run_check":
                 seen[key] = seen.get(key, int(key in acknowledged)) + 1
-                if seen[key] >= REPAIR_REPEAT_LIMIT:
-                    raise error(
-                        f"BLOCKED: {label} repeated unchanged tool call: {key[0]} {key[1]}",
-                        recoverable_stall=True,
-                    )
                 if seen[key] > 1:
                     content = (
                         "Already called with these args without a successful edit. "
@@ -3124,6 +3119,13 @@ def _run_coder_attempt(
         recorder.close()
         usage, calls = recorder.totals()
         account_attempt()
+        pre_dispatch = (
+            not (usage or {}).get("total_tokens")
+            and not (usage or {}).get("twt_trace_ids")
+            and not error_usage.get("twt_trace_ids")
+        )
+        if pre_dispatch:
+            usage = dict(usage or {}, reported_cost_usd=0.0)
         ledger.record(
             "coder.py",
             spec["model"],
@@ -3141,8 +3143,14 @@ def _run_coder_attempt(
                 "worktree": worktree,
                 "trace": recorder.path,
                 "verified": False,
-                "llm_call": invocation_started
-                or error_usage.get("not_dispatched") is not True,
+                "llm_call": (
+                    False
+                    if pre_dispatch
+                    else (
+                        invocation_started
+                        or error_usage.get("not_dispatched") is not True
+                    )
+                ),
             },
         )
 
