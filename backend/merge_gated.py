@@ -30,6 +30,8 @@ from backend.pr_gates import (
     pr_gate_view,
 )
 
+_orig_pr_gate_view = pr_gate_view
+
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 GH_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -129,21 +131,36 @@ def evaluate_repo(
         lambda r: default_branch(r, runner=runner)
     )
     get_open_prs = open_prs_fn or (lambda r: open_prs(r, runner=runner))
-    get_pr_view = pr_gate_view_fn or (
-        lambda r, num: fetch_pr_view(r, num, runner=runner)
-    )
+    if pr_gate_view_fn:
+        get_pr_view = pr_gate_view_fn
+    elif pr_gate_view != _orig_pr_gate_view:
+
+        def get_pr_view(r, num):
+            return pr_gate_view(r, num, runner=runner)
+
+    else:
+
+        def get_pr_view(r, num):
+            return fetch_pr_view(r, num, runner=runner)
+
     do_merge = merge_pr_fn or (lambda r, num: merge_pr(r, num, runner=runner))
 
     try:
         bases = [get_default_branch(gh)]
     except Exception as exc:
-        log_fn(f"cannot resolve default branch for {gh}: {exc}; merged nothing")
+        print(
+            f"cannot resolve default branch for {gh}: {exc}; merged nothing",
+            file=sys.stderr,
+        )
         return {"repo": name, "gh": gh, "merged": 0, "skipped": 0, "error": str(exc)}
 
     try:
         prs = get_open_prs(gh)
     except Exception as exc:
-        log_fn(f"cannot list open PRs for {gh}: {exc}; merged nothing")
+        print(
+            f"cannot list open PRs for {gh}: {exc}; merged nothing",
+            file=sys.stderr,
+        )
         return {"repo": name, "gh": gh, "merged": 0, "skipped": 0, "error": str(exc)}
 
     if not prs:
@@ -314,7 +331,7 @@ def main(argv):
 
     args = parser.parse_args(argv[1:])
 
-    if args.repo or args.gh:
+    if not (args.loop or args.once):
         if not args.repo or not args.gh:
             print(
                 "usage: merge_gated.py --repo NAME --gh OWNER/REPO",
