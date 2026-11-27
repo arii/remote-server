@@ -484,7 +484,8 @@ class RunnerTests(unittest.TestCase):
     def test_cap_validation(self):
         self.assertEqual(runner.checked_cap(0.5), 0.5)
         self.assertEqual(runner.checked_cap(1), 1.0)
-        for value in (True, 0, -1, 1.01, float("nan"), float("inf"), "0.5"):
+        self.assertEqual(runner.checked_cap(5), 5.0)
+        for value in (True, 0, -1, 5.01, float("nan"), float("inf"), "0.5"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 runner.checked_cap(value)
 

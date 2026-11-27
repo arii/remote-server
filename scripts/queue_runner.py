@@ -28,6 +28,7 @@ import zoneinfo
 
 
 ISSUE_CAP_USD = 1.0
+MAX_ISSUE_CAP_USD = 5.0
 
 
 class SafetyStop(RuntimeError):
@@ -483,10 +484,10 @@ def checked_cap(value):
     if (
         type(value) not in (int, float)
         or not math.isfinite(value)
-        or not 0 < value <= ISSUE_CAP_USD
+        or not 0 < value <= MAX_ISSUE_CAP_USD
     ):
         raise ValueError(
-            f"cap_usd must be finite, positive, and at most ${ISSUE_CAP_USD:.2f}"
+            f"cap_usd must be finite, positive, and at most ${MAX_ISSUE_CAP_USD:.2f}"
         )
     return float(value)
 
