@@ -4,7 +4,7 @@
 // ============================================================================
 
 import { matchField } from "./lib/matcher.js";
-import { createHybridPromptSession } from "./lib/hybrid-session.js";
+import { createHybridPromptSession, getHybridStatus } from "./lib/hybrid-session.js";
 import { deduplicateVault } from "./lib/vault.js";
 import { MAX_CHUNKS_PER_PAGE, MAX_CHUNKS_PER_RUN, PROFILE_FACTS_SCHEMA, collectSourcePages, extractFactsFromText, htmlToText } from "./lib/profile-ingest.js";
 import {
@@ -561,11 +561,19 @@ function renderModelProgress(key, { state, pct, label }, errorText = "") {
 
 // Reflect configured Firebase AI Logic hybrid mode in the panel so it is
 // never implied that all processing is on-device once cloud fallback exists.
-function showHybridModeLine() {
+function showHybridModeLine(hybrid) {
   const el = document.getElementById("hybrid-mode-line");
   if (!el) return;
-  el.textContent = "Hybrid mode active: Firebase AI Logic configured. Prompts prefer the on-device model and may fall back to cloud inference via Firebase.";
+  let text = "Hybrid mode active: Firebase AI Logic configured. Prompts prefer the on-device model and may fall back to cloud inference via Firebase.";
+  if (!getHybridStatus().appCheckActive) {
+    text += " App Check is not active in this build, so a cloud fallback may be rejected if your Firebase project enforces it.";
+  }
+  el.textContent = text;
   el.style.display = "";
+  hybrid.onError = (msg) => {
+    el.textContent = msg;
+    el.style.display = "";
+  };
 }
 
 async function createPromptSession(onProgress, options = {}) {
@@ -586,7 +594,7 @@ async function createPromptSession(onProgress, options = {}) {
     return null;
   });
   if (hybrid) {
-    showHybridModeLine();
+    showHybridModeLine(hybrid);
     return hybrid;
   }
 
