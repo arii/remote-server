@@ -5,7 +5,7 @@
 
 import { matchField } from "./lib/matcher.js";
 import { createHybridPromptSession, getHybridStatus } from "./lib/hybrid-session.js";
-import { deduplicateVault } from "./lib/vault.js";
+import { deduplicateVault, sanitizeVaultEntries } from "./lib/vault.js";
 import { MAX_CHUNKS_PER_PAGE, MAX_CHUNKS_PER_RUN, PROFILE_FACTS_SCHEMA, collectSourcePages, extractFactsFromText, htmlToText } from "./lib/profile-ingest.js";
 import {
   askTabEntries,
@@ -1649,9 +1649,10 @@ document.getElementById("file-import-vault").addEventListener("change", async (e
     const text = await e.target.files[0].text();
     const imported = JSON.parse(text);
     if (!Array.isArray(imported)) throw new Error("Expected an array of context entries.");
+    const { dropped } = sanitizeVaultEntries(imported);
     await chrome.runtime.sendMessage({ type: "vault:replace", entries: imported });
     renderVault();
-    alert("Vault successfully restored!");
+    alert(dropped === 0 ? "Vault successfully restored!" : `Vault restored. ${dropped} invalid entr${dropped === 1 ? "y was" : "ies were"} skipped.`);
   } catch (err) {
     alert("Failed to import vault JSON: " + err.message);
   }
