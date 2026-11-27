@@ -891,11 +891,14 @@ def build_check_tool(
                 notice = DITHER_NOTICE
             result += "\n" + notice.format(streak=spin["streak"])
         if tracker is not None:
-            passed = (
-                proc.returncode == 0
-                and bool(output.strip())
-                and not re.search(r"(?m)^Ran 0 tests\b", output)
-            )
+            if is_test_command(argv):
+                passed = (
+                    proc.returncode == 0
+                    and bool(output.strip())
+                    and not re.search(r"(?m)^Ran 0 tests\b", output)
+                )
+            else:
+                passed = proc.returncode == 0
             if (
                 tracker.record_check(argv, passed, generation)
                 and passed
@@ -1878,7 +1881,7 @@ def verify_stalled_edits(worktree, written_files, repo, recorder, deadline, brie
             commands.update(
                 shlex.join(argv)
                 for argv, passed in written_files.checks.items()
-                if not passed
+                if not passed and is_test_command(argv)
             )
         failures = []
         for command in sorted(commands):
@@ -1890,7 +1893,12 @@ def verify_stalled_edits(worktree, written_files, repo, recorder, deadline, brie
                 "run_check", args, time.monotonic() - started, True, result=result
             )
             argv = tuple(parse_check_command(command, repo))
-            if not result.startswith("exit=0\n") or not written_files.checks.get(argv):
+            check_passed = (
+                written_files.checks.get(argv)
+                if is_test_command(argv)
+                else (result.startswith("exit=0\n") or result == "exit=0")
+            )
+            if not result.startswith("exit=0\n") or not check_passed:
                 failures.append((argv, result))
         if failures:
             raise StalledVerificationFailed(

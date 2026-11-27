@@ -931,6 +931,38 @@ class TestTargetedChecks(unittest.TestCase):
                 )
             self.assertTrue(written.verified(worktree, "arii/remote-server"))
 
+    def test_verify_stalled_edits_allows_non_test_exit_zero_empty_output(self):
+        _install_fake_langchain(self)
+        with tempfile.TemporaryDirectory() as worktree:
+            written = coder.WriteTracker()
+            written.add("deep-agent/pipeline.py")
+            brief = (
+                "## Target Files\n- deep-agent/pipeline.py\n\n"
+                "## Verification Command\n"
+                "python3 -m pytest tests/test_pipeline_e2e.py\n"
+            )
+            # Record an empty git diff --stat check
+            written.checks[("git", "diff", "--stat")] = True
+            recorder = mock.MagicMock()
+            with mock.patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    ["python3", "-m", "pytest", "tests/test_pipeline_e2e.py"],
+                    0,
+                    "passed",
+                    "",
+                ),
+            ):
+                coder.verify_stalled_edits(
+                    worktree,
+                    written,
+                    "arii/remote-server",
+                    recorder,
+                    deadline=time.monotonic() + 30,
+                    brief=brief,
+                )
+            self.assertTrue(written.verified(worktree, "arii/remote-server"))
+
     def test_verify_stalled_edits_blocks_when_no_targeted_verification(self):
         _install_fake_langchain(self)
         with tempfile.TemporaryDirectory() as worktree:
