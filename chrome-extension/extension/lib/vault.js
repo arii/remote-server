@@ -12,7 +12,9 @@ export function sanitizeVaultEntries(raw) {
   let dropped = 0;
   for (const item of raw) {
     const isPlainObject = item !== null && typeof item === "object" && !Array.isArray(item);
-    const validValue = typeof item?.value === "string" || (typeof item?.value === "number" && Number.isFinite(item.value));
+    const validValue =
+      (typeof item?.value === "string" && item.value.trim() !== "") ||
+      (typeof item?.value === "number" && Number.isFinite(item.value));
     if (!isPlainObject || !validValue) {
       dropped++;
       continue;
@@ -22,6 +24,9 @@ export function sanitizeVaultEntries(raw) {
     clean.value = String(item.value);
     if (item.aliases !== undefined) {
       clean.aliases = Array.isArray(item.aliases) ? item.aliases.filter((a) => typeof a === "string") : [];
+    }
+    if (item.tags !== undefined) {
+      clean.tags = Array.isArray(item.tags) ? item.tags.filter((t) => typeof t === "string") : (typeof item.tags === "string" ? [item.tags] : []);
     }
     entries.push(clean);
   }
