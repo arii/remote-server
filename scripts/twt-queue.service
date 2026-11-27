@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=PYTHONPATH=/srv/remote-server
 EnvironmentFile=%h/.config/twt-queue/environment
 ExecStart=/usr/bin/python3 ${QUEUE_RUNNER} --config ${QUEUE_CONFIG}
 Restart=always
