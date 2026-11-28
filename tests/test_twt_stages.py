@@ -29,9 +29,7 @@ class TestTwtStageModels(unittest.TestCase):
                 self.assertEqual(body["model"], "default")
                 # Gateway-side routing (#1747): the client sends no provider
                 # controls, so the gateway picks the route.
-                self.assertNotIn(
-                    "provider_models", body.get("extra_body") or {}
-                )
+                self.assertNotIn("provider_models", body.get("extra_body") or {})
                 self.assertNotIn(
                     "provider_reasoning_effort", body.get("extra_body") or {}
                 )

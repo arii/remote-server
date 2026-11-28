@@ -1037,9 +1037,7 @@ class TestCoderBackend(unittest.TestCase):
 
                         with self.assertRaises(ModelCallLimitExceededError):
                             agent.invoke(request)
-                        self.assertEqual(
-                            target.read_text(), f"{new}\n\nVALUE = 1\n"
-                        )
+                        self.assertEqual(target.read_text(), f"{new}\n\nVALUE = 1\n")
                         self.assertEqual(written.mutations, 1)
                     else:
                         result = agent.invoke(request)
