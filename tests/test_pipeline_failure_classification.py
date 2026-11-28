@@ -1,9 +1,5 @@
 # Catalog failures classify as LIMITED (transient/requeue), not BLOCKED_DETERMINISTIC.
-import os
-import sys
 import unittest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import pipeline as pipeline_mod
 
