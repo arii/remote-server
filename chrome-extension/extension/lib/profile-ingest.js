@@ -85,6 +85,35 @@ export function parseProfileFacts(raw) {
   return facts;
 }
 
+const norm = (t) =>
+  String(t || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9@.+#/:_-]+/g, " ")
+    .replace(/[.,;:!?]+(?=\s|$)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+const SHORT_ANSWER = /^(yes|no|true|false|n\/a|none)$/i;
+
+// A model-proposed fact counts as supported only when the source text itself
+// says it: a sentence of the chunk must contain the whole proposed value
+// (whole words). For yes/no style values or values of 3 characters or fewer,
+// that same sentence must also contain a significant word of the key, so an
+// absent statement is never turned into "No". Returns the sentence or null.
+export function factSupport(fact, chunk) {
+  const value = norm(fact.proposedValue);
+  if (!value) return null;
+  const keyWords = norm(fact.key).split(" ").filter((w) => w.length >= 4);
+  const needsKey = SHORT_ANSWER.test(value) || value.length <= 3;
+  const sentences = String(chunk || "").split(/(?<=[.!?])\s+|\n+/);
+  for (const sentence of sentences) {
+    const ns = ` ${norm(sentence)} `;
+    if (!ns.includes(` ${value} `)) continue;
+    if (needsKey && !keyWords.some((w) => ns.includes(w))) continue;
+    return sentence.trim().slice(0, 240);
+  }
+  return null;
+}
+
 // Run the model over every chunk and aggregate. runPrompt(prompt) returns the
 // raw model string; the caller owns session lifetime (one fresh session each).
 export async function extractFactsFromText(text, runPrompt, { existingKeys = [], guidance, signal, onProgress, maxChunks = MAX_CHUNKS_PER_PAGE } = {}) {
@@ -92,6 +121,7 @@ export async function extractFactsFromText(text, runPrompt, { existingKeys = [],
   const chunks = allChunks.slice(0, Math.max(0, maxChunks));
   const seen = new Set();
   const facts = [];
+  let unsupported = 0;
   for (let i = 0; i < chunks.length; i++) {
     if (signal?.aborted) throw new Error("Extraction aborted");
     if (onProgress) onProgress(i + 1, chunks.length);
@@ -100,10 +130,15 @@ export async function extractFactsFromText(text, runPrompt, { existingKeys = [],
       const id = `${f.key.toLowerCase()}|${f.proposedValue.toLowerCase()}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      facts.push(f);
+      const excerpt = factSupport(f, chunks[i]);
+      if (!excerpt) {
+        unsupported++;
+        continue;
+      }
+      facts.push({ ...f, sourceExcerpt: excerpt });
     }
   }
-  return { facts, chunkCount: chunks.length, skippedChunks: allChunks.length - chunks.length };
+  return { facts, unsupported, chunkCount: chunks.length, skippedChunks: allChunks.length - chunks.length };
 }
 
 const DROP_BLOCKS = /<(head|script|style|nav|noscript|svg|template|header|footer)\b[\s\S]*?<\/\1\s*>/gi;
