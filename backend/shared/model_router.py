@@ -393,6 +393,8 @@ def resolve_llm(prefer=None):
         raise RuntimeError(
             "Ollama unreachable at " + _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
         )
+    if not strict_ollama and _env("TWT_BASE_URL"):
+        return _note_substitution(_twt_spec(), requested)
     if ollama_reachable():
         return _note_substitution(_ollama_spec(), requested)
     if strict_ollama:

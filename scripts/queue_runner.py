@@ -197,12 +197,8 @@ def counts_toward_escalation(summary):
 
 
 def check_strong_start(cap, fatal):
-    """Refuse a strong attempt without CODER_STRONG_MODEL or enough budget."""
-    strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip()
-    if not strong:
-        detail = "tier strong requires CODER_STRONG_MODEL in the queue environment"
-        fatal.append(detail)
-        raise StrongRefused("CONFIG_ERROR", detail)
+    """Refuse a strong attempt without enough remaining budget."""
+    strong = (os.environ.get("CODER_STRONG_MODEL") or "route:strong").strip()
     try:
         remaining = cap - check_budget(None, cap)
     except BudgetStop as error:
@@ -454,16 +450,16 @@ def discover_ready(config, issues, completed):
 
 
 def skip_reason(issue):
-    if issue["number"] in (2, 23, 26):
-        return "global operator hold"
-    if (issue["repo"], issue["number"]) == ("arii/remote-server", 1377):
-        return "requires a human decision"
-    if issue["repo"] == "arii/remote-server" and issue["number"] == 1359:
-        return "already merged via arii/remote-server#1381"
     if issue.get("merged") is True or issue.get("fixed") is True:
         return "already merged or fixed"
     if issue.get("requires_human") is True:
         return "requires a human decision"
+    labels = {
+        label.get("name") if isinstance(label, dict) else label
+        for label in issue.get("labels", [])
+    }
+    if "hold" in labels:
+        return "operator hold label"
     return issue.get("skip_reason")
 
 
