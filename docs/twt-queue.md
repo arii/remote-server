@@ -500,10 +500,11 @@ only on the GitHub `ready` label; no intake status maps to that label, so a
 
 The worker always runs with `NEBIUS_ONLY=1` and no `CODER_MODEL`, so an ordinary
 attempt uses TwT model `default`, which TwT routes local-first and can burn its
-whole timeout on a hard issue. A **strong** attempt instead sends the explicit
-`CODER_STRONG_MODEL` to TwT from the first coder call. With the configured
-`route:strong` profile, TwT tries the local strong model before eligible free
-providers and Nebius last. The coder's ordinary `default` route is not used,
+whole timeout on a hard issue. A **strong** attempt instead sends
+`route:strong` to TwT from the first coder call (no environment override
+path; issue #1798). TwT resolves the strong model from the live catalog,
+trying the local strong model before eligible free providers and Nebius
+last. The coder's ordinary `default` route is not used,
 so the bounded fallback above (it fires only for `default`) cannot
 double-escalate a strong attempt. That
 fallback stays as the in-attempt safety net for ordinary attempts. The tier chosen
@@ -569,9 +570,11 @@ refuses the attempt with `STRONG_BUDGET_INSUFFICIENT` if less than $0.05 is left
 That attempt makes no model call, does not fall back to local, and does not
 count toward escalation.
 
-A strong attempt without `CODER_STRONG_MODEL` in the config `environment` fails
-before any model call with `CONFIG_ERROR` and **halts the queue** (every later
-strong issue would fail the same way). Set the variable, then use `--clear-halt`.
+A strong attempt is budget-gated before any model call: with less than
+$0.05 left it is refused with `STRONG_BUDGET_INSUFFICIENT` and does not
+fall back. A missing `CODER_STRONG_MODEL` no longer fails the attempt;
+the route falls back to `route:strong` (no environment override path;
+issue #1798).
 
 Where to read the tier: the supervisor prints
 `START owner/repo#N tier=strong reason=label:model:strong`; the worker logs

@@ -85,16 +85,12 @@ gate as Nebius. Nebius remains the paid fallback.
 
 ### Strong coder tier
 
-The `strong` model tier requires `CODER_STRONG_MODEL`; unset raises
-`ValueError` and never falls back to the fast model. Set it to either:
-
-- `route:strong`: the gateway resolves the model from its own
-  `TWT_STRONG_MODELS` (JSON provider -> model) or `TWT_OLLAMA_STRONG_MODEL`.
-  Those variables are gateway-side. The client sends no `provider_models` or
-  `provider_reasoning_effort` on this route and never carries the fast
-  selection.
-- a concrete catalog id such as `nebius/<model>`, sent as-is with no
-  provider controls.
+The `strong` model tier always sends `route:strong`: the gateway resolves
+the model from its own `TWT_STRONG_MODELS` (JSON provider -> model) or
+`TWT_OLLAMA_STRONG_MODEL`. Those variables are gateway-side. The client
+sends no `provider_models` or `provider_reasoning_effort` on this route
+and never carries the fast selection. There is no environment override
+path: a set `CODER_STRONG_MODEL` is ignored (issue #1798).
 
 With `TWT_PREFLIGHT_REQUIRED=1`, preflight checks `/v1/models` before any
 `/v1/chat/completions` request. A concrete id missing from the catalog
