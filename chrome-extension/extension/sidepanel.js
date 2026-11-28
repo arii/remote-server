@@ -1909,7 +1909,7 @@ async function renderObserverQueue() {
       <div class="item-card" data-delta-id="${escapeHtml(delta.deltaId)}" style="margin-bottom:8px;">
         <div class="item-header">
           <span class="${badgeClass}">${actionText}</span>
-          <span style="font-size:10px; color:var(--text-muted);">${delta.origin === "observer" ? "Typed by you, not verified" : `Model estimate ${Math.round(delta.confidence * 100)}%`}</span>
+          <span style="font-size:10px; color:var(--text-muted);">${delta.origin === "observer" ? "Typed by you, not verified" : delta.sourceChecked ? "Found in source text" : "Not checked against a source"}</span>
         </div>
         <div style="font-weight:700; color:white; font-size:11.5px; margin: 2px 0;">${escapeHtml(delta.key)}</div>
         ${delta.previousValue ? `<div style="font-size:10.5px; color:var(--rose); text-decoration:line-through;">Previous: ${escapeHtml(delta.previousValue)}</div>` : ""}
@@ -2240,9 +2240,12 @@ async function queueVerifiedDeltas(rawFacts, sourceTitle = "", sourceUrl = "") {
       key,
       previousValue: f.previousValue,
       proposedValue: propText,
-      evidenceSnippet: f.evidenceSnippet || `Extracted from "${sourceTitle || "portfolio/resume"}"`,
+      evidenceSnippet: f.sourceExcerpt
+        ? `Source says: \u201c${f.sourceExcerpt}\u201d (${sourceTitle || "source"})`
+        : f.evidenceSnippet || `Extracted from "${sourceTitle || "portfolio/resume"}"; not checked against a source`,
+      sourceChecked: Boolean(f.sourceExcerpt),
       sourceUrl: f.sourceUrl || sourceUrl || "",
-      confidence: f.confidence || 0.92
+      confidence: f.confidence
     });
   }
 
@@ -2429,7 +2432,7 @@ async function learnFactsFromText(text, title, url, { onProgress, maxChunks = MA
   const existingKeys = userContextVault.map((v) => v.key).filter(Boolean);
   const signal = Telemetry.activeAbortController?.signal;
   const t0 = performance.now();
-  const { facts, chunkCount, skippedChunks } = await extractFactsFromText(
+  const { facts, unsupported, chunkCount, skippedChunks } = await extractFactsFromText(
     text,
     async (prompt) => {
       const session = await createPromptSession();
@@ -2449,10 +2452,10 @@ async function learnFactsFromText(text, title, url, { onProgress, maxChunks = MA
     type: "SCAN",
     title: "Profile Fact Extraction",
     durationMs: Math.round(performance.now() - t0),
-    details: { url, chunks: chunkCount, skippedChunks, facts: facts.length }
+    details: { url, chunks: chunkCount, skippedChunks, facts: facts.length, unsupported }
   });
   await queueVerifiedDeltas(facts, title, url);
-  return { count: facts.length, chunks: chunkCount, skipped: skippedChunks };
+  return { count: facts.length, unsupported, chunks: chunkCount, skipped: skippedChunks };
 }
 
 // --- Learn from my sources ---------------------------------------------------
@@ -2620,6 +2623,7 @@ document.getElementById("btn-learn-sources")?.addEventListener("click", async ()
   }
   btn.disabled = true;
   let total = 0;
+  let unsupportedTotal = 0;
   const failures = [];
   try {
     const pages = [];
@@ -2647,12 +2651,14 @@ document.getElementById("btn-learn-sources")?.addEventListener("click", async ()
         }
       });
       total += r.count;
+      unsupportedTotal += r.unsupported || 0;
       skipped += r.skipped;
       chunksLeft -= r.chunks;
     }
     renderObserverQueue();
     progress.textContent =
       `Queued ${total} candidate facts from ${pages.length} source(s) for review.` +
+      (unsupportedTotal ? ` Dropped ${unsupportedTotal} the source text does not say.` : "") +
       (skipped ? ` Skipped ${skipped} chunk(s) over the cap (${MAX_CHUNKS_PER_PAGE} per page, ${MAX_CHUNKS_PER_RUN} per run).` : "") +
       (failures.length ? ` Failed: ${failures.join("; ")}` : "");
   } catch (err) {
