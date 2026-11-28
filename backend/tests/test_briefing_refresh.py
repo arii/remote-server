@@ -125,6 +125,25 @@ class BriefingRefreshTest(unittest.TestCase):
         self.assertEqual(
             briefing_router.warm_briefing_cache(["a/b/c"]), [])
 
+    def test_narrator_off_spawns_no_patch_thread(self):
+        # Narrator disabled (the suite default): no thread, so no real
+        # network call whose failure warning could leak into another
+        # test's captured stderr.
+        with mock.patch.object(briefing_router,
+                               "threading") as threads:
+            briefing_router._spawn_narrative_patch(
+                "remote-server", 1.0, {"repo": "remote-server"})
+        threads.Thread.assert_not_called()
+
+    def test_narrator_on_spawns_patch_thread(self):
+        with (
+            mock.patch.dict(os.environ, {"BRIEFING_NARRATOR": "ollama"}),
+            mock.patch.object(briefing_router, "threading") as threads,
+        ):
+            briefing_router._spawn_narrative_patch(
+                "remote-server", 1.0, {"repo": "remote-server"})
+        threads.Thread.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
