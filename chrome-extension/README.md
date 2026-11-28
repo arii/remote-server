@@ -6,7 +6,7 @@ How a first run goes: add a few facts (name, email, phone), open a form, press A
 
 Privacy: by default the model runs on your device through Chrome's built-in Gemini Nano APIs. Fetching source pages and the optional Google Drive import use the network. Optional Firebase AI Logic configuration (see the hybrid mode section) can send prompt text to a cloud model, so read that section before enabling it.
 
-How it improves: after you submit, it records per field whether you kept, edited or cleared the fill (never the values). A learned rule is used only after you confirm it or three submissions agree. In an offline replay on this repo's job-board fixtures, fill accuracy went from 79.3% to 100%; that is an upper bound on fixtures, not a user study.
+How it improves: after you submit, it records per field whether you kept, edited or cleared the fill (never the values). A learned rule is used only after you confirm it or three submissions agree.
 
 ## Developer smoke test (about five minutes)
 
