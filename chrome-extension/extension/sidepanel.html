@@ -193,19 +193,19 @@
   <!-- TAB 2: FORM-EXPORT & FORM-EXPORT++ (PHASES 2 & 4) -->
   <main id="tab-export" class="tab-pane" style="display: none;">
     <div class="card">
-      <div class="card-title">Form-Export (v1 & v2)</div>
+      <div class="card-title">Export forms</div>
       <div class="card-desc">
         Extracts all form inputs on the active tab into a portable JSON schema with labels, CSS selectors, constraints, and hierarchy.
       </div>
 
       <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer;">
         <input type="checkbox" id="chk-export-plus" checked style="width:auto;" />
-        <span><strong>Enable Form-Export++ (v2):</strong> Include page context, heading hierarchy & AI Summarizer digest</span>
+        <span>Include page context: headings and a short page summary</span>
       </label>
 
       <label style="display:flex; align-items:center; gap:8px; margin-bottom:12px; cursor:pointer;">
         <input type="checkbox" id="chk-include-values" checked style="width:auto;" />
-        <span>Include currently typed input values in schema</span>
+        <span>Include what I have typed into the form</span>
       </label>
 
       <button id="btn-scan-page" class="btn btn-primary">
@@ -222,7 +222,7 @@
       </div>
 
       <button id="btn-run-ux-audit" class="btn btn-subtle btn-sm" style="margin-top:8px;">
-        🔍 Run UX & Touch Target Audit (Phase 8)
+        🔍 Check button and link sizes
       </button>
 
       <pre id="export-preview-box">Click "Scan Active Tab Forms" to inspect schema...</pre>
