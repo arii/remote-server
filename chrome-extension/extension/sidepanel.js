@@ -19,7 +19,7 @@ import { improvementSummary } from "./lib/improvement-summary.js";
 import { errorInfo as syncErrorInfo, formatSyncFailure } from "./lib/drive-sync.js";
 import { INTERNALS_URL, MODEL_APIS, collapseRepeatedErrors, describeModelError, describeTaskFailure, formatModelError, makeDownloadMonitor, modelProgressState, redactSecrets } from "./lib/model-download.js";
 import { buildTraceEntry } from "./lib/trace.js";
-import { modelPanelView, observeView } from "./lib/panel-state.js";
+import { modelPanelView, observeView, webHostname } from "./lib/panel-state.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
   SUGGESTION_SCHEMA,
@@ -1206,12 +1206,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     } catch {
       learned = [];
     }
-    let host = "";
-    try {
-      host = tab.url ? new URL(tab.url).hostname : "";
-    } catch {
-      host = "";
-    }
+    const host = webHostname(tab.url);
     const matchOpts = { learned, host };
 
     const fillId = `fill_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1898,9 +1893,9 @@ document.getElementById("btn-discard-all-deltas").addEventListener("click", asyn
 async function getActiveHostname() {
   try {
     const tab = await getActiveTab();
-    return tab?.url ? new URL(tab.url).hostname : "";
+    return webHostname(tab?.url);
   } catch {
-    return ""; // chrome:// and other non-standard URLs have no hostname
+    return "";
   }
 }
 

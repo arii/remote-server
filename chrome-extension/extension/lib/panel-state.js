@@ -37,6 +37,17 @@ export function modelPanelView(report) {
   return { phase, allReady, promptReady, showProgress: !allReady, showDownloadButton, summary, ctaText };
 }
 
+// Hostname of a regular web page, or "" for anything else. chrome-extension://
+// pages parse with the extension ID as their hostname, so only http(s) counts.
+export function webHostname(url) {
+  try {
+    const u = new URL(url || "");
+    return u.protocol === "http:" || u.protocol === "https:" ? u.hostname : "";
+  } catch {
+    return "";
+  }
+}
+
 // Start/stop button state for the Observer tab.
 export function observeView({ hostname, enabled } = {}) {
   if (!hostname) {

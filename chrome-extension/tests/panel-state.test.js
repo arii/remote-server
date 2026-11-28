@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { modelPanelView, observeView } from "../extension/lib/panel-state.js";
+import { modelPanelView, observeView, webHostname } from "../extension/lib/panel-state.js";
 
 const r = (languageModel, summarizer, writer) => ({ languageModel, summarizer, writer });
 
@@ -39,6 +39,20 @@ describe("modelPanelView", () => {
     const v = modelPanelView(r("unavailable", "available", "available"));
     expect(v.phase).toBe("blocked");
     expect(v.ctaText).toMatch(/unavailable in this Chrome/);
+  });
+});
+
+describe("webHostname", () => {
+  it("returns the hostname for http and https pages only", () => {
+    expect(webHostname("https://example.com/a?b=1")).toBe("example.com");
+    expect(webHostname("http://localhost:3000/")).toBe("localhost");
+  });
+  it("returns empty for extension, browser, file and invalid URLs", () => {
+    expect(webHostname("chrome-extension://jfiliipleginbfhfablnpcepnjeploal/sidepanel.html")).toBe("");
+    expect(webHostname("chrome://extensions")).toBe("");
+    expect(webHostname("file:///tmp/a.html")).toBe("");
+    expect(webHostname("")).toBe("");
+    expect(webHostname(undefined)).toBe("");
   });
 });
 
