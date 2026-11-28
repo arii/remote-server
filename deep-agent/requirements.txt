@@ -10,10 +10,10 @@
 # 1.0 LTS line or newer, langchain-core is pinned explicitly (not left
 # to transitive resolution), no langchain-community catch-all (dedicated
 # langchain-* integration packages only).
-deepagents==0.7.38
-langchain==1.5.0
-langchain-core==1.8.1
-langchain-openai==1.8.0
+deepagents==0.7.41
+langchain==1.5.2
+langchain-core==1.8.4
+langchain-openai==1.8.5
 langchain-ollama==1.1.0
 # Embedding backend for the td RAG index build (#1094): boomtick's
 # vector_store requires sentence_transformers at runtime; without it
@@ -23,5 +23,5 @@ langgraph-checkpoint-sqlite==3.1.3
 # Kept on purpose (#1535): no first-party import, but langchain-core
 # requires langsmith and deep-agent/tracing.py is driven by LANGSMITH_*
 # env vars through it. The explicit pin keeps the version reviewed.
-langsmith==0.14.17
+langsmith==0.16.0
 python-dotenv==1.2.4
