@@ -1191,7 +1191,18 @@ function renderSuggestionReview(suggestions, doc, vault = []) {
   const refreshHeader = () => {
     const n = (st) => suggestions.filter((x) => x.status === st).length;
     const filled = n("accepted") + n("confirmed");
-    h.textContent = `${suggestions.length} suggestion${suggestions.length === 1 ? "" : "s"}: ${n("pending")} waiting for you, ${filled} filled by you, ${n("rejected")} rejected. These suggestions are not filled until you accept them.`;
+    const count = `${suggestions.length} suggestion${suggestions.length === 1 ? "" : "s"}`;
+    h.textContent = n("pending") === 0
+      ? `All ${count} reviewed: ${filled} filled by you, ${n("rejected")} rejected, 0 waiting for you.`
+      : `${count}: ${n("pending")} waiting for you, ${filled} filled by you, ${n("rejected")} rejected. Waiting ones are not filled until you accept them.`;
+    const sb = document.getElementById("autofill-status-box");
+    if (sb) {
+      if (sb.dataset.autoText === undefined) sb.dataset.autoText = sb.textContent;
+      const first = sb.dataset.autoText.split("\n");
+      first[0] = first[0].replace(/^Filled (\d+) of (\d+) fields\./, "Automatic fill: $1 of $2 fields.");
+      if (filled > 0) first.splice(1, 0, `Filled by you after review: ${filled} more.`);
+      sb.textContent = first.join("\n");
+    }
     h.dataset.pending = String(n("pending"));
     h.dataset.filled = String(filled);
     h.dataset.rejected = String(n("rejected"));
@@ -1201,6 +1212,9 @@ function renderSuggestionReview(suggestions, doc, vault = []) {
     row.dataset.status = status;
     controls.forEach((c) => (c.disabled = true));
     if (label) label.textContent = status === "rejected" ? "Rejected" : status === "confirmed" ? "Confirmed and filled" : "Filled by you";
+    let note = row.querySelector(".review-result");
+    if (!note) { note = document.createElement("div"); note.className = "review-result"; row.appendChild(note); }
+    note.textContent = status === "rejected" ? "Status: rejected. Left empty on the page." : "Status: filled on the page by you.";
     refreshHeader();
   };
   for (const sg of suggestions) {
