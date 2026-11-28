@@ -369,7 +369,7 @@ class TestDefaultRouteSequence(unittest.TestCase):
             return outcome
 
         meter = {}
-        patched_env = {"CODER_FALLBACK_MODEL": "fb/model", **(env or {})}
+        patched_env = {**(env or {})}
         error = result = None
         with (
             mock.patch.object(coder, "_run_coder_attempt", side_effect=fake_attempt),
@@ -398,8 +398,8 @@ class TestDefaultRouteSequence(unittest.TestCase):
 
     def assert_no_paid_attempt(self, seen):
         self.assertFalse(
-            [k for _, k in seen if k.get("fallback_model")],
-            "unexpected TwT fallback attempt",
+            [k for _, k in seen if k.get("model_tier") == "strong"],
+            "unexpected strong-route fallback attempt",
         )
         self.assertNotIn("thread-fallback", self.threads(seen))
 
@@ -418,9 +418,13 @@ class TestDefaultRouteSequence(unittest.TestCase):
         self.assertEqual(cont[0][1], coder.CONTINUE_PROMPT)
         self.assertEqual(cont[1]["thread_floor"], 20)
         self.assertEqual(cont[1]["prior_files"], ("a.py",))
-        self.assertIsNone(initial[1].get("fallback_model"))
-        self.assertIsNone(cont[1].get("fallback_model"))
-        self.assertEqual(fallback[1]["fallback_model"], "fb/model")
+        # The fallback escalates through the gateway strong route (#1810).
+        self.assertIsNone(initial[1].get("model_override"))
+        self.assertIsNone(cont[1].get("model_override"))
+        self.assertNotEqual(initial[1].get("model_tier"), "strong")
+        self.assertNotEqual(cont[1].get("model_tier"), "strong")
+        self.assertEqual(fallback[1]["model_tier"], "strong")
+        self.assertEqual(fallback[1]["model_override"], "route:strong")
         self.assertEqual(fallback[1]["prior_files"], ("a.py", "b.py"))
         self.assertTrue(fallback[0][1].startswith("brief"))
         # Shared parent budget: each attempt is capped by what is left.
@@ -509,18 +513,6 @@ class TestDefaultRouteSequence(unittest.TestCase):
         self.assert_no_paid_attempt(seen)
 
     @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
-    def test_disabled_fallback_never_falls_back(self):
-        seen, _, _, error = self.run_sequence(
-            [self.cap_error(0), self.cap_error(20), "never"],
-            env={"CODER_FALLBACK_MODEL": " "},
-            continuations=1,
-            call_budget=100,
-        )
-        self.assertEqual(type(error).__name__, "ModelCallLimitExceededError")
-        self.assertEqual(len(seen), 2)
-        self.assert_no_paid_attempt(seen)
-
-    @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
     def test_non_default_route_never_falls_back(self):
         other = {"provider": "twt", "model": "route:other"}
         seen, _, _, error = self.run_sequence(
@@ -585,15 +577,11 @@ class TestRealGraphResume(unittest.TestCase):
             mock.patch.object(
                 coder,
                 "build_model",
-                return_value=(
-                    model,
-                    spec or {"provider": "local", "model": "fake"},
+                side_effect=lambda override=None: (
+                    (fallback, {"provider": "twt", "model": "route:strong"})
+                    if override == "route:strong"
+                    else (model, spec or {"provider": "local", "model": "fake"})
                 ),
-            ),
-            mock.patch.object(
-                coder,
-                "build_fallback_model",
-                return_value=(fallback, {"provider": "twt", "model": "fb"}),
             ) as build_fb,
             mock.patch("backend.shared.model_router.local_only", return_value=False),
             mock.patch.object(
@@ -618,7 +606,11 @@ class TestRealGraphResume(unittest.TestCase):
                 error = exc
         floors = [c.kwargs["thread_floor"] for c in build.call_args_list]
         threads = set(saver.storage)
-        self.fallback_builds = build_fb.call_count
+        self.fallback_builds = sum(
+            1
+            for c in build_fb.call_args_list
+            if (c.args[:1] or [c.kwargs.get("model_override")])[0] == "route:strong"
+        )
         return result, error, meter, floors, threads
 
     def test_resume_gets_a_fresh_budget_on_the_same_thread(self):
