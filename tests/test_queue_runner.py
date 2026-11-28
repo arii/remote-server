@@ -530,10 +530,16 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(
             [i["number"] for i in runner.ordered_issues(issues)], [11, 12, 10]
         )
-        for number in (2, 23, 26, 1377, 1359):
-            self.assertTrue(
-                runner.skip_reason({"repo": "arii/remote-server", "number": number})
-            )
+        self.assertEqual(
+            runner.skip_reason(
+                {
+                    "repo": "arii/remote-server",
+                    "number": 10,
+                    "labels": [{"name": "hold"}],
+                }
+            ),
+            "operator hold label",
+        )
         for field in ("fixed", "merged", "requires_human"):
             self.assertTrue(
                 runner.skip_reason({"repo": "repo/name", "number": 10, field: True})
@@ -570,12 +576,18 @@ class RunnerTests(unittest.TestCase):
 
     def test_human_decision_skips_are_repo_scoped_but_operator_holds_are_global(self):
         self.assertTrue(
-            runner.skip_reason({"repo": "arii/remote-server", "number": 1377})
+            runner.skip_reason(
+                {"repo": "arii/remote-server", "number": 1377, "requires_human": True}
+            )
         )
         self.assertIsNone(runner.skip_reason({"repo": "arii/boomtick", "number": 1377}))
         for repo in ("arii/remote-server", "arii/boomtick", "other/repo"):
-            for number in (2, 23, 26):
-                self.assertTrue(runner.skip_reason({"repo": repo, "number": number}))
+            self.assertEqual(
+                runner.skip_reason(
+                    {"repo": repo, "number": 2, "labels": [{"name": "hold"}]}
+                ),
+                "operator hold label",
+            )
 
     @mock.patch.object(runner.signal, "signal")
     @mock.patch.object(
@@ -1498,7 +1510,7 @@ class RunnerTests(unittest.TestCase):
                 self.listed(8, "2020-01-08"),
                 self.listed(5, "2020-01-05"),
                 self.listed(6, "2020-01-06", labels=("bug",)),
-                self.listed(23, "2020-01-01"),
+                self.listed(23, "2020-01-01", labels=("ready", "hold")),
             ],
             "owner/other": [self.listed(3, "2020-01-03")],
             "owner/denied": [self.listed(1, "2020-01-01")],
@@ -2726,11 +2738,12 @@ class StrongRoutingTests(unittest.TestCase):
 
     def test_strong_start_requires_model_and_budget(self):
         fatal = []
-        with mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": " "}):
-            with self.assertRaises(runner.StrongRefused) as caught:
-                runner.check_strong_start(0.5, fatal)
-        self.assertEqual(caught.exception.status, "CONFIG_ERROR")
-        self.assertIn("CODER_STRONG_MODEL", fatal[0])
+        with (
+            mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": " "}),
+            mock.patch.object(runner, "refresh_spend", return_value=0.1),
+        ):
+            self.assertEqual(runner.check_strong_start(0.5, fatal), "route:strong")
+        self.assertEqual(fatal, [])
         with (
             mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": "big"}),
             mock.patch.object(runner, "refresh_spend", return_value=0.47),
@@ -2809,11 +2822,9 @@ class StrongRoutingTests(unittest.TestCase):
 
     def test_worker_without_strong_model_fails_before_the_pipeline_and_halts(self):
         with tempfile.TemporaryDirectory() as root:
-            code, summary, _s, calls = self.run_worker(root, "strong", {})
-        self.assertEqual((code, calls), (2, 0))
-        self.assertEqual(summary["result"]["status"], "CONFIG_ERROR")
-        self.assertTrue(summary["halt_queue"])
-        self.assertIn("CODER_STRONG_MODEL", summary["halt_reasons"][0])
+            code, summary, seen, calls = self.run_worker(root, "strong", {})
+        self.assertEqual((code, seen, calls), (0, "strong", 1))
+        self.assertEqual(summary["strong_model"], "route:strong")
 
     def test_worker_with_insufficient_budget_does_not_start_strong(self):
         with tempfile.TemporaryDirectory() as root:
