@@ -27,20 +27,34 @@ class TestTwtStageModels(unittest.TestCase):
                     [{"role": "user", "content": "hello"}]
                 )
                 self.assertEqual(body["model"], "default")
-                self.assertEqual(
-                    body["extra_body"],
-                    {
-                        "provider_models": {
-                            "nvidia": "z-ai/glm-5.3-flash",
-                            "nebius": "zai-org/GLM-5.3-Flash",
-                        },
-                        "provider_reasoning_effort": {"nvidia": "low", "nebius": "low"},
-                    },
-                )
-                self.assertEqual(
-                    resolved["provider_models"], body["extra_body"]["provider_models"]
-                )
+                # No client-side model pins (#1809): the gateway picks.
+                extra_body = body.get("extra_body") or {}
+                self.assertNotIn("provider_models", extra_body)
+                self.assertNotIn("provider_reasoning_effort", extra_body)
+                self.assertNotIn("provider_models", resolved)
+                self.assertNotIn("provider_reasoning_effort", resolved)
                 self.assertNotIn("provider_models", spec)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("langchain_openai"), "needs deep-agent venv"
+    )
+    def test_explicit_stage_override_reaches_openai_request_body(self):
+        spec = {
+            "provider": "twt",
+            "model": "default",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+        env = {"TWT_CODER_NVIDIA_MODEL": "pinned/nvidia", "TWT_CODER_NEBIUS_MODEL": "x"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            model, resolved = model_router.build_chat_model(spec=spec, stage="coder")
+        body = model._get_request_payload([{"role": "user", "content": "hello"}])
+        self.assertEqual(body["model"], "default")
+        self.assertEqual(
+            body["extra_body"]["provider_models"],
+            {"nvidia": "pinned/nvidia", "nebius": "x"},
+        )
+        self.assertEqual(resolved["provider_models"], body["extra_body"]["provider_models"])
+        self.assertNotIn("provider_reasoning_effort", resolved)
 
     @unittest.skipUnless(
         importlib.util.find_spec("langchain_openai"), "needs deep-agent venv"
@@ -121,11 +135,8 @@ class TestTwtStageModels(unittest.TestCase):
             sent.append(body)
             self.assertEqual(body["model"], "default")
             self.assertEqual(body["max_tokens"], 8192)
-            self.assertEqual(body["provider_models"]["nvidia"], "z-ai/glm-5.3-flash")
-            self.assertEqual(body["provider_models"]["nebius"], "zai-org/GLM-5.3-Flash")
-            self.assertEqual(
-                body["provider_reasoning_effort"], {"nvidia": "low", "nebius": "low"}
-            )
+            self.assertNotIn("provider_models", body)
+            self.assertNotIn("provider_reasoning_effort", body)
             return httpx.Response(
                 200,
                 json={
@@ -202,10 +213,12 @@ class TestTwtStageModels(unittest.TestCase):
         base = {"provider": "twt", "base_url": "http://127.0.0.1:8000/v1"}
         concrete = "nebius/Qwen/Qwen3-235B-A22B-Instruct-2507"
         cases = (("default", True), ("route:default", True), (concrete, False))
+        # Controls exist on the default route only when explicitly configured.
+        env = {"TWT_CODER_NEBIUS_MODEL": "pinned/nebius"}
         for model_id, expects_controls in cases:
             with (
                 self.subTest(model=model_id),
-                mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch.dict(os.environ, env, clear=True),
             ):
                 model, spec = model_router.build_chat_model(
                     spec=dict(base, model=model_id), stage="coder"
@@ -215,9 +228,10 @@ class TestTwtStageModels(unittest.TestCase):
                 )
                 self.assertEqual(body["model"], model_id)
                 extra_body = body.get("extra_body") or {}
-                for key in ("provider_models", "provider_reasoning_effort"):
-                    self.assertEqual(key in extra_body, expects_controls)
-                    self.assertEqual(key in spec, expects_controls)
+                self.assertEqual("provider_models" in extra_body, expects_controls)
+                self.assertEqual("provider_models" in spec, expects_controls)
+                self.assertNotIn("provider_reasoning_effort", extra_body)
+                self.assertNotIn("provider_reasoning_effort", spec)
 
     @unittest.skipUnless(
         importlib.util.find_spec("langchain_openai"), "needs deep-agent venv"
@@ -276,8 +290,24 @@ class TestTwtStageModels(unittest.TestCase):
         self.assertEqual(
             calls[0]["model_ids"], ["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"]
         )
-        self.assertEqual(
-            calls[1]["provider_models"],
-            {"nvidia": "z-ai/glm-5.3-flash", "nebius": "zai-org/GLM-5.3-Flash"},
-        )
+        # No hardcoded pins (#1809): route:default sends none unless configured.
+        self.assertEqual(calls[1]["provider_models"], {})
         self.assertNotIn("model_ids", calls[1])
+        calls.clear()
+        with (
+            mock.patch.object(
+                twt_provenance, "verify_gateway_capabilities", side_effect=fake_verify
+            ),
+            mock.patch.dict(
+                os.environ, {"TWT_CODER_NEBIUS_MODEL": "pinned/nebius"}, clear=True
+            ),
+        ):
+            model_router.preflight_gateway(
+                spec={
+                    "provider": "twt",
+                    "model": "route:default",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                },
+                stage="coder",
+            )
+        self.assertEqual(calls[0]["provider_models"], {"nebius": "pinned/nebius"})
