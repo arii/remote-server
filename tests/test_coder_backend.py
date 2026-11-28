@@ -890,11 +890,12 @@ class TestCoderBackend(unittest.TestCase):
                 mismatch = call("64b57473", "edit_file", **bad)
                 duplicate = call("26413794", "edit_file", **bad)
                 if repeats:
-                    with self.assertRaisesRegex(
-                        coder.CoderBudgetExceeded,
-                        "repeated unchanged tool call: edit_file",
-                    ):
-                        call("1d714dd5", "edit_file", **bad)
+                    # No repeat hard block since the REPAIR_REPEAT_LIMIT
+                    # removal: the third identical call gets error content
+                    # instead of raising, and nothing is written.
+                    replay = call("1d714dd5", "edit_file", **bad)
+                    self.assertEqual(replay.status, "error")
+                    self.assertIn("Already called", replay.content)
                     self.assertEqual(target.read_text(), original)
                     self.assertEqual(written.mutations, 0)
                 else:
@@ -1026,11 +1027,18 @@ class TestCoderBackend(unittest.TestCase):
                         "messages": [HumanMessage(content="Update the docstring")]
                     }
                     if stop:
-                        with self.assertRaisesRegex(
-                            coder.CoderBudgetExceeded,
-                            f"repeated unchanged tool call: {name}",
-                        ):
+                        # No repeat hard block since the REPAIR_REPEAT_LIMIT
+                        # removal: identical replays get error content, and a
+                        # model that never adapts exhausts its thread budget.
+                        # The applied edit is still preserved exactly once.
+                        from langchain.agents.middleware.model_call_limit import (
+                            ModelCallLimitExceededError,
+                        )
+
+                        with self.assertRaises(ModelCallLimitExceededError):
                             agent.invoke(request)
+                        self.assertEqual(target.read_text(), f"{new}\n\nVALUE = 1\n")
+                        self.assertEqual(written.mutations, 1)
                     else:
                         result = agent.invoke(request)
                         replies = {

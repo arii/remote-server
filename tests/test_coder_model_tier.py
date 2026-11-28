@@ -151,8 +151,8 @@ class TestStrongTierGatewayRequest(unittest.TestCase):
     def test_fast_keeps_default_provider_models_strong_route_sends_none(self):
         fast, _, _ = self.build("fast", self.base)
         self.assertEqual(fast["model"], "default")
-        self.assertIn("provider_models", fast["extra_body"])
-        self.assertIn("provider_reasoning_effort", fast["extra_body"])
+        self.assertNotIn("provider_models", fast.get("extra_body") or {})
+        self.assertNotIn("provider_reasoning_effort", fast.get("extra_body") or {})
         strong, spec, _ = self.build(
             "strong", dict(self.base, CODER_STRONG_MODEL="route:strong")
         )

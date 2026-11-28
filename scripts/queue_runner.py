@@ -435,6 +435,8 @@ def discover_ready(config, issues, completed):
                 "repo": repo,
                 "number": item["number"],
                 "created_at": item["createdAt"],
+                # Keep labels so label-based holds filter discovered issues.
+                "labels": item.get("labels", []),
             }
             ordered_issues([issue])
             key = (repo, issue["number"])
