@@ -890,11 +890,10 @@ class TestCoderBackend(unittest.TestCase):
                 mismatch = call("64b57473", "edit_file", **bad)
                 duplicate = call("26413794", "edit_file", **bad)
                 if repeats:
-                    with self.assertRaisesRegex(
-                        coder.CoderBudgetExceeded,
-                        "repeated unchanged tool call: edit_file",
-                    ):
-                        call("1d714dd5", "edit_file", **bad)
+                    # No hard repeat block (6019acf): a further identical call
+                    # is still refused with guidance and changes nothing.
+                    again = call("1d714dd5", "edit_file", **bad)
+                    self.assertEqual(again.status, "error")
                     self.assertEqual(target.read_text(), original)
                     self.assertEqual(written.mutations, 0)
                 else:
@@ -1026,10 +1025,13 @@ class TestCoderBackend(unittest.TestCase):
                         "messages": [HumanMessage(content="Update the docstring")]
                     }
                     if stop:
-                        with self.assertRaisesRegex(
-                            coder.CoderBudgetExceeded,
-                            f"repeated unchanged tool call: {name}",
-                        ):
+                        # Repeats no longer hard-stop (6019acf); the per-thread
+                        # model-call cap is what bounds a replay loop.
+                        from langchain.agents.middleware.model_call_limit import (
+                            ModelCallLimitExceededError,
+                        )
+
+                        with self.assertRaises(ModelCallLimitExceededError):
                             agent.invoke(request)
                     else:
                         result = agent.invoke(request)
