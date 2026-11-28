@@ -29,8 +29,6 @@ used when the pipeline escalates to model_tier 'strong'; required
 then), CODER_THINK=1
 (Ollama thinking traces), CODER_VERIFY_ROUNDS (verify re-prompts,
 default 2, 0 disables), CODER_PLAN (always|never|unset auto),
-CODER_FALLBACK_MODEL (explicit TwT model after initial default-route model-cap
-exhaustion; defaults to Nebius GLM-5.3-Flash, empty disables),
 plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 """
 
@@ -88,7 +86,6 @@ ALREADY_APPLIED = "already_applied"
 DEFAULT_VERIFY_ROUNDS = 2
 REPAIR_TOOL_LIMIT = 20
 NEXT_OFFSET_RE = re.compile(r"\bnext offset (\d+)")
-REPAIR_REPEAT_LIMIT = 3
 REPAIR_MODEL_LIMIT = 12
 INITIAL_MODEL_LIMIT = 20
 INITIAL_TOOL_LIMIT = 32
@@ -411,20 +408,6 @@ def build_model(model_override=None):
         spec = dict(spec, model=model_override)
     think = os.environ.get("CODER_THINK", "") == "1"
     return model_router.build_chat_model(spec=spec, think=think, stage="coder")
-
-
-def build_fallback_model(model_name):
-    from backend.shared import model_router
-
-    spec = model_router.resolve_llm(prefer="twt")
-    if spec["provider"] != "twt":
-        raise RuntimeError("coder fallback requires TwT; local-only mode forbids it")
-    spec = dict(spec, model=model_name)
-    spec.pop("provider_models", None)
-    spec.pop("provider_reasoning_effort", None)
-    return model_router.build_chat_model(
-        spec=spec, think=os.environ.get("CODER_THINK", "") == "1"
-    )
 
 
 def _default_plan_fn(brief, worktree_root, context):
@@ -3039,7 +3022,6 @@ def _run_coder_attempt(
     model_override=None,
     catalog=None,
     repo=None,
-    fallback_model=None,
     prior_files=(),
     deadline=None,
     thread_floor=0,
@@ -3069,11 +3051,7 @@ def _run_coder_attempt(
     started = time.time()
     deadline = time.monotonic() + timeout if deadline is None else deadline
     override = model_override or tier_model(model_tier, brief=brief, catalog=catalog)
-    model, spec = (
-        build_fallback_model(fallback_model)
-        if fallback_model
-        else build_model(override)
-    )
+    model, spec = build_model(override)
     recorder = observe.TraceRecorder(observe.default_trace_path("coder", thread))
     if meter is not None:
         meter["trace"] = recorder.path
