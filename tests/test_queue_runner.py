@@ -1541,6 +1541,20 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("--label", gh.call_args_list[0].args[0])
         self.assertEqual(runner.discover_ready({}, manifest, []), [])
 
+    def test_discovered_issues_keep_labels_so_hold_is_honored(self):
+        listings = {
+            "owner/repo": [
+                self.listed(4, "2020-01-04", labels=("ready", "hold")),
+                self.listed(5, "2020-01-05"),
+            ]
+        }
+        with mock.patch.object(
+            runner.subprocess, "check_output", side_effect=self.ready_fake(listings)
+        ):
+            found = runner.discover_ready({"discover_repos": ["owner/repo"]}, [], [])
+        self.assertEqual([i["number"] for i in found], [5])
+        self.assertEqual(found[0]["labels"], [{"name": "ready"}])
+
     def test_failed_listing_skips_only_that_repo(self):
         config = {"discover_repos": ["owner/repo", "owner/other"]}
         listings = {"owner/other": [self.listed(3, "2020-01-03")]}
@@ -2564,6 +2578,20 @@ class CapEscalationTests(unittest.TestCase):
 
 class StrongRoutingTests(unittest.TestCase):
     fixture = RunnerTests.fixture
+
+    def test_blank_strong_model_falls_back_to_the_gateway_strong_route(self):
+        # A whitespace-only value must not produce an empty model id.
+        for value in (" ", "  \t"):
+            with (
+                mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": value}),
+                mock.patch.object(runner, "refresh_spend", return_value=0.1),
+            ):
+                self.assertEqual(runner.check_strong_start(0.5, []), "route:strong")
+        with (
+            mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": " big "}),
+            mock.patch.object(runner, "refresh_spend", return_value=0.1),
+        ):
+            self.assertEqual(runner.check_strong_start(0.5, []), "big")
 
     def run_one(self, root, summary, labels=("ready",), seed=None, config_extra=None):
         """Dispatch issue 7 once with a stubbed worker; return (status, job, out)."""
