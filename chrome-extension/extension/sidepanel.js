@@ -77,6 +77,17 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.pendingDeltas) renderObserverQueue();
 });
 
+// Plain result line for the status box. The full field list is in the
+// trace log (Telemetry HYDRATE), not in the main path.
+function fillSummaryText(result, derivedNotes = []) {
+  const total = Number(result?.totalFields) || 0;
+  const filled = Number(result?.filledCount) || 0;
+  const failed = Array.isArray(result?.failedFields) ? result.failedFields.length : 0;
+  const lines = [`Filled ${filled} of ${total} fields.` + (failed ? ` ${failed} could not be filled.` : "")];
+  lines.push(...derivedNotes);
+  return lines.join("\n");
+}
+
 async function getClonedSession() {
   const lmGlobal = self.LanguageModel || self.ai?.languageModel;
   if (!lmGlobal) return null;
@@ -1231,7 +1242,7 @@ function renderSuggestionReview(suggestions, doc, vault = []) {
     const entry = sg.entryId ? (vault || []).find((e) => e.id === sg.entryId) : null;
     if (entry && sg.source === "vault") {
       const conf = document.createElement("button"); conf.className = "btn review-confirm";
-      conf.textContent = "This is my answer: confirm, fill and remember";
+      conf.textContent = "Confirm as my answer";
       controls.push(conf);
       conf.addEventListener("click", async () => {
         const value = ta.value.trim();
@@ -1367,7 +1378,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
           field.value = m.entry.value;
           field.confidence = m.confidence;
         } else if (m) {
-          suggestions.push(makeSuggestion(field, { value: m.entry.value, source: "vault", entry: m.entry, reason: m.entry.userConfirmation ? "Confirmed for a different question, not this one" : "Unverified: you have not confirmed this answer" }));
+          suggestions.push(makeSuggestion(field, { value: m.entry.value, source: "vault", entry: m.entry, reason: m.entry.userConfirmation ? "Confirmed for a different question, not this one" : "Unverified, confirm or edit" }));
         }
         field.skipLLM = true;
         continue;
@@ -1485,10 +1496,10 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
           durationMs: performance.now() - stage2T0,
           details: finalResult
         });
-        statusBox.textContent = `Auto-Fill Completed!\n\n` + JSON.stringify(finalResult, null, 2) + (derivedNotes.length ? `\n${derivedNotes.join("\n")}` : "");
+        statusBox.textContent = fillSummaryText(finalResult, derivedNotes);
       }
     } else {
-      statusBox.textContent = `Auto-Fill Completed (Instant Pre-Draft Used)!\n\n` + JSON.stringify(stage1Result, null, 2) + (derivedNotes.length ? `\n${derivedNotes.join("\n")}` : "");
+      statusBox.textContent = fillSummaryText(stage1Result, derivedNotes);
     }
     renderSuggestionReview(suggestions, doc, userContextVault);
   } catch (err) {
