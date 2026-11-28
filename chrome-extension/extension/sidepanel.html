@@ -246,16 +246,13 @@
         <div id="autofill-target-desc" style="color:var(--text-muted); font-size:10px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
       </div>
 
-      <!-- Consent Checkbox Control -->
-      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer; font-size:11px; color:#cbd5e1;">
-        <input type="checkbox" id="chk-agree-consent" checked style="width:auto;" />
-        <span>Auto-check "I agree to terms & privacy policy" checkboxes</span>
-      </label>
+      <div class="obs-note" style="font-size:10.5px;color:#cbd5e1;margin-bottom:8px;">Terms, privacy and other consent boxes are never ticked for you.</div>
 
       <button id="btn-autofill-now" class="btn btn-primary">
         ✨ Auto-Fill Active Form with AI
       </button>
 
+      <div id="autofill-review" hidden></div>
       <pre id="autofill-status-box">Ready to fill active form.</pre>
       <div id="fill-stats-line" style="color:var(--text-muted); font-size:10.5px; margin-top:6px;"></div>
     </div>
@@ -401,7 +398,7 @@
       <span class="step-number">2</span>
       <span>Watch my form edits</span>
     </div>
-    <div class="card-desc">Saves what you typed as drafts when you submit a form or click Next, Continue, Review or Submit on a step. A button click does not prove a form was sent, so every draft waits in the queue below. Nothing reaches your vault until you approve it.</div>
+    <div class="card-desc">Record your edits when you submit forms on a site, then review them below before anything reaches your vault.</div>
     <button class="btn btn-primary obs-u2" id="btn-observe-toggle" aria-pressed="false">Open a website to start observing</button>
     <div id="observe-hint" class="card-desc"></div>
   </div>

@@ -605,4 +605,11 @@ pre {
   white-space:pre-wrap;
 }
 
-html{scroll-padding-bottom:56px}
+#autofill-review{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+.review-title{font-size:11px;font-weight:700;color:#fbbf24}
+.review-row{border:1px solid #475569;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:5px;font-size:10.5px}
+.review-row[data-status="accepted"]{border-color:#22c55e}
+.review-row[data-status="rejected"]{opacity:.55}
+.review-q{font-weight:600;color:#e2e8f0}.review-meta,.review-support{color:#94a3b8}
+.review-edit{width:100%;font-size:11px}
+.review-confirm{background:#334155;color:#e2e8f0}

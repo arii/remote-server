@@ -4,6 +4,8 @@
 // ============================================================================
 
 import { matchField } from "./lib/matcher.js";
+import { deriveNamePart } from "./lib/name-parts.js";
+import { checkGrounding, groundedEntries, isCommitmentQuery, isConsentField, isUserConfirmed, makeSuggestion, supportedSentences } from "./lib/answer-policy.js";
 import { createHybridPromptSession, getHybridStatus } from "./lib/hybrid-session.js";
 import { deduplicateVault, sanitizeVaultEntries, describeVaultImport } from "./lib/vault.js";
 import { MAX_CHUNKS_PER_PAGE, MAX_CHUNKS_PER_RUN, PROFILE_FACTS_SCHEMA, collectSourcePages, extractFactsFromText, htmlToText } from "./lib/profile-ingest.js";
@@ -1164,6 +1166,91 @@ document.getElementById("btn-run-ux-audit")?.addEventListener("click", async () 
 // ----------------------------------------------------------------------------
 // PHASES 3 & 6: FORM-IMPORT & FORM-IMPORT++ (TWO-STAGE INSTANT FILL)
 // ----------------------------------------------------------------------------
+// Review list: every suggestion is written to the page only after the user
+// accepts it (optionally edited). Nothing here writes to the vault.
+function renderSuggestionReview(suggestions, doc, vault = []) {
+  const box = document.getElementById("autofill-review");
+  if (!box) return;
+  box.textContent = "";
+  if (!suggestions.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const h = document.createElement("div");
+  h.className = "review-title";
+  box.appendChild(h);
+  const refreshHeader = () => {
+    const n = (st) => suggestions.filter((x) => x.status === st).length;
+    const filled = n("accepted") + n("confirmed");
+    h.textContent = `${suggestions.length} suggestion${suggestions.length === 1 ? "" : "s"}: ${n("pending")} waiting for you, ${filled} filled by you, ${n("rejected")} rejected. These suggestions are not filled until you accept them.`;
+    h.dataset.pending = String(n("pending"));
+    h.dataset.filled = String(filled);
+    h.dataset.rejected = String(n("rejected"));
+  };
+  const settle = (sg, row, status, label, controls) => {
+    sg.status = status;
+    row.dataset.status = status;
+    controls.forEach((c) => (c.disabled = true));
+    if (label) label.textContent = status === "rejected" ? "Rejected" : status === "confirmed" ? "Confirmed and filled" : "Filled by you";
+    refreshHeader();
+  };
+  for (const sg of suggestions) {
+    const row = document.createElement("div");
+    row.className = "review-row";
+    row.dataset.field = sg.fieldId;
+    const q = document.createElement("div"); q.className = "review-q"; q.textContent = sg.query;
+    const meta = document.createElement("div"); meta.className = "review-meta";
+    meta.textContent = `${sg.reason}. Source: ${sg.provenance}.`;
+    const ta = document.createElement("textarea"); ta.className = "review-edit"; ta.value = sg.value; ta.rows = 3;
+    ta.placeholder = "No supported answer. Type your own or reject.";
+    row.append(q, meta, ta);
+    for (const sup of sg.support || []) {
+      const d = document.createElement("div"); d.className = "review-support";
+      d.textContent = `Word overlap with your vault text, not proof it is true: "${sup.sentence}" overlaps "${sup.fact}"`;
+      row.appendChild(d);
+    }
+    if (sg.dropped?.length) {
+      const d = document.createElement("div"); d.className = "review-support";
+      d.textContent = `${sg.dropped.length} sentence(s) with no overlap in your vault were removed.`;
+      row.appendChild(d);
+    }
+    const field = () => (doc.fields || []).find((f) => f.fieldId === sg.fieldId);
+    const fillPage = (value) =>
+      sendToActiveTab({ action: "HYDRATE_PAGE_FORMS", document: { fields: [{ ...field(), value, pass: undefined, entryId: undefined, entryKey: undefined }] }, options: { highlightConfidence: false } });
+    const acc = document.createElement("button"); acc.className = "btn review-accept"; acc.textContent = "Accept and fill";
+    const rej = document.createElement("button"); rej.className = "btn review-reject"; rej.textContent = "Reject";
+    const controls = [acc, rej, ta];
+    acc.addEventListener("click", async () => {
+      const value = ta.value.trim();
+      if (!value || !field()) return;
+      await fillPage(value);
+      settle(sg, row, "accepted", acc, controls);
+    });
+    rej.addEventListener("click", () => settle(sg, row, "rejected", rej, controls));
+    row.append(acc, rej);
+    // Commitments from a vault entry can be confirmed by an explicit user action:
+    // this records {by:"user", value, at} on that entry so later fills may use it.
+    const entry = sg.entryId ? (vault || []).find((e) => e.id === sg.entryId) : null;
+    if (entry && sg.source === "vault") {
+      const conf = document.createElement("button"); conf.className = "btn review-confirm";
+      conf.textContent = "This is my answer: confirm, fill and remember";
+      controls.push(conf);
+      conf.addEventListener("click", async () => {
+        const value = ta.value.trim();
+        if (!value || !field()) return;
+        const r = await chrome.runtime.sendMessage({
+          type: "vault:upsert",
+          entry: { ...entry, value, userConfirmation: { by: "user", at: new Date().toISOString(), value, scope: sg.query } }
+        });
+        if (r && r.ok === false) return;
+        await fillPage(value);
+        settle(sg, row, "confirmed", conf, controls);
+      });
+      row.appendChild(conf);
+    }
+    box.appendChild(row);
+  }
+  refreshHeader();
+}
+
 document.getElementById("btn-autofill-now").addEventListener("click", async () => {
   const btn = document.getElementById("btn-autofill-now");
   const statusBox = document.getElementById("autofill-status-box");
@@ -1214,7 +1301,9 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     const matchOpts = { learned, host };
 
     const fillId = `fill_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const autoConsent = document.getElementById("chk-agree-consent")?.checked ?? true;
+    const suggestions = [];
+    const derivedNotes = [];
+    const vaultFacts = groundedEntries(userContextVault);
     const longFormFields = [];
 
     // 2. Stage 1: Deterministic fast match for atomic fields + pre-drafted Cover Letter check
@@ -1254,21 +1343,33 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
 
         // If we already pre-drafted a tailored cover letter for activeSessionContext, use it in 0ms!
         if (activeSessionContext?.preDraftedCoverLetter && /cover letter|note|motivation|why/i.test(q)) {
-          field.value = activeSessionContext.preDraftedCoverLetter;
-          field.confidence = 0.99;
-          field.pass = "prompt";
+          suggestions.push(makeSuggestion(field, { value: activeSessionContext.preDraftedCoverLetter, source: "ai-draft", reason: "AI draft, needs your review" }));
         } else {
           longFormFields.push(field);
         }
         continue;
       }
 
-      // Check consent checkboxes
-      if (field.inputType === "checkbox" && (field.semanticCategory === "legal.consent" || /agree|terms|privacy/i.test(q))) {
-        if (autoConsent) {
-          field.value = true;
-          field.confidence = 0.95;
+      // Consent and legal acknowledgments are never filled automatically.
+      if (isConsentField(field)) {
+        field.value = "";
+        field.skipLLM = true;
+        continue;
+      }
+
+      // Substantive commitments: filled only from an entry the user explicitly
+      // confirmed. Anything else (legacy or model-extracted) is at most an
+      // unverified suggestion; no match leaves the field empty. No model is used.
+      if (isCommitmentQuery(q)) {
+        const m = matchField(fieldMatchInput(field, q), userContextVault, matchOpts);
+        if (m && isUserConfirmed(m.entry, field.query)) {
+          tagMatch(field, m);
+          field.value = m.entry.value;
+          field.confidence = m.confidence;
+        } else if (m) {
+          suggestions.push(makeSuggestion(field, { value: m.entry.value, source: "vault", entry: m.entry, reason: m.entry.userConfirmation ? "Confirmed for a different question, not this one" : "Unverified: you have not confirmed this answer" }));
         }
+        field.skipLLM = true;
         continue;
       }
 
@@ -1285,6 +1386,12 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
           field.value = entry.value;
         }
         field.confidence = confidence;
+      } else {
+        const part = deriveNamePart(q, userContextVault);
+        if (part) {
+          field.value = part.value; // no entryId/pass: never learned as a mapping
+          derivedNotes.push(`${field.query}: derived from your vault entry "${part.fromKey}" (split of two words)`);
+        }
       }
     }
 
@@ -1303,7 +1410,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     });
     reportFillVerdicts(doc, stage1Result);
     renderFillStats();
-    statusBox.textContent = `Stage 1 filled ${stage1Result.filledCount} fields instantly...`;
+    statusBox.textContent = `Stage 1 filled ${stage1Result.filledCount} fields instantly...` + (derivedNotes.length ? `\n${derivedNotes.join("\n")}` : "");
 
     // 4. Stage 2: On-Device LLM synthesis ONLY for remaining tailored essays or unmapped fields
     if (longFormFields.length > 0) {
@@ -1320,8 +1427,8 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
         for (const field of longFormFields) {
           if (field.skipLLM) continue;
           const ctx = activeSessionContext || doc.pageContext || {};
-          const bioEntry = userContextVault.find((v) => v.id === "custom.bio")?.value || "";
-          const expEntries = userContextVault
+          const bioEntry = vaultFacts.find((v) => v.id === "custom.bio")?.value || "";
+          const expEntries = vaultFacts
             .filter((v) => ["professional", "education", "social"].includes(v.category))
             .map((v) => `${v.key}: ${v.value}`)
             .join("\n");
@@ -1331,8 +1438,8 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
             vars: {
               field: field.query,
               context:
-                `- Role: ${ctx.role || ctx.roleOrTopic || document.title}\n` +
-                `- Company: ${ctx.organization || "this organization"}\n` +
+                `- Role: ${ctx.role || ctx.roleOrTopic || doc.pageContext?.title || "unknown"}\n` +
+                `- Company: ${ctx.organization || "unknown"}\n` +
                 `- Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
                 `- Tech Stack: ${(ctx.techStack || ctx.keywords || []).join(", ")}`,
               facts:
@@ -1347,30 +1454,19 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
           const synthesized = await runObservablePrompt(session, prompt, {
             label: `Tailor "${field.query}"`,
             signal: abortSignal,
-            onChunk: (chunk) => {
-              const now = performance.now();
-              if (now - lastLiveUpdate > 250) {
-                lastLiveUpdate = now;
-                sendToActiveTab({
-                  action: "HYDRATE_PAGE_FORMS",
-                  document: { fields: [{ ...field, value: chunk }] },
-                  options: { highlightConfidence: false }
-                }).catch(() => {});
-              }
-            }
           });
 
           if (synthesized && synthesized.trim()) {
-            let finalText = synthesized.trim();
-            // Deterministic Portfolio Link Guarantee in Stage 2 Live Synthesis
-            const isProjectOrShowcase = /share something cool|built|project|portfolio|repo|link|work sample|cover letter/i.test(field.query);
-            if (isProjectOrShowcase && portfolioUrl && !finalText.includes(portfolioUrl)) {
-              const linkLine = `Portfolio: ${portfolioUrl}` + (githubUrl ? ` | GitHub: ${githubUrl}` : "");
-              finalText = `${finalText}\n\n${linkLine}`;
+            // Grounding: keep only sentences supported by a vault fact line, show the
+            // support, and never write the draft to the page without acceptance.
+            const factLines = vaultFacts.filter((v) => v.value).map((v) => `${v.key}: ${v.value}`);
+            const gv = checkGrounding(synthesized.trim(), factLines.join("\n"), { banned: ["LocalForm AI", "LocalForm"] });
+            const sup = supportedSentences(synthesized.trim(), factLines);
+            if (gv.ok && sup.kept.length) {
+              suggestions.push(makeSuggestion(field, { value: sup.kept.join(" "), source: "ai-draft", reason: "AI draft, unverified. Check every claim", support: sup.support, dropped: sup.dropped }));
+            } else {
+              suggestions.push(makeSuggestion(field, { value: "", source: "ai-draft", reason: `Draft discarded (${gv.ok ? "no supported sentences" : gv.reason}). Left empty.`, dropped: sup.dropped }));
             }
-            field.value = finalText;
-            field.confidence = 0.92;
-            field.pass = "prompt";
           }
         }
         session.destroy?.();
@@ -1389,11 +1485,12 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
           durationMs: performance.now() - stage2T0,
           details: finalResult
         });
-        statusBox.textContent = `Auto-Fill Completed!\n\n` + JSON.stringify(finalResult, null, 2);
+        statusBox.textContent = `Auto-Fill Completed!\n\n` + JSON.stringify(finalResult, null, 2) + (derivedNotes.length ? `\n${derivedNotes.join("\n")}` : "");
       }
     } else {
-      statusBox.textContent = `Auto-Fill Completed (Instant Pre-Draft Used)!\n\n` + JSON.stringify(stage1Result, null, 2);
+      statusBox.textContent = `Auto-Fill Completed (Instant Pre-Draft Used)!\n\n` + JSON.stringify(stage1Result, null, 2) + (derivedNotes.length ? `\n${derivedNotes.join("\n")}` : "");
     }
+    renderSuggestionReview(suggestions, doc, userContextVault);
   } catch (err) {
     statusBox.textContent = describeTaskFailure(err, "Auto-Fill");
     Telemetry.logTrace({
