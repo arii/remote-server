@@ -76,6 +76,81 @@ class TestCoderFallback(unittest.TestCase):
                     attempt.call_args.kwargs["prior_files"], ("result.txt",)
                 )
 
+    def malformed_tool_args_error(self):
+        from pydantic import BaseModel, ValidationError
+
+        class _Call(BaseModel):
+            name: str
+            args: dict
+            id: str
+
+        class _Msg(BaseModel):
+            tool_calls: list[_Call]
+
+        try:
+            _Msg(
+                tool_calls=[
+                    {"name": "edit_file", "args": '{"path": "a.py"', "id": "1"}
+                ]
+            )
+        except ValidationError as error:
+            return error
+        raise AssertionError("expected a tool_calls args ValidationError")
+
+    def test_malformed_tool_args_escalates_to_strong_once(self):
+        error = self.malformed_tool_args_error()
+        with (
+            mock.patch.dict(os.environ, {"S5_LOCAL_ONLY": "0"}),
+            mock.patch.object(
+                coder, "_run_coder_attempt", side_effect=[error, "finished"]
+            ) as attempt,
+        ):
+            self.assertEqual(
+                coder.run_coder("/repo", "brief", "system", "thread", 5), "finished"
+            )
+        self.assertEqual(attempt.call_count, 2)
+        self.assertEqual(attempt.call_args.args[3], "thread-malformed-escalate")
+        self.assertEqual(attempt.call_args.kwargs["model_tier"], "strong")
+        self.assertEqual(attempt.call_args.kwargs["model_override"], "route:strong")
+
+    def test_malformed_tool_args_reraises_when_already_strong(self):
+        error = self.malformed_tool_args_error()
+        with (
+            mock.patch.dict(os.environ, {"S5_LOCAL_ONLY": "0"}),
+            mock.patch.object(
+                coder, "_run_coder_attempt", side_effect=error
+            ) as attempt,
+        ):
+            with self.assertRaises(type(error)) as raised:
+                coder.run_coder(
+                    "/repo", "brief", "system", "thread", 5, model_tier="strong"
+                )
+        self.assertIs(raised.exception, error)
+        self.assertEqual(attempt.call_count, 1)
+
+    def test_other_validation_errors_do_not_escalate(self):
+        from pydantic import BaseModel, ValidationError
+
+        class _Other(BaseModel):
+            count: int
+
+        try:
+            _Other.model_validate({"count": object()})
+        except ValidationError as error:
+            other = error
+        else:
+            raise AssertionError("expected a non-tool ValidationError")
+        with (
+            mock.patch.dict(os.environ, {"S5_LOCAL_ONLY": "0"}),
+            mock.patch.object(
+                coder, "_run_coder_attempt", side_effect=other
+            ) as attempt,
+        ):
+            with self.assertRaises(ValidationError) as raised:
+                coder.run_coder("/repo", "brief", "system", "thread", 5)
+        self.assertIs(raised.exception, other)
+        self.assertEqual(attempt.call_count, 1)
+
     def test_noneligible_empty_disabled_and_nonbudget_failures_do_not_fallback(self):
         cases = [
             (self.cap_error(provider="ollama"), {}, {}),
