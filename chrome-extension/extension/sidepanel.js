@@ -77,6 +77,17 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.pendingDeltas) renderObserverQueue();
 });
 
+// Plain result line for the status box. The full field list is in the
+// trace log (Telemetry HYDRATE), not in the main path.
+function fillSummaryText(result, derivedNotes = []) {
+  const total = Number(result?.totalFields) || 0;
+  const filled = Number(result?.filledCount) || 0;
+  const failed = Array.isArray(result?.failedFields) ? result.failedFields.length : 0;
+  const lines = [`Filled ${filled} of ${total} fields.` + (failed ? ` ${failed} could not be filled.` : "")];
+  lines.push(...derivedNotes);
+  return lines.join("\n");
+}
+
 async function getClonedSession() {
   const lmGlobal = self.LanguageModel || self.ai?.languageModel;
   if (!lmGlobal) return null;
@@ -1231,7 +1242,7 @@ function renderSuggestionReview(suggestions, doc, vault = []) {
     const entry = sg.entryId ? (vault || []).find((e) => e.id === sg.entryId) : null;
     if (entry && sg.source === "vault") {
       const conf = document.createElement("button"); conf.className = "btn review-confirm";
-      conf.textContent = "This is my answer: confirm, fill and remember";
+      conf.textContent = "Confirm as my answer";
       controls.push(conf);
       conf.addEventListener("click", async () => {
         const value = ta.value.trim();
@@ -1367,7 +1378,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
           field.value = m.entry.value;
           field.confidence = m.confidence;
         } else if (m) {
-          suggestions.push(makeSuggestion(field, { value: m.entry.value, source: "vault", entry: m.entry, reason: m.entry.userConfirmation ? "Confirmed for a different question, not this one" : "Unverified: you have not confirmed this answer" }));
+          suggestions.push(makeSuggestion(field, { value: m.entry.value, source: "vault", entry: m.entry, reason: m.entry.userConfirmation ? "Confirmed for a different question, not this one" : "Unverified, confirm or edit" }));
         }
         field.skipLLM = true;
         continue;
@@ -1485,10 +1496,10 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
           durationMs: performance.now() - stage2T0,
           details: finalResult
         });
-        statusBox.textContent = `Auto-Fill Completed!\n\n` + JSON.stringify(finalResult, null, 2) + (derivedNotes.length ? `\n${derivedNotes.join("\n")}` : "");
+        statusBox.textContent = fillSummaryText(finalResult, derivedNotes);
       }
     } else {
-      statusBox.textContent = `Auto-Fill Completed (Instant Pre-Draft Used)!\n\n` + JSON.stringify(stage1Result, null, 2) + (derivedNotes.length ? `\n${derivedNotes.join("\n")}` : "");
+      statusBox.textContent = fillSummaryText(stage1Result, derivedNotes);
     }
     renderSuggestionReview(suggestions, doc, userContextVault);
   } catch (err) {
@@ -1909,7 +1920,7 @@ async function renderObserverQueue() {
       <div class="item-card" data-delta-id="${escapeHtml(delta.deltaId)}" style="margin-bottom:8px;">
         <div class="item-header">
           <span class="${badgeClass}">${actionText}</span>
-          <span style="font-size:10px; color:var(--text-muted);">${delta.origin === "observer" ? "Typed by you, not verified" : `Model estimate ${Math.round(delta.confidence * 100)}%`}</span>
+          <span style="font-size:10px; color:var(--text-muted);">${delta.origin === "observer" ? "Typed by you, not verified" : delta.sourceChecked ? "Text match, review" : "Not checked against a source"}</span>
         </div>
         <div style="font-weight:700; color:white; font-size:11.5px; margin: 2px 0;">${escapeHtml(delta.key)}</div>
         ${delta.previousValue ? `<div style="font-size:10.5px; color:var(--rose); text-decoration:line-through;">Previous: ${escapeHtml(delta.previousValue)}</div>` : ""}
@@ -2240,9 +2251,12 @@ async function queueVerifiedDeltas(rawFacts, sourceTitle = "", sourceUrl = "") {
       key,
       previousValue: f.previousValue,
       proposedValue: propText,
-      evidenceSnippet: f.evidenceSnippet || `Extracted from "${sourceTitle || "portfolio/resume"}"`,
+      evidenceSnippet: f.sourceExcerpt
+        ? `Text match in source, check it says this about you: \u201c${f.sourceExcerpt}\u201d (${sourceTitle || "source"})`
+        : f.evidenceSnippet || `Extracted from "${sourceTitle || "portfolio/resume"}"; not checked against a source`,
+      sourceChecked: Boolean(f.sourceExcerpt),
       sourceUrl: f.sourceUrl || sourceUrl || "",
-      confidence: f.confidence || 0.92
+      confidence: f.confidence
     });
   }
 
@@ -2429,7 +2443,7 @@ async function learnFactsFromText(text, title, url, { onProgress, maxChunks = MA
   const existingKeys = userContextVault.map((v) => v.key).filter(Boolean);
   const signal = Telemetry.activeAbortController?.signal;
   const t0 = performance.now();
-  const { facts, chunkCount, skippedChunks } = await extractFactsFromText(
+  const { facts, unsupported, chunkCount, skippedChunks } = await extractFactsFromText(
     text,
     async (prompt) => {
       const session = await createPromptSession();
@@ -2449,10 +2463,10 @@ async function learnFactsFromText(text, title, url, { onProgress, maxChunks = MA
     type: "SCAN",
     title: "Profile Fact Extraction",
     durationMs: Math.round(performance.now() - t0),
-    details: { url, chunks: chunkCount, skippedChunks, facts: facts.length }
+    details: { url, chunks: chunkCount, skippedChunks, facts: facts.length, unsupported }
   });
   await queueVerifiedDeltas(facts, title, url);
-  return { count: facts.length, chunks: chunkCount, skipped: skippedChunks };
+  return { count: facts.length, unsupported, chunks: chunkCount, skipped: skippedChunks };
 }
 
 // --- Learn from my sources ---------------------------------------------------
@@ -2620,6 +2634,7 @@ document.getElementById("btn-learn-sources")?.addEventListener("click", async ()
   }
   btn.disabled = true;
   let total = 0;
+  let unsupportedTotal = 0;
   const failures = [];
   try {
     const pages = [];
@@ -2647,12 +2662,14 @@ document.getElementById("btn-learn-sources")?.addEventListener("click", async ()
         }
       });
       total += r.count;
+      unsupportedTotal += r.unsupported || 0;
       skipped += r.skipped;
       chunksLeft -= r.chunks;
     }
     renderObserverQueue();
     progress.textContent =
       `Queued ${total} candidate facts from ${pages.length} source(s) for review.` +
+      (unsupportedTotal ? ` Dropped ${unsupportedTotal} the source text does not say.` : "") +
       (skipped ? ` Skipped ${skipped} chunk(s) over the cap (${MAX_CHUNKS_PER_PAGE} per page, ${MAX_CHUNKS_PER_RUN} per run).` : "") +
       (failures.length ? ` Failed: ${failures.join("; ")}` : "");
   } catch (err) {
