@@ -2739,9 +2739,10 @@ class StrongRoutingTests(unittest.TestCase):
     def test_strong_start_requires_model_and_budget(self):
         fatal = []
         with (
-            mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": " "}),
+            mock.patch.dict(os.environ, {}, clear=False),
             mock.patch.object(runner, "refresh_spend", return_value=0.1),
         ):
+            os.environ.pop("CODER_STRONG_MODEL", None)
             self.assertEqual(runner.check_strong_start(0.5, fatal), "route:strong")
         self.assertEqual(fatal, [])
         with (

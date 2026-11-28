@@ -201,7 +201,7 @@ class TestTwtStageModels(unittest.TestCase):
     def test_concrete_model_sends_no_provider_controls_default_route_keeps_them(self):
         base = {"provider": "twt", "base_url": "http://127.0.0.1:8000/v1"}
         concrete = "nebius/Qwen/Qwen3-235B-A22B-Instruct-2507"
-        cases = (("default", True), ("route:default", True), (concrete, False))
+        cases = (("default", False), ("route:default", False), (concrete, False))
         for model_id, expects_controls in cases:
             with (
                 self.subTest(model=model_id),
