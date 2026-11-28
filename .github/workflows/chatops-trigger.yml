@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Dispatch ChatOps Command
-        uses: arii/boomtick@34d6757f39e3d6f9a0d03502489d3c41ee4688a6 # boomtick main as of 2026-11-03
+        uses: arii/boomtick@aab29dc2c3339b3420af9cfd1c46b63a3182da41 # boomtick main as of 2026-11-03
         with:
           pr_number: "${{ github.event.issue.number }}"
           comment_body: ${{ github.event.comment.body }}
