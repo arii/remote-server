@@ -556,6 +556,7 @@ services:
         required: false
     environment:
       TWT_DISABLED_PROVIDERS: ""
+      TWT_STRONG_MODELS: '{"nebius":"nebius/Qwen/Qwen3-235B-A22B-Instruct-2507","google":"google/gemini-3.8-flash","groq":"groq/openai/gpt-oss-120b","openrouter":"openrouter/anthropic/claude-opus-5.5"}'
     volumes:
       - twt-data:/data
       - ${HOST_HOME:-/home/ari}/twt/run:/run/twt
