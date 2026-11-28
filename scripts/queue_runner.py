@@ -198,7 +198,7 @@ def counts_toward_escalation(summary):
 
 def check_strong_start(cap, fatal):
     """Refuse a strong attempt without enough remaining budget."""
-    strong = (os.environ.get("CODER_STRONG_MODEL") or "route:strong").strip()
+    strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip() or "route:strong"
     try:
         remaining = cap - check_budget(None, cap)
     except BudgetStop as error:
@@ -436,7 +436,11 @@ def discover_ready(config, issues, completed):
                 "number": item["number"],
                 "created_at": item["createdAt"],
                 # Keep labels so label-based holds filter discovered issues.
-                "labels": item.get("labels", []),
+                "labels": [
+                    {"name": label["name"]}
+                    for label in item.get("labels", [])
+                    if isinstance(label.get("name"), str)
+                ],
             }
             ordered_issues([issue])
             key = (repo, issue["number"])
