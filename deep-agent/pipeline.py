@@ -1232,6 +1232,19 @@ class Pipeline:
                 "ratelimit",
                 "overloaded",
                 "tier exhausted",
+                "503",
+                "upstream http 402",
+                "upstream http 403",
+                "upstream http 404",
+                "upstream payment required",
+                "key limit",
+                "timeout",
+                "timed out",
+                "no synced eligible",
+                "run twt sync",
+                "catalog",
+                "provider mismatch",
+                "not served",
             )
         ):
             return LIMITED
