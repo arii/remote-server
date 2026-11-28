@@ -604,3 +604,5 @@ pre {
   margin-top:6px;
   white-space:pre-wrap;
 }
+
+html{scroll-padding-bottom:56px}
