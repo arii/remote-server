@@ -632,23 +632,65 @@
       .catch(() => {});
   }
 
-  // Listen for passive form submissions to propose context updates
-  document.addEventListener(
-    "submit",
-    async () => {
-      try {
-        if (!(await isObserverEnabledForCurrentDomain())) return;
-        reportFillOutcomes();
-        const snapshot = capturePageSnapshot();
-        if (snapshot.filledFormFields.length > 0) {
-          chrome.runtime.sendMessage({
-            action: "FORM_SUBMIT_DETECTED",
-            payload: snapshot
-          });
-        }
-      } catch (e) {
-        console.warn("Submit observation failed:", e);
+  // Passive observation, OPT-IN per domain. Native <form> submits fire "submit".
+  // Single-page apps (LinkedIn Easy Apply, multi-step modals) advance with plain
+  // buttons, so clicks on step or final-action buttons inside a form or dialog
+  // are observed too. A click is NOT proof of a submission: it is recorded as a
+  // draft observation labeled "submit", "final-click" or "step", skipped when
+  // the page shows validation errors, and identical snapshots are recorded once.
+  // Fill outcomes (kept/edited/cleared) are reported only for a real submit event.
+  const FINAL_LABEL = /^\s*(submit|submit application|apply|send application|send|finish)\b/i;
+  const STEP_LABEL = /^\s*(next|continue|review|save and continue)\b/i;
+  const DEDUPE_WINDOW_MS = 60000;
+  let lastSignature = "";
+  let lastSignatureAt = 0;
+
+  function pageHasValidationErrors(container) {
+    const scope = container || document;
+    if (scope.querySelector('[aria-invalid="true"]')) return true;
+    const form = container?.closest?.("form") || container;
+    try {
+      if (form && form.tagName === "FORM" && form.checkValidity && !form.checkValidity()) return true;
+    } catch {}
+    return false;
+  }
+
+  async function observeSubmission(kind, container) {
+    try {
+      if (!(await isObserverEnabledForCurrentDomain())) return;
+      if (kind !== "submit") {
+        await new Promise((r) => setTimeout(r, 400)); // let validation messages render
+        if (pageHasValidationErrors(container)) return;
       }
+      const snapshot = capturePageSnapshot();
+      if (snapshot.filledFormFields.length === 0) return;
+      const signature = JSON.stringify(snapshot.filledFormFields.map((f) => [f.query, f.value]));
+      const now = Date.now();
+      if (signature === lastSignature && now - lastSignatureAt < DEDUPE_WINDOW_MS) return;
+      lastSignature = signature;
+      lastSignatureAt = now;
+      if (kind === "submit") reportFillOutcomes();
+      chrome.runtime.sendMessage({
+        action: "FORM_SUBMIT_DETECTED",
+        payload: { ...snapshot, observationKind: kind }
+      });
+    } catch (e) {
+      console.warn("Submit observation failed:", e);
+    }
+  }
+
+  document.addEventListener("submit", (event) => observeSubmission("submit", event.target), true);
+
+  document.addEventListener(
+    "click",
+    (event) => {
+      const target = event.target instanceof Element ? event.target.closest('button, [role="button"], input[type="submit"]') : null;
+      if (!target) return;
+      const container = target.closest('form, [role="dialog"], [aria-modal="true"]');
+      if (!container) return;
+      const label = target.getAttribute("aria-label") || target.value || target.innerText || target.textContent || "";
+      if (FINAL_LABEL.test(label)) observeSubmission("final-click", container);
+      else if (STEP_LABEL.test(label)) observeSubmission("step", container);
     },
     true
   );

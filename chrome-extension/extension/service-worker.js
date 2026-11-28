@@ -494,6 +494,11 @@ async function handleFormSubmitObservation(payload, tab) {
   ]);
 
   const newDeltas = [];
+  // A click is not proof of a submission: say what was actually observed.
+  const observedAs =
+    payload.observationKind === "submit" ? "Form submit observed" :
+    payload.observationKind === "final-click" ? "Final-action button click observed (submission not confirmed)" :
+    "Step button click observed (not a submission)";
 
   for (const field of payload.filledFormFields || []) {
     if (!field.value || typeof field.value !== "string") continue;
@@ -534,12 +539,13 @@ async function handleFormSubmitObservation(payload, tab) {
     if (isCompanySpecificCoverLetter) {
       const companyOrg = activeSessionContext?.organization || pageTitle.split("|")[0].trim() || "Recent Application";
       newDeltas.push({
+        origin: "observer",
         deltaId: `delta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         action: "create",
         category: "custom",
         key: `Cover Letter Sample (${companyOrg})`,
         proposedValue: propText,
-        evidenceSnippet: `Submitted on form "${pageTitle}"`,
+        evidenceSnippet: `${observedAs} on "${pageTitle}"`,
         sourceUrl: pageUrl,
         confidence: 0.9
       });
@@ -556,13 +562,14 @@ async function handleFormSubmitObservation(payload, tab) {
 
     if (!existing) {
       newDeltas.push({
+        origin: "observer",
         deltaId: `delta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         action: "create",
         category,
         key,
         fieldLabel: field.query,
         proposedValue: propText,
-        evidenceSnippet: `Submitted on form "${pageTitle}"`,
+        evidenceSnippet: `${observedAs} on "${pageTitle}"`,
         sourceUrl: pageUrl,
         confidence: 0.88
       });
@@ -575,7 +582,7 @@ async function handleFormSubmitObservation(payload, tab) {
           category: "custom",
           key: `Cover Letter / Bio (${pageTitle.split("|")[0].trim()})`,
           proposedValue: propText,
-          evidenceSnippet: `Submitted on form "${pageTitle}"`,
+          evidenceSnippet: `${observedAs} on "${pageTitle}"`,
           sourceUrl: pageUrl,
           confidence: 0.88
         });
@@ -589,7 +596,7 @@ async function handleFormSubmitObservation(payload, tab) {
           fieldLabel: field.query,
           previousValue: existing.value,
           proposedValue: propText,
-          evidenceSnippet: `Observed updated value on form "${pageTitle}"`,
+          evidenceSnippet: `${observedAs}; changed value on "${pageTitle}"`,
           sourceUrl: pageUrl,
           confidence: 0.94
         });

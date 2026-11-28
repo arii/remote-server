@@ -54,7 +54,7 @@ export function observeView({ hostname, enabled } = {}) {
     return { label: "Open a website to start observing", disabled: true, pressed: false, hint: "Observer works on regular websites, not browser pages." };
   }
   if (enabled) {
-    return { label: `Stop observing ${hostname}`, disabled: false, pressed: true, hint: "Edits you make in forms on this site are being recorded for review." };
+    return { label: `Stop observing ${hostname}`, disabled: false, pressed: true, hint: "What you type here is saved as drafts at form submits and step buttons. Review them in the queue; nothing reaches your vault until you approve." };
   }
   return { label: `Start observing ${hostname}`, disabled: false, pressed: false, hint: "Record your form edits on this site so you can review them for your vault." };
 }
