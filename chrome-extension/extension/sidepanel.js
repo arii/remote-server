@@ -1909,7 +1909,7 @@ async function renderObserverQueue() {
       <div class="item-card" data-delta-id="${escapeHtml(delta.deltaId)}" style="margin-bottom:8px;">
         <div class="item-header">
           <span class="${badgeClass}">${actionText}</span>
-          <span style="font-size:10px; color:var(--text-muted);">${delta.origin === "observer" ? "Typed by you, not verified" : delta.sourceChecked ? "Found in source text" : "Not checked against a source"}</span>
+          <span style="font-size:10px; color:var(--text-muted);">${delta.origin === "observer" ? "Typed by you, not verified" : delta.sourceChecked ? "Text match, review" : "Not checked against a source"}</span>
         </div>
         <div style="font-weight:700; color:white; font-size:11.5px; margin: 2px 0;">${escapeHtml(delta.key)}</div>
         ${delta.previousValue ? `<div style="font-size:10.5px; color:var(--rose); text-decoration:line-through;">Previous: ${escapeHtml(delta.previousValue)}</div>` : ""}
@@ -2241,7 +2241,7 @@ async function queueVerifiedDeltas(rawFacts, sourceTitle = "", sourceUrl = "") {
       previousValue: f.previousValue,
       proposedValue: propText,
       evidenceSnippet: f.sourceExcerpt
-        ? `Source says: \u201c${f.sourceExcerpt}\u201d (${sourceTitle || "source"})`
+        ? `Text match in source, check it says this about you: \u201c${f.sourceExcerpt}\u201d (${sourceTitle || "source"})`
         : f.evidenceSnippet || `Extracted from "${sourceTitle || "portfolio/resume"}"; not checked against a source`,
       sourceChecked: Boolean(f.sourceExcerpt),
       sourceUrl: f.sourceUrl || sourceUrl || "",
