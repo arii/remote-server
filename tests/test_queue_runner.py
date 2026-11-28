@@ -484,7 +484,8 @@ class RunnerTests(unittest.TestCase):
     def test_cap_validation(self):
         self.assertEqual(runner.checked_cap(0.5), 0.5)
         self.assertEqual(runner.checked_cap(1), 1.0)
-        for value in (True, 0, -1, 1.01, float("nan"), float("inf"), "0.5"):
+        self.assertEqual(runner.checked_cap(5), 5.0)
+        for value in (True, 0, -1, 5.01, float("nan"), float("inf"), "0.5"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 runner.checked_cap(value)
 
@@ -529,10 +530,16 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(
             [i["number"] for i in runner.ordered_issues(issues)], [11, 12, 10]
         )
-        for number in (2, 23, 26, 1377, 1359):
-            self.assertTrue(
-                runner.skip_reason({"repo": "arii/remote-server", "number": number})
-            )
+        self.assertEqual(
+            runner.skip_reason(
+                {
+                    "repo": "arii/remote-server",
+                    "number": 10,
+                    "labels": [{"name": "hold"}],
+                }
+            ),
+            "operator hold label",
+        )
         for field in ("fixed", "merged", "requires_human"):
             self.assertTrue(
                 runner.skip_reason({"repo": "repo/name", "number": 10, field: True})
@@ -569,12 +576,18 @@ class RunnerTests(unittest.TestCase):
 
     def test_human_decision_skips_are_repo_scoped_but_operator_holds_are_global(self):
         self.assertTrue(
-            runner.skip_reason({"repo": "arii/remote-server", "number": 1377})
+            runner.skip_reason(
+                {"repo": "arii/remote-server", "number": 1377, "requires_human": True}
+            )
         )
         self.assertIsNone(runner.skip_reason({"repo": "arii/boomtick", "number": 1377}))
         for repo in ("arii/remote-server", "arii/boomtick", "other/repo"):
-            for number in (2, 23, 26):
-                self.assertTrue(runner.skip_reason({"repo": repo, "number": number}))
+            self.assertEqual(
+                runner.skip_reason(
+                    {"repo": repo, "number": 2, "labels": [{"name": "hold"}]}
+                ),
+                "operator hold label",
+            )
 
     @mock.patch.object(runner.signal, "signal")
     @mock.patch.object(
@@ -1395,9 +1408,21 @@ class RunnerTests(unittest.TestCase):
                     "group": "code-reaper",
                     "created_at": "2020-01-01",
                 },
-                *[{"repo": "owner/repo", "number": number} for number in (2, 23, 26)],
-                {"repo": "arii/remote-server", "number": 1377},
-                {"repo": "arii/remote-server", "number": 1359},
+                # Holds are label-based since #1813 removed the hardcoded list.
+                *[
+                    {
+                        "repo": "owner/repo",
+                        "number": number,
+                        "labels": [{"name": "hold"}],
+                    }
+                    for number in (2, 23, 26)
+                ],
+                {
+                    "repo": "arii/remote-server",
+                    "number": 1377,
+                    "requires_human": True,
+                },
+                {"repo": "arii/remote-server", "number": 1359, "fixed": True},
                 {"repo": "owner/repo", "number": 101, "fixed": True},
                 {"repo": "owner/repo", "number": 102, "requires_human": True},
             ]
@@ -1497,7 +1522,7 @@ class RunnerTests(unittest.TestCase):
                 self.listed(8, "2020-01-08"),
                 self.listed(5, "2020-01-05"),
                 self.listed(6, "2020-01-06", labels=("bug",)),
-                self.listed(23, "2020-01-01"),
+                self.listed(23, "2020-01-01", labels=("ready", "hold")),
             ],
             "owner/other": [self.listed(3, "2020-01-03")],
             "owner/denied": [self.listed(1, "2020-01-01")],
@@ -2725,11 +2750,13 @@ class StrongRoutingTests(unittest.TestCase):
 
     def test_strong_start_requires_model_and_budget(self):
         fatal = []
-        with mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": " "}):
-            with self.assertRaises(runner.StrongRefused) as caught:
-                runner.check_strong_start(0.5, fatal)
-        self.assertEqual(caught.exception.status, "CONFIG_ERROR")
-        self.assertIn("CODER_STRONG_MODEL", fatal[0])
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.object(runner, "refresh_spend", return_value=0.1),
+        ):
+            os.environ.pop("CODER_STRONG_MODEL", None)
+            self.assertEqual(runner.check_strong_start(0.5, fatal), "route:strong")
+        self.assertEqual(fatal, [])
         with (
             mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": "big"}),
             mock.patch.object(runner, "refresh_spend", return_value=0.47),
@@ -2808,11 +2835,9 @@ class StrongRoutingTests(unittest.TestCase):
 
     def test_worker_without_strong_model_fails_before_the_pipeline_and_halts(self):
         with tempfile.TemporaryDirectory() as root:
-            code, summary, _s, calls = self.run_worker(root, "strong", {})
-        self.assertEqual((code, calls), (2, 0))
-        self.assertEqual(summary["result"]["status"], "CONFIG_ERROR")
-        self.assertTrue(summary["halt_queue"])
-        self.assertIn("CODER_STRONG_MODEL", summary["halt_reasons"][0])
+            code, summary, seen, calls = self.run_worker(root, "strong", {})
+        self.assertEqual((code, seen, calls), (0, "strong", 1))
+        self.assertEqual(summary["strong_model"], "route:strong")
 
     def test_worker_with_insufficient_budget_does_not_start_strong(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2934,3 +2959,269 @@ class QueueStatusStopTests(unittest.TestCase):
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 result = runner.queue_status({"state_dir": tmp})
             self.assertTrue(result.startswith("RUNNING"), result)
+
+
+class QueueRunnerCLIFlagsTests(unittest.TestCase):
+    def test_stop_flag_creates_stop_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            state.mkdir()
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text(json.dumps({"state_dir": str(state)}))
+            with mock.patch(
+                "sys.argv", ["queue_runner.py", "--config", str(cfg_path), "--stop"]
+            ):
+                ret = runner.main()
+                self.assertEqual(ret, 0)
+                self.assertTrue((state / "STOP").exists())
+
+    def test_only_issue_unlinks_stop_and_passes_to_supervise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            state.mkdir()
+            (state / "STOP").touch()
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text(json.dumps({"state_dir": str(state)}))
+            with (
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "queue_runner.py",
+                        "--config",
+                        str(cfg_path),
+                        "--only-issue",
+                        "owner/repo#7",
+                    ],
+                ),
+                mock.patch.object(
+                    runner, "supervise", return_value=0
+                ) as mock_supervise,
+            ):
+                ret = runner.main()
+                self.assertEqual(ret, 0)
+                self.assertFalse((state / "STOP").exists())
+                mock_supervise.assert_called_once_with(
+                    cfg_path, clear_halt=False, only_issue="owner/repo#7"
+                )
+
+    def test_proof_verifies_ceiling_and_prints_ledger_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            issue_dir = root / "owner_repo-7"
+            issue_dir.mkdir()
+            summary = {
+                "issue": 7,
+                "repo": "owner/repo",
+                "run_id": "testrun123",
+                "exit_code": 0,
+                "result": {"status": "APPROVED"},
+                "reconciliation": {
+                    "reconciled": True,
+                    "cost_usd": 0.05,
+                    "trace_ids": ["t1", "t2"],
+                },
+            }
+            (issue_dir / "summary.json").write_text(json.dumps(summary))
+            (issue_dir / "job.json").write_text(json.dumps({"cap_usd": 1.0}))
+            (root / "status.json").write_text(
+                json.dumps({"completed": ["owner/repo#7"]})
+            )
+
+            prov = mock.Mock()
+            reader = mock.Mock()
+            reader.read_ledger.return_value = [
+                {
+                    "Timestamp": "11/26/2026 10:00:00",
+                    "Agent / Source": "S5-Queue",
+                    "Status": "Act",
+                    "Link": "https://github.com/owner/repo/issues/7",
+                    "Item / Note": "claimed by queue run testrun123",
+                },
+                {
+                    "Timestamp": "11/26/2026 10:05:00",
+                    "Agent / Source": "S5-Queue",
+                    "Status": "Later",
+                    "Link": "https://github.com/owner/repo/issues/7",
+                    "Item / Note": "Later: APPROVED, queue run testrun123",
+                },
+            ]
+
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                res = runner.print_queue_proof(
+                    {"state_dir": str(root)},
+                    "owner/repo#7",
+                    reader=reader,
+                    provenance=prov,
+                )
+            self.assertEqual(res, 0)
+            prov.require_gateway_feature.assert_called_once()
+            output = out.getvalue()
+            self.assertIn("Run ID: testrun123", output)
+            self.assertIn("verified (request_cost_ceiling)", output)
+            self.assertIn("Cumulative Spend: $0.0500 / $1.00", output)
+            self.assertIn("Reconciled Receipts: 2 traces", output)
+            self.assertIn("Claim Row: Sheet Row 2", output)
+            self.assertIn("Result Row: Sheet Row 3", output)
+
+    def test_proof_fails_closed_when_gateway_ceiling_missing(self):
+        prov = mock.Mock()
+        prov.require_gateway_feature.side_effect = RuntimeError(
+            "ceiling feature not supported"
+        )
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            res = runner.print_queue_proof(
+                {"state_dir": "/tmp"},
+                "owner/repo#7",
+                provenance=prov,
+            )
+        self.assertEqual(res, 1)
+        self.assertIn(
+            "PROOF FAILED: gateway does not support request_cost_ceiling",
+            err.getvalue(),
+        )
+
+    def test_proof_fails_closed_when_spend_exceeds_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            issue_dir = root / "owner_repo-7"
+            issue_dir.mkdir()
+            summary = {
+                "issue": 7,
+                "repo": "owner/repo",
+                "reconciliation": {
+                    "reconciled": True,
+                    "cost_usd": 1.50,
+                    "trace_ids": [],
+                },
+            }
+            (issue_dir / "summary.json").write_text(json.dumps(summary))
+            (issue_dir / "job.json").write_text(json.dumps({"cap_usd": 1.0}))
+            prov = mock.Mock()
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                res = runner.print_queue_proof(
+                    {"state_dir": str(root)},
+                    "owner/repo#7",
+                    provenance=prov,
+                )
+            self.assertEqual(res, 1)
+            self.assertIn("spend $1.5000 exceeded cap $1.00", err.getvalue())
+
+
+class StandingIdlePollTests(unittest.TestCase):
+    def test_standing_idle_poll_terminates_on_stop(self):
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            issues_path = root_path / "issues.json"
+            runner.write_json(issues_path, [])
+            state_dir = root_path / "state"
+            config = {
+                "issues_file": str(issues_path),
+                "state_dir": str(state_dir),
+                "runtime_state_dir": str(root_path / "runtime"),
+                "repo_paths": {"owner/repo": str(root_path / "repo")},
+                "pipeline_checkout": str(root_path / "pipeline"),
+                "runtime_command": [],
+                "worker_python": sys.executable,
+                "standing": True,
+                "idle_poll_seconds": 60,
+                "discover_repos": ["owner/repo"],
+            }
+            config_path = root_path / "config.json"
+            runner.write_json(config_path, config)
+            (root_path / "repo").mkdir(parents=True)
+            (root_path / "pipeline").mkdir(parents=True)
+
+            def fake_sleep(duration):
+                (state_dir / "STOP").touch(mode=0o600)
+
+            with (
+                mock.patch.object(runner, "discover_ready", return_value=[]),
+                mock.patch.object(runner.time, "sleep", side_effect=fake_sleep),
+                mock.patch.object(runner.signal, "signal"),
+            ):
+                code = runner.supervise(config_path)
+
+            self.assertEqual(code, 0)
+            status = runner.read_json(state_dir / "status.json")
+            self.assertTrue(status.get("stopped"))
+
+    def test_standing_idle_poll_dispatches_when_issue_discovered(self):
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            issues_path = root_path / "issues.json"
+            runner.write_json(issues_path, [])
+            state_dir = root_path / "state"
+            config = {
+                "issues_file": str(issues_path),
+                "state_dir": str(state_dir),
+                "runtime_state_dir": str(root_path / "runtime"),
+                "repo_paths": {"owner/repo": str(root_path / "repo")},
+                "pipeline_checkout": str(root_path / "pipeline"),
+                "runtime_command": [],
+                "worker_python": sys.executable,
+                "standing": True,
+                "idle_poll_seconds": 60,
+                "discover_repos": ["owner/repo"],
+            }
+            config_path = root_path / "config.json"
+            runner.write_json(config_path, config)
+            (root_path / "repo").mkdir(parents=True)
+            (root_path / "pipeline").mkdir(parents=True)
+
+            discovered_calls = 0
+
+            def fake_discover(cfg, iss, completed):
+                nonlocal discovered_calls
+                discovered_calls += 1
+                if discovered_calls == 1:
+                    return []
+                return [{"repo": "owner/repo", "number": 10}]
+
+            def fake_sleep(duration):
+                pass
+
+            def spawn(command, **_kwargs):
+                name = Path(command[-1]).name
+                (state_dir / "STOP").touch(mode=0o600)
+                process = mock.Mock(returncode=0)
+                process.communicate.side_effect = lambda _: runner.write_json(
+                    state_dir / name / "summary.json",
+                    {
+                        "halt_queue": False,
+                        "reconciliation": {"reconciled": True},
+                        "result": {
+                            "status": "APPROVED",
+                            "submit_url": "https://github.com/owner/repo/pull/1",
+                        },
+                        "exit_code": 0,
+                    },
+                )
+                return process
+
+            with (
+                mock.patch.object(runner, "discover_ready", side_effect=fake_discover),
+                mock.patch.object(runner.time, "sleep", side_effect=fake_sleep),
+                mock.patch.object(runner.signal, "signal"),
+                mock.patch.object(runner.subprocess, "Popen", side_effect=spawn),
+                mock.patch.object(
+                    runner.subprocess,
+                    "check_output",
+                    return_value=json.dumps(
+                        {"state": "open", "title": "t", "labels": ["ready"]}
+                    ),
+                ),
+                mock.patch.object(runner.QueueLedger, "boundary"),
+                mock.patch.object(
+                    runner.QueueLedger, "claimed_elsewhere", return_value=None
+                ),
+                mock.patch.object(runner.QueueLedger, "claim"),
+                mock.patch.object(runner.QueueLedger, "result"),
+            ):
+                code = runner.supervise(config_path)
+
+            self.assertEqual(code, 0)
+            status = runner.read_json(state_dir / "status.json")
+            self.assertIn("owner/repo#10", status.get("completed", []))

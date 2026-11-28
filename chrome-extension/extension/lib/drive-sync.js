@@ -293,6 +293,12 @@ export function mergeStates(local, remote) {
   const learnedMappings = mappings.merged
     .map(({ winner, versions }) => ({
       ...winner,
+      status: (() => {
+        const tomb = tombs.find((t) => t.kind === "mapping" && t.id === winner.sig);
+        return versions.some((v) => v.status === "confirmed" && (!tomb || v.lastSeen > tomb.deletedAt))
+          ? "confirmed"
+          : winner.status;
+      })(),
       hits: Math.max(...versions.map((v) => v.hits)),
       cleanUses: Math.max(...versions.map((v) => v.cleanUses))
     }))

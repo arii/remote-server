@@ -27,19 +27,14 @@ class TestTwtStageModels(unittest.TestCase):
                     [{"role": "user", "content": "hello"}]
                 )
                 self.assertEqual(body["model"], "default")
-                self.assertEqual(
-                    body["extra_body"],
-                    {
-                        "provider_models": {
-                            "nvidia": "z-ai/glm-5.3-flash",
-                            "nebius": "zai-org/GLM-5.3-Flash",
-                        },
-                        "provider_reasoning_effort": {"nvidia": "low", "nebius": "low"},
-                    },
+                # Gateway-side routing (#1747): the client sends no provider
+                # controls, so the gateway picks the route.
+                self.assertNotIn("provider_models", body.get("extra_body") or {})
+                self.assertNotIn(
+                    "provider_reasoning_effort", body.get("extra_body") or {}
                 )
-                self.assertEqual(
-                    resolved["provider_models"], body["extra_body"]["provider_models"]
-                )
+                self.assertNotIn("provider_models", resolved)
+                self.assertNotIn("provider_reasoning_effort", resolved)
                 self.assertNotIn("provider_models", spec)
 
     @unittest.skipUnless(
@@ -121,11 +116,9 @@ class TestTwtStageModels(unittest.TestCase):
             sent.append(body)
             self.assertEqual(body["model"], "default")
             self.assertEqual(body["max_tokens"], 8192)
-            self.assertEqual(body["provider_models"]["nvidia"], "z-ai/glm-5.3-flash")
-            self.assertEqual(body["provider_models"]["nebius"], "zai-org/GLM-5.3-Flash")
-            self.assertEqual(
-                body["provider_reasoning_effort"], {"nvidia": "low", "nebius": "low"}
-            )
+            # Gateway-side routing (#1747): no client provider controls.
+            self.assertNotIn("provider_models", body)
+            self.assertNotIn("provider_reasoning_effort", body)
             return httpx.Response(
                 200,
                 json={
@@ -201,7 +194,7 @@ class TestTwtStageModels(unittest.TestCase):
     def test_concrete_model_sends_no_provider_controls_default_route_keeps_them(self):
         base = {"provider": "twt", "base_url": "http://127.0.0.1:8000/v1"}
         concrete = "nebius/Qwen/Qwen3-235B-A22B-Instruct-2507"
-        cases = (("default", True), ("route:default", True), (concrete, False))
+        cases = (("default", False), ("route:default", False), (concrete, False))
         for model_id, expects_controls in cases:
             with (
                 self.subTest(model=model_id),
@@ -276,8 +269,7 @@ class TestTwtStageModels(unittest.TestCase):
         self.assertEqual(
             calls[0]["model_ids"], ["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"]
         )
-        self.assertEqual(
-            calls[1]["provider_models"],
-            {"nvidia": "z-ai/glm-5.3-flash", "nebius": "zai-org/GLM-5.3-Flash"},
-        )
+        # Gateway-side routing (#1747): route:default carries no client
+        # provider map; the gateway picks the route.
+        self.assertEqual(calls[1]["provider_models"], {})
         self.assertNotIn("model_ids", calls[1])

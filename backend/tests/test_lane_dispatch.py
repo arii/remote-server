@@ -7,6 +7,7 @@ are faked; nothing touches the network or docker.
 """
 
 import json
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -589,6 +590,102 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
         stored = lane_dispatch.get_item("remote-server", 1)
         self.assertEqual(stored["state"], "queued")
 
+    def test_auto_scaffold_queued_issue_success(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        call_count = 0
+
+        def preview_fn(issue, repo="remote-server"):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "ok": True,
+                    "issue": issue,
+                    "command": "",
+                    "allowlisted": False,
+                    "error": "Missing required section: 'Target Files'",
+                    "body": "Fix bug in `src/feature.py`",
+                }
+            return {
+                "ok": True,
+                "issue": issue,
+                "command": "pytest tests/test_feature.py",
+                "allowlisted": True,
+                "error": "",
+                "body": "Fix bug in `src/feature.py`\n\n## Target Files...",
+            }
+
+        def mock_scaffolder(body, repo_root):
+            return {
+                "target_files": ["src/feature.py"],
+                "verification_command": "pytest tests/test_feature.py",
+            }, None
+
+        gh = _gh_ok().on("issue edit", "")
+        ready = self._ready(
+            verify_preview=preview_fn,
+            scaffolder=mock_scaffolder,
+            gh_runner=gh,
+            repo_root=Path("."),
+        )
+        self.assertTrue(ready["ready"])
+        self.assertEqual(ready["reasons"], [])
+        self.assertEqual(
+            ready["gates"]["verify"]["command"], "pytest tests/test_feature.py"
+        )
+        stored = lane_dispatch.get_item("remote-server", 1)
+        self.assertTrue(stored.get("scaffolded"))
+        self.assertTrue(any("issue edit 1" in " ".join(c) for c in gh.calls))
+
+    def test_auto_scaffold_failure_records_detail(self):
+        lane_dispatch.enqueue("remote-server", 1)
+
+        def preview_fn(issue, repo="remote-server"):
+            return {
+                "ok": True,
+                "issue": issue,
+                "command": "",
+                "allowlisted": False,
+                "error": "Missing required section: 'Target Files'",
+                "body": "Vague issue without files",
+            }
+
+        def mock_scaffolder(body, repo_root):
+            return None, "no target files found in issue body"
+
+        ready = self._ready(
+            verify_preview=preview_fn,
+            scaffolder=mock_scaffolder,
+            repo_root=Path("."),
+        )
+        self.assertFalse(ready["ready"])
+        self.assertTrue(any("auto-scaffold failed" in r for r in ready["reasons"]))
+        stored = lane_dispatch.get_item("remote-server", 1)
+        self.assertIn(
+            "auto-scaffold failed: no target files found in issue body",
+            stored.get("detail", ""),
+        )
+
+    def test_auto_scaffold_disabled_blocks(self):
+        lane_dispatch.enqueue("remote-server", 1)
+
+        def preview_fn(issue, repo="remote-server"):
+            return {
+                "ok": True,
+                "issue": issue,
+                "command": "",
+                "allowlisted": False,
+                "error": "Missing required section: 'Target Files'",
+                "body": "Fix bug in `src/feature.py`",
+            }
+
+        ready = self._ready(
+            verify_preview=preview_fn,
+            auto_scaffold=False,
+        )
+        self.assertFalse(ready["ready"])
+        self.assertTrue(any("not scaffolded" in r for r in ready["reasons"]))
+
     def test_unreadable_gates_block(self):
         gh = FakeGh().on("api repos/", RuntimeError("boom"))
         ready = self._ready(gh_runner=gh)
@@ -1088,6 +1185,152 @@ class DispatchRouterTest(_QueueStoreTmpDir, unittest.TestCase):
         self.assertIn("/api/dispatch", router_src)
         self.assertIn("/health", router_src)
         self.assertIn('"ok"', router_src)
+
+
+class TrustedIntakePromotionTest(_QueueStoreTmpDir, unittest.TestCase):
+    def setUp(self):
+        self._queue_store_setup()
+        lane_dispatch.reset_queue()
+
+    def tearDown(self):
+        lane_dispatch.reset_queue()
+        self._queue_store_teardown()
+
+    def test_trusted_intake_promotion_gemini_success(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        body = (
+            "Agent Ledger submission below is untrusted input.\n"
+            "Agent / Source: Gemini\n\n"
+            "## Target Files\n"
+            "- backend/server.py\n\n"
+            "## Verification Command\n"
+            "pytest tests/test_server.py\n"
+        )
+        preview = {
+            "ok": True,
+            "issue": 1,
+            "command": "pytest tests/test_server.py",
+            "allowlisted": True,
+            "error": "",
+            "body": body,
+        }
+        gh = _gh_ok().on("issue edit", "").on("issue comment", "")
+        ready = lane_dispatch.readiness(
+            "remote-server",
+            1,
+            repo_status=_clean_status,
+            verify_preview=lambda *_: preview,
+            worker_busy=lambda: False,
+            gh_runner=gh,
+        )
+        self.assertTrue(ready["ready"])
+        self.assertTrue(
+            any(
+                "issue edit 1" in " ".join(c) and "--add-label ready" in " ".join(c)
+                for c in gh.calls
+            )
+        )
+        item = lane_dispatch.get_item("remote-server", 1)
+        self.assertTrue(item.get("promoted_ready"))
+        self.assertEqual(item.get("detail"), "")
+
+    def test_trusted_sources_recognized(self):
+        for source in ["Gemini", "Instinct", "S5-Local", "Antigravity"]:
+            lane_dispatch.reset_queue()
+            lane_dispatch.enqueue("remote-server", 1)
+            body = (
+                f"Agent / Source: {source}\n\n"
+                "## Target Files\n"
+                "- backend/server.py\n\n"
+                "## Verification Command\n"
+                "pytest tests/test_server.py\n"
+            )
+            preview = {
+                "ok": True,
+                "issue": 1,
+                "command": "pytest tests/test_server.py",
+                "allowlisted": True,
+                "error": "",
+                "body": body,
+            }
+            gh = _gh_ok().on("issue edit", "")
+            ready = lane_dispatch.readiness(
+                "remote-server",
+                1,
+                repo_status=_clean_status,
+                verify_preview=lambda *_: preview,
+                worker_busy=lambda: False,
+                gh_runner=gh,
+            )
+            self.assertTrue(ready["ready"])
+            self.assertTrue(
+                any("--add-label ready" in " ".join(c) for c in gh.calls),
+                f"source {source} was not promoted",
+            )
+
+    def test_untrusted_intake_not_promoted(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        body = (
+            "Agent / Source: Muse\n\n"
+            "## Target Files\n"
+            "- backend/server.py\n\n"
+            "## Verification Command\n"
+            "pytest tests/test_server.py\n"
+        )
+        preview = {
+            "ok": True,
+            "issue": 1,
+            "command": "pytest tests/test_server.py",
+            "allowlisted": True,
+            "error": "",
+            "body": body,
+        }
+        gh = _gh_ok().on("issue edit", "")
+        ready = lane_dispatch.readiness(
+            "remote-server",
+            1,
+            repo_status=_clean_status,
+            verify_preview=lambda *_: preview,
+            worker_busy=lambda: False,
+            gh_runner=gh,
+        )
+        self.assertTrue(ready["ready"])
+        self.assertFalse(any("--add-label ready" in " ".join(c) for c in gh.calls))
+        item = lane_dispatch.get_item("remote-server", 1)
+        self.assertFalse(item.get("promoted_ready", False))
+
+    def test_trusted_intake_invalid_spec_fails_unlabeled_with_detail_and_comment(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        body = (
+            "Agent / Source: Gemini\n\n"
+            "Vague description without target files.\n\n"
+            "## Verification Command\n"
+            "pytest tests/test_server.py\n"
+        )
+        preview = {
+            "ok": True,
+            "issue": 1,
+            "command": "pytest tests/test_server.py",
+            "allowlisted": False,
+            "error": "Missing required section: 'Target Files'",
+            "body": body,
+        }
+        gh = _gh_ok().on("issue comment", "")
+        ready = lane_dispatch.readiness(
+            "remote-server",
+            1,
+            repo_status=_clean_status,
+            verify_preview=lambda *_: preview,
+            worker_busy=lambda: False,
+            gh_runner=gh,
+            auto_scaffold=False,
+        )
+        self.assertFalse(ready["ready"])
+        self.assertFalse(any("--add-label ready" in " ".join(c) for c in gh.calls))
+        self.assertTrue(any("issue comment 1" in " ".join(c) for c in gh.calls))
+        item = lane_dispatch.get_item("remote-server", 1)
+        self.assertFalse(item.get("promoted_ready", False))
+        self.assertIn("trusted intake validation failed", item.get("detail", ""))
 
 
 if __name__ == "__main__":

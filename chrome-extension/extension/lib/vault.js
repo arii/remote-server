@@ -6,10 +6,37 @@
 // (non-timestamp) IDs sort first so they win the merge.
 // ============================================================================
 
+export function sanitizeVaultEntries(raw) {
+  if (!Array.isArray(raw)) return { entries: [], dropped: 0 };
+  const entries = [];
+  let dropped = 0;
+  for (const item of raw) {
+    const isPlainObject = item !== null && typeof item === "object" && !Array.isArray(item);
+    const validValue =
+      (typeof item?.value === "string" && item.value.trim() !== "") ||
+      (typeof item?.value === "number" && Number.isFinite(item.value));
+    if (!isPlainObject || !validValue) {
+      dropped++;
+      continue;
+    }
+    const clean = { ...item };
+    clean.key = typeof item.key === "string" ? item.key : (item.key == null ? "" : String(item.key));
+    clean.value = String(item.value);
+    if (item.aliases !== undefined) {
+      clean.aliases = Array.isArray(item.aliases) ? item.aliases.filter((a) => typeof a === "string") : [];
+    }
+    if (item.tags !== undefined) {
+      clean.tags = Array.isArray(item.tags) ? item.tags.filter((t) => typeof t === "string") : (typeof item.tags === "string" ? [item.tags] : []);
+    }
+    entries.push(clean);
+  }
+  return { entries, dropped };
+}
+
 export function deduplicateVault(entries) {
   if (!Array.isArray(entries)) return [];
   // Sort so canonical IDs (like "identity.full_name" without random timestamps) come FIRST
-  const sorted = [...entries].sort((a, b) => {
+  const sorted = sanitizeVaultEntries(entries).entries.sort((a, b) => {
     const aIsTimestamp = /\.\d{10,}$/.test(a.id || "");
     const bIsTimestamp = /\.\d{10,}$/.test(b.id || "");
     return Number(aIsTimestamp) - Number(bIsTimestamp);
@@ -47,4 +74,15 @@ export function deduplicateVault(entries) {
     cleaned.push(item);
   }
   return cleaned;
+}
+
+export function describeVaultImport(currentEntries, importedEntries) {
+  const currentCount = deduplicateVault(Array.isArray(currentEntries) ? currentEntries : []).length;
+  const imported = Array.isArray(importedEntries) ? importedEntries : [];
+  const importCount = deduplicateVault(imported).length;
+  const dropped = sanitizeVaultEntries(importedEntries).dropped;
+  let message = `Replace your vault with this file?\n\nCurrent vault: ${currentCount} entr${currentCount === 1 ? "y" : "ies"}\nIn the file: ${importCount} valid entr${importCount === 1 ? "y" : "ies"}`;
+  if (dropped > 0) message += ` (${dropped} invalid skipped)`;
+  message += `\n\nEntries that are not in the file are removed from this vault. If you press Sync with Google Drive, those removals are applied on your other devices too, and the imported values can overwrite newer edits made there.`;
+  return { currentCount, importCount, dropped, message };
 }

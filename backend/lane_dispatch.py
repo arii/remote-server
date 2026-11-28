@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 
@@ -336,6 +337,25 @@ def retry(repo: str, issue: int, mode: str = "fresh") -> tuple[dict | None, str 
         return _copy(item), None
 
 
+TRUSTED_INTAKE_SOURCES = frozenset({"gemini", "instinct", "s5-local", "antigravity"})
+INTAKE_SOURCE_RE = re.compile(
+    r"(?:Agent\s*/\s*Source|Agent|Source)\s*[:\*]+\s*([A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+
+
+def extract_intake_source(body: str) -> str | None:
+    """Return normalized name of trusted intake source if body matches, else None."""
+    if not body:
+        return None
+    match = INTAKE_SOURCE_RE.search(body)
+    if match:
+        source = match.group(1).strip().lower()
+        if source in TRUSTED_INTAKE_SOURCES:
+            return source
+    return None
+
+
 def read_repo_gates(repo: str, gh_runner=None) -> dict:
     """Live per-repo merge gates: default branch + required status
     checks from branch protection. Never assumed, never cached:
@@ -398,6 +418,9 @@ def readiness(
     verify_preview=None,
     worker_busy=None,
     gh_runner=None,
+    auto_scaffold: bool = True,
+    scaffolder=None,
+    repo_root=None,
 ) -> dict:
     """Per-repo dispatch gates for one item. Returns {"ready",
     "reasons", "gates"}: ready True only when every gate passes;
@@ -409,7 +432,11 @@ def readiness(
     if repo_status is None:
         from backend.core.git_helpers import get_repo_status as repo_status
     if verify_preview is None:
-        from backend.api.routers.issues import _repair_verify_preview as verify_preview
+        from backend.api.routers.issues import _repair_verify_preview
+
+        def verify_preview(issue_number: int, repo_name: str = "remote-server") -> dict:
+            return _repair_verify_preview(issue_number, repo_name, runner=gh_runner)
+
     if worker_busy is None:
 
         def worker_busy() -> bool:
@@ -442,6 +469,7 @@ def readiness(
             and i.get("state") == RUNNING
             and i.get("issue") != issue
         ]
+        queued_item = _items.get(_key(repo, issue))
     gates["repo_idle"] = len(repo_running) == 0
     if repo_running:
         reasons.append(
@@ -452,6 +480,15 @@ def readiness(
     gates["worker_idle"] = not busy
     if busy:
         reasons.append("repair worker is busy")
+
+    protection = read_repo_gates(repo, gh_runner=gh_runner)
+    gates["protection"] = protection
+    if not protection.get("ok"):
+        reasons.append(protection.get("error", "could not read gates"))
+
+    checkout_ok = bool(gates.get("checkout", {}).get("clean"))
+    repo_idle = bool(gates.get("repo_idle"))
+    protection_ok = bool(gates.get("protection", {}).get("ok"))
 
     try:
         preview = verify_preview(issue, repo)
@@ -471,20 +508,237 @@ def readiness(
                     f"verify command not allowlisted: {preview.get('error', '')}"[:200]
                 )
             else:
-                reasons.append(
-                    f"issue is not scaffolded for repair: "
-                    f"{preview.get('error') or 'no verify command'}; "
-                    f"add 'Target Files' + 'Verification Command' "
-                    f"sections (Deterministic Task template)"[:300]
+                can_scaffold = (
+                    auto_scaffold
+                    and queued_item is not None
+                    and checkout_ok
+                    and repo_idle
+                    and protection_ok
                 )
+                if can_scaffold:
+                    scaffold_fn = scaffolder
+                    if scaffold_fn is None:
+                        from backend.parse_task_spec import (
+                            scaffold_task_spec as scaffold_fn,
+                        )
+                    from backend.parse_task_spec import format_scaffold_sections
+
+                    resolved_root = repo_root
+                    if resolved_root is None:
+                        try:
+                            from backend.core.repos import get_checkout_path
+
+                            resolved_root = get_checkout_path(repo)
+                        except Exception:
+                            resolved_root = None
+
+                    body = preview.get("body")
+                    if not body:
+                        try:
+                            from backend.gh import repo_gh, run_gh_json
+
+                            gh = repo_gh(repo)
+                            row = run_gh_json(
+                                gh,
+                                [
+                                    "issue",
+                                    "view",
+                                    str(issue),
+                                    "--repo",
+                                    gh,
+                                    "--json",
+                                    "body",
+                                ],
+                                timeout=60,
+                                runner=gh_runner,
+                            )
+                            body = row.get("body", "") if isinstance(row, dict) else ""
+                        except Exception:
+                            body = ""
+
+                    scaffold_res, err = (
+                        scaffold_fn(body, resolved_root)
+                        if (resolved_root or scaffolder is not None)
+                        else (None, "no checkout for repo")
+                    )
+
+                    if not scaffold_res:
+                        reason_detail = f"auto-scaffold failed: {err or 'no target files or verify command derived'}"
+                        with _lock:
+                            item = _items.get(_key(repo, issue))
+                            if item is not None:
+                                item["detail"] = reason_detail
+                                _persist_locked()
+                        reasons.append(
+                            f"issue is not scaffolded for repair: {reason_detail}; "
+                            f"add 'Target Files' + 'Verification Command' "
+                            f"sections (Deterministic Task template)"[:300]
+                        )
+                    else:
+                        formatted = format_scaffold_sections(
+                            scaffold_res["target_files"],
+                            scaffold_res["verification_command"],
+                        )
+                        new_body = (body.rstrip() + "\n\n" + formatted).strip()
+                        try:
+                            from backend.gh import repo_gh, run_gh
+
+                            gh = repo_gh(repo)
+                            run_gh(
+                                gh,
+                                [
+                                    "issue",
+                                    "edit",
+                                    str(issue),
+                                    "--repo",
+                                    gh,
+                                    "--body",
+                                    new_body,
+                                ],
+                                runner=gh_runner,
+                            )
+                            preview = verify_preview(issue, repo)
+                            if isinstance(preview, dict) and "body" not in preview:
+                                preview["body"] = new_body
+                            gates["verify"] = {
+                                "command": preview.get("command", ""),
+                                "allowlisted": bool(preview.get("allowlisted")),
+                            }
+                            if preview.get("allowlisted"):
+                                with _lock:
+                                    item = _items.get(_key(repo, issue))
+                                    if item is not None:
+                                        item["scaffolded"] = True
+                                        item["detail"] = ""
+                                        _persist_locked()
+                            else:
+                                if preview.get("command"):
+                                    reasons.append(
+                                        f"verify command not allowlisted: {preview.get('error', '')}"[
+                                            :200
+                                        ]
+                                    )
+                                else:
+                                    reasons.append(
+                                        f"issue is not scaffolded for repair: "
+                                        f"{preview.get('error') or 'no verify command'}; "
+                                        f"add 'Target Files' + 'Verification Command' "
+                                        f"sections (Deterministic Task template)"[:300]
+                                    )
+                        except Exception as exc:
+                            reasons.append(
+                                f"failed to update issue scaffold: {exc}"[:200]
+                            )
+                else:
+                    reasons.append(
+                        f"issue is not scaffolded for repair: "
+                        f"{preview.get('error') or 'no verify command'}; "
+                        f"add 'Target Files' + 'Verification Command' "
+                        f"sections (Deterministic Task template)"[:300]
+                    )
     except Exception as exc:
         gates["verify"] = {"command": "", "allowlisted": False}
         reasons.append(f"could not read verify command: {exc}"[:200])
 
-    protection = read_repo_gates(repo, gh_runner=gh_runner)
-    gates["protection"] = protection
-    if not protection.get("ok"):
-        reasons.append(protection.get("error", "could not read gates"))
+    # Auto-promote trusted Agent Ledger intake issues to ready (#1789)
+    try:
+        current_body = preview.get("body") if isinstance(preview, dict) else ""
+        if not current_body:
+            try:
+                from backend.gh import repo_gh, run_gh_json
+
+                gh = repo_gh(repo)
+                row = run_gh_json(
+                    gh,
+                    [
+                        "issue",
+                        "view",
+                        str(issue),
+                        "--repo",
+                        gh,
+                        "--json",
+                        "body",
+                    ],
+                    timeout=60,
+                    runner=gh_runner,
+                )
+                current_body = row.get("body", "") if isinstance(row, dict) else ""
+            except Exception:
+                current_body = ""
+
+        trusted_source = extract_intake_source(current_body)
+        if trusted_source:
+            from backend.parse_task_spec import (
+                TaskSpecError,
+                parse_task_spec,
+            )
+
+            spec_error = None
+            try:
+                spec = parse_task_spec(current_body)
+                if not spec.get("target_files"):
+                    spec_error = "missing or empty 'Target Files'"
+                elif not (isinstance(preview, dict) and preview.get("allowlisted")):
+                    spec_error = (
+                        preview.get("error") if isinstance(preview, dict) else ""
+                    ) or "verification command not allowlisted"
+            except (TaskSpecError, ValueError) as err:
+                spec_error = str(err)
+
+            if spec_error is None:
+                try:
+                    from backend.gh import repo_gh, run_gh
+
+                    gh = repo_gh(repo)
+                    run_gh(
+                        gh,
+                        [
+                            "issue",
+                            "edit",
+                            str(issue),
+                            "--repo",
+                            gh,
+                            "--add-label",
+                            "ready",
+                        ],
+                        runner=gh_runner,
+                    )
+                    with _lock:
+                        item = _items.get(_key(repo, issue))
+                        if item is not None:
+                            item["promoted_ready"] = True
+                            item["detail"] = ""
+                            _persist_locked()
+                except Exception as exc:
+                    reasons.append(f"failed to add ready label: {exc}"[:200])
+            else:
+                failure_detail = f"trusted intake validation failed: {spec_error}"
+                with _lock:
+                    item = _items.get(_key(repo, issue))
+                    if item is not None:
+                        item["detail"] = failure_detail
+                        _persist_locked()
+                try:
+                    from backend.gh import repo_gh, run_gh
+
+                    gh = repo_gh(repo)
+                    run_gh(
+                        gh,
+                        [
+                            "issue",
+                            "comment",
+                            str(issue),
+                            "--repo",
+                            gh,
+                            "--body",
+                            failure_detail,
+                        ],
+                        runner=gh_runner,
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     return {"ready": len(reasons) == 0, "reasons": reasons, "gates": gates}
 

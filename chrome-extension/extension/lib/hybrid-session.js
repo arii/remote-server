@@ -112,29 +112,48 @@ function warmDeviceModel(model) {
 }
 
 let firebaseAppPromise = null;
+let appCheckActive = false;
 
 async function getOrInitFirebaseApp(firebase, config, appCheckDebugToken) {
   if (!firebaseAppPromise) {
     firebaseAppPromise = (async () => {
       const app = firebase.initializeApp(config);
-      // App Check is enforced for Firebase AI Logic. Debug tokens are accepted
-      // by the hackathon rules and are the only provider shape that works on a
-      // chrome-extension:// origin (reCAPTCHA needs a web domain). The token
-      // must be set before initializeAppCheck and must never be committed.
+      // Firebase can enforce App Check for AI Logic projects. No provider is
+      // passed below, so initializeAppCheck currently throws and App Check
+      // stays inactive (surfaced via getHybridStatus). The debug token, when
+      // set, must be set before initializeAppCheck and must never be committed.
       if (appCheckDebugToken) {
         self.FIREBASE_APPCHECK_DEBUG_TOKEN = appCheckDebugToken;
       }
       try {
         firebase.initializeAppCheck(app, { isTokenAutoRefreshEnabled: true });
+        appCheckActive = true;
       } catch (err) {
         // On-device inference does not call the cloud API and works without
         // App Check; only the cloud fallback leg needs the token.
+        appCheckActive = false;
         console.warn("LocalForm AI: App Check init failed; cloud fallback may be rejected:", err);
       }
       return app;
     })();
   }
   return firebaseAppPromise;
+}
+
+export function getHybridStatus() {
+  return { appCheckActive };
+}
+
+export function describeCloudFailure(err) {
+  const msg = (err?.message || String(err)).toLowerCase();
+  const code = (err?.code || "").toLowerCase();
+  const codeRejection = /app-?check|permission-denied/.test(code);
+  const msgRejection = /\bapp ?check\b|permission[_ -]?denied|\[403\]|\b403\b\s*(forbidden)?|status:?\s*403\b/i.test(msg);
+  if (codeRejection || msgRejection) {
+    return "The cloud request was rejected (App Check or access). Nothing was answered by the cloud; on-device inference only works if Chrome's built-in model is available.";
+  }
+  const short = (err?.message || String(err)).slice(0, 140);
+  return `The cloud request failed: ${short}`;
 }
 
 class HybridPromptSession {
@@ -178,22 +197,38 @@ class HybridPromptSession {
   }
 
   async prompt(text, { responseConstraint } = {}) {
-    const result = await this.getModel(responseConstraint).generateContent(this.buildRequest(text, responseConstraint));
-    const response = result.response;
-    const total = response?.usageMetadata?.totalTokenCount;
-    if (typeof total === "number") this.contextUsage = total;
-    return response.text();
+    try {
+      const result = await this.getModel(responseConstraint).generateContent(this.buildRequest(text, responseConstraint));
+      const response = result.response;
+      const total = response?.usageMetadata?.totalTokenCount;
+      if (typeof total === "number") this.contextUsage = total;
+      return response.text();
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        this.lastError = describeCloudFailure(err);
+        this.onError?.(this.lastError);
+      }
+      throw err;
+    }
   }
 
   // The panel's stream reader tolerates both cumulative and delta chunks;
   // Firebase yields delta chunks.
   async *promptStreaming(text, { responseConstraint } = {}) {
-    const result = await this.getModel(responseConstraint).generateContentStream(this.buildRequest(text, responseConstraint));
-    for await (const chunk of result.stream) {
-      yield chunk.text();
+    try {
+      const result = await this.getModel(responseConstraint).generateContentStream(this.buildRequest(text, responseConstraint));
+      for await (const chunk of result.stream) {
+        yield chunk.text();
+      }
+      const total = (await result.response)?.usageMetadata?.totalTokenCount;
+      if (typeof total === "number") this.contextUsage = total;
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        this.lastError = describeCloudFailure(err);
+        this.onError?.(this.lastError);
+      }
+      throw err;
     }
-    const total = (await result.response)?.usageMetadata?.totalTokenCount;
-    if (typeof total === "number") this.contextUsage = total;
   }
 
   destroy() {
@@ -227,5 +262,6 @@ export async function createHybridPromptSession(options = {}) {
 
 // Test-only: reset the cached Firebase app between cases.
 export function __resetHybridSessionForTests() {
+  appCheckActive = false;
   firebaseAppPromise = null;
 }

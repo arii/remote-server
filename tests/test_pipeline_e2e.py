@@ -6,6 +6,7 @@ git fixtures + real pytest; they skip otherwise. The real-td smoke
 test skips when no td binary is on PATH.
 """
 
+import json
 import os
 import shutil
 import tempfile
@@ -48,6 +49,8 @@ class ScriptedPipeline(pipeline_mod.Pipeline):
 
     def stage_code(self, brief, worktree_root=None, repair_notes=""):
         self.calls.append((worktree_root, bool(repair_notes)))
+        if getattr(self, "scripted_checks", None) is not None:
+            self.verification_evidence = list(self.scripted_checks)
         return True, {}, worktree_root or "/tmp/wt-1"
 
     def stage_audit(self, worktree_root):
@@ -494,6 +497,165 @@ class TestSubmitArgv(unittest.TestCase):
             pipe.stage_submit("/tmp/wt", "title"),
             (False, "td agent submit-pr exited with code 1"),
         )
+
+
+class TestClaimAndReceiptGates(unittest.TestCase):
+    def test_pipeline_refuses_execution_without_active_claim(self):
+        with tempfile.TemporaryDirectory() as root:
+            empty_canonical = Path(root, "empty-ledger.jsonl")
+            empty_canonical.write_text("")
+            pipe = ScriptedPipeline(
+                [pipeline_mod.APPROVED],
+                require_claim=True,
+            )
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"CANONICAL_LEDGER_PATH": str(empty_canonical)},
+                ),
+                mock.patch.object(ledger, "LEDGER", str(empty_canonical)),
+                mock.patch.object(history_ledger, "read", return_value=[]),
+            ):
+                result = pipe.run()
+            self.assertEqual(result["status"], pipeline_mod.BLOCKED)
+            self.assertIn("no active ledger claim found", result["detail"])
+
+    def test_pipeline_proceeds_with_active_claim(self):
+        with tempfile.TemporaryDirectory() as root:
+            claimed_canonical = Path(root, "claimed-ledger.jsonl")
+            pipe = ScriptedPipeline(
+                [pipeline_mod.APPROVED],
+                require_claim=True,
+                submit_pr=False,
+            )
+            claimed_canonical.write_text(
+                json.dumps({"kind": "claim", "thread_id": pipe.thread_id}) + "\n"
+            )
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"CANONICAL_LEDGER_PATH": str(claimed_canonical)},
+                ),
+                mock.patch.object(ledger, "LEDGER", str(claimed_canonical)),
+            ):
+                result = pipe.run()
+            self.assertEqual(result["status"], pipeline_mod.APPROVED)
+
+    def test_receipt_gate_blocks_when_verification_command_missing(self):
+        pipe = ScriptedPipeline(
+            [pipeline_mod.APPROVED],
+            require_receipts=True,
+            submit_pr=True,
+        )
+        with (
+            mock.patch.object(
+                pipe,
+                "stage_submit",
+                return_value=(True, "https://github.com/arii/remote-server/pull/101"),
+            ),
+            mock.patch(
+                "pipeline._count_run_rows",
+                return_value=1,
+            ),
+        ):
+            result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.BLOCKED)
+        self.assertIn("exit-0 verification command", result["detail"])
+
+    def test_receipt_gate_blocks_when_pr_url_missing(self):
+        pipe = ScriptedPipeline(
+            [pipeline_mod.APPROVED],
+            require_receipts=True,
+            submit_pr=True,
+        )
+        pipe.scripted_checks = [{"command": "pytest", "passed": True}]
+        with (
+            mock.patch.object(
+                pipe,
+                "stage_submit",
+                return_value=(True, ""),
+            ),
+            mock.patch(
+                "pipeline._count_run_rows",
+                return_value=1,
+            ),
+        ):
+            result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.BLOCKED)
+        self.assertIn("PR URL", result["detail"])
+
+    def test_receipt_gate_blocks_when_twt_cost_exceeds_cap(self):
+        pipe = ScriptedPipeline(
+            [pipeline_mod.APPROVED],
+            require_receipts=True,
+            submit_pr=True,
+        )
+        pipe.scripted_checks = [{"command": "pytest", "passed": True}]
+        with (
+            mock.patch.object(
+                pipe,
+                "stage_submit",
+                return_value=(True, "https://github.com/arii/remote-server/pull/102"),
+            ),
+            mock.patch(
+                "pipeline._count_run_rows",
+                return_value=1,
+            ),
+            mock.patch(
+                "backend.shared.runs.total_metered_spend",
+                return_value={"spent": 1.50, "unknown": 0},
+            ),
+        ):
+            result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.BLOCKED)
+        self.assertIn("reconciled TwT cost receipt within $1.00 cap", result["detail"])
+
+    def test_receipt_gate_blocks_when_canonical_ledger_entry_missing(self):
+        pipe = ScriptedPipeline(
+            [pipeline_mod.APPROVED],
+            require_receipts=True,
+            submit_pr=True,
+        )
+        pipe.scripted_checks = [{"command": "pytest", "passed": True}]
+        with (
+            mock.patch.object(
+                pipe,
+                "stage_submit",
+                return_value=(True, "https://github.com/arii/remote-server/pull/103"),
+            ),
+            mock.patch(
+                "pipeline._count_run_rows",
+                return_value=0,
+            ),
+        ):
+            result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.BLOCKED)
+        self.assertIn("canonical ledger entry", result["detail"])
+
+    def test_receipt_gate_approves_when_all_four_receipts_present(self):
+        pipe = ScriptedPipeline(
+            [pipeline_mod.APPROVED],
+            require_receipts=True,
+            submit_pr=True,
+        )
+        pipe.scripted_checks = [{"command": "pytest", "passed": True}]
+        with (
+            mock.patch.object(
+                pipe,
+                "stage_submit",
+                return_value=(True, "https://github.com/arii/remote-server/pull/104"),
+            ),
+            mock.patch(
+                "pipeline._count_run_rows",
+                return_value=1,
+            ),
+            mock.patch(
+                "backend.shared.runs.total_metered_spend",
+                return_value={"spent": 0.05, "unknown": 0},
+            ),
+        ):
+            result = pipe.run()
+        self.assertEqual(result["status"], pipeline_mod.APPROVED)
 
 
 class TestRealTdSmoke(unittest.TestCase):

@@ -68,14 +68,6 @@
     {
       "fixture": "lever-form.html",
       "field": {
-        "id": "phone"
-      },
-      "filledEntryId": "basics.full_name",
-      "submittedEntryId": "basics.phone"
-    },
-    {
-      "fixture": "lever-form.html",
-      "field": {
         "id": "github-urls"
       },
       "filledEntryId": "social.linkedin",

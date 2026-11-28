@@ -74,3 +74,56 @@ export function describeModelError(err, { availability } = {}) {
 export function formatModelError(d) {
   return `${d.name}: ${d.message}\n${d.hint}\n${d.steps.map((s) => `- ${s}`).join("\n")}`;
 }
+
+/**
+ * Collapses repeated error texts into a single full message followed by shorthand notes.
+ * @param {Array<{key: string, label: string, text: string}>} items - Display‑ordered items.
+ * @returns {Array<{key: string, text: string}>} Collapsed list; empty text entries are kept empty.
+ */
+export function collapseRepeatedErrors(items) {
+  const seen = new Map();
+  return items.map(({ key, label, text }) => {
+    if (!text) return { key, text: "" };
+    if (seen.has(text)) {
+      return { key, text: `Same as ${seen.get(text)} above.` };
+    }
+    seen.set(text, label);
+    return { key, text };
+  });
+}
+
+/** One-line task failure text; adds a next step when the model itself is unavailable. */
+export function redactSecrets(text) {
+  if (typeof text !== 'string') return text;
+  let result = text;
+  const secretNames = 'key|api_key|apikey|token|access_token|auth|signature|sig|password|passwd|pwd|secret|client_secret';
+
+  // Query/URL params with "=" (case-insensitive, keeps param name)
+  result = result.replace(new RegExp(`(^|[?&,;:\\s])(${secretNames})=[^&\\s"']*`, 'gi'), '$1$2=[redacted]');
+
+  // Bearer / Basic tokens
+  result = result.replace(/((?:Bearer|Basic)\s+)[^&\s"']*/g, '$1[redacted]');
+
+  // Google API keys (AIza + 35 chars)
+  result = result.replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, '[redacted]');
+
+  // Long opaque tokens like sk-... or ghp_
+  result = result.replace(/\b(sk-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_-]+)\b/g, '[redacted]');
+
+  // JSON/text style: "name": "value" or name: value (with optional quotes around name)
+  const jsonTextRegex = new RegExp(`(["']?)(${secretNames})(["']?)(\\s*:\\s*)("[^"]*"|'[^']*'|[^\\s,}"']+)`, 'gi');
+  result = result.replace(jsonTextRegex, (match, nameQuote, name, nameEndQuote, separator, value) => {
+    const valueQuote = value.startsWith('"') ? '"' : value.startsWith("'") ? "'" : '';
+    return `${nameQuote}${name}${nameEndQuote}${separator}${valueQuote}[redacted]${valueQuote}`;
+  });
+
+  return result;
+}
+
+export function describeTaskFailure(err, label) {
+  const message = (() => { if (typeof err === "string") return err; if (err && typeof err === "object" && err.message) return err.message; return ""; })() || "unknown error";
+  const safeMessage = redactSecrets(message);
+  let result = `${label} failed: ${safeMessage}`;
+  if (/not available|unavailable|LanguageModel[^\n]*not defined|not defined[^\n]*LanguageModel|LanguageModel|NotSupported/i.test(safeMessage)) { result += "\nThe on-device model is unavailable. Open the Model section above for status, or chrome://on-device-internals."; }
+  return result;
+}

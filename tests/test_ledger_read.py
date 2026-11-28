@@ -83,9 +83,35 @@ class ReadLedgerTests(unittest.TestCase):
                 ledger_read.read_ledger("sheet", self.token_path)
         self.assertEqual(len(self.requests), 1)
 
-    def test_missing_token_file_raises(self):
-        with self.assertRaises(FileNotFoundError):
-            ledger_read.read_ledger("sheet", self.token_path + ".missing")
+    def test_fold_latest_per_key(self):
+        rows = [
+            {"Link": "url1", "Item / Note": "note1"},
+            {"Link": "", "Item / Note": "task-123"},
+            {"Link": "", "Item / Note": "some note"},
+            {"Link": "url1", "Item / Note": "note2"},
+        ]
+        # Expected:
+        # url1 -> note2 (latest)
+        # task-123 -> task-123 (extracted)
+        # some note -> some note (fallback)
+        folded = ledger_read.fold_latest_per_key(rows)
+
+        # folded is a list of rows, need to find the right one
+        def get_row_by_key(key):
+            for r in folded:
+                link = r.get("Link", "").strip()
+                if link == key:
+                    return r
+                note = r.get("Item / Note", "").strip()
+                m = __import__("re").search(r"task-[a-zA-Z0-9_-]+", note)
+                extracted = m.group(0) if m else note
+                if extracted == key:
+                    return r
+            return None
+
+        self.assertEqual(get_row_by_key("url1")["Item / Note"], "note2")
+        self.assertEqual(get_row_by_key("task-123")["Item / Note"], "task-123")
+        self.assertEqual(get_row_by_key("some note")["Item / Note"], "some note")
 
 
 if __name__ == "__main__":

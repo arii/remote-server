@@ -12,8 +12,9 @@
 //      a project, then go to AI Services > AI Logic > Get started and choose
 //      the "Gemini Developer API" provider (no-cost).
 //   3. Register a Web app in the project and paste its config values below.
-//   4. App Check is enforced automatically for AI Logic. For development and
-//      hackathon judging (debug tokens are accepted by the rules), set
+//   4. Firebase may enforce App Check for AI Logic on new projects. This build
+//      does not activate App Check (no provider is configured), so a cloud call
+//      can be rejected on an enforcing project. For development, set
 //      appCheckDebugToken below to a debug token registered in the Firebase
 //      console under Security > App Check > Apps > Manage debug tokens.
 //      To mint one, run the extension once with appCheckDebugToken: "true"

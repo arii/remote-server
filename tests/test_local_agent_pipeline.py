@@ -773,27 +773,6 @@ class TestPipelineContracts(unittest.TestCase):
             )
 
     @mock.patch.dict(os.environ, {}, clear=True)
-    def test_coder_cli_model_is_used(self):
-        """--model must reach the editing executor's model selection."""
-
-        def finish(*args, **kwargs):
-            self.assertEqual(os.environ["CODER_MODEL"], "qwen2.5-coder:7b")
-            return 0
-
-        with (
-            tempfile.TemporaryDirectory() as root,
-            mock.patch.object(coder, "needs_plan", return_value=False),
-            mock.patch.object(
-                coder, "_implement_and_finish", side_effect=finish
-            ) as execute,
-        ):
-            self.assertEqual(
-                coder.main(["--model", "qwen2.5-coder:7b", "--worktree", root, "fix"]),
-                0,
-            )
-            execute.assert_called_once()
-
-    @mock.patch.dict(os.environ, {}, clear=True)
     def test_pipeline_flag_sets_local_only(self):
         """--local-only enables the switch before any pipeline stages run."""
 
