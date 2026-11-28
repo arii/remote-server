@@ -4,7 +4,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fieldSignature } from "../extension/lib/matcher.js";
 
+// Each load() re-imports the content script, which adds document listeners.
+// Drop the ones from earlier loads so only the current instance reacts.
+const registered = [];
+const origAdd = document.addEventListener.bind(document);
+document.addEventListener = (...args) => {
+  registered.push(args);
+  return origAdd(...args);
+};
+
 async function load({ allowlist }) {
+  for (const args of registered.splice(0)) document.removeEventListener(...args);
   vi.resetModules();
   delete window.__localFormAIInjected;
   window.happyDOM.setURL("https://ok.test/form");
@@ -83,5 +93,75 @@ describe("content-script fill tracking", () => {
     await hydrate(doc);
     await submit();
     expect(sent.filter((m) => m.type === "learning:recordOutcomes")).toHaveLength(0);
+  });
+});
+
+describe("content-script observer on SPA step and final buttons", () => {
+  beforeEach(() => vi.unstubAllGlobals());
+
+  async function loadWithButtons(allowlist, extra = "") {
+    const ctx = await load({ allowlist });
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `<div role="dialog">${extra}<button type="button" id="next-btn">Next</button><button type="button" id="submit-btn">Submit application</button><button type="button" id="save-btn">Save</button><button type="button" id="cancel-btn">Dismiss</button></div>`
+    );
+    document.getElementById("nm").value = "Ada";
+    return ctx;
+  }
+  const click = async (id, wait = 600) => {
+    document.getElementById(id).dispatchEvent(new window.Event("click", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, wait));
+  };
+  const obs = (sent) => sent.filter((m) => m.action === "FORM_SUBMIT_DETECTED");
+
+  it("step navigation is recorded as a step, never as a submit", async () => {
+    const { sent } = await loadWithButtons(["ok.test"]);
+    await click("next-btn");
+    expect(obs(sent)).toHaveLength(1);
+    expect(obs(sent)[0].payload.observationKind).toBe("step");
+    expect(sent.filter((m) => m.type === "learning:recordOutcomes")).toHaveLength(0);
+  });
+
+  it("a genuine final action click is labeled final-click, still not confirmed", async () => {
+    const { sent } = await loadWithButtons(["ok.test"]);
+    await click("submit-btn");
+    expect(obs(sent)[0].payload.observationKind).toBe("final-click");
+  });
+
+  it("records nothing on a host that did not opt in", async () => {
+    const { sent } = await loadWithButtons([]);
+    await click("next-btn");
+    expect(obs(sent)).toHaveLength(0);
+  });
+
+  it("ignores unrelated Save and Dismiss buttons", async () => {
+    const { sent } = await loadWithButtons(["ok.test"]);
+    await click("save-btn");
+    await click("cancel-btn");
+    expect(obs(sent)).toHaveLength(0);
+  });
+
+  it("skips a step when the page shows a validation error", async () => {
+    const { sent } = await loadWithButtons(["ok.test"], '<input id="bad" aria-invalid="true" value="x">');
+    await click("next-btn");
+    expect(obs(sent)).toHaveLength(0);
+  });
+
+  it("records an identical snapshot once even when click and submit are more than 1.5s apart", async () => {
+    const { sent, submit } = await loadWithButtons(["ok.test"]);
+    await click("next-btn", 1800);
+    await submit();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(obs(sent)).toHaveLength(1);
+  });
+
+  it("a real submit with changed values is recorded and reports outcomes", async () => {
+    const { sent, submit } = await loadWithButtons(["ok.test"]);
+    await click("next-btn");
+    document.getElementById("nm").value = "Ada Lovelace";
+    await submit();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(obs(sent)).toHaveLength(2);
+    expect(obs(sent)[1].payload.observationKind).toBe("submit");
   });
 });
