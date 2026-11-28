@@ -66,6 +66,8 @@ LocalForm AI fills web forms from a local, on-device profile vault and improves 
 
 Model inference runs on-device by default via Chrome's built-in Gemini Nano APIs. Source fetching and optional Drive features still use their own network connections. As an optional hybrid mode (built during the November 2026 #BuildHybridAI hackathon), the extension can instead route prompts through Firebase AI Logic in `PREFER_ON_DEVICE` mode: on-device Gemini Nano when available, cloud fallback to Gemini via Firebase when it is not.
 
+![Hybrid inference flow: every prompt prefers on-device Gemini Nano and falls back to Firebase AI Logic cloud Gemini only when on-device is unavailable](docs/hybrid-flow-diagram.png)
+
 - Setup: copy `extension/lib/firebase-config.example.js` to `extension/lib/firebase-config.js` (gitignored), fill in your own Firebase project's web config, then `npm run build` (this also bundles the vendored Firebase SDK). Full setup steps: `extension/lib/firebase-config.example.js`.
 - Firebase AI Logic requires App Check; it is initialized from the same config. For local development use an App Check debug token from your own Firebase project, kept on your machine only and never committed.
 - Whenever this config is active the AI Model tab shows a "Hybrid mode active" line, so it is explicit that prompts may use cloud inference. Without the config file the extension behaves exactly as before: built-in APIs only, no keys, no cloud calls.

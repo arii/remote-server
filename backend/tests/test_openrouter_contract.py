@@ -105,6 +105,10 @@ class OpenRouterContract(unittest.TestCase):
                 self.assertNotEqual(row.get("provider"), "nebius")
                 self.assertFalse(row.get("model", "").startswith("nebius:"))
 
+    def test_no_stale_strong_model_override(self):
+        """Ensure no stale CODER_STRONG_MODEL override is expected."""
+        self.assertNotIn("CODER_STRONG_MODEL", os.environ)
+
     def test_openrouter_does_not_require_a_nebius_key(self):
         """#1294: the free remote is usable independently of paid credentials."""
         os.environ["OPENROUTER_API_KEY"] = OR_KEY

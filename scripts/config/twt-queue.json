@@ -1,0 +1,28 @@
+{
+  "_comment": "Host queue configuration for S5 twt-queue service. Secret-free.",
+  "issues_file": "/srv/remote-server/scripts/config/twt-queue-issues.json",
+  "state_dir": "/srv/repos/.twt-queue",
+  "runtime_state_dir": "/srv/repos/.twt-queue",
+  "pipeline_checkout": "/srv/remote-server",
+  "repo_paths": {
+    "arii/remote-server": "/srv/remote-server",
+    "arii/boomtick": "/srv/repos/boomtick"
+  },
+  "discover_repos": [
+    "arii/remote-server",
+    "arii/boomtick"
+  ],
+  "runtime_command": [],
+  "worker_python": "/opt/venvs/td/bin/python",
+  "cap_usd": 5.0,
+  "max_common_failures": 3,
+  "strong_after_failures": 2,
+  "inter_issue_delay_seconds": 60,
+  "standing": true,
+  "idle_poll_seconds": 60,
+  "environment": {
+    "TWT_BASE_URL": "http://twt/v1",
+    "TWT_UDS": "/run/twt/gateway.sock",
+    "CODER_STRONG_MODEL": "route:strong"
+  }
+}

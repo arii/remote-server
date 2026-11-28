@@ -6,6 +6,9 @@ with non-JSON stdout. gh is stubbed at backend.repair_worker.subprocess
 so the test never touches the network.
 """
 
+import json
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -246,7 +249,9 @@ class SetupWorktreeNodeTest(unittest.TestCase):
         commit_env = envs[2]
         self.assertIsNotNone(commit_env)
         self.assertEqual(commit_env.get("GIT_AUTHOR_NAME"), "S5 Autonomous Repair")
-        self.assertEqual(commit_env.get("GIT_AUTHOR_EMAIL"), "repair@s5.internal")
+        self.assertEqual(
+            commit_env.get("GIT_AUTHOR_EMAIL"), "ariandersrobotics@gmail.com"
+        )
         self.assertEqual(commands[3][:2], ["git", "-c"])
         self.assertIn("credential.https://github.com.helper", commands[3][2])
         self.assertEqual(commands[3][3:], ["push", "origin", "repair/issue-449-test"])
@@ -467,6 +472,118 @@ class SetupWorktreeNodeTest(unittest.TestCase):
         self.assertEqual(entry["usage"]["input_tokens"], 300)
         self.assertEqual(entry["usage"]["output_tokens"], 150)
         self.assertEqual(entry["usage"]["total_tokens"], 450)
+
+
+class FormatGateTest(unittest.TestCase):
+    def test_detect_repo_format_command_package_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pkg = os.path.join(tmpdir, "package.json")
+            with open(pkg, "w") as f:
+                json.dump({"scripts": {"lint:format": "ruff format --check ."}}, f)
+
+            cmd = repair_worker_mod.detect_repo_format_command(tmpdir)
+            self.assertEqual(cmd, ["npm", "run", "lint:format"])
+
+            # With pnpm-lock.yaml and pnpm in PATH
+            lock = os.path.join(tmpdir, "pnpm-lock.yaml")
+            with open(lock, "w") as f:
+                f.write("")
+            with patch("shutil.which", return_value="/bin/pnpm"):
+                cmd_pnpm = repair_worker_mod.detect_repo_format_command(tmpdir)
+                self.assertEqual(cmd_pnpm, ["pnpm", "run", "lint:format"])
+
+    def test_detect_repo_format_command_check_diff_script(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scripts_dir = os.path.join(tmpdir, "scripts")
+            os.makedirs(scripts_dir, exist_ok=True)
+            script = os.path.join(scripts_dir, "check-format-diff.sh")
+            with open(script, "w") as f:
+                f.write("#!/bin/bash\n")
+
+            cmd = repair_worker_mod.detect_repo_format_command(tmpdir)
+            self.assertEqual(cmd, ["bash", "scripts/check-format-diff.sh"])
+
+    def test_detect_repo_format_command_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cmd = repair_worker_mod.detect_repo_format_command(tmpdir)
+            self.assertIsNone(cmd)
+
+    def test_verify_code_node_runs_format_gate_and_fails_on_unformatted(self):
+        state = {
+            "worktree_dir": "/tmp/test-wt-fmt",
+            "verification_cmd": "pytest cli/tests/test_mcp_installer.py",
+            "retry_count": 0,
+            "target_files": ["cli/dev_tools/handlers/mcp_installer.py"],
+            "file_contents": {
+                "cli/dev_tools/handlers/mcp_installer.py": "def foo(): pass"
+            },
+        }
+
+        commands = []
+
+        def fake_run(cmd, *args, **kwargs):
+            commands.append(cmd)
+            # First command is pytest (passes)
+            if cmd[:1] == ["pytest"]:
+                return SimpleNamespace(returncode=0, stdout="pytest passed", stderr="")
+            # Second command is format check (fails)
+            if cmd[:2] == ["npm", "run"]:
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout="1 file would be reformatted",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("backend.repair_worker.subprocess.run", side_effect=fake_run),
+            patch(
+                "backend.repair_worker.detect_repo_format_command",
+                return_value=["npm", "run", "lint:format"],
+            ),
+            patch("backend.repair_worker.format_target_files"),
+            patch("os.path.exists", return_value=False),
+        ):
+            res = repair_worker_mod.verify_code_node(state)
+
+        self.assertFalse(res["tests_passed"])
+        self.assertIn("Format check failed (exit code 1)", res["current_errors"])
+        self.assertIn("1 file would be reformatted", res["current_errors"])
+        self.assertEqual(res["retry_count"], 1)
+
+    def test_verify_code_node_passes_when_format_check_succeeds(self):
+        state = {
+            "worktree_dir": "/tmp/test-wt-fmt-pass",
+            "verification_cmd": "pytest cli/tests/test_mcp_installer.py",
+            "retry_count": 0,
+            "target_files": ["cli/dev_tools/handlers/mcp_installer.py"],
+            "file_contents": {
+                "cli/dev_tools/handlers/mcp_installer.py": "def foo(): pass\n"
+            },
+        }
+
+        commands = []
+
+        def fake_run(cmd, *args, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="all formatted", stderr="")
+
+        with (
+            patch("backend.repair_worker.subprocess.run", side_effect=fake_run),
+            patch(
+                "backend.repair_worker.detect_repo_format_command",
+                return_value=["npm", "run", "lint:format"],
+            ),
+            patch("backend.repair_worker.format_target_files"),
+            patch("os.path.exists", return_value=False),
+        ):
+            res = repair_worker_mod.verify_code_node(state)
+
+        self.assertTrue(res["tests_passed"])
+        self.assertEqual(res["current_errors"], "")
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[0], ["pytest", "cli/tests/test_mcp_installer.py"])
+        self.assertEqual(commands[1], ["npm", "run", "lint:format"])
 
 
 if __name__ == "__main__":

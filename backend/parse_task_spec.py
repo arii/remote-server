@@ -8,6 +8,7 @@ and expected output/constraints.
 
 import json
 import os
+from pathlib import Path
 import re
 import sys
 from typing import Any, Dict, List
@@ -71,8 +72,8 @@ def _extract_list_items(section_text: str) -> List[str]:
         stripped = line.strip()
         if not stripped:
             continue
-        # Check if line starts a list item: - , * , + , or 1. , 1)
-        match = re.match(r"^[-*+]\s+(.*)$|^(\d+[\.\)])\s+(.*)$", stripped)
+        # Check if line starts a list item: - , * , + , •, or 1. , 1)
+        match = re.match(r"^[-*+•]\s+(.*)$|^(\d+[\.\)])\s+(.*)$", stripped)
         if match:
             if current_item:
                 items.append("\n".join(current_item).strip())
@@ -160,9 +161,13 @@ def parse_task_spec(markdown_body: str) -> Dict[str, Any]:
         return None
 
     target_files_raw = find_section(["target files", "target file"])
-    verification_raw = find_section(["verification command", "verification commands", "verification"])
+    verification_raw = find_section(
+        ["verification command", "verification commands", "verification"]
+    )
     required_changes_raw = find_section(["required changes", "required change"])
-    expected_output_raw = find_section(["expected output", "expected output / constraints", "constraints"])
+    expected_output_raw = find_section(
+        ["expected output", "expected output / constraints", "constraints"]
+    )
 
     if target_files_raw is None:
         raise TaskSpecError("Missing required section: 'Target Files'")
@@ -175,24 +180,29 @@ def parse_task_spec(markdown_body: str) -> Dict[str, Any]:
         for line in f.splitlines():
             cleaned_file = _clean_code_ticks(line.strip())
             # Strip list symbols if any remain
-            cleaned_file = re.sub(r"^[-*+]\s+", "", cleaned_file).strip()
+            cleaned_file = re.sub(r"^[-*+•]\s+", "", cleaned_file).strip()
             cleaned_file = _clean_code_ticks(cleaned_file)
-            if cleaned_file and cleaned_file not in ("-", "*", "+"):
+            if cleaned_file and cleaned_file not in ("-", "*", "+", "•"):
                 if not validate_target_path(cleaned_file):
                     raise TaskSpecError(
                         "'Target Files' entry escapes the checkout: "
-                        f"{cleaned_file[:200]!r}")
+                        f"{cleaned_file[:200]!r}"
+                    )
                 target_files.append(cleaned_file)
 
     if not target_files:
-        raise TaskSpecError("'Target Files' section is empty or contains no valid file paths")
+        raise TaskSpecError(
+            "'Target Files' section is empty or contains no valid file paths"
+        )
 
     if verification_raw is None:
         raise TaskSpecError("Missing required section: 'Verification Command'")
 
     verification_command = _clean_command(verification_raw)
     if not verification_command:
-        raise TaskSpecError("'Verification Command' section is empty or contains no valid command")
+        raise TaskSpecError(
+            "'Verification Command' section is empty or contains no valid command"
+        )
 
     required_changes: List[str] = []
     if required_changes_raw:
@@ -206,6 +216,234 @@ def parse_task_spec(markdown_body: str) -> Dict[str, Any]:
         "required_changes": required_changes,
         "expected_output": expected_output,
     }
+
+
+try:
+    from issue_generator import evidence_cites_repo_file
+except ImportError:
+    try:
+        from deep_agent.issue_generator import evidence_cites_repo_file
+    except ImportError:
+        evidence_cites_repo_file = None
+
+_REPO_FILE_RE = re.compile(r"(?<![\w/])([\w./-]+\.\w+)(?::\d+(?:,\d+)*)?")
+
+
+def extract_target_files(body: str, repo_root: str | Path) -> list[str]:
+    """Derive verified repo-relative file paths from markdown body text.
+
+    Scans paths cited in body text, backticks, and list items, verifying each
+    against repo_root so only existing checkout files are returned.
+    """
+    if not body or not repo_root:
+        return []
+    repo_path = Path(repo_root)
+    if not repo_path.is_dir():
+        return []
+
+    hits: list[str] = []
+    if evidence_cites_repo_file is not None:
+        try:
+            for rel in evidence_cites_repo_file(body, str(repo_path)):
+                if validate_target_path(rel) and rel not in hits:
+                    hits.append(rel)
+        except Exception:
+            pass
+
+    raw_candidates: list[str] = []
+    for match in _REPO_FILE_RE.finditer(body):
+        raw_candidates.append(match.group(1))
+
+    for span in re.findall(r"`([^`\n]+)`", body):
+        span = span.strip()
+        if re.search(r"\.\w+", span):
+            raw_candidates.append(span)
+
+    for item in raw_candidates:
+        candidate = item.strip().strip("`'\" \t\r\n")
+        candidate = re.sub(r":\d+(?:,\d+)*$", "", candidate)
+        candidate = re.sub(r":\d+:\d+$", "", candidate)
+        candidate = candidate.lstrip("./")
+        if (
+            not candidate
+            or candidate.startswith(".git/")
+            or ".." in candidate.split("/")
+        ):
+            continue
+        if not validate_target_path(candidate):
+            continue
+        full_path = repo_path / candidate
+        if full_path.is_file() and candidate not in hits:
+            hits.append(candidate)
+
+    return hits
+
+
+def derive_verification_command(
+    body: str, repo_root: str | Path, target_files: list[str] | None = None
+) -> str | None:
+    """Derive an allowlisted verification command from body, target files, or repo."""
+    from backend.verify_allowlist import validate_verify_command
+
+    repo_path = Path(repo_root) if repo_root else None
+
+    # 1. Search for allowlisted command inside body (fenced code blocks, backticks, lines)
+    if body:
+        for block in re.findall(r"```(?:\w+)?\n?(.*?)```", body, re.DOTALL):
+            cmd = _clean_code_ticks(block.strip())
+            if validate_verify_command(cmd):
+                return cmd
+        for tick in re.findall(r"`([^`\n]+)`", body):
+            cmd = tick.strip()
+            if validate_verify_command(cmd):
+                return cmd
+        for line in body.splitlines():
+            line = line.strip().strip("$#` ")
+            if validate_verify_command(line):
+                return line
+
+    files = target_files or []
+
+    # 2. Check if any target file is itself a test file
+    for tf in files:
+        base = os.path.basename(tf).lower()
+        parts = tf.lower().split("/")
+        is_test = (
+            base.startswith("test_")
+            or base.endswith(
+                (
+                    "_test.py",
+                    ".test.ts",
+                    ".test.tsx",
+                    ".spec.ts",
+                    ".spec.tsx",
+                    ".test.js",
+                    ".spec.js",
+                )
+            )
+            or "tests" in parts
+            or "test" in parts
+        )
+        if is_test:
+            if tf.endswith(".py"):
+                cmd = f"pytest {tf}"
+                if validate_verify_command(cmd):
+                    return cmd
+            elif tf.endswith((".ts", ".tsx", ".js", ".jsx")):
+                cmd = f"vitest run {tf}"
+                if validate_verify_command(cmd):
+                    return cmd
+                cmd = f"npx vitest run {tf}"
+                if validate_verify_command(cmd):
+                    return cmd
+
+    # 3. Check for matching test file in repo for each target file
+    if repo_path and repo_path.is_dir():
+        for tf in files:
+            name, ext = os.path.splitext(os.path.basename(tf))
+            if ext == ".py":
+                candidates = [
+                    f"tests/test_{name}.py",
+                    f"test/test_{name}.py",
+                    os.path.join(os.path.dirname(tf), f"test_{name}.py"),
+                    os.path.join(os.path.dirname(tf), "tests", f"test_{name}.py"),
+                ]
+                for cand in candidates:
+                    if (repo_path / cand).is_file():
+                        cmd = f"pytest {cand}"
+                        if validate_verify_command(cmd):
+                            return cmd
+            elif ext in (".ts", ".tsx", ".js", ".jsx"):
+                candidates = [
+                    os.path.join(os.path.dirname(tf), f"{name}.test{ext}"),
+                    os.path.join("src", "test", f"{name}.test{ext}"),
+                    os.path.join("tests", f"{name}.test{ext}"),
+                ]
+                for cand in candidates:
+                    if (repo_path / cand).is_file():
+                        cmd = f"vitest run {cand}"
+                        if validate_verify_command(cmd):
+                            return cmd
+
+    # 4. Fallback to repo test command
+    if repo_path and repo_path.is_dir():
+        pkg_json = repo_path / "package.json"
+        if pkg_json.is_file():
+            try:
+                data = json.loads(pkg_json.read_text(encoding="utf-8"))
+                scripts = data.get("scripts", {})
+                test_script = scripts.get("test", "")
+                if test_script and validate_verify_command(test_script):
+                    return test_script
+                if "vitest" in test_script or "vitest" in data.get(
+                    "devDependencies", {}
+                ):
+                    cmd = "vitest run"
+                    if validate_verify_command(cmd):
+                        return cmd
+            except Exception:
+                pass
+
+        if (repo_path / "tests").is_dir():
+            has_py = any(
+                p.endswith(".py")
+                for _, _, fnames in os.walk(repo_path / "tests")
+                for p in fnames
+            )
+            if has_py:
+                cmd = "pytest tests/"
+                if validate_verify_command(cmd):
+                    return cmd
+        if (repo_path / "pyproject.toml").is_file() or (
+            repo_path / "pytest.ini"
+        ).is_file():
+            cmd = "pytest"
+            if validate_verify_command(cmd):
+                return cmd
+
+    return None
+
+
+def scaffold_task_spec(
+    body: str, repo_root: str | Path
+) -> tuple[dict | None, str | None]:
+    """Derive target files and verification command for an unscaffolded issue.
+
+    Returns ({'target_files': [...], 'verification_command': '...'}, None) on success,
+    or (None, failure_reason) on failure.
+    """
+    targets = extract_target_files(body, repo_root)
+    if not targets:
+        return None, "no target files found in issue body that exist in repo tree"
+
+    cmd = derive_verification_command(body, repo_root, targets)
+    if not cmd:
+        return None, "no allowlisted verification command could be derived"
+
+    return {
+        "target_files": targets,
+        "verification_command": cmd,
+    }, None
+
+
+def format_scaffold_sections(target_files: list[str], verification_command: str) -> str:
+    """Format Target Files and Verification Command markdown sections."""
+    lines = [
+        "## Target Files",
+    ]
+    for tf in target_files:
+        lines.append(f"- `{tf}`")
+    lines.extend(
+        [
+            "",
+            "## Verification Command",
+            "",
+            "```",
+            verification_command,
+            "```",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def main(argv=None) -> None:

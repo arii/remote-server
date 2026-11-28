@@ -18,8 +18,8 @@ describe("hybrid UI copy", () => {
 
   it("has a hidden hybrid-mode line shown only when Firebase is configured", () => {
     expect(html).toContain('id="hybrid-mode-line"');
-    expect(js).toMatch(/function showHybridModeLine\(\)/);
-    expect(js).toMatch(/if \(hybrid\) \{\s*showHybridModeLine\(\);/);
+    expect(js).toMatch(/function showHybridModeLine\(hybrid\)/);
+    expect(js).toMatch(/if \(hybrid\) \{\s*showHybridModeLine\(hybrid\);/);
   });
 });
 

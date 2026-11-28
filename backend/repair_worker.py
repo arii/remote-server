@@ -643,33 +643,75 @@ def ast_check_node(state: AgentState) -> Dict[str, Any]:
     }
 
 
+def detect_repo_format_command(worktree_dir: str) -> Optional[List[str]]:
+    """Detect the repo's existing format check command.
+
+    Checks package.json scripts for canonical format check names
+    ('format:check', 'lint:format', 'check-format'), or a repo-level
+    scripts/check-format-diff.sh script.
+    """
+    pkg_path = os.path.join(worktree_dir, "package.json")
+    if os.path.exists(pkg_path):
+        try:
+            with open(pkg_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            scripts = data.get("scripts", {})
+            for script_name in ("format:check", "lint:format", "check-format"):
+                if script_name in scripts:
+                    runner = (
+                        "pnpm"
+                        if os.path.exists(os.path.join(worktree_dir, "pnpm-lock.yaml"))
+                        and shutil.which("pnpm")
+                        else "npm"
+                    )
+                    return [runner, "run", script_name]
+        except Exception as exc:
+            logging.warning(
+                "Failed to inspect package.json for format scripts: %s", exc
+            )
+
+    diff_script = os.path.join(worktree_dir, "scripts", "check-format-diff.sh")
+    if os.path.exists(diff_script):
+        return ["bash", "scripts/check-format-diff.sh"]
+
+    return None
+
+
+def format_target_files(
+    worktree_dir: str, target_files: List[str], run_env: Dict[str, str]
+) -> None:
+    """Optionally run canonical in-place formatters (like ruff) on target files if available."""
+    py_files = [f for f in target_files if f.endswith(".py")]
+    if py_files:
+        ruff_bin = os.path.join(worktree_dir, ".venv", "bin", "ruff")
+        cmd = None
+        if os.path.exists(ruff_bin):
+            cmd = [ruff_bin, "format"] + py_files
+        elif shutil.which("ruff"):
+            cmd = ["ruff", "format"] + py_files
+        else:
+            cmd = [sys.executable, "-m", "ruff", "format"] + py_files
+        if cmd:
+            try:
+                subprocess.run(
+                    cmd,
+                    cwd=worktree_dir,
+                    env=run_env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=60,
+                )
+            except Exception as exc:
+                logging.warning("Auto-format failed on target files: %s", exc)
+
+
 def verify_code_node(state: AgentState) -> Dict[str, Any]:
-    """Execute the target verification command inside the worktree directory."""
+    """Execute the target verification command inside the worktree directory and verify formatting."""
     verification_cmd = state.get("verification_cmd", "")
     worktree_dir = state.get("worktree_dir", "")
     retry_count = state.get("retry_count", 0)
 
-    if not verification_cmd:
-        return {"tests_passed": True, "current_errors": ""}
-
-    # Defense in depth: the parse node already gated this, but state
-    # reaching verify directly must never execute untrusted text.
-    # Retry is exhausted — a rejected command never passes on retry.
-    cmd_args = validate_verify_command(verification_cmd)
-    if cmd_args is None:
-        return {
-            "tests_passed": False,
-            "current_errors": (
-                "verification command not allowlisted: "
-                f"{verification_cmd[:200]!r} "
-                f"(allowed: {VERIFY_VERB_HELP})"
-            ),
-            "retry_count": MAX_RETRIES,
-        }
-    print(
-        f"[repair] Executing verification command: {verification_cmd}",
-        flush=True,
-    )
     run_env = os.environ.copy()
     venv_bin = os.path.join(worktree_dir, ".venv", "bin")
     node_bin = os.path.join(worktree_dir, "node_modules", ".bin")
@@ -686,58 +728,128 @@ def verify_code_node(state: AgentState) -> Dict[str, Any]:
         python_paths.append(existing_ppath)
     run_env["PYTHONPATH"] = ":".join(python_paths)
 
-    try:
-        proc = subprocess.run(
-            cmd_args,
-            cwd=worktree_dir,
-            env=run_env,
-            shell=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=VERIFY_TIMEOUT,
-        )
-    except FileNotFoundError as exc:
+    if verification_cmd:
+        # Defense in depth: the parse node already gated this, but state
+        # reaching verify directly must never execute untrusted text.
+        # Retry is exhausted — a rejected command never passes on retry.
+        cmd_args = validate_verify_command(verification_cmd)
+        if cmd_args is None:
+            return {
+                "tests_passed": False,
+                "current_errors": (
+                    "verification command not allowlisted: "
+                    f"{verification_cmd[:200]!r} "
+                    f"(allowed: {VERIFY_VERB_HELP})"
+                ),
+                "retry_count": MAX_RETRIES,
+            }
         print(
-            f"[repair] Verification command executable not found: {exc}",
+            f"[repair] Executing verification command: {verification_cmd}",
             flush=True,
         )
-        return {
-            "tests_passed": False,
-            "current_errors": f"verification command executable not found: {exc}",
-            "retry_count": retry_count + 1,
-        }
-    except subprocess.TimeoutExpired:
-        print(
-            f"[repair] Verification command timed out after {VERIFY_TIMEOUT}s",
-            flush=True,
-        )
-        return {
-            "tests_passed": False,
-            "current_errors": (
-                "verification command timed out after "
-                f"{VERIFY_TIMEOUT}s: {verification_cmd[:200]}"
-            ),
-            "retry_count": retry_count + 1,
-        }
 
-    if proc.returncode == 0:
+        try:
+            proc = subprocess.run(
+                cmd_args,
+                cwd=worktree_dir,
+                env=run_env,
+                shell=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=VERIFY_TIMEOUT,
+            )
+        except FileNotFoundError as exc:
+            print(
+                f"[repair] Verification command executable not found: {exc}",
+                flush=True,
+            )
+            return {
+                "tests_passed": False,
+                "current_errors": f"verification command executable not found: {exc}",
+                "retry_count": retry_count + 1,
+            }
+        except subprocess.TimeoutExpired:
+            print(
+                f"[repair] Verification command timed out after {VERIFY_TIMEOUT}s",
+                flush=True,
+            )
+            return {
+                "tests_passed": False,
+                "current_errors": (
+                    "verification command timed out after "
+                    f"{VERIFY_TIMEOUT}s: {verification_cmd[:200]}"
+                ),
+                "retry_count": retry_count + 1,
+            }
+
+        if proc.returncode != 0:
+            output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            print(
+                f"[repair] Verification command failed (exit code {proc.returncode}):\n{output.strip()}",
+                flush=True,
+            )
+            return {
+                "tests_passed": False,
+                "current_errors": f"Verification command failed (exit code {proc.returncode}):\n{output.strip()}",
+                "retry_count": retry_count + 1,
+            }
+
         print("[repair] Verification command passed", flush=True)
-        return {
-            "tests_passed": True,
-            "current_errors": "",
-        }
-    else:
-        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+
+    # Verification passed (or was omitted): run format gate before creating PR
+    format_target_files(worktree_dir, state.get("target_files", []), run_env)
+    updated_contents = dict(state.get("file_contents", {}))
+    for rel_path in state.get("target_files", []):
+        full_path = _worktree_path(worktree_dir, rel_path)
+        if full_path and os.path.exists(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                updated_contents[rel_path] = f.read()
+
+    fmt_cmd = detect_repo_format_command(worktree_dir)
+    if fmt_cmd:
         print(
-            f"[repair] Verification command failed (exit code {proc.returncode}):\n{output.strip()}",
+            f"[repair] Executing format check command: {' '.join(fmt_cmd)}",
             flush=True,
         )
-        return {
-            "tests_passed": False,
-            "current_errors": f"Verification command failed (exit code {proc.returncode}):\n{output.strip()}",
-            "retry_count": retry_count + 1,
-        }
+        try:
+            fmt_proc = subprocess.run(
+                fmt_cmd,
+                cwd=worktree_dir,
+                env=run_env,
+                shell=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=VERIFY_TIMEOUT,
+            )
+            if fmt_proc.returncode != 0:
+                output = (fmt_proc.stdout or "") + "\n" + (fmt_proc.stderr or "")
+                print(
+                    f"[repair] Format check failed (exit code {fmt_proc.returncode}):\n{output.strip()}",
+                    flush=True,
+                )
+                return {
+                    "tests_passed": False,
+                    "current_errors": f"Format check failed (exit code {fmt_proc.returncode}):\n{output.strip()}",
+                    "retry_count": retry_count + 1,
+                    "file_contents": updated_contents,
+                }
+            print("[repair] Format check passed", flush=True)
+        except Exception as exc:
+            print(f"[repair] Format check execution failed: {exc}", flush=True)
+            return {
+                "tests_passed": False,
+                "current_errors": f"Format check execution failed: {exc}",
+                "retry_count": retry_count + 1,
+                "file_contents": updated_contents,
+            }
+
+    return {
+        "tests_passed": True,
+        "current_errors": "",
+        "file_contents": updated_contents,
+    }
 
 
 def create_pr_node(state: AgentState) -> Dict[str, Any]:
@@ -758,9 +870,9 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
 
     commit_env = os.environ.copy()
     commit_env.setdefault("GIT_AUTHOR_NAME", "S5 Autonomous Repair")
-    commit_env.setdefault("GIT_AUTHOR_EMAIL", "repair@s5.internal")
+    commit_env.setdefault("GIT_AUTHOR_EMAIL", "ariandersrobotics@gmail.com")
     commit_env.setdefault("GIT_COMMITTER_NAME", "S5 Autonomous Repair")
-    commit_env.setdefault("GIT_COMMITTER_EMAIL", "repair@s5.internal")
+    commit_env.setdefault("GIT_COMMITTER_EMAIL", "ariandersrobotics@gmail.com")
 
     status_proc = subprocess.run(
         ["git", "status", "--porcelain"],

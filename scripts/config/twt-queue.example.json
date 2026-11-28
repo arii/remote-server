@@ -12,12 +12,13 @@
   "discover_repos": ["arii/remote-server", "arii/boomtick"],
   "runtime_command": [],
   "worker_python": "/opt/venvs/td/bin/python",
-  "cap_usd": 1.0,
+  "cap_usd": 5.0,
   "max_common_failures": 3,
   "strong_after_failures": 2,
   "inter_issue_delay_seconds": 60,
+  "standing": true,
+  "idle_poll_seconds": 60,
   "environment": {
-    "TWT_BASE_URL": "http://127.0.0.1:8000/v1",
-    "CODER_STRONG_MODEL": "nebius/zai-org/GLM-5.3-Flash"
+    "TWT_BASE_URL": "http://127.0.0.1:8000/v1"
   }
 }

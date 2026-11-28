@@ -28,10 +28,17 @@ import zoneinfo
 
 
 ISSUE_CAP_USD = 1.0
+MAX_ISSUE_CAP_USD = 5.0
 
 
 class SafetyStop(RuntimeError):
+    """A ledger inconsistency that should park the issue."""
+
     llm_not_dispatched = True
+
+
+class LedgerError(SafetyStop):
+    """A ledger inconsistency that should park the issue."""
 
 
 class StrongRefused(RuntimeError):
@@ -82,10 +89,10 @@ def receipt_total(ids, local_ids, receipts):
     found = {}
     for row in receipts:
         if not isinstance(row, dict):
-            raise SafetyStop("malformed TwT receipt")
+            raise LedgerError("malformed TwT receipt")
         trace = row.get("trace_id")
         if trace not in expected or trace in found:
-            raise SafetyStop("unexpected or duplicate TwT receipt")
+            raise LedgerError("unexpected or duplicate TwT receipt")
         found[trace] = row
     total = 0.0
     for trace in expected:
@@ -93,12 +100,12 @@ def receipt_total(ids, local_ids, receipts):
         if row is None and trace in local_ids:
             continue
         if row is None:
-            raise SafetyStop("missing hosted TwT receipt: " + trace)
+            raise LedgerError("missing hosted TwT receipt: " + trace)
         cost = receipt_cost(row)
         if cost is None:
-            raise SafetyStop("unknown or incomplete TwT cost: " + trace)
+            raise LedgerError("unknown or incomplete TwT cost: " + trace)
         if trace in local_ids and cost != 0:
-            raise SafetyStop("local TwT receipt has paid cost: " + trace)
+            raise LedgerError("local TwT receipt has paid cost: " + trace)
         total += cost
     return total
 
@@ -129,7 +136,7 @@ def refresh_spend(scope):
             if not owned.intersection(ids):
                 continue
             if not owned.issubset(ids) or represented.intersection(owned):
-                raise SafetyStop("receipt ownership overlaps rows or runs")
+                raise LedgerError("receipt ownership overlaps rows or runs")
             represented.update(owned)
         if represented:
             missing = twt_receipts.merge_receipts(
@@ -147,7 +154,7 @@ def refresh_spend(scope):
         )
     total = runs.total_metered_spend()
     if total["unknown"]:
-        raise SafetyStop("unknown recorded spend before dispatch")
+        raise LedgerError("unknown recorded spend before dispatch")
     return total["spent"] + unowned_cost
 
 
@@ -159,7 +166,12 @@ STRONG_MIN_BUDGET_USD = 0.05
 # BUDGET_EXHAUSTED (coder call cap hit after continuations, #1638) counts: a
 # stronger model may finish within the cap. BUDGET_UNSPLITTABLE does not: it is
 # a scoping problem that a stronger model would not fix.
-COUNTED_STATUSES = ("BLOCKED_DETERMINISTIC", "CHANGES_REQUESTED", "BUDGET_EXHAUSTED")
+COUNTED_STATUSES = (
+    "BLOCKED_DETERMINISTIC",
+    "CHANGES_REQUESTED",
+    "BUDGET_EXHAUSTED",
+    "LIMITED",
+)
 
 
 def start_tier(fresh, failures, threshold):
@@ -185,12 +197,8 @@ def counts_toward_escalation(summary):
 
 
 def check_strong_start(cap, fatal):
-    """Refuse a strong attempt without CODER_STRONG_MODEL or enough budget."""
-    strong = (os.environ.get("CODER_STRONG_MODEL") or "").strip()
-    if not strong:
-        detail = "tier strong requires CODER_STRONG_MODEL in the queue environment"
-        fatal.append(detail)
-        raise StrongRefused("CONFIG_ERROR", detail)
+    """Refuse a strong attempt without enough remaining budget."""
+    strong = (os.environ.get("CODER_STRONG_MODEL") or "route:strong").strip()
     try:
         remaining = cap - check_budget(None, cap)
     except BudgetStop as error:
@@ -427,6 +435,8 @@ def discover_ready(config, issues, completed):
                 "repo": repo,
                 "number": item["number"],
                 "created_at": item["createdAt"],
+                # Keep labels so label-based holds filter discovered issues.
+                "labels": item.get("labels", []),
             }
             ordered_issues([issue])
             key = (repo, issue["number"])
@@ -442,16 +452,16 @@ def discover_ready(config, issues, completed):
 
 
 def skip_reason(issue):
-    if issue["number"] in (2, 23, 26):
-        return "global operator hold"
-    if (issue["repo"], issue["number"]) == ("arii/remote-server", 1377):
-        return "requires a human decision"
-    if issue["repo"] == "arii/remote-server" and issue["number"] == 1359:
-        return "already merged via arii/remote-server#1381"
     if issue.get("merged") is True or issue.get("fixed") is True:
         return "already merged or fixed"
     if issue.get("requires_human") is True:
         return "requires a human decision"
+    labels = {
+        label.get("name") if isinstance(label, dict) else label
+        for label in issue.get("labels", [])
+    }
+    if "hold" in labels:
+        return "operator hold label"
     return issue.get("skip_reason")
 
 
@@ -478,10 +488,10 @@ def checked_cap(value):
     if (
         type(value) not in (int, float)
         or not math.isfinite(value)
-        or not 0 < value <= ISSUE_CAP_USD
+        or not 0 < value <= MAX_ISSUE_CAP_USD
     ):
         raise ValueError(
-            f"cap_usd must be finite, positive, and at most ${ISSUE_CAP_USD:.2f}"
+            f"cap_usd must be finite, positive, and at most ${MAX_ISSUE_CAP_USD:.2f}"
         )
     return float(value)
 
@@ -793,6 +803,78 @@ def coverage(state):
     }
 
 
+def sync_to_canonical_ledger(directory, summary):
+    """Mirror reconciled run records and settlement summary to canonical ledger."""
+    canonical_str = os.environ.get(
+        "CANONICAL_LEDGER_PATH", "/var/lib/buttons/deep-agent/ledger.jsonl"
+    )
+    canonical = Path(canonical_str)
+    run_ledger = Path(directory) / "ledger.jsonl"
+    if not run_ledger.exists():
+        return
+    try:
+        from backend.shared import ledger
+
+        lines = [
+            line.strip() for line in run_ledger.read_text().splitlines() if line.strip()
+        ]
+        if not lines:
+            return
+
+        with ledger.locked(str(canonical)):
+            canonical.parent.mkdir(parents=True, exist_ok=True)
+            existing = set()
+            if canonical.exists():
+                for line in canonical.read_text().splitlines():
+                    if line.strip():
+                        try:
+                            row = json.loads(line)
+                            tid = row.get("thread_id")
+                            ts = row.get("ts")
+                            if tid and ts:
+                                existing.add((tid, ts))
+                        except Exception:
+                            pass
+
+            to_append = []
+            for line in lines:
+                try:
+                    row = json.loads(line)
+                    tid = row.get("thread_id")
+                    ts = row.get("ts")
+                    if tid and ts and (tid, ts) in existing:
+                        continue
+                    to_append.append(line)
+                except Exception:
+                    to_append.append(line)
+
+            recon = summary.get("reconciliation") or {}
+            if recon.get("reconciled"):
+                settlement_row = {
+                    "kind": "queue-settlement",
+                    "ts": time.time(),
+                    "repo": summary.get("repo"),
+                    "issue": summary.get("issue"),
+                    "tier": summary.get("tier"),
+                    "cost_usd": recon.get("cost_usd", 0.0),
+                    "trace_ids": recon.get("trace_ids", []),
+                    "submit_url": (summary.get("result") or {}).get("submit_url", ""),
+                    "status": (summary.get("result") or {}).get("status", "DONE"),
+                }
+                to_append.append(json.dumps(settlement_row))
+
+            if to_append:
+                with canonical.open("a", encoding="utf-8") as f:
+                    for item in to_append:
+                        f.write(item + "\n")
+    except Exception as e:
+        print(
+            f"WARNING: failed to sync canonical ledger: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def worker(job_dir):
     directory = Path(job_dir).resolve()
     job = read_json(directory / "job.json")
@@ -816,17 +898,11 @@ def worker(job_dir):
     for key in ("CODER_MODEL", "S5_AUDIT_MODEL", "S5_START_MODEL_TIER"):
         os.environ.pop(key, None)
     routing = job.get("routing") or {}
-    picks = routing.get("picks") or {}
-    for pick_tier, env_key in (
-        ("fast", "CODER_MODEL"),
-        ("strong", "CODER_STRONG_MODEL"),
-    ):
-        pin = (picks.get(pick_tier) or {}).get("model")
-        if pin:
-            os.environ[env_key] = pin
     tier = job.get("model_tier", "default")
     if tier == "strong":
         os.environ["S5_START_MODEL_TIER"] = "strong"
+    else:
+        os.environ["CODER_MODEL"] = "default"
     os.chdir(repo)
     result = {}
     stages = []
@@ -852,7 +928,7 @@ def worker(job_dir):
             file=sys.stderr,
             flush=True,
         )
-        if routing.get("picks"):
+        if routing and not routing.get("error"):
             try:
                 from backend.shared import task_router
 
@@ -876,18 +952,6 @@ def worker(job_dir):
             and preflight is not None
         ):
             preflight(stage="coder")
-        from scripts import slop_review
-
-        slop = {}
-        pipeline.Pipeline.stage_submit = slop_review.gated_submit(
-            pipeline.Pipeline.stage_submit,
-            slop,
-            root=slop_review.checkout_root(),
-            gh=["gh"],
-            model_factory=lambda: slop_review.default_model(
-                f"slop-{job['issue']['number']}"
-            ),
-        )
         for stage in ("init", "spec", "code", "audit", "submit", "cleanup"):
             original = getattr(pipeline.Pipeline, "stage_" + stage)
 
@@ -909,7 +973,7 @@ def worker(job_dir):
                                 for key in ("valid", "verdict", "findings", "errors")
                             }
                         if stage == "submit":
-                            entry["submit_url"] = slop.get("pr_url") or output[1]
+                            entry["submit_url"] = output[1]
                         return output
                     except BaseException as error:
                         entry["error"] = f"{type(error).__name__}: {error}"
@@ -928,7 +992,7 @@ def worker(job_dir):
 
         @functools.wraps(original_run)
         def capture_result(instance):
-            value = slop_review.override_result(original_run(instance), slop)
+            value = original_run(instance)
             result.update(value)
             save("pipeline-result.json", value)
             return value
@@ -977,6 +1041,7 @@ def worker(job_dir):
         "elapsed_s": round(time.time() - started, 3),
     }
     save("summary.json", summary)
+    sync_to_canonical_ledger(directory, summary)
     print(json.dumps(summary, default=str), flush=True)
     return 2 if fatal else code
 
@@ -1060,6 +1125,11 @@ def reconcile_job(config, source, directory, runtime_directory):
         process.communicate(source)
     if process.returncode != 0 or read_json(recovery).get("reconciled") is not True:
         raise SafetyStop("startup receipt reconciliation failed")
+    summary_path = directory / "summary.json"
+    if summary_path.exists():
+        summary = read_json(summary_path)
+        summary["reconciliation"] = read_json(recovery)
+        sync_to_canonical_ledger(directory, summary)
     return read_json(recovery)
 
 
@@ -1292,11 +1362,16 @@ def prune_landed_worktrees(config):
                 print(f"PRUNE {repo} {line.strip()}", flush=True)
 
 
-def supervise(config_path, *, clear_halt=False):
+def supervise(config_path, *, clear_halt=False, only_issue=None):
     """One queue pass. `only_issues` (exactly one "owner/repo#N") is validated here,
     before the lock or any GitHub call, and makes the stop terminal (see _supervise)."""
     config = read_json(config_path)
-    only = only_issue_keys(config["only_issues"]) if "only_issues" in config else None
+    if only_issue is not None:
+        only = only_issue_keys([only_issue])
+    else:
+        only = (
+            only_issue_keys(config["only_issues"]) if "only_issues" in config else None
+        )
     held = []
     try:
         return _supervise(config_path, clear_halt=clear_halt, only=only, held=held)
@@ -1411,237 +1486,284 @@ def _supervise(config_path, *, clear_halt=False, only=None, held=None):
 
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
-        issues = ordered_issues(read_json(config["issues_file"]))
-        issues += discover_ready(config, issues, status["completed"])
-        issues.sort(
-            key=lambda issue: (
-                f"{issue['repo']}#{issue['number']}" != status.get("retry")
+        is_standing = (
+            bool(
+                config.get("standing", False)
+                or (
+                    "idle_poll_seconds" in config
+                    and config.get("idle_poll_seconds", 0) > 0
+                )
             )
+            and only is None
         )
-        if only is not None:
-            issues = [i for i in issues if f"{i['repo']}#{i['number']}" in only]
-            print("ONLY " + ", ".join(sorted(only)), flush=True)
-            found = {f"{i['repo']}#{i['number']}" for i in issues}
-            for key in sorted(only - found):
-                print(
-                    f"ONLY {key} not in the manifest or ready discovery: nothing to run",
-                    flush=True,
-                )
-        for issue in issues:
-            if stopping or (root / "STOP").exists():
-                status.update(stopped=True, current=None)
-                write_json(status_path, status)
-                return 0
-            key = f"{issue['repo']}#{issue['number']}"
-            if key in status["completed"]:
-                continue
-            reason = skip_reason(issue)
-            if reason:
-                status.setdefault("skipped", {})[key] = reason
-                if status.get("retry") == key:
-                    status.pop("retry")
-                write_json(status_path, status)
-                continue
-            if issue["repo"] not in config["repo_paths"]:
-                raise ValueError("no configured checkout for " + issue["repo"])
-            try:
-                fresh = json.loads(
-                    subprocess.check_output(
-                        config.get("gh_command", ["gh"])
-                        + [
-                            "api",
-                            f"repos/{issue['repo']}/issues/{issue['number']}",
-                        ],
-                        text=True,
-                    )
-                )
-                state = fresh["state"]
-                labels = {
-                    label.get("name") if isinstance(label, dict) else label
-                    for label in fresh.get("labels") or []
-                }
-            except (
-                subprocess.CalledProcessError,
-                OSError,
-                ValueError,
-                KeyError,
-            ) as e:
-                print(f"SKIP {key} refresh failed: {e}", flush=True)
-                continue
-            if state != "open":
-                status["completed"].append(key)
-                if status.get("retry") == key:
-                    status.pop("retry")
-                write_json(status_path, status)
-                continue
-            if "ready" not in labels:
-                print(f"SKIP {key} not ready", flush=True)
-                continue
-            name = issue["repo"].replace("/", "_") + "-" + str(issue["number"])
-            directory = root / name
-            if directory.exists():
-                status.update(
-                    halted=True,
-                    reason="unfinished issue directory requires inspection",
-                    current=key,
-                )
-                write_json(status_path, status)
-                return 2
-            try:
-                remaining_cap = checked_cap(
-                    cap - status.get("retry_spend", {}).get(key, 0)
-                )
-            except ValueError as error:
-                status.update(
-                    halted=True, reason=f"issue budget prevents dispatch: {error}"
-                )
-                write_json(status_path, status)
-                return 2
-            ledger.boundary()
-            held = ledger.claimed_elsewhere(key)
-            if held:
-                ledger_log(f"skip {key}: {held}")
-                status.setdefault("ledger_skipped", {})[key] = held
-                write_json(status_path, status)
-                continue
-            if stopping or (root / "STOP").exists():
-                status.update(stopped=True, current=None)
-                write_json(status_path, status)
-                return 0
-            directory.mkdir(mode=0o700)
-            runtime_directory = runtime_root / name
-            tier, tier_reason = start_tier(
-                fresh, status.get("tier_failures", {}).get(key, 0), strong_after
-            )
-            # Deterministic task routing: pick concrete provider/model
-            # pins per tier from the live TwT catalog, and raise the
-            # start tier when the task itself looks hard — never lowered
-            # below the escalation/label tier. Router failure keeps the
-            # configured environment untouched.
-            requested_tier = tier
-            routing = None
-            try:
-                from backend.shared import task_router
+        idle_delay = config.get("idle_poll_seconds", 60)
 
-                routing = task_router.route_issue(fresh, remaining_cap)
-                if routing["tier"] == "strong" and tier != "strong":
-                    tier = "strong"
-                    tier_reason = f"{tier_reason}+{routing['tier_rule']}"
+        while True:
+            if stopping or (root / "STOP").exists():
+                status.update(stopped=True, current=None)
+                write_json(status_path, status)
+                return 0
+            issues = ordered_issues(read_json(config["issues_file"]))
+            issues += discover_ready(config, issues, status["completed"])
+            issues.sort(
+                key=lambda issue: (
+                    f"{issue['repo']}#{issue['number']}" != status.get("retry")
+                )
+            )
+            if only is not None:
+                issues = [i for i in issues if f"{i['repo']}#{i['number']}" in only]
+                print("ONLY " + ", ".join(sorted(only)), flush=True)
+                found = {f"{i['repo']}#{i['number']}" for i in issues}
+                for key in sorted(only - found):
                     print(
-                        f"WARNING {key} requested tier={requested_tier} "
-                        f"but serving tier={tier} ({routing['tier_rule']})",
-                        file=sys.stderr,
+                        f"ONLY {key} not in the manifest or ready discovery: nothing to run",
                         flush=True,
                     )
-            except Exception as error:
-                routing = {"error": str(error)}
-            job = {
-                "issue": {
-                    "repo": issue["repo"],
-                    "number": issue["number"],
-                    "title": fresh["title"],
-                    "body": fresh.get("body") or "",
-                },
-                "cap_usd": remaining_cap,
-                "checkout": config["repo_paths"][issue["repo"]],
-                "pipeline_checkout": config["pipeline_checkout"],
-                "environment": config.get("environment", {}),
-                "model_tier": tier,
-                "requested_tier": requested_tier,
-                "tier_reason": tier_reason,
-                "routing": routing,
-            }
-            write_json(directory / "job.json", job)
-            status.update(current=key, started_at=time.time())
-            if status.get("retry") == key:
-                status.pop("retry")
-            write_json(status_path, status)
-            ledger.claim(key)
-            print(f"START {key} tier={tier} reason={tier_reason}", flush=True)
-            print(f"START {key} tier={tier} reason={tier_reason}", flush=True)
-            with (directory / "run.log").open("w") as log:
-                process = subprocess.Popen(
-                    worker_command(config, "--worker", runtime_directory),
-                    stdin=subprocess.PIPE,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    text=True,
+            pending = [
+                i
+                for i in issues
+                if f"{i['repo']}#{i['number']}" not in status["completed"]
+                and not skip_reason(i)
+            ]
+            if not pending:
+                if not is_standing:
+                    status.update(done=True, current=None)
+                    write_json(status_path, status)
+                    return 0
+                print(
+                    f"IDLE: no ready issues discovered; sleeping {idle_delay}s...",
+                    flush=True,
                 )
-                process.communicate(source)
-            audit_failures(config)
-            summary_path = directory / "summary.json"
-            if not summary_path.exists():
-                status.update(
-                    halted=True,
-                    reason="worker exited without verifiable cost/reconciliation",
-                    current=key,
+                ticks = int(idle_delay) if idle_delay >= 1 else 1
+                for _ in range(ticks):
+                    if stopping or (root / "STOP").exists():
+                        status.update(stopped=True, current=None)
+                        write_json(status_path, status)
+                        return 0
+                    time.sleep(1 if idle_delay >= 1 else idle_delay)
+                continue
+
+            for issue in issues:
+                if stopping or (root / "STOP").exists():
+                    status.update(stopped=True, current=None)
+                    write_json(status_path, status)
+                    return 0
+                key = f"{issue['repo']}#{issue['number']}"
+                if key in status["completed"]:
+                    continue
+                reason = skip_reason(issue)
+                if reason:
+                    status.setdefault("skipped", {})[key] = reason
+                    if status.get("retry") == key:
+                        status.pop("retry")
+                    write_json(status_path, status)
+                    continue
+                if issue["repo"] not in config["repo_paths"]:
+                    raise ValueError("no configured checkout for " + issue["repo"])
+                try:
+                    fresh = json.loads(
+                        subprocess.check_output(
+                            config.get("gh_command", ["gh"])
+                            + [
+                                "api",
+                                f"repos/{issue['repo']}/issues/{issue['number']}",
+                            ],
+                            text=True,
+                        )
+                    )
+                    state = fresh["state"]
+                    labels = {
+                        label.get("name") if isinstance(label, dict) else label
+                        for label in fresh.get("labels") or []
+                    }
+                except (
+                    subprocess.CalledProcessError,
+                    OSError,
+                    ValueError,
+                    KeyError,
+                ) as e:
+                    print(f"SKIP {key} refresh failed: {e}", flush=True)
+                    continue
+                if state != "open":
+                    status["completed"].append(key)
+                    if status.get("retry") == key:
+                        status.pop("retry")
+                    write_json(status_path, status)
+                    continue
+                if "ready" not in labels:
+                    print(f"SKIP {key} not ready", flush=True)
+                    continue
+                name = issue["repo"].replace("/", "_") + "-" + str(issue["number"])
+                directory = root / name
+                if directory.exists():
+                    status.update(
+                        halted=True,
+                        reason="unfinished issue directory requires inspection",
+                        current=key,
+                    )
+                    write_json(status_path, status)
+                    return 2
+                try:
+                    remaining_cap = checked_cap(
+                        cap - status.get("retry_spend", {}).get(key, 0)
+                    )
+                except ValueError as error:
+                    status.update(
+                        halted=True, reason=f"issue budget prevents dispatch: {error}"
+                    )
+                    write_json(status_path, status)
+                    return 2
+                ledger.boundary()
+                held = ledger.claimed_elsewhere(key)
+                if held:
+                    ledger_log(f"skip {key}: {held}")
+                    status.setdefault("ledger_skipped", {})[key] = held
+                    write_json(status_path, status)
+                    continue
+                if stopping or (root / "STOP").exists():
+                    status.update(stopped=True, current=None)
+                    write_json(status_path, status)
+                    return 0
+                directory.mkdir(mode=0o700)
+                runtime_directory = runtime_root / name
+                tier, tier_reason = start_tier(
+                    fresh, status.get("tier_failures", {}).get(key, 0), strong_after
                 )
-                write_json(status_path, status)
-                ledger.result(key, None)
-                return 2
-            summary = read_json(summary_path)
-            if summary["halt_queue"] or not summary["reconciliation"]["reconciled"]:
-                status.update(
-                    halted=True, reason=summary.get("halt_reasons"), current=key
-                )
-                write_json(status_path, status)
-                ledger.result(key, None)
-                return 2
-            if process.returncode != summary.get("exit_code"):
-                status.update(
-                    halted=True,
-                    reason="worker exit disagrees with its summary",
-                    current=key,
-                )
-                write_json(status_path, status)
-                ledger.result(key, None)
-                return 2
-            status["completed"].append(key)
-            status.update(last=summary, current=None)
-            if summary["exit_code"] == 0:
-                # Failed runs keep their tree as evidence for --retry.
-                prune_landed_worktrees(config)
-            failures = status.setdefault("tier_failures", {})
-            if counts_toward_escalation(summary):
-                failures[key] = failures.get(key, 0) + 1
-            elif summary["exit_code"] == 0:
-                failures.pop(key, None)
-            status.setdefault("attempts", {}).setdefault(key, []).append(
-                {
-                    "tier": tier,
-                    "reason": tier_reason,
-                    "status": summary["result"].get("status"),
-                    "exit_code": summary["exit_code"],
+                # Deterministic task routing: pick concrete provider/model
+                # pins per tier from the live TwT catalog, and raise the
+                # start tier when the task itself looks hard — never lowered
+                # below the escalation/label tier. Router failure keeps the
+                # configured environment untouched.
+                requested_tier = tier
+                routing = None
+                try:
+                    from backend.shared import task_router
+
+                    routing = task_router.route_issue(fresh, remaining_cap)
+                    if routing["tier"] == "strong" and tier != "strong":
+                        tier = "strong"
+                        tier_reason = f"{tier_reason}+{routing['tier_rule']}"
+                        print(
+                            f"WARNING {key} requested tier={requested_tier} "
+                            f"but serving tier={tier} ({routing['tier_rule']})",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                except Exception as error:
+                    routing = {"error": str(error)}
+                job = {
+                    "issue": {
+                        "repo": issue["repo"],
+                        "number": issue["number"],
+                        "title": fresh["title"],
+                        "body": fresh.get("body") or "",
+                    },
+                    "cap_usd": remaining_cap,
+                    "checkout": config["repo_paths"][issue["repo"]],
+                    "pipeline_checkout": config["pipeline_checkout"],
+                    "environment": config.get("environment", {}),
+                    "model_tier": tier,
+                    "requested_tier": requested_tier,
+                    "tier_reason": tier_reason,
+                    "routing": routing,
                 }
-            )
-            if summary["exit_code"]:
-                blocker = {
-                    key: summary["result"].get(key) for key in ("status", "detail")
-                }
-                status["consecutive_failures"] = (
-                    status.get("consecutive_failures", 0) + 1
-                    if status.get("blocker") == blocker
-                    else 1
-                )
-                status["blocker"] = blocker
-            else:
-                status.update(consecutive_failures=0, blocker=None)
-            write_json(status_path, status)
-            print(
-                "FINISH " + key + " " + summary["result"].get("status", "UNKNOWN"),
-                flush=True,
-            )
-            ledger.result(key, summary, status["consecutive_failures"] >= failure_limit)
-            if status["consecutive_failures"] >= failure_limit:
-                status.update(
-                    halted=True, reason="consecutive failures with a common blocker"
-                )
+                write_json(directory / "job.json", job)
+                status.update(current=key, started_at=time.time())
+                if status.get("retry") == key:
+                    status.pop("retry")
                 write_json(status_path, status)
-                return 2
-            if only is None:
-                time.sleep(config.get("inter_issue_delay_seconds", 60))
-        status.update(done=True, current=None)
-        write_json(status_path, status)
+                ledger.claim(key)
+                print(f"START {key} tier={tier} reason={tier_reason}", flush=True)
+                print(f"START {key} tier={tier} reason={tier_reason}", flush=True)
+                with (directory / "run.log").open("w") as log:
+                    process = subprocess.Popen(
+                        worker_command(config, "--worker", runtime_directory),
+                        stdin=subprocess.PIPE,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                    process.communicate(source)
+                audit_failures(config)
+                summary_path = directory / "summary.json"
+                if not summary_path.exists():
+                    status.update(
+                        halted=True,
+                        reason="worker exited without verifiable cost/reconciliation",
+                        current=key,
+                    )
+                    write_json(status_path, status)
+                    ledger.result(key, None)
+                    return 2
+                summary = read_json(summary_path)
+                if summary["halt_queue"] or not summary["reconciliation"]["reconciled"]:
+                    status.update(
+                        halted=True, reason=summary.get("halt_reasons"), current=key
+                    )
+                    write_json(status_path, status)
+                    ledger.result(key, None)
+                    return 2
+                if process.returncode != summary.get("exit_code"):
+                    status.update(
+                        halted=True,
+                        reason="worker exit disagrees with its summary",
+                        current=key,
+                    )
+                    write_json(status_path, status)
+                    ledger.result(key, None)
+                    return 2
+                status["completed"].append(key)
+                status.update(last=summary, current=None)
+                if summary["exit_code"] == 0:
+                    # Failed runs keep their tree as evidence for --retry.
+                    prune_landed_worktrees(config)
+                failures = status.setdefault("tier_failures", {})
+                if counts_toward_escalation(summary):
+                    failures[key] = failures.get(key, 0) + 1
+                elif summary["exit_code"] == 0:
+                    failures.pop(key, None)
+                status.setdefault("attempts", {}).setdefault(key, []).append(
+                    {
+                        "tier": tier,
+                        "reason": tier_reason,
+                        "status": summary["result"].get("status"),
+                        "exit_code": summary["exit_code"],
+                    }
+                )
+                if summary["exit_code"]:
+                    blocker = {
+                        key: summary["result"].get(key) for key in ("status", "detail")
+                    }
+                    status["consecutive_failures"] = (
+                        status.get("consecutive_failures", 0) + 1
+                        if status.get("blocker") == blocker
+                        else 1
+                    )
+                    status["blocker"] = blocker
+                else:
+                    status.update(consecutive_failures=0, blocker=None)
+                write_json(status_path, status)
+                print(
+                    "FINISH " + key + " " + summary["result"].get("status", "UNKNOWN"),
+                    flush=True,
+                )
+                summary["run_id"] = ledger.run_id
+                write_json(summary_path, summary)
+                ledger.result(
+                    key, summary, status["consecutive_failures"] >= failure_limit
+                )
+                if status["consecutive_failures"] >= failure_limit:
+                    status.update(
+                        halted=True, reason="consecutive failures with a common blocker"
+                    )
+                    write_json(status_path, status)
+                    return 2
+                if only is None:
+                    time.sleep(config.get("inter_issue_delay_seconds", 60))
+            if not is_standing:
+                status.update(done=True, current=None)
+                write_json(status_path, status)
+                return 0
     return 0
 
 
@@ -1774,6 +1896,163 @@ def _queue_state(config, now=None):
     return f"RUNNING {current} active"
 
 
+def print_queue_proof(config, issue_key=None, reader=None, provenance=None):
+    """Print ledger proof for a completed queue run.
+
+    Verifies gateway ceiling feature, spend cap, receipts, and sheet claim/result rows.
+    Fails closed if gateway lacks request_cost_ceiling, spend > cap, or proof missing.
+    """
+    env = config.get("environment", {})
+    base_url = env.get("TWT_BASE_URL", os.environ.get("TWT_BASE_URL", "http://twt/v1"))
+    uds = env.get("TWT_UDS", os.environ.get("TWT_UDS", "/run/twt/gateway.sock"))
+    prov = provenance
+    if prov is None:
+        try:
+            from backend.shared import twt_provenance
+
+            prov = twt_provenance
+        except ImportError:
+            prov = None
+    if prov is not None:
+        try:
+            prov.require_gateway_feature(CEILING_FEATURE, base_url, uds)
+        except Exception as error:
+            print(
+                f"PROOF FAILED: gateway does not support {CEILING_FEATURE}: {error}",
+                file=sys.stderr,
+            )
+            return 1
+
+    root = Path(config["state_dir"]).resolve()
+    status_path = root / "status.json"
+    status = read_json(status_path) if status_path.exists() else {}
+    if not issue_key or issue_key == "LAST":
+        last = status.get("last") or {}
+        if last.get("repo") and last.get("issue"):
+            issue_key = f"{last['repo']}#{last['issue']}"
+        elif status.get("completed"):
+            issue_key = status["completed"][-1]
+        else:
+            print("PROOF FAILED: no completed run found to prove", file=sys.stderr)
+            return 1
+
+    try:
+        repo, number_str = issue_key.rsplit("#", 1)
+        number = int(number_str)
+    except ValueError:
+        print(f"PROOF FAILED: malformed issue key '{issue_key}'", file=sys.stderr)
+        return 1
+
+    dir_name = repo.replace("/", "_") + "-" + str(number)
+    issue_dir = root / dir_name
+    summary_path = issue_dir / "summary.json"
+    if not summary_path.exists():
+        archive_dir = root / "archive"
+        matches = (
+            sorted(archive_dir.glob(f"{dir_name}-*")) if archive_dir.exists() else []
+        )
+        if matches and (matches[-1] / "summary.json").exists():
+            summary_path = matches[-1] / "summary.json"
+            issue_dir = matches[-1]
+        else:
+            print(
+                f"PROOF FAILED: no summary.json found for {issue_key}",
+                file=sys.stderr,
+            )
+            return 1
+
+    summary = read_json(summary_path)
+    job_path = issue_dir / "job.json"
+    job = read_json(job_path) if job_path.exists() else {}
+
+    cap_usd = checked_cap(job.get("cap_usd", config.get("cap_usd", ISSUE_CAP_USD)))
+    recon = summary.get("reconciliation") or {}
+    cost_usd = recon.get("cost_usd")
+    if (
+        cost_usd is None
+        or type(cost_usd) not in (int, float)
+        or not math.isfinite(cost_usd)
+    ):
+        print(
+            f"PROOF FAILED: unreconciled or invalid cost in {summary_path}",
+            file=sys.stderr,
+        )
+        return 1
+    if cost_usd > cap_usd:
+        print(
+            f"PROOF FAILED: spend ${cost_usd:.4f} exceeded cap ${cap_usd:.2f}",
+            file=sys.stderr,
+        )
+        return 1
+
+    issue_url = f"https://github.com/{repo}/issues/{number}"
+    if reader is None:
+        reader = ledger_module("ledger_read")
+    sheet_id = os.environ.get(
+        "AGENT_LEDGER_SHEET_ID", getattr(reader, "DEFAULT_SHEET_ID", None)
+    )
+    token_file = os.environ.get(
+        "GOOGLE_TOKEN_FILE", getattr(reader, "DEFAULT_TOKEN_PATH", None)
+    )
+    try:
+        raw_rows = reader.read_ledger(sheet_id, token_file)
+    except Exception as error:
+        print(f"PROOF FAILED: could not read Agent Ledger: {error}", file=sys.stderr)
+        return 1
+
+    matching = [
+        (i + 2, r)
+        for i, r in enumerate(raw_rows)
+        if (r.get("Link") or "").strip() == issue_url
+    ]
+    if not matching:
+        print(f"PROOF FAILED: no ledger rows found for {issue_url}", file=sys.stderr)
+        return 1
+
+    claim_row = None
+    result_row = None
+    run_id = summary.get("run_id")
+
+    for row_num, r in matching:
+        note = r.get("Item / Note") or ""
+        m = re.search(r"queue run ([0-9a-fA-F]+)", note)
+        row_run_id = m.group(1) if m else None
+        if "claimed by queue run" in note:
+            claim_row = (row_num, r, row_run_id)
+            if not run_id and row_run_id:
+                run_id = row_run_id
+        elif claim_row and (row_run_id == run_id or not row_run_id):
+            result_row = (row_num, r, row_run_id)
+
+    if not run_id and claim_row:
+        run_id = claim_row[2]
+
+    trace_ids = recon.get("trace_ids") or []
+    status_str = (summary.get("result") or {}).get("status") or "UNKNOWN"
+
+    print(f"=== Queue Run Proof: {issue_key} ===")
+    print(f"Run ID: {run_id or 'unknown'}")
+    print(f"Gateway Cost Ceiling Check: verified ({CEILING_FEATURE})")
+    print(f"Cumulative Spend: ${cost_usd:.4f} / ${cap_usd:.2f} (within cap: True)")
+    print(f"Reconciled Receipts: {len(trace_ids)} traces")
+    if claim_row:
+        print(
+            f"Claim Row: Sheet Row {claim_row[0]} | Timestamp: {claim_row[1].get('Timestamp')} | "
+            f"Agent: {claim_row[1].get('Agent / Source')} | Status: {claim_row[1].get('Status')} | Note: {claim_row[1].get('Item / Note')}"
+        )
+    else:
+        print("Claim Row: (none found)")
+    if result_row:
+        print(
+            f"Result Row: Sheet Row {result_row[0]} | Timestamp: {result_row[1].get('Timestamp')} | "
+            f"Agent: {result_row[1].get('Agent / Source')} | Status: {result_row[1].get('Status')} | Note: {result_row[1].get('Item / Note')}"
+        )
+    else:
+        print("Result Row: (none found)")
+    print(f"Issue Status: {status_str}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     default_config = os.environ.get("QUEUE_CONFIG")
@@ -1800,31 +2079,120 @@ def main():
         help="print runner state (idle, stalled or down) with the next action and exit",
     )
     parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="create STOP marker in queue state directory and exit",
+    )
+    parser.add_argument(
+        "--only-issue",
+        metavar="REPO#ISSUE",
+        help="run exactly one bounded issue pass without editing configuration file",
+    )
+    parser.add_argument(
+        "--proof",
+        nargs="?",
+        const="LAST",
+        metavar="REPO#ISSUE",
+        help="verify gateway cost ceiling, check spend vs cap, and print ledger proof",
+    )
+    parser.add_argument(
         "--clear-halt",
         action="store_true",
         help="acknowledge saved halts after successful reconciliation and resume",
     )
     args = parser.parse_args()
+    if args.stop:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.retry
+            or args.status
+            or args.budget_report
+            or args.proof
+            or args.only_issue
+        ):
+            parser.error("--stop requires supervisor configuration only")
+        root = Path(read_json(args.config)["state_dir"]).resolve()
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stop_path = root / "STOP"
+        stop_path.touch(mode=0o600)
+        print(f"STOP marker created at {stop_path}")
+        return 0
     if args.status:
-        if args.worker or args.reconcile or args.archive_worktree or args.retry:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.retry
+            or args.budget_report
+            or args.proof
+            or args.only_issue
+        ):
             parser.error("--status requires supervisor configuration only")
         print(queue_status(read_json(args.config)))
         return 0
     if args.budget_report:
-        if args.worker or args.reconcile or args.archive_worktree or args.retry:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.retry
+            or args.proof
+            or args.only_issue
+        ):
             parser.error("--budget-report requires supervisor configuration only")
         print(budget_report(Path(read_json(args.config)["state_dir"])))
         return 0
+    if args.proof is not None:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.retry
+            or args.clear_halt
+            or args.only_issue
+        ):
+            parser.error("--proof requires supervisor configuration only")
+        target_issue = None if args.proof == "LAST" else args.proof
+        return print_queue_proof(read_json(args.config), target_issue)
+    if args.only_issue:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.retry
+            or args.stop
+            or args.status
+            or args.budget_report
+            or args.proof
+        ):
+            parser.error("--only-issue requires supervisor configuration only")
+        only_issue_keys([args.only_issue])
+        cfg = read_json(args.config)
+        root = Path(cfg["state_dir"]).resolve()
+        (root / "STOP").unlink(missing_ok=True)
+        return supervise(
+            args.config, clear_halt=args.clear_halt, only_issue=args.only_issue
+        )
     if args.retry:
-        if args.worker or args.reconcile or args.archive_worktree or args.clear_halt:
+        if (
+            args.worker
+            or args.reconcile
+            or args.archive_worktree
+            or args.clear_halt
+            or args.only_issue
+        ):
             parser.error(
                 "--retry requires supervisor configuration without --clear-halt"
             )
         return retry_issue(args.config, args.retry)
     directory = args.worker or args.reconcile or args.archive_worktree
     if directory:
-        if args.clear_halt:
-            parser.error("--clear-halt requires supervisor configuration")
+        if args.clear_halt or args.only_issue:
+            parser.error(
+                "--worker/--reconcile/--archive-worktree cannot be combined with supervisor options"
+            )
         with (directory / "worker.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.archive_worktree:

@@ -97,8 +97,12 @@ for this refresh. If a repo returns 100 issues, the log warns that older ones
 may be missing.
 ### One issue only
 
-To run exactly one issue, set `"only_issues": ["owner/repo#N"]` (exactly one entry) in the
-queue config. The issue must already be in `issues_file` or found by ready discovery, with
+To run exactly one issue, use the non-interactive CLI flag or set `"only_issues": ["owner/repo#N"]` (exactly one entry) in the
+queue config:
+```bash
+python3 scripts/queue_runner.py --config scripts/config/twt-queue.json --only-issue owner/repo#N
+```
+The issue must already be in `issues_file` or found by ready discovery, with
 the same `owner/repo` spelling. An unmatched key is logged as `ONLY ... nothing to run`.
 The pass dispatches only that issue, which still goes through the `ready`, ledger and
 budget checks. The pass then ends with no inter-issue delay. A malformed value fails at
@@ -107,6 +111,14 @@ startup, before the lock or any GitHub call. If another issue is claimed
 error), it writes the `STOP` sentinel in `state_dir`, so a later start dispatches nothing.
 A second start that loses the lock race writes nothing. SIGKILL or power loss skip the
 sentinel; touch `STOP` by hand after an unclean exit. To run again, remove the key and delete `STOP` (or use `--clear-halt`).
+
+### Non-interactive runner controls
+
+The supervisor supports non-interactive execution, inspection, and shutdown without the web terminal:
+- **Status check**: `python3 scripts/queue_runner.py --config scripts/config/twt-queue.json --status`
+- **Stop runner**: `python3 scripts/queue_runner.py --config scripts/config/twt-queue.json --stop` (places `STOP` marker in `state_dir`)
+- **Single-issue run**: `python3 scripts/queue_runner.py --config scripts/config/twt-queue.json --only-issue owner/repo#N` (unlinks existing `STOP` marker, executes the bounded run, and drops a terminal `STOP` marker when complete)
+- **Proof check**: `python3 scripts/queue_runner.py --config scripts/config/twt-queue.json --proof [owner/repo#N]` (verifies gateway ceiling feature, spend cap, receipts, and prints Sheet claim/result rows)
 
 ## Dispatch gate
 

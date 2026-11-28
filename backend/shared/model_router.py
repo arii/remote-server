@@ -393,6 +393,8 @@ def resolve_llm(prefer=None):
         raise RuntimeError(
             "Ollama unreachable at " + _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
         )
+    if not strict_ollama and _env("TWT_BASE_URL"):
+        return _note_substitution(_twt_spec(), requested)
     if ollama_reachable():
         return _note_substitution(_ollama_spec(), requested)
     if strict_ollama:
@@ -592,8 +594,7 @@ PROFILE_PROVIDERS = {
 }
 
 
-STAGE_NEBIUS_MODELS = dict.fromkeys(("coder", "spec", "audit"), "zai-org/GLM-5.3-Flash")
-STAGE_NVIDIA_MODELS = dict.fromkeys(("coder", "spec", "audit"), "z-ai/glm-5.3-flash")
+PIPELINE_STAGES = frozenset(("coder", "spec", "audit"))
 
 
 def _gateway_strong_models():
@@ -628,7 +629,7 @@ def _gateway_strong_models():
 def preflight_gateway(spec=None, expected_sha=None, stage=None):
     """Preflight check for TwT gateway capabilities and provenance before paid inference."""
     spec = dict(spec) if spec else resolve_llm()
-    if stage is not None and stage not in STAGE_NEBIUS_MODELS:
+    if stage is not None and stage not in PIPELINE_STAGES:
         raise ValueError(f"unknown pipeline model stage: {stage}")
     if spec.get("provider") != "twt":
         return
@@ -642,14 +643,18 @@ def preflight_gateway(spec=None, expected_sha=None, stage=None):
         dict(spec.get("provider_models") or {}) if is_default_route else {}
     )
     if stage is not None and not provider_models and is_default_route:
-        provider_models = {
-            "nvidia": _env(
-                f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
-            ),
-            "nebius": _env(
-                f"TWT_{stage.upper()}_NEBIUS_MODEL", STAGE_NEBIUS_MODELS[stage]
-            ),
-        }
+        for provider_name in (
+            "nvidia",
+            "nebius",
+            "google",
+            "groq",
+            "openrouter",
+            "sambanova",
+            "cloudflare",
+        ):
+            override = _env(f"TWT_{stage.upper()}_{provider_name.upper()}_MODEL")
+            if override:
+                provider_models[provider_name] = override
     extra = {}
     if model == TWT_STRONG_ROUTE:
         # route:strong is resolved gateway-side and is absent from /v1/models;
@@ -679,21 +684,16 @@ def build_chat_model(
     per-caller output budget, clamped to PIPELINE_MAX_TOKENS.
     """
     spec = dict(spec) if spec else resolve_llm()
-    if stage is not None and stage not in STAGE_NEBIUS_MODELS:
+    if stage is not None and stage not in PIPELINE_STAGES:
         raise ValueError(f"unknown pipeline model stage: {stage}")
     is_twt_default = (
         spec.get("provider") == "twt" and spec.get("model") in TWT_DEFAULT_ROUTES
     )
     if is_twt_default and stage is not None:
-        provider_models = {
-            "nvidia": _env(
-                f"TWT_{stage.upper()}_NVIDIA_MODEL", STAGE_NVIDIA_MODELS[stage]
-            ),
-            "nebius": _env(
-                f"TWT_{stage.upper()}_NEBIUS_MODEL", STAGE_NEBIUS_MODELS[stage]
-            ),
-        }
+        provider_models = {}
         for provider_name in (
+            "nvidia",
+            "nebius",
             "google",
             "groq",
             "openrouter",
@@ -703,8 +703,11 @@ def build_chat_model(
             override = _env(f"TWT_{stage.upper()}_{provider_name.upper()}_MODEL")
             if override:
                 provider_models[provider_name] = override
-        spec["provider_models"] = provider_models
-        spec["provider_reasoning_effort"] = dict.fromkeys(("nvidia", "nebius"), "low")
+        if provider_models:
+            spec["provider_models"] = provider_models
+        else:
+            spec.pop("provider_models", None)
+        spec.pop("provider_reasoning_effort", None)
     elif spec.get("provider") == "twt":
         spec.pop("provider_models", None)
         spec.pop("provider_reasoning_effort", None)

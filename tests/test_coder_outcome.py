@@ -58,7 +58,7 @@ class TestCoderFallback(unittest.TestCase):
                 ) as attempt,
                 mock.patch.dict(
                     os.environ,
-                    {"S5_LOCAL_ONLY": "0", "CODER_FALLBACK_MODEL": "nebius/custom"},
+                    {"S5_LOCAL_ONLY": "0"},
                 ),
             ):
                 self.assertEqual(
@@ -66,8 +66,11 @@ class TestCoderFallback(unittest.TestCase):
                 )
                 self.assertEqual(attempt.call_count, 2)
                 self.assertEqual(attempt.call_args.args[3], "thread-fallback")
+                # The one-shot TwT fallback retries at the strong tier on the
+                # gateway strong route, not a configured fallback model.
+                self.assertEqual(attempt.call_args.kwargs["model_tier"], "strong")
                 self.assertEqual(
-                    attempt.call_args.kwargs["fallback_model"], "nebius/custom"
+                    attempt.call_args.kwargs["model_override"], "route:strong"
                 )
                 self.assertEqual(
                     attempt.call_args.kwargs["prior_files"], ("result.txt",)
@@ -79,7 +82,6 @@ class TestCoderFallback(unittest.TestCase):
             (self.cap_error(model="nebius/explicit"), {}, {}),
             (self.cap_error(limit=12), {"repair": True}, {}),
             (self.cap_error(), {}, {"S5_LOCAL_ONLY": "1"}),
-            (self.cap_error(), {}, {"CODER_FALLBACK_MODEL": ""}),
             (RuntimeError("BLOCKED: repeated unchanged read"), {}, {}),
             (TimeoutError("timeout"), {}, {}),
         ]
@@ -92,7 +94,6 @@ class TestCoderFallback(unittest.TestCase):
                     os.environ,
                     {
                         "S5_LOCAL_ONLY": "0",
-                        "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
                         **overrides,
                     },
                 ),
@@ -121,7 +122,6 @@ class TestCoderFallback(unittest.TestCase):
                     os.environ,
                     {
                         "S5_LOCAL_ONLY": "0",
-                        "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
                     },
                 ),
                 mock.patch.object(
@@ -208,13 +208,14 @@ class TestCoderFallback(unittest.TestCase):
                         self.assertEqual(limits, [3, 1])
 
     def test_paid_failure_is_not_retried(self):
-        error = self.cap_error(model=coder.DEFAULT_FALLBACK_MODEL)
+        # A cap error on the strong-route fallback is not retried: only the
+        # initial default-route exhaustion gets one fallback attempt.
+        error = self.cap_error(model="route:strong")
         with (
             mock.patch.dict(
                 os.environ,
                 {
                     "S5_LOCAL_ONLY": "0",
-                    "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
                 },
             ),
             mock.patch.object(
@@ -246,7 +247,6 @@ class TestCoderFallback(unittest.TestCase):
                         os.environ,
                         {
                             "S5_LOCAL_ONLY": "0",
-                            "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
                         },
                     ),
                     mock.patch.object(coder, "latest_plan", return_value=plan),
@@ -303,7 +303,7 @@ class TestCoderFallback(unittest.TestCase):
                 model_router, "build_chat_model", return_value=(None, spec)
             ) as build,
         ):
-            coder.build_fallback_model(coder.DEFAULT_FALLBACK_MODEL)
+            coder.build_fallback_model("nebius/zai-org/GLM-5.3-Flash")
         resolve.assert_called_once_with(prefer="twt")
         self.assertNotIn("stage", build.call_args.kwargs)
         sent = build.call_args.kwargs["spec"]
@@ -317,7 +317,7 @@ class TestCoderFallback(unittest.TestCase):
             mock.patch.object(model_router, "build_chat_model") as build,
         ):
             with self.assertRaisesRegex(RuntimeError, "requires TwT"):
-                coder.build_fallback_model(coder.DEFAULT_FALLBACK_MODEL)
+                coder.build_fallback_model("nebius/zai-org/GLM-5.3-Flash")
             build.assert_not_called()
 
     def writing_model(self, prefix):
@@ -369,25 +369,25 @@ class TestCoderFallback(unittest.TestCase):
                 os.environ,
                 {
                     "S5_LOCAL_ONLY": "0",
-                    "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
                 },
             ),
+            # The TwT fallback rebuilds through build_model at the strong
+            # tier (#1811): initial default-route build, then one strong
+            # rebuild for the fallback thread.
             mock.patch.object(
                 coder,
                 "build_model",
-                return_value=(
-                    self.writing_model("free"),
-                    {"provider": "twt", "model": "route:default"},
-                ),
+                side_effect=[
+                    (
+                        self.writing_model("free"),
+                        {"provider": "twt", "model": "route:default"},
+                    ),
+                    (
+                        paid,
+                        {"provider": "twt", "model": "route:strong"},
+                    ),
+                ],
             ) as initial,
-            mock.patch.object(
-                coder,
-                "build_fallback_model",
-                return_value=(
-                    paid,
-                    {"provider": "twt", "model": coder.DEFAULT_FALLBACK_MODEL},
-                ),
-            ) as fallback,
             mock.patch.object(
                 deep_chat,
                 "open_checkpointer",
@@ -413,8 +413,9 @@ class TestCoderFallback(unittest.TestCase):
             self.assertEqual(result[0], "DONE #1550")
             self.assertTrue(result[6])
             self.assertEqual(len(list(Path(root).glob("free-*.txt"))), 20)
-            initial.assert_called_once()
-            fallback.assert_called_once_with(coder.DEFAULT_FALLBACK_MODEL)
+            self.assertEqual(initial.call_count, 2)
+            self.assertIsNone(initial.call_args_list[0].args[0])
+            self.assertEqual(initial.call_args_list[1].args[0], "route:strong")
 
     def test_real_paid_graph_has_its_own_20_call_limit(self):
         from langchain.agents.middleware.model_call_limit import (
@@ -428,25 +429,25 @@ class TestCoderFallback(unittest.TestCase):
                 os.environ,
                 {
                     "S5_LOCAL_ONLY": "0",
-                    "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
                 },
             ),
+            # The TwT fallback rebuilds through build_model at the strong
+            # tier (#1811): initial default-route build, then one strong
+            # rebuild for the fallback thread.
             mock.patch.object(
                 coder,
                 "build_model",
-                return_value=(
-                    self.writing_model("free"),
-                    {"provider": "twt", "model": "default"},
-                ),
+                side_effect=[
+                    (
+                        self.writing_model("free"),
+                        {"provider": "twt", "model": "default"},
+                    ),
+                    (
+                        self.writing_model("paid"),
+                        {"provider": "twt", "model": "route:strong"},
+                    ),
+                ],
             ),
-            mock.patch.object(
-                coder,
-                "build_fallback_model",
-                return_value=(
-                    self.writing_model("paid"),
-                    {"provider": "twt", "model": coder.DEFAULT_FALLBACK_MODEL},
-                ),
-            ) as fallback,
             mock.patch.object(
                 deep_chat,
                 "open_checkpointer",
@@ -463,7 +464,6 @@ class TestCoderFallback(unittest.TestCase):
                 coder.run_coder(root, "implement", "system", "thread", 10)
             self.assertEqual(raised.exception.thread_count, 20)
             self.assertEqual(len(list(Path(root).glob("paid-*.txt"))), 20)
-            fallback.assert_called_once()
 
     def test_remaining_issue_budget_prevents_paid_dispatch(self):
         from scripts import queue_runner
@@ -490,13 +490,16 @@ class TestCoderFallback(unittest.TestCase):
                     os.environ,
                     {
                         "S5_LOCAL_ONLY": "0",
-                        "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
                     },
                 ),
                 mock.patch.object(
                     coder,
                     "build_model",
-                    return_value=(None, {"provider": "twt", "model": "default"}),
+                    side_effect=lambda override=None: (
+                        queue_runner.check_budget(None, 0.5)
+                        if override
+                        else (None, {"provider": "twt", "model": "default"})
+                    ),
                 ),
                 mock.patch.object(coder, "build_agent", side_effect=build),
                 mock.patch.object(
@@ -562,26 +565,28 @@ class TestCoderFallback(unittest.TestCase):
 
                 return SimpleNamespace(invoke=invoke)
 
-            def paid(model):
+            def paid(override):
                 row = json.loads(path.read_text())
                 self.assertEqual(row["cost_usd"], 0.01)
                 self.assertIn("ModelCallLimitExceededError", row["extra"]["error"])
-                return None, {"provider": "twt", "model": model}
+                # The fallback rebuilds at the strong tier on the gateway
+                # strong route (#1811).
+                self.assertEqual(override, "route:strong")
+                return None, {"provider": "twt", "model": "route:strong"}
+
+            def fake_build(override=None):
+                if override:
+                    return paid(override)
+                return None, {"provider": "twt", "model": "default"}
 
             with (
                 mock.patch.dict(
                     os.environ,
                     {
                         "S5_LOCAL_ONLY": "0",
-                        "CODER_FALLBACK_MODEL": coder.DEFAULT_FALLBACK_MODEL,
                     },
                 ),
-                mock.patch.object(
-                    coder,
-                    "build_model",
-                    return_value=(None, {"provider": "twt", "model": "default"}),
-                ),
-                mock.patch.object(coder, "build_fallback_model", side_effect=paid),
+                mock.patch.object(coder, "build_model", side_effect=fake_build),
                 mock.patch.object(coder, "build_agent", side_effect=agent),
                 mock.patch.object(coder, "verify_rounds", return_value=0),
                 mock.patch.object(

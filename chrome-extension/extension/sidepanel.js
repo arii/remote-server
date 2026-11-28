@@ -4,8 +4,8 @@
 // ============================================================================
 
 import { matchField } from "./lib/matcher.js";
-import { createHybridPromptSession } from "./lib/hybrid-session.js";
-import { deduplicateVault } from "./lib/vault.js";
+import { createHybridPromptSession, getHybridStatus } from "./lib/hybrid-session.js";
+import { deduplicateVault, sanitizeVaultEntries, describeVaultImport } from "./lib/vault.js";
 import { MAX_CHUNKS_PER_PAGE, MAX_CHUNKS_PER_RUN, PROFILE_FACTS_SCHEMA, collectSourcePages, extractFactsFromText, htmlToText } from "./lib/profile-ingest.js";
 import {
   askTabEntries,
@@ -17,7 +17,8 @@ import {
 import { MAX_DRIVE_FILES_PER_RUN } from "./lib/drive-import.js";
 import { improvementSummary } from "./lib/improvement-summary.js";
 import { errorInfo as syncErrorInfo, formatSyncFailure } from "./lib/drive-sync.js";
-import { INTERNALS_URL, MODEL_APIS, describeModelError, formatModelError, makeDownloadMonitor, modelProgressState } from "./lib/model-download.js";
+import { INTERNALS_URL, MODEL_APIS, collapseRepeatedErrors, describeModelError, describeTaskFailure, formatModelError, makeDownloadMonitor, modelProgressState, redactSecrets } from "./lib/model-download.js";
+import { buildTraceEntry } from "./lib/trace.js";
 import { modelPanelView, observeView } from "./lib/panel-state.js";
 import { getPrompt, guidanceChanged, PROMPT_IDS } from "./lib/prompts.js";
 import {
@@ -263,14 +264,7 @@ const Telemetry = {
   },
 
   logTrace({ type, title, durationMs, details }) {
-    const entry = {
-      id: Date.now() + Math.random(),
-      ts: new Date().toLocaleTimeString(),
-      type, // 'SCAN' | 'HYDRATE' | 'LLM_PROMPT' | 'OBSERVER' | 'ERROR'
-      title,
-      durationMs: Math.round(durationMs || 0),
-      details: typeof details === "string" ? details : JSON.stringify(details, null, 2)
-    };
+    const entry = buildTraceEntry({ type, title, durationMs, details });
     this.traces.unshift(entry);
     if (this.traces.length > 40) this.traces.pop();
     this.renderTraces();
@@ -364,9 +358,9 @@ async function runObservablePrompt(session, prompt, options = {}) {
   } catch (err) {
     Telemetry.logTrace({
       type: "ERROR",
-      title: `${label} Failed: ${err.message}`,
+      title: `${label} Failed: ${redactSecrets(String(err.message))}`,
       durationMs: performance.now() - t0,
-      details: err.stack || err.message
+      details: redactSecrets(String(err.stack || err.message))
     });
     throw err;
   }
@@ -511,12 +505,22 @@ async function checkBuiltInAIStatus() {
     badgeText.textContent = "AI Unavailable";
   }
 
+  const items = [];
   for (const api of MODEL_APIS) {
     renderModelProgress(api.key, modelProgressState(report[api.key]));
-    if (report[api.key] === "unavailable") {
-      renderModelError(api.key, describeModelError(null, { availability: "unavailable" }));
-    } else if (!failedModelDetails[api.key]) {
-      renderModelError(api.key, null);
+    const text = report[api.key] === "unavailable"
+      ? formatModelError(describeModelError(null, { availability: "unavailable" }))
+      : "";
+    items.push({ key: api.key, label: MODEL_API_LABEL[api.key] || api.key, text });
+  }
+  const collapsed = collapseRepeatedErrors(items);
+  for (const item of collapsed) {
+    const el = document.getElementById(`model-error-${item.key}`);
+    if (item.text && el) {
+      el.hidden = false;
+      el.textContent = item.text;
+    } else if (!failedModelDetails[item.key]) {
+      renderModelError(item.key, null);
     }
   }
 
@@ -542,6 +546,12 @@ function applyModelView(report) {
   document.getElementById("prompt-cta-text").textContent = view.ctaText;
 }
 
+const MODEL_API_LABEL = {
+  languageModel: "Prompt API",
+  summarizer: "Summarizer",
+  writer: "Writer",
+};
+
 function renderModelError(key, detail) {
   const el = document.getElementById(`model-error-${key}`);
   if (!el) return;
@@ -561,11 +571,19 @@ function renderModelProgress(key, { state, pct, label }, errorText = "") {
 
 // Reflect configured Firebase AI Logic hybrid mode in the panel so it is
 // never implied that all processing is on-device once cloud fallback exists.
-function showHybridModeLine() {
+function showHybridModeLine(hybrid) {
   const el = document.getElementById("hybrid-mode-line");
   if (!el) return;
-  el.textContent = "Hybrid mode active: Firebase AI Logic configured. Prompts prefer the on-device model and may fall back to cloud inference via Firebase.";
+  let text = "Hybrid mode active: Firebase AI Logic configured. Prompts prefer the on-device model and may fall back to cloud inference via Firebase.";
+  if (!getHybridStatus().appCheckActive) {
+    text += " App Check is not active in this build, so a cloud fallback may be rejected if your Firebase project enforces it.";
+  }
+  el.textContent = text;
   el.style.display = "";
+  hybrid.onError = (msg) => {
+    el.textContent = `${text} ${msg}`;
+    el.style.display = "";
+  };
 }
 
 async function createPromptSession(onProgress, options = {}) {
@@ -586,7 +604,7 @@ async function createPromptSession(onProgress, options = {}) {
     return null;
   });
   if (hybrid) {
-    showHybridModeLine();
+    showHybridModeLine(hybrid);
     return hybrid;
   }
 
@@ -781,7 +799,7 @@ document.getElementById("btn-ask")?.addEventListener("click", async () => {
     box.textContent = lastAskAnswer;
     if (lastAskAnswer.trim()) saveBtn.style.display = "";
   } catch (err) {
-    box.textContent = signal.aborted ? "Stopped." : `Ask failed: ${err.message}`;
+    box.textContent = signal.aborted ? "Stopped." : describeTaskFailure(err, "Ask");
   } finally {
     session?.destroy();
     Telemetry.endTask();
@@ -833,7 +851,7 @@ document.getElementById("btn-run-sandbox").addEventListener("click", async () =>
     box.textContent = `[${elapsed}ms local inference]\n\n${result}`;
     session.destroy();
   } catch (err) {
-    box.textContent = `Prompt Error: ${err.message}`;
+    box.textContent = describeTaskFailure(err, "Prompt");
   }
 });
 
@@ -1059,7 +1077,7 @@ async function suggestGuidanceImprovements() {
       list.append(row);
     }
   } catch (err) {
-    status.textContent = `Suggestion failed: ${err.message}`;
+    status.textContent = describeTaskFailure(err, "Suggestion");
   } finally {
     session?.destroy?.();
   }
@@ -1101,7 +1119,7 @@ document.getElementById("btn-scan-page").addEventListener("click", async () => {
     preview.textContent = JSON.stringify(doc, null, 2);
     actionsRow.style.display = "flex";
   } catch (err) {
-    preview.textContent = `Scan failed: ${err.message}\nMake sure you are on an http/https web page and refresh the page if the extension was just installed.`;
+    preview.textContent = `${describeTaskFailure(err, "Scan")}\nMake sure you are on an http/https web page and refresh the page if the extension was just installed.`;
   }
 });
 
@@ -1135,7 +1153,7 @@ document.getElementById("btn-run-ux-audit")?.addEventListener("click", async () 
     const report = await sendToActiveTab({ action: "RUN_UX_AUDIT" });
     preview.textContent = JSON.stringify(report, null, 2);
   } catch (err) {
-    preview.textContent = "UX Audit Error: " + err.message;
+    preview.textContent = describeTaskFailure(err, "UX Audit");
   }
 });
 
@@ -1378,12 +1396,12 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       statusBox.textContent = `Auto-Fill Completed (Instant Pre-Draft Used)!\n\n` + JSON.stringify(stage1Result, null, 2);
     }
   } catch (err) {
-    statusBox.textContent = `Auto-Fill Error: ${err.message}`;
+    statusBox.textContent = describeTaskFailure(err, "Auto-Fill");
     Telemetry.logTrace({
       type: "ERROR",
       title: "Auto-Fill Error",
       durationMs: 0,
-      details: err.message
+      details: redactSecrets(err.message)
     });
   } finally {
     Telemetry.endTask();
@@ -1631,11 +1649,20 @@ document.getElementById("file-import-vault").addEventListener("change", async (e
     const text = await e.target.files[0].text();
     const imported = JSON.parse(text);
     if (!Array.isArray(imported)) throw new Error("Expected an array of context entries.");
+    const { userContextVault } = await chrome.storage.local.get(["userContextVault"]);
+    const d = describeVaultImport(userContextVault, imported);
+    if (d.importCount === 0) {
+      alert("No valid entries were found in that file. Your vault was not changed.");
+      return;
+    }
+    if (!confirm(d.message)) return;
     await chrome.runtime.sendMessage({ type: "vault:replace", entries: imported });
     renderVault();
-    alert("Vault successfully restored!");
+    alert(d.dropped === 0 ? "Vault successfully restored!" : `Vault restored. ${d.dropped} invalid entr${d.dropped === 1 ? "y was" : "ies were"} skipped.`);
   } catch (err) {
     alert("Failed to import vault JSON: " + err.message);
+  } finally {
+    e.target.value = "";
   }
 });
 
