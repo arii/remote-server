@@ -111,6 +111,15 @@ describe("extractFactsFromText", () => {
     expect(factSupport({ key: "Sponsorship required", proposedValue: "no", category: "identity" }, chunk)).toBeNull();
     expect(factSupport({ key: "Relocation", proposedValue: "no", category: "identity" }, chunk)).toBe("Relocation: no.");
   });
+  it("rejects false associations: unrelated no, negated skill, bare yes/no", () => {
+    const f = (key, v, chunk) => factSupport({ key, proposedValue: v, category: "custom" }, chunk);
+    expect(f("Sponsorship required", "No", "Our sponsorship program is great. I have no pets.")).toBeNull();
+    expect(f("Programming language", "Python", "I have no Python experience.")).toBeNull();
+    expect(f("Programming language", "Python", "I never used Python in production.")).toBeNull();
+    expect(f("Work authorization", "Yes", "Yes, we offer remote work. Authorization is handled by HR.")).toBeNull();
+    expect(f("Relocation", "no", "Willing to relocate: no.")).toBe("Willing to relocate: no.");
+    expect(f("Programming language", "Python", "She writes Python daily.")).toBe("She writes Python daily.");
+  });
   it("stops when aborted", async () => {
     const ctrl = new AbortController();
     ctrl.abort();
