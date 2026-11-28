@@ -1193,7 +1193,7 @@ function renderSuggestionReview(suggestions, doc, vault = []) {
     const filled = n("accepted") + n("confirmed");
     const count = `${suggestions.length} suggestion${suggestions.length === 1 ? "" : "s"}`;
     h.textContent = n("pending") === 0
-      ? `All ${count} reviewed: ${filled} filled by you, ${n("rejected")} rejected, 0 waiting for you.`
+      ? `All ${count} reviewed: ${filled} filled by you, ${n("rejected")} rejected, 0 waiting for you. Nothing is submitted: check the page, then submit it yourself.`
       : `${count}: ${n("pending")} waiting for you, ${filled} filled by you, ${n("rejected")} rejected. Waiting ones are not filled until you accept them.`;
     const sb = document.getElementById("autofill-status-box");
     if (sb) {
@@ -1938,7 +1938,7 @@ async function renderObserverQueue() {
         </div>
         <div style="font-weight:700; color:white; font-size:11.5px; margin: 2px 0;">${escapeHtml(delta.key)}</div>
         ${delta.previousValue ? `<div style="font-size:10.5px; color:var(--rose); text-decoration:line-through;">Previous: ${escapeHtml(delta.previousValue)}</div>` : ""}
-        <div style="font-size:11px; color:var(--accent-light); font-weight:600;">Proposed: ${escapeHtml(delta.proposedValue)}</div>
+        <div style="font-size:11px; color:var(--accent-light); font-weight:600;">Add to vault: ${escapeHtml(delta.proposedValue)}</div>
         <div style="font-size:10px; color:var(--text-muted); font-style:italic; margin-top:2px;">${escapeHtml(delta.evidenceSnippet || "")}</div>
         <div class="btn-row" style="margin-top:6px;">
           <button class="btn btn-primary btn-sm btn-approve-delta" data-delta-id="${escapeHtml(delta.deltaId)}">Approve & Merge</button>
