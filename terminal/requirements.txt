@@ -1,7 +1,7 @@
 # Pinned dependencies for terminal environment (mirrors backend/requirements.txt + pytest)
-fastapi==0.163.1
+fastapi==0.165.0
 uvicorn==0.54.0
-pydantic==2.14.3
+pydantic==2.14.4
 httpx==0.28.1
 PyYAML==6.0.3
 pytest==9.1.1
