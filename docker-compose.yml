@@ -545,6 +545,23 @@ services:
     logging: *default-logging
     restart: unless-stopped
 
+  twt:
+    build:
+      context: ../repos/boomtick/tokens-with-taste
+      dockerfile: Dockerfile
+    image: remote-twt:local
+    user: "1000:1000"
+    env_file:
+      - path: twt.env
+        required: false
+    environment:
+      TWT_DISABLED_PROVIDERS: ""
+      TWT_STRONG_MODELS: '{"nebius":"nebius/Qwen/Qwen3-235B-A22B-Instruct-2507","google":"google/gemini-3.8-flash","groq":"groq/openai/gpt-oss-120b","openrouter":"openrouter/anthropic/claude-opus-5.5"}'
+    volumes:
+      - twt-data:/data
+      - ${HOST_HOME:-/home/ari}/twt/run:/run/twt
+    restart: unless-stopped
+
 volumes:
   ollama-data:
   pi-data:
@@ -556,6 +573,7 @@ volumes:
   buttons-data:
   code-server-data:
   code-server-config:
+  twt-data:
 
 # ---------------------------------------------------------------------------
 # ON HOLD — remaining agent harness decisions deferred (2026-10-22).
