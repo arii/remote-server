@@ -50,6 +50,7 @@ import time
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
+from pydantic import ValidationError
 
 from backend.shared import cli
 
@@ -2741,6 +2742,34 @@ def tier_model(model_tier, brief="", catalog=None):
 CONTINUE_PROMPT = "Continue; your changes are preserved."
 
 
+def is_malformed_tool_args(error):
+    """True when error is (or wraps) a tool_calls args ValidationError.
+
+    A model that emits a JSON string instead of a dict for
+    ``AIMessage.tool_calls.0.args`` fails message construction with a
+    Pydantic ValidationError whose location path runs through
+    ``tool_calls`` and ``args``. Only that shape counts: any other
+    validation failure keeps the existing non-retryable behavior.
+    """
+    seen = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ValidationError):
+            try:
+                details = current.errors()
+            except Exception:  # noqa: BLE001 - malformed error payload
+                details = ()
+            for detail in details:
+                loc = detail.get("loc", ()) if isinstance(detail, dict) else ()
+                if "tool_calls" in loc and "args" in loc:
+                    return True
+        current = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
+    return False
+
+
 def run_coder(
     worktree,
     brief,
@@ -2818,6 +2847,7 @@ def run_coder(
     turn_brief, floor, prior_files = brief, 0, ()
     twt_errors = []
     stall_escalated = False
+    malformed_escalated = False
 
     def attempt(*args, **kwargs):
         """One TwT attempt; record non-cap failures for the CLI hook."""
@@ -2868,6 +2898,27 @@ def run_coder(
                     kwargs["model_tier"] = "strong"
                     kwargs["model_override"] = "route:strong"
                     thread = f"{thread}-stall-escalate"
+                    continue
+                raise
+            except Exception as error:
+                # A model emitting a JSON string for tool_calls args fails
+                # message construction; the strong tier gets one chance to
+                # retry with well-formed calls instead of a deterministic block.
+                if (
+                    is_malformed_tool_args(error)
+                    and not malformed_escalated
+                    and kwargs.get("model_tier") != "strong"
+                    and (call_budget is None or left() > 0)
+                    and time.monotonic() < deadline
+                ):
+                    malformed_escalated = True
+                    meter["malformed_escalations"] = meter.get(
+                        "malformed_escalations", 0
+                    ) + 1
+                    meter["strong_escalations"] = meter.get("strong_escalations", 0) + 1
+                    kwargs["model_tier"] = "strong"
+                    kwargs["model_override"] = "route:strong"
+                    thread = f"{thread}-malformed-escalate"
                     continue
                 raise
         error = capped
