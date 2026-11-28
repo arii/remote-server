@@ -6,6 +6,8 @@
 // (non-timestamp) IDs sort first so they win the merge.
 // ============================================================================
 
+import { isCommitmentQuery } from "./answer-policy.js";
+
 export function sanitizeVaultEntries(raw) {
   if (!Array.isArray(raw)) return { entries: [], dropped: 0 };
   const entries = [];
@@ -61,7 +63,12 @@ export function deduplicateVault(entries) {
     if (!normVal) continue;
 
     // If another entry already has the exact same normalized value and overlapping key/category, merge aliases instead of duplicating
+    // Commitment and user-confirmed entries never merge: an identical "Yes"/"No"
+    // does not mean the same question, and merging would spread aliases (and a
+    // confirmation) onto other answers.
+    const protectedEntry = (e) => !!e.userConfirmation || isCommitmentQuery(e.key);
     const existing = cleaned.find((c) => {
+      if (protectedEntry(c) || protectedEntry(item)) return false;
       const cPair = pairFor(c);
       return cPair.val === normVal && (cPair.key === normKey || c.category === item.category || item.tags?.includes("observed"));
     });
