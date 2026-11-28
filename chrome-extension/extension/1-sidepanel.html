@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LocalForm AI — Side Panel</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <!-- HEADER -->
+  <header class="header">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div>
+        <div class="brand-title">LocalForm AI</div>
+      </div>
+    </div>
+    <div id="ai-status-badge" class="badge badge-downloadable">
+      <span class="dot">●</span>
+      <span id="ai-status-text">Checking AI...</span>
+    </div>
+  </header>
+
+  <!-- Global Live Activity & Token Bar (Sticky below header) -->
+  <div id="ux-activity-bar" style="display:none; background:#0f172a; border-bottom:1px solid #3b82f6; padding:8px 12px; font-size:11px; margin:-12px -12px 12px -12px; position:sticky; top:0; z-index:100;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <span class="lf-spinner"></span>
+        <strong id="ux-stage-label" style="color:#93c5fd;">Initializing...</strong>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span id="ux-elapsed-timer" style="font-family:monospace; color:#38bdf8;">0.0s</span>
+        <button id="btn-abort-ai" class="btn btn-danger" style="width:auto; padding:1px 6px; font-size:10px; margin:0;">Abort</button>
+      </div>
+    </div>
+    <!-- Progress Bar Track -->
+    <div style="width:100%; height:4px; background:#1e293b; border-radius:2px; overflow:hidden;">
+      <div id="ux-progress-fill" style="width:15%; height:100%; background:linear-gradient(90deg, #3b82f6, #10b981); transition:width 0.2s ease;"></div>
+    </div>
+    <div id="ux-stream-preview" style="font-family:monospace; font-size:10px; color:#94a3b8; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+  </div>
+
+  <!-- NAVIGATION TABS -->
+  <nav class="nav">
+    <button data-tab="tab-ai" class="active">
+      <span>AI Model</span>
+    </button>
+    <button data-tab="tab-export">
+      <span>Export</span>
+    </button>
+    <button data-tab="tab-fill">
+      <span>Auto-Fill</span>
+    </button>
+    <button data-tab="tab-vault">
+      <span>Vault</span>
+    </button>
+    <button data-tab="tab-observer">
+      <span id="tab-observer-label">Observer</span>
+    </button>
+  </nav>
+
+  <!-- TAB 1: AI MODEL BOOTSTRAPPER (PHASE 1) -->
+  <main id="tab-ai" class="tab-pane">
+    <div class="card">
+      <div class="card-title">Chrome Built-in AI (Gemini Nano)</div>
+      <div class="card-desc">
+        On-device via Chrome's native Prompt and Summarizer APIs by default. With the optional Firebase AI Logic config, prompts run hybrid: on-device first, cloud fallback to Gemini via Firebase.
+      </div>
+
+      <div id="model-ready-line" class="card-desc" style="display:none;"></div>
+      <div id="hybrid-mode-line" class="card-desc" style="display:none;"></div>
+
+      <div id="download-section">
+      <div class="status-grid">
+        <div class="status-pill">
+          <div class="label">Prompt API</div>
+          <div id="pill-prompt-status" class="val">...</div>
+        </div>
+        <div class="status-pill">
+          <div class="label">Summarizer</div>
+          <div id="pill-summarizer-status" class="val">...</div>
+        </div>
+        <div class="status-pill">
+          <div class="label">Writer API</div>
+          <div id="pill-writer-status" class="val">...</div>
+        </div>
+      </div>
+
+      <div id="download-progress-container">
+        <div class="model-progress-row" data-model="languageModel">
+          <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+            <span>Prompt (Gemini Nano)</span>
+            <span id="download-text-languageModel">...</span>
+          </div>
+          <div class="progress-bar-container"><div id="download-fill-languageModel" class="progress-bar" style="width: 0%;"></div></div>
+          <pre id="model-error-languageModel" class="model-error" hidden></pre>
+        </div>
+        <div class="model-progress-row" data-model="summarizer">
+          <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+            <span>Summarizer</span>
+            <span id="download-text-summarizer">...</span>
+          </div>
+          <div class="progress-bar-container"><div id="download-fill-summarizer" class="progress-bar" style="width: 0%;"></div></div>
+          <pre id="model-error-summarizer" class="model-error" hidden></pre>
+        </div>
+        <div class="model-progress-row" data-model="writer">
+          <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+            <span>Writer</span>
+            <span id="download-text-writer">...</span>
+          </div>
+          <div class="progress-bar-container"><div id="download-fill-writer" class="progress-bar" style="width: 0%;"></div></div>
+          <pre id="model-error-writer" class="model-error" hidden></pre>
+        </div>
+      </div>
+
+      <button id="btn-bootstrap-model" class="btn btn-primary">
+        Initialize / Download Built-in Models
+      </button>
+      </div>
+
+      <details id="model-details">
+        <summary class="card-desc">Model details</summary>
+        <button id="btn-open-on-device-internals" class="btn">Open chrome://on-device-internals</button>
+        <div class="card-desc">Model status and logs: chrome://on-device-internals. Prompt API is stable in desktop Chrome extensions from 138; model download and hardware requirements still apply. Writer availability is separate.</div>
+
+        <pre id="model-details-box">Checking capabilities...</pre>
+      </details>
+    </div>
+
+    <div id="prompt-cta" class="card" style="display:none;">
+      <div id="prompt-cta-text" class="card-desc"></div>
+    </div>
+
+    <div id="prompt-tools">
+
+    <div class="card">
+      <div class="card-title">Ask</div>
+      <div class="card-desc">Ask anything. The on-device model answers only from the sources you tick.</div>
+      <textarea id="ask-question" rows="3" placeholder="e.g. Summarize this page, or what do I still need to fill in here?"></textarea>
+      <label class="card-desc"><input type="checkbox" id="ask-src-page" checked> Current page</label>
+      <label class="card-desc"><input type="checkbox" id="ask-src-vault"> My vault facts</label>
+      <label id="ask-src-target-label" class="card-desc" style="display:none;"><input type="checkbox" id="ask-src-target"> Target context</label>
+      <details id="ask-tabs-details">
+        <summary class="card-desc">Other open tabs</summary>
+        <div id="ask-tab-list"></div>
+      </details>
+      <div class="btn-row">
+        <button id="btn-ask" class="btn btn-primary">Ask</button>
+        <button id="btn-ask-stop" class="btn btn-secondary" disabled>Stop</button>
+        <button id="btn-ask-save" class="btn btn-secondary" style="display: none;">Save answer as fact</button>
+      </div>
+      <pre id="ask-answer" style="display: none;"></pre>
+      <div id="ask-sources-used" class="card-desc"></div>
+    </div>
+
+    <details class="card" id="prompt-tuning">
+      <summary class="card-title">Prompt tuning (advanced)</summary>
+      <div class="card-title">Test a prompt</div>
+      <textarea id="sandbox-prompt-input" rows="2" placeholder="Ask on-device Gemini Nano a test question...">Why is local on-device form autofill safer for privacy?</textarea>
+      <div class="btn-row">
+        <button id="btn-run-sandbox" class="btn btn-secondary">Run Test Prompt</button>
+      </div>
+      <pre id="sandbox-response-box" style="display: none;"></pre>
+      <div class="card-desc">Samples: save this input with expectations, then score all saved samples against the current "ask" guidance.</div>
+      <input id="sandbox-expect-contain" type="text" placeholder="Must contain (comma separated)">
+      <input id="sandbox-expect-forbid" type="text" placeholder="Must not contain (comma separated)">
+      <input id="sandbox-expect-words" type="number" min="1" placeholder="Max words">
+      <div class="btn-row">
+        <button id="btn-eval-save" class="btn btn-secondary">Save as sample</button>
+        <button id="btn-eval-run" class="btn btn-secondary">Run samples</button>
+      </div>
+      <div id="sandbox-eval-samples"></div>
+      <div id="sandbox-eval-results" class="card-desc"></div>
+      <div id="sandbox-eval-suggestions"></div>
+
+      <div class="card-title">Prompt Guidance</div>
+      <div class="card-desc">Your guidance is added to every on-device prompt. Format instructions always stay in force.</div>
+      <select id="guidance-target"><option value="global">Global (all prompts)</option></select>
+      <textarea id="guidance-input" rows="3" maxlength="800" placeholder="e.g. Always capture my GitHub and LinkedIn links. Keep answers under 120 words."></textarea>
+      <div class="btn-row">
+        <button id="btn-guidance-save" class="btn btn-primary">Save</button>
+        <button id="btn-guidance-revert" class="btn btn-secondary">Revert last</button>
+        <button id="btn-guidance-suggest" class="btn btn-secondary">Suggest improvements</button>
+      </div>
+      <div id="guidance-suggest-status" class="card-desc"></div>
+      <div id="guidance-suggestions"></div>
+      <div class="card-desc">Effective prompt preview</div>
+      <pre id="guidance-preview"></pre>
+    </details>
+    </div>
+  </main>
+
+  <!-- TAB 2: FORM-EXPORT & FORM-EXPORT++ (PHASES 2 & 4) -->
+  <main id="tab-export" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">Form-Export (v1 & v2)</div>
+      <div class="card-desc">
+        Extracts all form inputs on the active tab into a portable JSON schema with labels, CSS selectors, constraints, and hierarchy.
+      </div>
+
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer;">
+        <input type="checkbox" id="chk-export-plus" checked style="width:auto;" />
+        <span><strong>Enable Form-Export++ (v2):</strong> Include page context, heading hierarchy & AI Summarizer digest</span>
+      </label>
+
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:12px; cursor:pointer;">
+        <input type="checkbox" id="chk-include-values" checked style="width:auto;" />
+        <span>Include currently typed input values in schema</span>
+      </label>
+
+      <button id="btn-scan-page" class="btn btn-primary">
+        Scan Active Tab Forms
+      </button>
+
+      <div class="btn-row" id="export-actions-row" style="display: none;">
+        <button id="btn-download-export-json" class="btn btn-secondary">
+          Download .JSON File
+        </button>
+        <button id="btn-copy-export-json" class="btn btn-subtle">
+          Copy to Clipboard
+        </button>
+      </div>
+
+      <button id="btn-run-ux-audit" class="btn btn-subtle btn-sm" style="margin-top:8px;">
+        🔍 Run UX & Touch Target Audit (Phase 8)
+      </button>
+
+      <pre id="export-preview-box">Click "Scan Active Tab Forms" to inspect schema...</pre>
+    </div>
+  </main>
+
+  <!-- TAB 3: AUTO-FILL & MANUAL IMPORT (PHASES 3 & 6) -->
+  <main id="tab-fill" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">Phase 6: Form-Import++ (1-Click AI Auto-Fill)</div>
+      <div class="card-desc">
+        Scans the page in memory, resolves fields against your User-Context Vault and active Target Context using local Gemini Nano, and populates the form.
+      </div>
+
+      <!-- Active Target Context Indicator in Auto-Fill Tab -->
+      <div id="autofill-target-context-card" style="display:none; border:1px solid #3b82f6; border-radius:6px; background:rgba(30,58,138,0.18); padding:8px 10px; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight:600; font-size:11px; color:#93c5fd;">🎯 Grounded with Target Context</span>
+          <span id="autofill-target-role" style="color:#e2e8f0; font-size:10.5px; font-weight:600;"></span>
+        </div>
+        <div id="autofill-target-desc" style="color:var(--text-muted); font-size:10px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+      </div>
+
+      <!-- Consent Checkbox Control -->
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer; font-size:11px; color:#cbd5e1;">
+        <input type="checkbox" id="chk-agree-consent" checked style="width:auto;" />
+        <span>Auto-check "I agree to terms & privacy policy" checkboxes</span>
+      </label>
+
+      <button id="btn-autofill-now" class="btn btn-primary">
+        ✨ Auto-Fill Active Form with AI
+      </button>
+
+      <pre id="autofill-status-box">Ready to fill active form.</pre>
+      <div id="fill-stats-line" style="color:var(--text-muted); font-size:10.5px; margin-top:6px;"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Phase 3: Manual Form-Import (JSON)</div>
+      <div class="card-desc">
+        Load an exported .json schema file to populate matching fields via React-safe native setters.
+      </div>
+
+      <input type="file" id="file-import-input" accept=".json" style="margin-bottom: 8px;" />
+      <button id="btn-run-manual-import" class="btn btn-subtle">
+        Populate Form from Selected File
+      </button>
+    </div>
+  </main>
+
+  <!-- TAB 4: USER-CONTEXT VAULT (PHASE 5) -->
+  <main id="tab-vault" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">
+        <span>User-Context Vault</span>
+        <span id="vault-count-badge" class="badge badge-available">0 entries</span>
+      </div>
+      <div class="card-desc">
+        Your transparent, private on-device facts and recurring application answers.
+      </div>
+
+      <div class="filter-bar">
+        <input type="text" id="vault-search-input" placeholder="Search keys, values, or tags..." />
+        <select id="vault-category-filter" style="width: 110px;">
+          <option value="all">All</option>
+          <option value="identity">Identity</option>
+          <option value="contact">Contact</option>
+          <option value="location">Location</option>
+          <option value="professional">Professional</option>
+          <option value="social">Social</option>
+          <option value="preferences">Preferences</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+
+      <div id="vault-entries-container" style="max-height: 260px; overflow-y: auto; margin-bottom: 10px;"></div>
+
+      <div class="btn-row">
+        <button id="btn-export-vault" class="btn btn-subtle btn-sm">Export Vault JSON</button>
+        <button id="btn-import-vault-trigger" class="btn btn-subtle btn-sm">Import Vault JSON</button>
+        <input type="file" id="file-import-vault" accept=".json" style="display:none;" />
+      </div>
+      <div class="btn-row">
+        <button id="btn-drive-sync" class="btn btn-subtle btn-sm">Sync with Google Drive</button>
+      </div>
+      <div id="drive-sync-status" class="card-desc" role="status" style="white-space:pre-wrap">Last synced: never</div>
+    </div>
+
+    <!-- ADD NEW FACT CARD -->
+    <div class="card">
+      <div class="card-title">+ Add New Fact to Vault</div>
+      <div style="display:grid; grid-template-columns: 1fr 100px; gap: 6px; margin-bottom: 6px;">
+        <input type="text" id="new-fact-key" placeholder="Key (e.g., Portfolio URL)" />
+        <select id="new-fact-category">
+          <option value="custom">Custom</option>
+          <option value="identity">Identity</option>
+          <option value="contact">Contact</option>
+          <option value="location">Location</option>
+          <option value="professional">Professional</option>
+          <option value="social">Social</option>
+          <option value="preferences">Preferences</option>
+        </select>
+      </div>
+      <input type="text" id="new-fact-value" placeholder="Value (e.g., https://example.com)" style="margin-bottom: 8px;" />
+      <button id="btn-add-fact" class="btn btn-secondary">Save Fact to Vault</button>
+    </div>
+
+    <!-- CHATBOT IMPORT: always available, open by default only while the vault is empty. Facts go to the Review & Merge Queue, never straight to the vault. -->
+    <details class="card" id="vault-onboarding-card">
+      <summary class="card-title" id="vault-onboarding-title" style="cursor:pointer;">Add more from my chatbot</summary>
+      <div style="font-size:11px; color:#94a3b8; margin-bottom:6px;">
+        Copy this prompt into the chatbot you already use (ChatGPT, Claude, Gemini). It lists what it knows about you as JSON, so you do not have to type everything. Review its reply and delete anything private or wrong before pasting it below.
+      </div>
+      <label id="vault-onboarding-include-row" style="display:none; font-size:11px; margin:6px 0; align-items:center; gap:6px;">
+        <input type="checkbox" id="vault-onboarding-include-existing" checked />
+        Include my existing field names so the chatbot skips them
+      </label>
+      <textarea id="vault-onboarding-prompt" rows="6" readonly style="width:100%;"></textarea>
+      <button class="btn btn-subtle btn-sm" id="btn-copy-vault-prompt" style="margin-top:6px;">Copy prompt</button>
+      <div style="font-size:11px; color:#fbbf24; margin:8px 0 6px;">
+        Do not include passwords, social security numbers, card numbers or other secrets. Replies that look like they contain any are rejected.
+      </div>
+      <textarea id="vault-onboarding-input" rows="5" placeholder="Paste the chatbot's JSON reply here" style="width:100%;"></textarea>
+      <input type="file" id="vault-onboarding-file" accept=".json,.txt" style="margin-top:6px; font-size:11px;" />
+      <button class="btn btn-secondary" id="btn-vault-onboarding-import" style="margin-top:8px;">Check and send to review</button>
+      <div id="vault-onboarding-status" style="font-size:11px; margin-top:6px; white-space:pre-wrap;"></div>
+    </details>
+  </main>
+
+  <!-- TAB 5: OBSERVER (PHASE 7) -->
+  <main id="tab-observer" class="tab-pane" style="display: none;">
+  <div class="card" id="observer-intro-card">
+    <div class="card-desc obs-u1">Learn from your sources, watch your form edits, then review what was found before using Auto-Fill.</div>
+  </div>
+  
+  <div class="card" id="observe-card">
+    <div class="card-title card-title-step">
+      <span class="step-number">1</span>
+      <span>Learn from my sources</span>
+    </div>
+    <div class="card-desc">Add your website, GitHub, public LinkedIn page or portfolio. Facts found go to the Review &amp; Merge Queue below, never straight to your vault.</div>
+    <button class="btn btn-secondary obs-u2" id="btn-snapshot-user-facts">👤 Learn from this page</button>
+    <div class="obs-u3">
+      <input class="obs-u4" type="url" id="source-url-input" placeholder="https://your-site.example" />
+      <button class="btn btn-secondary obs-u5" id="btn-add-source">Add</button>
+    </div>
+    <div class="obs-u6" id="source-list"></div>
+    <details class="obs-u2">
+      <summary class="card-desc obs-u7">Paste text, upload a file or import from Google Drive</summary>
+      <textarea class="obs-u8" id="source-pasted-text" rows="4" placeholder="Paste resume or bio text here. PDFs are not supported: open the PDF, copy its text and paste it here."></textarea>
+      <input class="obs-u9" type="file" id="source-file-input" accept=".txt,.md,.html,.json" />
+      <div class="obs-u10">
+        <input class="obs-u11" type="checkbox" id="chk-follow-links" />
+        <label class="obs-u12" for="chk-follow-links">Follow profile links one level (same site, GitHub, LinkedIn; max 5 pages)</label>
+      </div>
+      <div class="obs-u13">
+        <button class="btn btn-secondary obs-u14" id="btn-drive-import">Import from Google Drive</button>
+        <div class="obs-u15" id="drive-hint"></div>
+        <div class="obs-u9" id="drive-picker" style="display:none;">
+          <div class="obs-u16">
+            <input class="obs-u4" type="text" id="drive-search" placeholder="Search file names" />
+            <button class="btn btn-secondary obs-u5" id="btn-drive-search">Search</button>
+          </div>
+          <div class="obs-u17" id="drive-file-list"></div>
+          <button class="btn btn-secondary obs-u18" id="btn-drive-more" style="display:none;">Load more</button>
+          <button class="btn btn-primary obs-u19" id="btn-drive-add">Add selected to text box</button>
+        </div>
+      </div>
+    </details>
+    <button class="btn btn-primary obs-u2" id="btn-learn-sources">Learn from all</button>
+    <div class="obs-u20" id="source-progress"></div>
+  </div>
+  
+  <div class="card" id="capture-card">
+    <div class="card-title card-title-step">
+      <span class="step-number">2</span>
+      <span>Watch my form edits</span>
+    </div>
+    <div class="card-desc">Record your edits when you submit forms on a site, then review them below before anything reaches your vault.</div>
+    <button class="btn btn-primary obs-u2" id="btn-observe-toggle" aria-pressed="false">Open a website to start observing</button>
+    <div id="observe-hint" class="card-desc"></div>
+  </div>
+  
+  <div class="card" id="target-context-card">
+    <div class="card-title card-title-step">
+      <span class="step-number">3</span>
+      <span>Review & Merge Queue</span>
+      <span id="observer-queue-count" class="badge badge-downloadable obs-u21">0 pending</span>
+    </div>
+  
+    <div class="btn-row obs-u22" id="observer-bulk-actions" style="display:none;">
+      <button id="btn-approve-all-deltas" class="btn btn-primary btn-sm">Approve All</button>
+      <button id="btn-discard-all-deltas" class="btn btn-danger btn-sm">Discard All</button>
+    </div>
+  
+    <div id="learned-container"></div>
+  
+    <div id="observer-deltas-container">
+      <div class="obs-u23">
+        No pending fact updates. Learn from a page or submit a form to learn new facts.
+      </div>
+    </div>
+  </div>
+  
+  <div class="card" id="optional-target-card">
+    <div class="card-title obs-u24">Optional: ground fills in a job page</div>
+    <div class="card-desc">Capture a job or topic page to ground your next form fill and Ask answers.</div>
+    <button class="btn btn-primary obs-u2" id="btn-capture-target-context">🎯 Capture Target / Job Context</button>
+  </div>
+  
+  <!-- Active Target Context Card -->
+  <div class="card obs-u25" id="session-context-card" style="display:none;">
+    <div class="obs-u26">
+      <strong class="obs-u27">🎯 Active Target Context (For Next Form Fill)</strong>
+      <button class="btn btn-danger obs-u28" id="btn-clear-target-context">Clear</button>
+    </div>
+    <div class="obs-u29" id="session-context-badge"></div>
+    <div class="obs-u30" id="session-context-summary"></div>
+  </div>
+  
+  <div class="card" id="improve-card">
+    <div class="card-title">How LocalForm improves</div>
+    <div id="improve-loop" class="card-desc"></div>
+    <div id="improve-items"></div>
+    <div id="improve-next" class="card-desc"></div>
+  </div>
+  </main>
+
+  <!-- Persistent Observability & Telemetry Footer Drawer -->
+  <div id="obs-drawer" style="border-top:1px solid #1e293b; background:#090d16; font-size:11px; margin:16px -12px -12px -12px; position:sticky; bottom:0; z-index:90;">
+    <div id="obs-drawer-toggle" style="display:flex; justify-content:space-between; align-items:center; padding:6px 12px; cursor:pointer; user-select:none;">
+      <span style="color:#94a3b8; font-weight:600;">📡 Observability & AI Trace (<span id="obs-log-count">0</span> events)</span>
+      <span id="obs-token-pill" style="font-family:monospace; font-size:10px; color:#64748b;">Tokens: 0 / 9216</span>
+    </div>
+    <div id="obs-drawer-body" style="display:none; max-height:190px; overflow-y:auto; padding:8px 12px; border-top:1px solid #1e293b; font-family:monospace; font-size:10px;">
+      <div style="display:flex; justify-content:flex-end; margin-bottom:4px;">
+        <button id="btn-clear-traces" style="background:none; border:none; color:#64748b; cursor:pointer; font-size:10px;">Clear Logs</button>
+      </div>
+      <div id="obs-trace-list"></div>
+    </div>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>
