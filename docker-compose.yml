@@ -552,7 +552,8 @@ services:
     image: remote-twt:local
     user: "1000:1000"
     env_file:
-      - twt.env
+      - path: twt.env
+        required: false
     environment:
       TWT_DISABLED_PROVIDERS: ""
     volumes:
