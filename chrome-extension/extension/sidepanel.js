@@ -1668,6 +1668,16 @@ async function renderVault() {
   // Attach delete listeners
   container.querySelectorAll(".btn-delete-fact").forEach((btn) => {
     btn.addEventListener("click", async () => {
+      // Two steps: the first click arms the button, the second deletes.
+      if (btn.dataset.armed !== "1") {
+        btn.dataset.armed = "1";
+        btn.textContent = "Delete? Click again";
+        btn.setAttribute("aria-label", "Click again to delete this fact");
+        setTimeout(() => {
+          if (btn.isConnected) { btn.dataset.armed = ""; btn.textContent = "\u2715"; btn.removeAttribute("aria-label"); }
+        }, 4000);
+        return;
+      }
       await chrome.runtime.sendMessage({ type: "vault:delete", id: btn.dataset.id });
       renderVault();
     });
