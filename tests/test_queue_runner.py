@@ -1408,9 +1408,21 @@ class RunnerTests(unittest.TestCase):
                     "group": "code-reaper",
                     "created_at": "2020-01-01",
                 },
-                *[{"repo": "owner/repo", "number": number} for number in (2, 23, 26)],
-                {"repo": "arii/remote-server", "number": 1377},
-                {"repo": "arii/remote-server", "number": 1359},
+                # Holds are label-based since #1813 removed the hardcoded list.
+                *[
+                    {
+                        "repo": "owner/repo",
+                        "number": number,
+                        "labels": [{"name": "hold"}],
+                    }
+                    for number in (2, 23, 26)
+                ],
+                {
+                    "repo": "arii/remote-server",
+                    "number": 1377,
+                    "requires_human": True,
+                },
+                {"repo": "arii/remote-server", "number": 1359, "fixed": True},
                 {"repo": "owner/repo", "number": 101, "fixed": True},
                 {"repo": "owner/repo", "number": 102, "requires_human": True},
             ]
