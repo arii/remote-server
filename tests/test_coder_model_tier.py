@@ -63,10 +63,19 @@ class TestCoderModelTier(unittest.TestCase):
         overrides, starts, _ = self.run_tier("strong", env)
         self.assertEqual(overrides, ["route:strong"])
         self.assertEqual(starts, ["twt:route:strong (tier=strong)"])
-        env_with_strong = {"CODER_MODEL": "fast-m", "CODER_STRONG_MODEL": "big-m"}
-        overrides, starts, _ = self.run_tier("strong", env_with_strong)
-        self.assertEqual(overrides, ["big-m"])
-        self.assertEqual(starts, ["twt:big-m (tier=strong)"])
+
+    def test_strong_ignores_strong_model_env_pin(self):
+        # No environment override path (issue #1798): a set
+        # CODER_STRONG_MODEL behaves identically to an unset one.
+        for env in (
+            {"CODER_MODEL": "fast-m"},
+            {"CODER_MODEL": "fast-m", "CODER_STRONG_MODEL": "big-m"},
+            {"CODER_MODEL": "fast-m", "CODER_STRONG_MODEL": "  "},
+        ):
+            with self.subTest(env=env):
+                overrides, starts, _ = self.run_tier("strong", env)
+                self.assertEqual(overrides, ["route:strong"])
+                self.assertEqual(starts, ["twt:route:strong (tier=strong)"])
 
     def test_fast_and_none_use_coder_model(self):
         env = {"CODER_MODEL": "fast-m"}
@@ -161,29 +170,35 @@ class TestStrongTierGatewayRequest(unittest.TestCase):
         self.assertNotIn("provider_reasoning_effort", strong.get("extra_body") or {})
         self.assertNotIn("provider_models", spec)
 
-    def test_concrete_strong_sends_no_fast_selection(self):
+    def test_concrete_strong_pin_is_ignored(self):
+        # No environment override path (issue #1798): even a concrete
+        # CODER_STRONG_MODEL pin resolves through the gateway route and
+        # sends no fast-tier selection.
         body, spec, _ = self.build(
             "strong",
             dict(self.base, CODER_MODEL="fast-m", CODER_STRONG_MODEL="nebius/big-m"),
         )
-        self.assertEqual(body["model"], "nebius/big-m")
+        self.assertEqual(body["model"], "route:strong")
         self.assertEqual(body.get("extra_body") or {}, {})
         self.assertNotIn("provider_models", spec)
 
-    def test_preflight_missing_concrete_strong_id_raises_before_inference(self):
-        from backend.shared import twt_provenance
-
+    def test_bogus_strong_pin_does_not_preflight(self):
+        # With no override path there is no pinned id to preflight: a
+        # bogus CODER_STRONG_MODEL is ignored and the gateway route
+        # map validation decides.
         env = dict(
             self.base, CODER_STRONG_MODEL="nebius/nope", TWT_PREFLIGHT_REQUIRED="1"
         )
-        with self.assertRaisesRegex(
-            twt_provenance.TwTPreflightError, "CODER_STRONG_MODEL.*nebius/big-m"
-        ):
-            self.build("strong", env)
-        body, _, query = self.build(
-            "strong", dict(env, CODER_STRONG_MODEL="nebius/big-m")
+        body, _, _ = self.build("strong", env)
+        self.assertEqual(body["model"], "route:strong")
+        good = dict(
+            self.base,
+            CODER_STRONG_MODEL="nebius/nope",
+            TWT_PREFLIGHT_REQUIRED="1",
+            TWT_STRONG_MODELS='{"nebius": "big-m"}',
         )
-        self.assertEqual(body["model"], "nebius/big-m")
+        body, _, query = self.build("strong", good)
+        self.assertEqual(body["model"], "route:strong")
         query.assert_called_once()
 
     def test_preflight_route_strong_validates_gateway_strong_map(self):
@@ -246,5 +261,5 @@ class TestStrongStartSkipsLocal(unittest.TestCase):
         ):
             coder.build_model(coder.tier_model("strong"))
         self.assertEqual(
-            [(s["provider"], s["model"]) for s in built], [("twt", "big-m")]
+            [(s["provider"], s["model"]) for s in built], [("twt", "route:strong")]
         )

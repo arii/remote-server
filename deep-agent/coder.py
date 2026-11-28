@@ -24,9 +24,9 @@ success, 1 with a Sorry line on failure, 3 on plan pause.
 Every run is traced + ledgered (recorder totals, like deep_chat).
 
 Env: CODER_TIMEOUT (wall seconds, default 1800; also the plan
-freshness cap on resume), CODER_MODEL (override), CODER_STRONG_MODEL (model
-used when the pipeline escalates to model_tier 'strong'; required
-then), CODER_THINK=1
+freshness cap on resume), CODER_MODEL (override; the strong tier always
+resolves via 'route:strong' with no environment override, issue #1798),
+CODER_THINK=1
 (Ollama thinking traces), CODER_VERIFY_ROUNDS (verify re-prompts,
 default 2, 0 disables), CODER_PLAN (always|never|unset auto),
 CODER_FALLBACK_MODEL (explicit TwT model after initial default-route model-cap
@@ -2728,14 +2728,15 @@ def mark_unverified(summary):
 def tier_model(model_tier, brief="", catalog=None):
     """Model override for a pipeline model_tier ('fast', 'strong', None).
 
-    'strong' returns CODER_STRONG_MODEL if set, or 'route:strong' to request
-    strong tier routing through TwT gateway.
-    'fast' and None use CODER_MODEL (None means the router default).
+    'strong' always returns 'route:strong' so the TwT gateway resolves
+    the strong model from the live catalog; no environment override path
+    (issue #1798). 'fast' and None use CODER_MODEL (None means the router
+    default).
     """
     if model_tier not in (None, "fast", "strong"):
         raise ValueError(f"unknown model_tier {model_tier!r}")
     if model_tier == "strong":
-        return (os.environ.get("CODER_STRONG_MODEL") or "").strip() or "route:strong"
+        return "route:strong"
     return os.environ.get("CODER_MODEL") or None
 
 
@@ -2966,12 +2967,13 @@ def run_coder(
         meter["continuations"] += 1
         meter["verify_fixes"] = meter.get("verify_fixes", 0) + 1
         kwargs["prior_tracker"] = error.coder_write_tracker
-        if (os.environ.get("CODER_STRONG_MODEL") or "").strip():
-            # Count an out-of-band escalation so the pipeline's tier selector
-            # still respects max_escalations on a later repair.
-            if kwargs.get("model_tier") != "strong":
-                meter["strong_escalations"] = meter.get("strong_escalations", 0) + 1
-            kwargs["model_tier"] = "strong"
+        # Verify-fix turns always run at the strong tier (no environment
+        # override path; issue #1798). Count an out-of-band escalation so
+        # the pipeline's tier selector still respects max_escalations on a
+        # later repair.
+        if kwargs.get("model_tier") != "strong":
+            meter["strong_escalations"] = meter.get("strong_escalations", 0) + 1
+        kwargs["model_tier"] = "strong"
         return _run_coder_attempt(
             worktree,
             f"{brief}\n\n{correction_context(worktree, error.coder_written_files, error.failures)}",
