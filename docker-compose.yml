@@ -112,6 +112,9 @@ services:
       - attach
       - --create
       - main
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     volumes:
       - ${HOST_HOME:-/home/ari}/twt/run:/run/twt:ro
       - .:/srv/remote-server # repo (compose, docs, .env) editable from the phone
@@ -281,6 +284,9 @@ services:
     # Docker Hub for remote-buttons:local and warn/fail. This skips it
     # from pull; build it with `docker compose up -d --build buttons`.
     pull_policy: build
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     volumes:
       - ${HOST_HOME:-/home/ari}/twt/run:/run/twt:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -335,6 +341,7 @@ services:
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434/api/generate}
       TWT_BASE_URL: http://twt/v1
       TWT_UDS: /run/twt/gateway.sock
+      BUTTONS_EXT_PAIRING_TOKEN: ${BUTTONS_EXT_PAIRING_TOKEN:-}
       # Playwright browser home (#1118): must match the Dockerfile
       # bake path — the runtime HOME (/home/ari) differs from the
       # bake user (root), so the default ~/.cache lookup misses the
