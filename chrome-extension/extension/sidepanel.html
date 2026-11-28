@@ -42,13 +42,7 @@
 
   <!-- NAVIGATION TABS -->
   <nav class="nav">
-    <button data-tab="tab-ai" class="active">
-      <span>AI Model</span>
-    </button>
-    <button data-tab="tab-export">
-      <span>Export</span>
-    </button>
-    <button data-tab="tab-fill">
+    <button data-tab="tab-fill" class="active">
       <span>Auto-Fill</span>
     </button>
     <button data-tab="tab-vault">
@@ -57,10 +51,16 @@
     <button data-tab="tab-observer">
       <span id="tab-observer-label">Observer</span>
     </button>
+    <button data-tab="tab-export">
+      <span>Export</span>
+    </button>
+    <button data-tab="tab-ai">
+      <span>AI Model</span>
+    </button>
   </nav>
 
   <!-- TAB 1: AI MODEL BOOTSTRAPPER (PHASE 1) -->
-  <main id="tab-ai" class="tab-pane">
+  <main id="tab-ai" class="tab-pane" style="display: none;">
     <div class="card">
       <div class="card-title">Chrome Built-in AI (Gemini Nano)</div>
       <div class="card-desc">
@@ -230,7 +230,7 @@
   </main>
 
   <!-- TAB 3: AUTO-FILL & MANUAL IMPORT (PHASES 3 & 6) -->
-  <main id="tab-fill" class="tab-pane" style="display: none;">
+  <main id="tab-fill" class="tab-pane">
     <div class="card">
       <div class="card-title">Auto-Fill this page</div>
       <div class="card-desc">
