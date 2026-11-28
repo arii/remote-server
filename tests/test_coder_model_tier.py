@@ -149,12 +149,19 @@ class TestStrongTierGatewayRequest(unittest.TestCase):
     base = {"NEBIUS_ONLY": "1", "S5_LOCAL_ONLY": "0", "OLLAMA_STRICT": "0"}
 
     def test_fast_keeps_default_provider_models_strong_route_sends_none(self):
+        # No client-side pins by default (#1809): the gateway chooses.
         fast, _, _ = self.build("fast", self.base)
         self.assertEqual(fast["model"], "default")
-        self.assertIn("provider_models", fast["extra_body"])
-        self.assertIn("provider_reasoning_effort", fast["extra_body"])
+        self.assertNotIn("provider_models", fast.get("extra_body") or {})
+        self.assertNotIn("provider_reasoning_effort", fast.get("extra_body") or {})
+        # An explicit per-stage override still reaches the default route only.
+        pinned = dict(self.base, TWT_CODER_NEBIUS_MODEL="pinned/nebius")
+        fast, _, _ = self.build("fast", pinned)
+        self.assertEqual(
+            fast["extra_body"]["provider_models"], {"nebius": "pinned/nebius"}
+        )
         strong, spec, _ = self.build(
-            "strong", dict(self.base, CODER_STRONG_MODEL="route:strong")
+            "strong", dict(pinned, CODER_STRONG_MODEL="route:strong")
         )
         self.assertEqual(strong["model"], "route:strong")
         self.assertNotIn("provider_models", strong.get("extra_body") or {})
