@@ -1,8 +1,14 @@
 # LocalForm AI — Chrome Extension Suite (Manifest V3)
 
-LocalForm AI fills web forms from a local, on-device profile vault and improves every time you correct it. When you submit a filled form, the extension records per field whether you kept, edited or cleared the fill (never the values themselves). Corrections become learned field rules, quarantined until you confirm them or three of your submissions agree, and those rules make the next fill more accurate: the offline eval replays recorded corrections against the repo's job-board fixtures and lifts fill accuracy from 79.3% to 100% (upper bound; the replay assumes an on-device model answer for the fields the vault abstains on). By default, inference uses Chrome's built-in Gemini Nano APIs on-device. Optional Firebase AI Logic configuration enables cloud fallback for prompts, so selected page or vault text can leave the browser. See the hybrid mode section before enabling it.
+LocalForm AI is a Chrome side panel that fills web forms from facts you saved, shows each suggestion for you to accept, edit or reject, and learns from the corrections you make. Facts come from sources you choose, and nothing is saved to your vault until you approve it.
 
-## Five-minute smoke test
+How a first run goes: add a few facts (name, email, phone), open a form, press Auto-Fill, review the suggestions, then submit. Yes/no answers such as work authorization or sponsorship stay marked Unverified until you confirm that answer, and answers the vault cannot support are left empty.
+
+Privacy: by default the model runs on your device through Chrome's built-in Gemini Nano APIs. Fetching source pages and the optional Google Drive import use the network. Optional Firebase AI Logic configuration (see the hybrid mode section) can send prompt text to a cloud model, so read that section before enabling it.
+
+How it improves: after you submit, it records per field whether you kept, edited or cleared the fill (never the values). A learned rule is used only after you confirm it or three submissions agree. In an offline replay on this repo's job-board fixtures, fill accuracy went from 79.3% to 100%; that is an upper bound on fixtures, not a user study.
+
+## Developer smoke test (about five minutes)
 
 1. `cd chrome-extension && npm run build` — validates the manifest and referenced assets, writes the ready-to-load extension to `dist/` and packages `dist/localform-ai-extension.zip`.
 2. Load `dist/` into a supported desktop Chrome (see **Loading into Google Chrome** below). Prompt API support and model readiness are separate: eligible devices may still need to download Gemini Nano before local inference works.

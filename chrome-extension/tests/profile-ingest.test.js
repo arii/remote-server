@@ -7,6 +7,7 @@ import {
   isPrivateHost,
   extractFactsFromText,
   extractLinks,
+  factSupport,
   htmlToText,
   parseProfileFacts
 } from "../extension/lib/profile-ingest.js";
@@ -74,13 +75,14 @@ describe("htmlToText and extractLinks", () => {
 
 describe("extractFactsFromText", () => {
   it("collects facts from every chunk with a fake session", async () => {
-    const text = Array.from({ length: 900 }, (_, i) => `word${i}`).join(" ");
+    const text = "Ari Doe. " + Array.from({ length: 900 }, (_, i) => `word${i}`).join(" ");
     let n = 0;
-    const runPrompt = vi.fn(async () => {
+    const runPrompt = vi.fn(async (prompt) => {
       n++;
+      const words = prompt.match(/word\d+/g);
       return JSON.stringify([
-        { key: `Fact ${n}a`, proposedValue: `value ${n}a`, category: "professional" },
-        { key: `Fact ${n}b`, proposedValue: `value ${n}b`, category: "custom" },
+        { key: `Fact ${n}a`, proposedValue: words[3], category: "professional" },
+        { key: `Fact ${n}b`, proposedValue: words[7], category: "custom" },
         { key: "Name", proposedValue: "Ari Doe", category: "identity" }
       ]);
     });
@@ -89,6 +91,34 @@ describe("extractFactsFromText", () => {
     expect(runPrompt).toHaveBeenCalledTimes(chunkCount);
     expect(facts).toHaveLength(chunkCount * 2 + 1); // duplicate Name deduped
     expect(runPrompt.mock.calls[0][0]).toContain("focus on work");
+  });
+  it("drops facts the source text does not say, keeps the supporting sentence", async () => {
+    const text = "Ariel writes Python for robot perception. She lives in San Jose.";
+    const runPrompt = async () =>
+      JSON.stringify([
+        { key: "Primary language", proposedValue: "Python", category: "professional" },
+        { key: "Do you require sponsorship", proposedValue: "No", category: "identity" },
+        { key: "Work authorization", proposedValue: "Yes", category: "identity" },
+        { key: "Hobby", proposedValue: "Climbing", category: "preferences" }
+      ]);
+    const { facts, unsupported } = await extractFactsFromText(text, runPrompt, {});
+    expect(facts.map((f) => f.key)).toEqual(["Primary language"]);
+    expect(facts[0].sourceExcerpt).toContain("Python for robot perception");
+    expect(unsupported).toBe(3);
+  });
+  it("accepts a yes/no value only when the same sentence mentions the key", () => {
+    const chunk = "I do not need visa sponsorship. Relocation: no.";
+    expect(factSupport({ key: "Sponsorship required", proposedValue: "no", category: "identity" }, chunk)).toBeNull();
+    expect(factSupport({ key: "Relocation", proposedValue: "no", category: "identity" }, chunk)).toBe("Relocation: no.");
+  });
+  it("rejects false associations: unrelated no, negated skill, bare yes/no", () => {
+    const f = (key, v, chunk) => factSupport({ key, proposedValue: v, category: "custom" }, chunk);
+    expect(f("Sponsorship required", "No", "Our sponsorship program is great. I have no pets.")).toBeNull();
+    expect(f("Programming language", "Python", "I have no Python experience.")).toBeNull();
+    expect(f("Programming language", "Python", "I never used Python in production.")).toBeNull();
+    expect(f("Work authorization", "Yes", "Yes, we offer remote work. Authorization is handled by HR.")).toBeNull();
+    expect(f("Relocation", "no", "Willing to relocate: no.")).toBe("Willing to relocate: no.");
+    expect(f("Programming language", "Python", "She writes Python daily.")).toBe("She writes Python daily.");
   });
   it("stops when aborted", async () => {
     const ctrl = new AbortController();
