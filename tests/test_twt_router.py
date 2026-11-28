@@ -62,8 +62,13 @@ class TestTwTRouter(unittest.TestCase):
             os.environ, {"TWT_BASE_URL": "http://localhost:18000/v1/"}, clear=True
         ):
             with mock.patch.object(model_router, "ollama_reachable", return_value=True):
-                local = model_router.resolve_llm()
+                automatic = model_router.resolve_llm()
+                local = model_router.resolve_llm(prefer="ollama")
             hosted = model_router.resolve_llm(prefer="twt")
+        # Automatic calls go straight to TwT when TWT_BASE_URL is set (#1812);
+        # local stays reachable only by explicit prefer="ollama".
+        self.assertEqual(automatic["provider"], "twt")
+        self.assertEqual(automatic["model"], "default")
         self.assertEqual(local["provider"], "ollama")
         self.assertEqual(local["base_url"], "http://localhost:18000/local")
         self.assertEqual(hosted["provider"], "twt")
