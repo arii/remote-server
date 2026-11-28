@@ -246,16 +246,13 @@
         <div id="autofill-target-desc" style="color:var(--text-muted); font-size:10px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
       </div>
 
-      <!-- Consent Checkbox Control -->
-      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer; font-size:11px; color:#cbd5e1;">
-        <input type="checkbox" id="chk-agree-consent" checked style="width:auto;" />
-        <span>Auto-check "I agree to terms & privacy policy" checkboxes</span>
-      </label>
+      <div class="obs-note" style="font-size:10.5px;color:#cbd5e1;margin-bottom:8px;">Terms, privacy and other consent boxes are never ticked for you.</div>
 
       <button id="btn-autofill-now" class="btn btn-primary">
         ✨ Auto-Fill Active Form with AI
       </button>
 
+      <div id="autofill-review" hidden></div>
       <pre id="autofill-status-box">Ready to fill active form.</pre>
       <div id="fill-stats-line" style="color:var(--text-muted); font-size:10.5px; margin-top:6px;"></div>
     </div>
