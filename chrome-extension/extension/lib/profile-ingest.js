@@ -99,17 +99,35 @@ const SHORT_ANSWER = /^(yes|no|true|false|n\/a|none)$/i;
 // (whole words). For yes/no style values or values of 3 characters or fewer,
 // that same sentence must also contain a significant word of the key, so an
 // absent statement is never turned into "No". Returns the sentence or null.
+const NEGATION = new Set(["no", "not", "never", "without", "dont", "don't", "cannot", "cant", "can't", "lack", "lacks", "zero", "none", "avoid"]);
+
+// Text match only, never proof. A sentence must contain the whole proposed
+// value as words. It is rejected when a negation word sits in the 4 words
+// before the value ("no Python experience"). For yes/no style values the
+// value must follow a significant key word within 3 words ("Relocation: no"),
+// so an unrelated "no" never becomes the answer. It cannot tell whose
+// experience a sentence describes; the review card says so. Returns the
+// sentence or null.
 export function factSupport(fact, chunk) {
   const value = norm(fact.proposedValue);
   if (!value) return null;
+  const vTokens = value.split(" ");
   const keyWords = norm(fact.key).split(" ").filter((w) => w.length >= 4);
-  const needsKey = SHORT_ANSWER.test(value) || value.length <= 3;
+  const shortAnswer = SHORT_ANSWER.test(value) || value.length <= 3;
   const sentences = String(chunk || "").split(/(?<=[.!?])\s+|\n+/);
   for (const sentence of sentences) {
-    const ns = ` ${norm(sentence)} `;
-    if (!ns.includes(` ${value} `)) continue;
-    if (needsKey && !keyWords.some((w) => ns.includes(w))) continue;
-    return sentence.trim().slice(0, 240);
+    const tokens = norm(sentence).split(" ");
+    for (let i = 0; i + vTokens.length <= tokens.length; i++) {
+      if (!vTokens.every((t, j) => tokens[i + j] === t)) continue;
+      const before = tokens.slice(Math.max(0, i - 4), i);
+      if (!shortAnswer && before.some((w) => NEGATION.has(w))) continue;
+      if (shortAnswer) {
+        const near = tokens.slice(Math.max(0, i - 4), i);
+        if (!near.some((w) => keyWords.some((k) => w.length >= 5 && w.slice(0, 5) === k.slice(0, 5)))) continue;
+        if (near.some((w) => NEGATION.has(w)) && value !== "no") continue;
+      }
+      return sentence.trim().slice(0, 240);
+    }
   }
   return null;
 }
