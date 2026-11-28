@@ -530,10 +530,20 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(
             [i["number"] for i in runner.ordered_issues(issues)], [11, 12, 10]
         )
+        # Holds are data, not code (#1813): bare issue numbers no longer skip.
         for number in (2, 23, 26, 1377, 1359):
-            self.assertTrue(
+            self.assertIsNone(
                 runner.skip_reason({"repo": "arii/remote-server", "number": number})
             )
+        self.assertTrue(
+            runner.skip_reason(
+                {
+                    "repo": "arii/remote-server",
+                    "number": 5,
+                    "labels": [{"name": "hold"}],
+                }
+            )
+        )
         for field in ("fixed", "merged", "requires_human"):
             self.assertTrue(
                 runner.skip_reason({"repo": "repo/name", "number": 10, field: True})
@@ -551,13 +561,14 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.ordered_issues([issue])
         manifest = runner.read_json("scripts/config/twt-queue-issues.json")
-        self.assertTrue(
-            next(
+        # The old hardcoded holds now live in the manifest.
+        for number in (1359, 1377):
+            entry = next(
                 i
                 for i in manifest
-                if i["repo"] == "arii/remote-server" and i["number"] == 1359
-            )["skip_reason"]
-        )
+                if i["repo"] == "arii/remote-server" and i["number"] == number
+            )
+            self.assertTrue(runner.skip_reason(entry))
 
     def test_config_can_come_from_environment(self):
         with (
@@ -569,13 +580,27 @@ class RunnerTests(unittest.TestCase):
             supervise.assert_called_once_with(Path("/config.json"), clear_halt=False)
 
     def test_human_decision_skips_are_repo_scoped_but_operator_holds_are_global(self):
+        # Holds come from the manifest skip_reason or a `hold` label (#1813),
+        # never from issue numbers in code, so they are always per-issue.
         self.assertTrue(
-            runner.skip_reason({"repo": "arii/remote-server", "number": 1377})
+            runner.skip_reason(
+                {"repo": "arii/remote-server", "number": 1377, "skip_reason": "hold"}
+            )
         )
         self.assertIsNone(runner.skip_reason({"repo": "arii/boomtick", "number": 1377}))
         for repo in ("arii/remote-server", "arii/boomtick", "other/repo"):
             for number in (2, 23, 26):
-                self.assertTrue(runner.skip_reason({"repo": repo, "number": number}))
+                self.assertIsNone(runner.skip_reason({"repo": repo, "number": number}))
+                self.assertTrue(
+                    runner.skip_reason(
+                        {"repo": repo, "number": number, "labels": [{"name": "hold"}]}
+                    )
+                )
+                self.assertTrue(
+                    runner.skip_reason(
+                        {"repo": repo, "number": number, "labels": ["hold"]}
+                    )
+                )
 
     @mock.patch.object(runner.signal, "signal")
     @mock.patch.object(
@@ -1396,9 +1421,16 @@ class RunnerTests(unittest.TestCase):
                     "group": "code-reaper",
                     "created_at": "2020-01-01",
                 },
-                *[{"repo": "owner/repo", "number": number} for number in (2, 23, 26)],
-                {"repo": "arii/remote-server", "number": 1377},
-                {"repo": "arii/remote-server", "number": 1359},
+                *[
+                    {
+                        "repo": "owner/repo",
+                        "number": number,
+                        "labels": [{"name": "hold"}],
+                    }
+                    for number in (2, 23, 26)
+                ],
+                {"repo": "arii/remote-server", "number": 1377, "skip_reason": "hold"},
+                {"repo": "arii/remote-server", "number": 1359, "skip_reason": "done"},
                 {"repo": "owner/repo", "number": 101, "fixed": True},
                 {"repo": "owner/repo", "number": 102, "requires_human": True},
             ]
@@ -1498,7 +1530,7 @@ class RunnerTests(unittest.TestCase):
                 self.listed(8, "2020-01-08"),
                 self.listed(5, "2020-01-05"),
                 self.listed(6, "2020-01-06", labels=("bug",)),
-                self.listed(23, "2020-01-01"),
+                self.listed(23, "2020-01-01", labels=("ready", "hold")),
             ],
             "owner/other": [self.listed(3, "2020-01-03")],
             "owner/denied": [self.listed(1, "2020-01-01")],
@@ -2725,12 +2757,15 @@ class StrongRoutingTests(unittest.TestCase):
         self.assertEqual(job["model_tier"], "strong")
 
     def test_strong_start_requires_model_and_budget(self):
-        fatal = []
-        with mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": " "}):
-            with self.assertRaises(runner.StrongRefused) as caught:
-                runner.check_strong_start(0.5, fatal)
-        self.assertEqual(caught.exception.status, "CONFIG_ERROR")
-        self.assertIn("CODER_STRONG_MODEL", fatal[0])
+        # No pin required (#1811): strong falls back to the gateway route.
+        for unset in ({"CODER_STRONG_MODEL": " "}, {}):
+            with (
+                mock.patch.dict(os.environ, unset),
+                mock.patch.object(runner, "refresh_spend", return_value=0.1),
+            ):
+                if not unset:
+                    os.environ.pop("CODER_STRONG_MODEL", None)
+                self.assertEqual(runner.check_strong_start(0.5, []), "route:strong")
         with (
             mock.patch.dict(os.environ, {"CODER_STRONG_MODEL": "big"}),
             mock.patch.object(runner, "refresh_spend", return_value=0.47),
@@ -2807,13 +2842,12 @@ class StrongRoutingTests(unittest.TestCase):
         self.assertIsNone(seen)
         self.assertEqual(summary["tier"], "default")
 
-    def test_worker_without_strong_model_fails_before_the_pipeline_and_halts(self):
+    def test_worker_without_strong_model_uses_the_gateway_strong_route(self):
         with tempfile.TemporaryDirectory() as root:
-            code, summary, _s, calls = self.run_worker(root, "strong", {})
-        self.assertEqual((code, calls), (2, 0))
-        self.assertEqual(summary["result"]["status"], "CONFIG_ERROR")
-        self.assertTrue(summary["halt_queue"])
-        self.assertIn("CODER_STRONG_MODEL", summary["halt_reasons"][0])
+            code, summary, seen, calls = self.run_worker(root, "strong", {})
+        self.assertEqual((code, seen, calls), (0, "strong", 1))
+        self.assertEqual(summary["strong_model"], "route:strong")
+        self.assertFalse(summary["halt_queue"])
 
     def test_worker_with_insufficient_budget_does_not_start_strong(self):
         with tempfile.TemporaryDirectory() as root:
