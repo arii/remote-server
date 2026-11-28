@@ -414,3 +414,193 @@ pre {
   box-sizing: border-box;
   max-width: 100%;
 }
+
+/* Step card title layout */
+.card-title-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.card-title-step .step-number {
+  flex-shrink: 0;
+}
+
+.card-title-step span:nth-child(2) {
+  flex-grow: 1;
+}
+
+/* Step Numbers */
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: var(--indigo);
+  color: white;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Observer pane layout classes (replace former inline styles) */
+.obs-u1 {
+  margin-bottom: 0;
+}
+
+.obs-u2 {
+  margin-bottom: 8px;
+}
+
+.obs-u3 {
+  display:flex;
+  gap:6px;
+  margin-bottom:8px;
+}
+
+.obs-u4 {
+  flex:1;
+}
+
+.obs-u5 {
+  width:auto;
+  margin:0;
+}
+
+.obs-u6 {
+  font-size:11px;
+  margin-bottom:8px;
+}
+
+.obs-u7 {
+  cursor: pointer;
+  margin-bottom: 0;
+}
+
+.obs-u8 {
+  width:100%;
+  margin-top: 6px;
+}
+
+.obs-u9 {
+  margin-top:6px;
+  font-size:11px;
+}
+
+.obs-u10 {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin:8px 0;
+}
+
+.obs-u11 {
+  width:auto;
+}
+
+.obs-u12 {
+  font-size:11px;
+  color:#cbd5e1;
+  cursor:pointer;
+}
+
+.obs-u13 {
+  margin:8px 0;
+}
+
+.obs-u14 {
+  margin:0;
+  margin-bottom: 6px;
+}
+
+.obs-u15 {
+  font-size:10.5px;
+  color:#94a3b8;
+  margin-top:4px;
+}
+
+.obs-u16 {
+  display:flex;
+  gap:6px;
+  margin-bottom:6px;
+}
+
+.obs-u17 {
+  max-height:140px;
+  overflow:auto;
+  margin-bottom:6px;
+}
+
+.obs-u18 {
+  margin:0 0 6px;
+}
+
+.obs-u19 {
+  margin:0;
+}
+
+.obs-u20 {
+  font-size:11px;
+  color:#38bdf8;
+  margin-top:6px;
+}
+
+.obs-u21 {
+  margin-left: auto;
+}
+
+.obs-u22 {
+  margin-bottom: 10px;
+}
+
+.obs-u23 {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 16px 0;
+}
+
+.obs-u24 {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.obs-u25 {
+  border-color:#3b82f6;
+  background:rgba(30,58,138,0.15);
+}
+
+.obs-u26 {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+
+.obs-u27 {
+  font-size:11px;
+  color:#93c5fd;
+}
+
+.obs-u28 {
+  width:auto;
+  padding:2px 8px;
+  font-size:10px;
+  margin:0;
+}
+
+.obs-u29 {
+  margin-top:5px;
+  font-size:10.5px;
+  color:#38bdf8;
+  font-weight:600;
+}
+
+.obs-u30 {
+  font-size:11px;
+  color:#cbd5e1;
+  margin-top:6px;
+  white-space:pre-wrap;
+}

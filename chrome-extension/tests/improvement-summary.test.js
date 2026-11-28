@@ -80,14 +80,15 @@ describe("improvement card wiring", () => {
     }
   });
 
-  it("the card ids the panel looks up exist, and the card comes first in the Observer tab", () => {
+  it("the card ids the panel looks up exist, and the three steps come before it in the Observer tab", () => {
     for (const id of ["improve-card", "improve-loop", "improve-items", "improve-next"]) {
       expect(html).toContain(`id="${id}"`);
       if (id !== "improve-card") expect(panelSrc).toContain(`"${id}"`);
     }
     const observer = html.slice(html.indexOf('id="tab-observer"'));
     expect(observer.indexOf('id="improve-card"')).toBeGreaterThan(-1);
-    expect(observer.indexOf('id="improve-card"')).toBeLessThan(observer.indexOf('id="btn-observe-toggle"'));
+    expect(observer.indexOf('id="btn-learn-sources"')).toBeLessThan(observer.indexOf('id="improve-card"'));
+    expect(observer.indexOf('id="btn-observe-toggle"')).toBeLessThan(observer.indexOf('id="improve-card"'));
   });
 
   it("loop copy has both kinds", () => {

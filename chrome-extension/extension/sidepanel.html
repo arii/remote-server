@@ -354,95 +354,101 @@
 
   <!-- TAB 5: OBSERVER (PHASE 7) -->
   <main id="tab-observer" class="tab-pane" style="display: none;">
-    <div class="card" id="improve-card">
-      <div class="card-title">How LocalForm improves</div>
-      <div id="improve-loop" class="card-desc"></div>
-      <div id="improve-items"></div>
-      <div id="improve-next" class="card-desc"></div>
+  <div class="card" id="observer-intro-card">
+    <div class="card-desc obs-u1">Learn from your sources, watch your form edits, then review what was found before using Auto-Fill.</div>
+  </div>
+  
+  <div class="card" id="observe-card">
+    <div class="card-title card-title-step">
+      <span class="step-number">1</span>
+      <span>Learn from my sources</span>
     </div>
-
-    <div class="card">
-      <div class="card-title">Observe</div>
-      <div class="card-desc">Record your edits when you submit forms on a site, then review them below before anything reaches your vault.</div>
-      <button class="btn btn-primary" id="btn-observe-toggle" aria-pressed="false">Open a website to start observing</button>
-      <div id="observe-hint" class="card-desc"></div>
+    <div class="card-desc">Add your website, GitHub, public LinkedIn page or portfolio. Facts found go to the Review &amp; Merge Queue below, never straight to your vault.</div>
+    <button class="btn btn-secondary obs-u2" id="btn-snapshot-user-facts">👤 Learn from this page</button>
+    <div class="obs-u3">
+      <input class="obs-u4" type="url" id="source-url-input" placeholder="https://your-site.example" />
+      <button class="btn btn-secondary obs-u5" id="btn-add-source">Add</button>
     </div>
-
-    <div class="card">
-      <div class="card-title">Target context</div>
-      <div class="card-desc">Capture a job or topic page to ground your next form fill and Ask answers.</div>
-      <button class="btn btn-primary" id="btn-capture-target-context">
-        🎯 Capture Target / Job Context
-      </button>
-
-      <!-- Active Target Context Card -->
-      <div class="card" id="session-context-card" style="display:none; border-color:#3b82f6; background:rgba(30,58,138,0.15);">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <strong style="font-size:11px; color:#93c5fd;">🎯 Active Target Context (For Next Form Fill)</strong>
-          <button class="btn btn-danger" id="btn-clear-target-context" style="width:auto; padding:2px 8px; font-size:10px; margin:0;">Clear</button>
-        </div>
-        <div id="session-context-badge" style="margin-top:5px; font-size:10.5px; color:#38bdf8; font-weight:600;"></div>
-        <div id="session-context-summary" style="font-size:11px; color:#cbd5e1; margin-top:6px; white-space:pre-wrap;"></div>
+    <div class="obs-u6" id="source-list"></div>
+    <details class="obs-u2">
+      <summary class="card-desc obs-u7">Paste text, upload a file or import from Google Drive</summary>
+      <textarea class="obs-u8" id="source-pasted-text" rows="4" placeholder="Paste resume or bio text here. PDFs are not supported: open the PDF, copy its text and paste it here."></textarea>
+      <input class="obs-u9" type="file" id="source-file-input" accept=".txt,.md,.html,.json" />
+      <div class="obs-u10">
+        <input class="obs-u11" type="checkbox" id="chk-follow-links" />
+        <label class="obs-u12" for="chk-follow-links">Follow profile links one level (same site, GitHub, LinkedIn; max 5 pages)</label>
       </div>
-    </div>
-
-    <!-- Learn from my sources: feeds the Review & Merge Queue only -->
-    <div class="card" id="sources-card">
-      <div class="card-title">Learn from my sources</div>
-      <div style="font-size:11px; color:#94a3b8; margin-bottom:6px;">
-        Add your website, GitHub, public LinkedIn page or portfolio. Facts found go to the Review &amp; Merge Queue below, never straight to your vault.
-      </div>
-      <button class="btn btn-secondary" id="btn-snapshot-user-facts">👤 Learn from this page</button>
-      <div style="display:flex; gap:6px; margin-bottom:6px;">
-        <input type="url" id="source-url-input" placeholder="https://your-site.example" style="flex:1;" />
-        <button class="btn btn-secondary" id="btn-add-source" style="width:auto; margin:0;">Add</button>
-      </div>
-      <div id="source-list" style="font-size:11px; margin-bottom:8px;"></div>
-      <details>
-      <summary class="card-desc">Paste text, upload a file or import from Google Drive</summary>
-      <textarea id="source-pasted-text" rows="4" placeholder="Paste resume or bio text here. PDFs are not supported: open the PDF, copy its text and paste it here." style="width:100%;"></textarea>
-      <input type="file" id="source-file-input" accept=".txt,.md,.html,.json" style="margin-top:6px; font-size:11px;" />
-      <div style="display:flex; align-items:center; gap:8px; margin:8px 0;">
-        <input type="checkbox" id="chk-follow-links" style="width:auto;" />
-        <label for="chk-follow-links" style="font-size:11px; color:#cbd5e1; cursor:pointer;">Follow profile links one level (same site, GitHub, LinkedIn; max 5 pages)</label>
-      </div>
-      <div style="margin:8px 0;">
-        <button class="btn btn-secondary" id="btn-drive-import" style="margin:0;">Import from Google Drive</button>
-        <div id="drive-hint" style="font-size:10.5px; color:#94a3b8; margin-top:4px;"></div>
-        <div id="drive-picker" style="display:none; margin-top:6px; font-size:11px;">
-          <div style="display:flex; gap:6px; margin-bottom:6px;">
-            <input type="text" id="drive-search" placeholder="Search file names" style="flex:1;" />
-            <button class="btn btn-secondary" id="btn-drive-search" style="width:auto; margin:0;">Search</button>
+      <div class="obs-u13">
+        <button class="btn btn-secondary obs-u14" id="btn-drive-import">Import from Google Drive</button>
+        <div class="obs-u15" id="drive-hint"></div>
+        <div class="obs-u9" id="drive-picker" style="display:none;">
+          <div class="obs-u16">
+            <input class="obs-u4" type="text" id="drive-search" placeholder="Search file names" />
+            <button class="btn btn-secondary obs-u5" id="btn-drive-search">Search</button>
           </div>
-          <div id="drive-file-list" style="max-height:140px; overflow:auto; margin-bottom:6px;"></div>
-          <button class="btn btn-secondary" id="btn-drive-more" style="display:none; margin:0 0 6px;">Load more</button>
-          <button class="btn btn-primary" id="btn-drive-add" style="margin:0;">Add selected to text box</button>
+          <div class="obs-u17" id="drive-file-list"></div>
+          <button class="btn btn-secondary obs-u18" id="btn-drive-more" style="display:none;">Load more</button>
+          <button class="btn btn-primary obs-u19" id="btn-drive-add">Add selected to text box</button>
         </div>
       </div>
-      </details>
-      <button class="btn btn-primary" id="btn-learn-sources">Learn from all</button>
-      <div id="source-progress" style="font-size:11px; color:#38bdf8; margin-top:6px;"></div>
+    </details>
+    <button class="btn btn-primary obs-u2" id="btn-learn-sources">Learn from all</button>
+    <div class="obs-u20" id="source-progress"></div>
+  </div>
+  
+  <div class="card" id="capture-card">
+    <div class="card-title card-title-step">
+      <span class="step-number">2</span>
+      <span>Watch my form edits</span>
     </div>
-
-    <div class="card">
-      <div class="card-title">
-        <span>Review & Merge Queue</span>
-        <span id="observer-queue-count" class="badge badge-downloadable">0 pending</span>
-      </div>
-
-      <div class="btn-row" id="observer-bulk-actions" style="margin-bottom: 10px; display: none;">
-        <button id="btn-approve-all-deltas" class="btn btn-primary btn-sm">Approve All</button>
-        <button id="btn-discard-all-deltas" class="btn btn-danger btn-sm">Discard All</button>
-      </div>
-
-      <div id="learned-container"></div>
-
-      <div id="observer-deltas-container">
-        <div style="text-align: center; color: var(--text-muted); padding: 16px 0;">
-          No pending fact updates. Learn from a page or submit a form to learn new facts.
-        </div>
+    <div class="card-desc">Record your edits when you submit forms on a site, then review them below before anything reaches your vault.</div>
+    <button class="btn btn-primary obs-u2" id="btn-observe-toggle" aria-pressed="false">Open a website to start observing</button>
+    <div id="observe-hint" class="card-desc"></div>
+  </div>
+  
+  <div class="card" id="target-context-card">
+    <div class="card-title card-title-step">
+      <span class="step-number">3</span>
+      <span>Review & Merge Queue</span>
+      <span id="observer-queue-count" class="badge badge-downloadable obs-u21">0 pending</span>
+    </div>
+  
+    <div class="btn-row obs-u22" id="observer-bulk-actions" style="display:none;">
+      <button id="btn-approve-all-deltas" class="btn btn-primary btn-sm">Approve All</button>
+      <button id="btn-discard-all-deltas" class="btn btn-danger btn-sm">Discard All</button>
+    </div>
+  
+    <div id="learned-container"></div>
+  
+    <div id="observer-deltas-container">
+      <div class="obs-u23">
+        No pending fact updates. Learn from a page or submit a form to learn new facts.
       </div>
     </div>
+  </div>
+  
+  <div class="card" id="optional-target-card">
+    <div class="card-title obs-u24">Optional: ground fills in a job page</div>
+    <div class="card-desc">Capture a job or topic page to ground your next form fill and Ask answers.</div>
+    <button class="btn btn-primary obs-u2" id="btn-capture-target-context">🎯 Capture Target / Job Context</button>
+  </div>
+  
+  <!-- Active Target Context Card -->
+  <div class="card obs-u25" id="session-context-card" style="display:none;">
+    <div class="obs-u26">
+      <strong class="obs-u27">🎯 Active Target Context (For Next Form Fill)</strong>
+      <button class="btn btn-danger obs-u28" id="btn-clear-target-context">Clear</button>
+    </div>
+    <div class="obs-u29" id="session-context-badge"></div>
+    <div class="obs-u30" id="session-context-summary"></div>
+  </div>
+  
+  <div class="card" id="improve-card">
+    <div class="card-title">How LocalForm improves</div>
+    <div id="improve-loop" class="card-desc"></div>
+    <div id="improve-items"></div>
+    <div id="improve-next" class="card-desc"></div>
+  </div>
   </main>
 
   <!-- Persistent Observability & Telemetry Footer Drawer -->
