@@ -69,6 +69,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
     renderGuidanceCard();
   }
   if (area === "local" && IMPROVE_KEYS.some((k) => changes[k])) renderImprovement();
+  // The observer writes pendingDeltas from the service worker while the panel is
+  // open. Without this the queue and the "Observer (n)" tab label stayed stale
+  // until the panel was reloaded, so captures looked like they never happened.
+  if (area === "local" && changes.pendingDeltas) renderObserverQueue();
 });
 
 async function getClonedSession() {
@@ -1808,7 +1812,7 @@ async function renderObserverQueue() {
       <div class="item-card" data-delta-id="${escapeHtml(delta.deltaId)}" style="margin-bottom:8px;">
         <div class="item-header">
           <span class="${badgeClass}">${actionText}</span>
-          <span style="font-size:10px; color:var(--text-muted);">${Math.round(delta.confidence * 100)}% confidence</span>
+          <span style="font-size:10px; color:var(--text-muted);">${delta.origin === "observer" ? "Typed by you, not verified" : `Model estimate ${Math.round(delta.confidence * 100)}%`}</span>
         </div>
         <div style="font-weight:700; color:white; font-size:11.5px; margin: 2px 0;">${escapeHtml(delta.key)}</div>
         ${delta.previousValue ? `<div style="font-size:10.5px; color:var(--rose); text-decoration:line-through;">Previous: ${escapeHtml(delta.previousValue)}</div>` : ""}
